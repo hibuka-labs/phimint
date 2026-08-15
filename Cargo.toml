@@ -33,6 +33,8 @@ dotenvy = "0.15"
 # input for both the TUI and the inline chat.
 ratatui = "0.29"
 crossterm = "0.28"
+# Display width for wide CJK glyphs (TUI wrap + inline cursor column).
+unicode-width = "0.1"
 
 # Observability: mirror phi-agent's CLI — write `tracing` records to a
 # session.log file (via log-core's LogCoreLayer) and per-turn event JSONL

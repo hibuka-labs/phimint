@@ -1,4 +1,4 @@
-//! ratatui frame rendering: output / tool log / composer / status bar.
+//! ratatui frame rendering: transcript (output) / composer / status bar.
 
 use std::ops::Range;
 
@@ -10,10 +10,11 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap},
 };
+use unicode_width::UnicodeWidthStr;
 
-use crate::ui::app::{AgentStatus, App, LineKind, ToolCallEntry, WRAP_WIDTH, wrap};
+use crate::ui::app::{AgentStatus, App, LineKind, WRAP_WIDTH, wrap};
 
 /// Max composer rows shown (its box grows with the buffer up to this).
 const MAX_COMPOSER_ROWS: usize = 8;
@@ -23,17 +24,15 @@ pub fn draw(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(3),                 // output
-            Constraint::Length(6),              // tool log
+            Constraint::Min(3),                  // output (transcript)
             Constraint::Length(composer_height), // composer
-            Constraint::Length(1),              // status bar
+            Constraint::Length(1),               // status bar
         ])
         .split(f.area());
 
     render_output(f, app, chunks[0]);
-    render_tool_log(f, app, chunks[1]);
-    render_composer(f, app, chunks[2]);
-    render_status(f, app, chunks[3]);
+    render_composer(f, app, chunks[1]);
+    render_status(f, app, chunks[2]);
 
     if app.has_pending_approval() {
         render_approval_popup(f, app);
@@ -41,7 +40,7 @@ pub fn draw(f: &mut Frame, app: &App) {
 }
 
 fn render_output(f: &mut Frame, app: &App, area: Rect) {
-    let height = area.height.saturating_sub(2) as usize;
+    let height = area.height as usize;
 
     // Committed lines + the live streaming tail (uncommitted text renders
     // progressively, then flushes into `output` on the next structural event).
@@ -70,62 +69,9 @@ fn render_output(f: &mut Frame, app: &App, area: Rect) {
         }
     }
 
-    let block = Block::default().borders(Borders::ALL).title("output");
-    f.render_widget(Paragraph::new(lines).block(block), area);
-}
-
-fn render_tool_log(f: &mut Frame, app: &App, area: Rect) {
-    let height = area.height.saturating_sub(2) as usize;
-    let items: Vec<ListItem> = app
-        .tool_log
-        .iter()
-        .rev()
-        .take(height)
-        .map(tool_item)
-        .collect();
-
-    let block = Block::default().borders(Borders::ALL).title("tools");
-    f.render_widget(List::new(items).block(block), area);
-}
-
-fn tool_item(entry: &ToolCallEntry) -> ListItem<'_> {
-    let marker = if entry.denied {
-        "⛔"
-    } else if entry.done {
-        "✓"
-    } else {
-        "…"
-    };
-    let agent = entry
-        .agent_id
-        .as_deref()
-        .map(|a| format!("[{a}] "))
-        .unwrap_or_default();
-
-    let mut spans = vec![
-        Span::styled(
-            marker,
-            Style::default().fg(if entry.denied { Color::Red } else { Color::Green }),
-        ),
-        Span::raw(" "),
-        Span::styled(
-            format!("{agent}{}", entry.tool_name),
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
-    ];
-    if !entry.args.is_empty() {
-        spans.push(Span::styled(
-            format!(" {}", entry.args),
-            Style::default().fg(Color::DarkGray),
-        ));
-    }
-    if let Some(summary) = &entry.summary {
-        spans.push(Span::styled(
-            format!(" ↳ {summary}"),
-            Style::default().fg(Color::DarkGray),
-        ));
-    }
-    ListItem::new(Line::from(spans))
+    // No border/title — the transcript flows freely (Claude Code style); the
+    // composer's own box is the visual boundary between output and input.
+    f.render_widget(Paragraph::new(lines), area);
 }
 
 fn render_composer(f: &mut Frame, app: &App, area: Rect) {
@@ -152,15 +98,9 @@ fn render_composer(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
 
-    let title = if app.running {
-        "input — agent is running"
-    } else {
-        "input"
-    };
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .title(title);
+        .border_type(BorderType::Rounded);
     f.render_widget(Paragraph::new(items).block(block), area);
 }
 
@@ -266,7 +206,9 @@ fn style_for(kind: LineKind) -> Style {
             .add_modifier(Modifier::DIM)
             .add_modifier(Modifier::ITALIC),
         LineKind::Plan => Style::default().fg(Color::Cyan),
+        LineKind::Tool => Style::default().fg(Color::Cyan),
         LineKind::Done => Style::default().fg(Color::Green),
+        LineKind::ToolResult => Style::default().fg(Color::Green),
         LineKind::Error => Style::default().fg(Color::Red),
         LineKind::System => Style::default().fg(Color::DarkGray),
         LineKind::Cancelled => Style::default().fg(Color::Yellow),
@@ -294,11 +236,18 @@ fn window_range(total: usize, app: &App, height: usize) -> Range<usize> {
 pub fn buffer_to_text(buf: &Buffer) -> String {
     let area = buf.area;
     let cells = buf.content();
-    let mut out = String::with_capacity((area.width as usize + 1) * area.height as usize);
+    let width = area.width as usize;
+    let mut out = String::with_capacity((width + 1) * area.height as usize);
     for y in 0..area.height {
         let mut line = String::new();
-        for x in 0..area.width {
-            line.push_str(cells[(y as usize) * (area.width as usize) + (x as usize)].symbol());
+        let mut x = 0usize;
+        while x < width {
+            let sym = cells[y as usize * width + x].symbol();
+            line.push_str(sym);
+            // A wide glyph (CJK, etc.) is stored in one cell with the following
+            // cell as a reset continuation; step over it so we don't emit a
+            // stray space between wide chars.
+            x += sym.width().max(1);
         }
         out.push_str(line.trim_end());
         out.push('\n');
@@ -320,7 +269,7 @@ pub fn snapshot_text(app: &App, width: u16, height: u16) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::app::{AgentStatus, App, LineKind, OutputLine, Phase, ToolCallEntry, TuiEvent};
+    use crate::ui::app::{AgentStatus, App, LineKind, OutputLine, Phase, TuiEvent};
     use phi_agent::{RuntimeEvent, SessionId};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
@@ -334,21 +283,13 @@ mod tests {
                 kind: LineKind::Normal,
             });
         }
-        app.tool_log.push(ToolCallEntry {
-            agent_id: Some("sub/1".into()),
-            tool_name: "read_file".into(),
-            args: "{\"path\":\"src/lib.rs\"}".into(),
-            summary: Some("123 lines".into()),
-            denied: false,
-            done: true,
+        app.output.push(OutputLine {
+            text: "⏺ [sub/1] read_file {\"path\":\"src/lib.rs\"}".into(),
+            kind: LineKind::Tool,
         });
-        app.tool_log.push(ToolCallEntry {
-            agent_id: None,
-            tool_name: "execute_command".into(),
-            args: "cargo test".into(),
-            summary: None,
-            denied: true,
-            done: true,
+        app.output.push(OutputLine {
+            text: "  ⛔ execute_command denied".into(),
+            kind: LineKind::Error,
         });
         app.composer.insert_str("hello\nworld");
         app.running = true;
@@ -439,7 +380,6 @@ mod tests {
 
         let text = snapshot_text(&app, 80, 24);
         assert!(text.contains("approval"), "popup title missing:\n{text}");
-        assert!(text.contains("output"), "output pane title missing:\n{text}");
         assert!(text.contains("do a thing"), "composer content missing:\n{text}");
         assert!(text.contains('\n'), "snapshot should be multi-line:\n{text}");
     }
@@ -471,5 +411,19 @@ mod tests {
         }));
         let text = snapshot_text(&app, 80, 24);
         assert!(text.contains("partial answer"), "tail missing:\n{text}");
+    }
+
+    #[test]
+    fn buffer_to_text_skips_wide_char_continuation() {
+        let backend = TestBackend::new(12, 2);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                f.render_widget(Paragraph::new("你好"), f.area());
+            })
+            .unwrap();
+        let text = buffer_to_text(terminal.backend().buffer());
+        assert!(text.contains("你好"), "got: {text:?}");
+        assert!(!text.contains("你 好"), "wide chars should be adjacent, got: {text:?}");
     }
 }

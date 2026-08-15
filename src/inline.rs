@@ -30,6 +30,7 @@ use crossterm::{
 };
 use phi_agent::{ApprovalDecision, PhiAgent, RiskLevel, RuntimeEvent, SessionContext, SessionId, save_turn_log};
 use tokio::sync::mpsc;
+use unicode_width::UnicodeWidthStr;
 
 use crate::approval::ApprovalItem;
 use crate::ui::app::{Phase, TuiEvent};
@@ -545,15 +546,15 @@ impl<W: Write> Renderer<W> {
         }
         let _ = write!(self.out, "\r\n╰─ ⏎ send · ⇧⏎ newline · ^C quit");
 
-        // Leave the cursor on composer line `cl`, at the text column (5 chars of
-        // left gutter) plus the char-count offset into that line. CJK wide chars
-        // are under-counted — known follow-up, same as the TUI wrap width.
+        // Leave the cursor on composer line `cl`, at the text column (5 cols of
+        // left gutter) plus the display-width offset into that line, so the
+        // cursor sits on the glyph regardless of wide CJK chars before it.
         let up = lines.len().saturating_sub(cl);
         if up > 0 {
             let _ = write!(self.out, "\x1b[{up}A");
         }
         let _ = write!(self.out, "\r");
-        let col = 5 + char_count(&lines[cl][..cb]);
+        let col = 5 + display_width(&lines[cl][..cb]);
         if col > 0 {
             let _ = write!(self.out, "\x1b[{col}C");
         }
@@ -630,10 +631,11 @@ fn one_line(s: &str, max: usize) -> String {
     }
 }
 
-/// Column width of a string as a char count (not byte count; wide CJK chars are
-/// a known follow-up and still under-counted).
-fn char_count(s: &str) -> usize {
-    s.chars().count()
+/// Display width of a string in terminal columns (ASCII = 1, wide CJK = 2,
+/// combining marks = 0). Matches the terminal's own cursor column so the inline
+/// composer cursor lands where the text actually is.
+fn display_width(s: &str) -> usize {
+    UnicodeWidthStr::width(s)
 }
 
 fn render_approval<W: Write>(r: &mut Renderer<W>, item: &ApprovalItem) {
@@ -800,6 +802,14 @@ mod tests {
         });
         assert!(out.contains("╭─ > first"), "got: {out:?}");
         assert!(out.contains("│    second"), "got: {out:?}");
+    }
+
+    #[test]
+    fn display_width_counts_wide_cjk_and_ascii() {
+        assert_eq!(display_width("abc"), 3);
+        assert_eq!(display_width("你好"), 4);
+        assert_eq!(display_width("a你"), 3);
+        assert_eq!(display_width(""), 0);
     }
 
     /// Debug aid: drive the renderer through a realistic turn and dump the raw

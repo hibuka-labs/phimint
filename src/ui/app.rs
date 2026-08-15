@@ -2,14 +2,15 @@
 //!
 //! The agent loop (phi-agent) is untouched; its `RuntimeEvent`s are forwarded
 //! here through a channel and mapped onto visible state — a scrollable output
-//! buffer, a tool-call log, a status state machine, and the composer. This is
-//! the same event stream the `print_event` REPL renderer consumed, so nothing
-//! in the framework needed to change for the TUI to exist.
+//! buffer (tool calls render inline), a status state machine, and the composer.
+//! This is the same event stream the `print_event` REPL renderer consumed, so
+//! nothing in the framework needed to change for the TUI to exist.
 
 use std::collections::VecDeque;
 
 use crossterm::event::{KeyCode, KeyModifiers};
 use phi_agent::{ApprovalDecision, ApprovalRequest, RuntimeEvent};
+use unicode_width::UnicodeWidthChar;
 
 use crate::approval::ApprovalItem;
 use crate::ui::input::Composer;
@@ -42,7 +43,9 @@ pub enum LineKind {
     Normal,
     Thought,
     Plan,
+    Tool,
     Done,
+    ToolResult,
     Error,
     System,
     Cancelled,
@@ -53,17 +56,6 @@ pub enum LineKind {
 pub struct OutputLine {
     pub text: String,
     pub kind: LineKind,
-}
-
-/// A single tool invocation, filled in across `ToolCallStarted`/`Finished`.
-#[derive(Debug, Clone)]
-pub struct ToolCallEntry {
-    pub agent_id: Option<String>,
-    pub tool_name: String,
-    pub args: String,
-    pub summary: Option<String>,
-    pub denied: bool,
-    pub done: bool,
 }
 
 /// A user action surfaced from key handling, consumed by the TUI loop.
@@ -88,7 +80,6 @@ pub enum TuiEvent {
 #[derive(Debug)]
 pub struct App {
     pub output: Vec<OutputLine>,
-    pub tool_log: Vec<ToolCallEntry>,
     pub composer: Composer,
     pub status: AgentStatus,
     /// True while a turn is running (gates submitting another task).
@@ -113,7 +104,6 @@ impl App {
     pub fn new() -> Self {
         Self {
             output: Vec::new(),
-            tool_log: Vec::new(),
             composer: Composer::new(),
             status: AgentStatus::Idle,
             running: false,
@@ -182,13 +172,21 @@ impl App {
                 ..
             } => {
                 self.flush_pending();
-                self.tool_log.push(ToolCallEntry {
-                    agent_id,
-                    tool_name: tool_name.clone(),
-                    args: one_line(&args_json, 80),
-                    summary: None,
-                    denied: false,
-                    done: false,
+                // Tools render inline in the transcript (Claude Code style): an
+                // invocation line now, a result line on `ToolCallFinished`.
+                let agent = agent_id
+                    .as_deref()
+                    .map(|a| format!("[{a}] "))
+                    .unwrap_or_default();
+                let args = one_line(&args_json, 80);
+                let text = if args.is_empty() {
+                    format!("⏺ {agent}{tool_name}")
+                } else {
+                    format!("⏺ {agent}{tool_name} {args}")
+                };
+                self.output.push(OutputLine {
+                    text,
+                    kind: LineKind::Tool,
                 });
                 self.status = AgentStatus::Running {
                     phase: Phase::ToolCall { tool: tool_name },
@@ -200,17 +198,18 @@ impl App {
                 denied,
                 ..
             } => {
-                // Pair with the most recent in-progress entry of that tool name.
-                if let Some(entry) = self
-                    .tool_log
-                    .iter_mut()
-                    .rev()
-                    .find(|e| !e.done && e.tool_name == tool_name)
-                {
-                    entry.summary = Some(one_line(&summary, 80));
-                    entry.denied = denied;
-                    entry.done = true;
-                }
+                let (text, kind) = if denied {
+                    (format!("  ⛔ {tool_name} denied"), LineKind::Error)
+                } else {
+                    let s = one_line(&summary, 80);
+                    let text = if s.is_empty() {
+                        format!("  ✓ {tool_name}")
+                    } else {
+                        format!("  ✓ {tool_name} {s}")
+                    };
+                    (text, LineKind::ToolResult)
+                };
+                self.output.push(OutputLine { text, kind });
                 self.status = AgentStatus::Running {
                     phase: Phase::Thinking,
                 };
@@ -487,8 +486,10 @@ impl App {
     }
 }
 
-/// Hard-wrap text to `width` columns: split on existing newlines, then break
-/// over-long runs at char boundaries (greedy, 1 column per char).
+/// Hard-wrap text to `width` display columns: split on existing newlines, then
+/// break over-long runs at char boundaries. Each char's width is its terminal
+/// column count (ASCII = 1, wide CJK = 2, combining marks = 0), so a line of
+/// Chinese wraps at the same visual width as a line of English.
 pub fn wrap(text: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
     let mut out = Vec::new();
@@ -500,12 +501,15 @@ pub fn wrap(text: &str, width: usize) -> Vec<String> {
         let mut line = String::new();
         let mut col = 0usize;
         for c in raw.chars() {
-            if col == width {
+            let cw = c.width().unwrap_or(0);
+            // Break before a char that would overflow the line, unless the line
+            // is still empty (a single over-wide char still gets its own line).
+            if col + cw > width && !line.is_empty() {
                 out.push(std::mem::take(&mut line));
                 col = 0;
             }
             line.push(c);
-            col += 1;
+            col += cw;
         }
         out.push(line);
     }
@@ -610,20 +614,25 @@ mod tests {
     }
 
     #[test]
-    fn tool_log_accumulates_and_pairs_finish() {
+    fn tool_calls_render_inline_in_output() {
         let mut app = App::new();
         app.handle_event(TuiEvent::Runtime(tool_started("read_file")));
-        app.handle_event(TuiEvent::Runtime(tool_started("verify")));
-        assert_eq!(app.tool_log.len(), 2);
-        assert!(!app.tool_log[0].done);
-
         app.handle_event(TuiEvent::Runtime(tool_finished("read_file", false)));
-        let read = app.tool_log.iter().find(|e| e.tool_name == "read_file").unwrap();
-        assert!(read.done);
-        assert_eq!(read.summary.as_deref(), Some("done"));
-        // verify is still in flight
-        let verify = app.tool_log.iter().find(|e| e.tool_name == "verify").unwrap();
-        assert!(!verify.done);
+        app.handle_event(TuiEvent::Runtime(tool_finished("execute_command", true)));
+
+        // Invocation + result lines land inline in `output`, in event order.
+        let texts: Vec<&str> = app.output.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            vec![
+                "⏺ read_file {}",
+                "  ✓ read_file done",
+                "  ⛔ execute_command denied",
+            ]
+        );
+        assert_eq!(app.output[0].kind, LineKind::Tool);
+        assert_eq!(app.output[1].kind, LineKind::ToolResult);
+        assert_eq!(app.output[2].kind, LineKind::Error);
     }
 
     #[test]
@@ -749,16 +758,28 @@ mod tests {
     }
 
     #[test]
+    fn wrap_counts_wide_cjk_as_two_columns() {
+        // "你好世界" is 4 wide glyphs = 8 columns; at width 4 it splits in half.
+        assert_eq!(wrap("你好世界", 4), vec!["你好", "世界"]);
+        // A wide glyph straddling the boundary is pushed to the next line.
+        assert_eq!(wrap("a你b", 3), vec!["a你", "b"]);
+        // ASCII is unchanged: width-1 glyphs wrap exactly as before.
+        assert_eq!(wrap("abcdefgh", 3), vec!["abc", "def", "gh"]);
+    }
+
+    #[test]
     fn streaming_tail_exposes_uncommitted_text() {
         let mut app = App::new();
         assert_eq!(app.streaming_tail(), None);
         app.handle_event(TuiEvent::Runtime(text("hel")));
         app.handle_event(TuiEvent::Runtime(text("lo")));
         assert_eq!(app.streaming_tail(), Some(("hello", LineKind::Normal)));
-        // A structural event flushes the tail into committed output.
+        // A structural event flushes the tail into committed output (and, for a
+        // tool call, also appends an inline invocation line).
         app.handle_event(TuiEvent::Runtime(tool_started("verify")));
         assert_eq!(app.streaming_tail(), None);
-        assert_eq!(app.output.len(), 1);
+        assert_eq!(app.output[0].text, "hello");
+        assert_eq!(app.output[1].kind, LineKind::Tool);
     }
 
     #[test]
