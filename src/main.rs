@@ -6,6 +6,7 @@
 
 mod agent;
 mod approval;
+mod gate;
 mod inline;
 mod tools;
 mod ui;
@@ -92,7 +93,15 @@ async fn main() -> Result<()> {
     let session_ctx = resolve_session(cli.session.as_deref(), &base_dir)?;
     init_logging(&session_ctx, &cli.log_level).await?;
 
-    let agent = agent::build(llm_client, approval, policy, cli.shell_timeout_ms, workspace.clone())?;
+    // `deny` 模式只读（写工具全被拒），强制 verify 闸门无意义，故关闭。
+    let agent = agent::build(
+        llm_client,
+        approval,
+        policy,
+        cli.shell_timeout_ms,
+        workspace.clone(),
+        cli.approval != "deny",
+    )?;
     let session = agent.create_session().await;
 
     // Ratatui TUI by default; `--inline` → the inline chat.

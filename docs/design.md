@@ -1,17 +1,16 @@
 # phiforge 设计文档
 
-> 状态：已评审通过 — Phase 1–3 完成
+> 状态：Phase 1–5 完成，Phase 6 设计中（产品定位已反转，§1）
 > 关联框架：`phi-agent`（本仓库的运行时框架）
 
 ## 1. 定位
 
-**phiforge 是一个基于 `phi-agent` 的 AI 编码 agent —— 用「写代码」这件事来压测框架。**
+**phiforge 是一个基于 `phi-agent` 的 AI 编码 agent —— 产品优先，验证框架是副产品。**
 
-- 首要目标：**验证 `phi-agent`**（写代码是压测框架最狠的场景）
-- 次要目标：**自己用**（自己玩玩也行）
-- 可选目标：产品化（不做也完全成立）
+- 首要目标：**做一款好用的编码产品**。招牌是「**永远不把编不过的代码交给你**」——改完先验、验过才交。
+- 次要目标：**验证 `phi-agent`**。做好产品与压测框架是一件事的两面：只有真实用户会因框架的弱点而痛，框架的 bug 才会暴露；产品够好，本身就是框架的证明。
 
-它不与 Claude Code / Codex 比较 —— 那不是它的目标。
+> 2026-08-16 修订：原「用写代码压测框架」翻转为「产品优先」。写代码仍是压测框架最狠的场景，但方向从「为压测而写代码」变成「为做好产品而写代码，顺带压测框架」。
 
 ---
 
@@ -175,7 +174,9 @@ trait LanguageAdapter {
 
 ---
 
-## 8. LSP 诊断（重要但后置）
+## 8. 验证闭环产品化（先验再交）
+
+> Phase 6 主题：把 §6 第 5–6 步的「失败喂回 → 迭代修」从「靠 prompt 引导」升级成「产品保证 + 更快反馈」。拆两半：**6a 强制 verify 闸门**（保证）+ **6b LSP 快速内环**（加速）。
 
 ### 8.1 为什么写代码场景 LSP 价值大
 
@@ -186,17 +187,54 @@ trait LanguageAdapter {
 | 改完发现「第 42 行类型错了」 | 跑 `cargo build`，10–60 秒，自己解析报错 | 改完立刻拿到「42 行：类型不匹配」 |
 | 修完再验证 | 再跑一遍编译 | 增量，快 |
 
-### 8.2 但它是优化，不是前置条件
+### 8.2 先验再交的两半：权威闸门 + 快速内环
 
-MVP 先靠 `cargo build/test` 兜底跑通闭环。**当「改完等编译」慢到无法忍受时，再上 LSP。**
+「永远不把编不过的代码交给你」靠两半拼起来：
 
-### 8.3 技术选型
+- **权威闸门（已有，Phase 3）**：`verify` 跑 `cargo check`/`cargo test`，是「交出去之前必须过」的最终判定。
+- **快速内环（Phase 6b）**：LSP diagnostics，改完**不重编译**立刻拿到 `file:line:col`。它不替代闸门，它让闸门「跑得起」——每次改完等 30 秒编译，agent 会本能地跳过验证；快了它才愿意每次都验。
+
+即：LSP 让 agent **愿意**验，`verify` 让 agent **必须**验。
+
+### 8.3 强制 verify 闸门（Phase 6a）——「必须验」的保证
+
+「必须验」不是 prompt 劝告，而是框架层卡死：本 turn 动过文件（`write_file`/`edit_file`）又没跑过 `verify`，「报 done」就被拦下、强制先验。
+
+**机制（框架已有，零改框架）**：`agent-base` 的 `Middleware` trait 有 `on_post_llm` 钩子，`PostLlmCtx` 的 `skip_push`（压掉本次结束）+ `follow_up_message`（注入下一条）就是「拦截结束 + 逼再走一轮」的通用能力，已有 `ToolEnforcementMiddleware` 先例（逼 agent 必须调工具，带 `max_nudges=3` 防死循环）。phiforge 写一个 `VerifyEnforcementMiddleware`：
+
+```rust
+struct VerifyEnforcementMiddleware { tracker: Arc<EditTracker> }
+
+impl Middleware for VerifyEnforcementMiddleware {
+    async fn on_post_llm(&self, ctx: &mut PostLlmCtx) -> AgentResult<()> {
+        if !ctx.is_tool_call && self.tracker.edited_since_verify() {
+            ctx.skip_push = true;
+            ctx.follow_up_message =
+                Some("CRITICAL: 你改过文件但还没 verify，先跑 verify 再汇报".into());
+        }
+        Ok(())
+    }
+}
+```
+
+`EditTracker` 是 phiforge 的共享状态：包装 `write_file`/`edit_file` → 置脏，`verify` → 清脏。**框架完全不知道「verify」「编译」是什么**——它只提供「响应可压掉、可注入下一条」这个通用能力；「编码必须验」是 phiforge 的策略，不是框架的默认。**底线：编码专属的强制策略不硬编码进框架**（别的业务不适用）。
+
+三个兜底（防「绝对化」引出 bug）：
+
+1. **死锁**：逼到无限循环让 agent 收不了尾。→ 学 `max_nudges`，强制 N 次（默认 3）后**降级**：不再压结束，改成最终回复打「⚠️ 未验证」交用户仲裁。
+2. **误伤**：改 README/文档等非编译路径，逼跑 `cargo check` 无意义。→ 只对「编译相关路径」的改动计脏。
+3. **安全**：强制跑 verify 不新增执行面——`verify` 本就经 shell、已过审批策略，闸门只是复用同一工具。
+
+### 8.4 LSP 技术选型（Phase 6b）
 
 - 底座：**`lsp-types`**（协议类型，事实标准，v0.95.1）
 - 现成 client（很新，用前评估成熟度）：
   - **`nexo-lsp`**（2026-05）—— 进程内 client，包 rust-analyzer/pylsp/tsserver/gopls，暴露 go_to_def/hover/references/workspace_symbol/diagnostics
   - **`codive-lsp`**（2026-01）—— 面向 AI coding agent 的 LSP client 基础设施
 - 兜底方案：`lsp-types` + 手写 ~150 行 stdio codec，自己封装需要的几个方法
+- **范围**：首版只做 **diagnostics**（`didOpen`/`didChange` 同步 + 拉 `textDocument/publishDiagnostics`），不做 completion（agent 整文件写，不做行补全）；go-to-def/hover/references 后续再议。
+- **集成**：`diagnostics` 工具（拉取式，复用 `Tool` trait + 审批），agent 写文件后主动调；不做后台常驻推送（YAGNI）。
+- **语言**：Rust-only 起步（`LanguageAdapter` 抽象已备，§5.3），多语言后置。
 
 ---
 
@@ -368,8 +406,10 @@ Idle ──用户输入──▶ Running ──RunFinished──▶ Idle
 - REPL 升级为 ratatui TUI（§9）：计划面板 / 输出区 / 审批内联弹窗 / 输入框。
 - 压测点：事件流够不够驱动富 TUI、`agent_id` 多 agent 归属、`AwaitingApproval` 内联审批。
 
-### Phase 6 — LSP 诊断（优化，后置）
-- 视「盲写 + 等编译」痛点引入 LSP client（§8.3）。
+### Phase 6 — 验证闭环产品化（先验再交）🔧
+- **6a 强制 verify 闸门** ✅：`VerifyEnforcementMiddleware`（consumer-side，零改框架）——动过代码文件未 verify 就拦下「报 done」逼先验，`max_nudges` 后降级为「⚠️ 未验证」标记（§8.3）。
+- **6b LSP 诊断** 🔧：`lsp-types` + rust-analyzer，`diagnostics` 工具拉 `publishDiagnostics`（不重编译的快速内环）。首版只 diagnostics，不做 completion/goto（§8.4）。
+- **顺序**：6a 先（强需求 + 便宜 + 不依赖 LSP），6b 后（加速器）。
 
 ---
 
@@ -379,6 +419,9 @@ Idle ──用户输入──▶ Running ──RunFinished──▶ Idle
 
 - **语言范围**：**多语言为目标**，首版 Rust 起步。`LanguageAdapter` 边界 + tree-sitter RepoMap（天生多语言；加语言 = 加配置 + 一个 tree-sitter query，约 1～2 天/门）。
 - **形态**：仅 REPL + TUI（ratatui），类似 Claude Code，不做单次任务模式。
+- **产品定位（2026-08-16 定）**：产品优先，「永远不把编不过的代码交给你」是招牌，框架验证是副产品（§1 已反转）。
+- **强制 verify 闸门（6a）**：作为 phiforge 的 `Middleware` 实现（consumer-side），**不把「必须验」硬编码进框架**——框架只提供 `skip_push`/`follow_up_message` 通用能力，编码专属策略留在 consumer。防死锁走 `max_nudges` 降级。
+- **Phase 6 顺序**：6a（强制闸门）先于 6b（LSP）。闸门是保证、不依赖 LSP；LSP 是加速。
 
 ### 开放
 
@@ -509,4 +552,29 @@ Idle ──用户输入──▶ Running ──RunFinished──▶ Idle
 **已真机验证（2026-08-15，deepseek-v4-pro）**：跑了一次「三模块 + 单测」的较大任务，完整走通 `decompose`（判 `parallel`，4 切片文件边界清晰，主动把共享 `lib.rs` 编辑单列成独立切片）→ `spawn_agent ×4`（`full_permission=true`，各写各文件）→ `wait_agent ×4` 全 `ok`（0 denied）→ `merge`（报 changed files + 越界检测 + `✓ passed`），最终 `cargo test` 24 单测绿、`session.log` 0 ERROR/WARN。§7 四个难问题（分解质量/上下文传递/冲突处理/合并验证）真机跑通。
 
 - **发现并修复**：子 agent 跑 `cargo check` 生成的 `Cargo.lock` 被 `merge` 误报为 out-of-scope 冲突——snapshot 排除列表只排目录（`target` 等）没排文件。补 `EXCLUDED_FILES = ["Cargo.lock"]`（`workspace.rs`，附 `snapshot_skips_cargo_lock` 单测），现单测 43/43。
-- **另记两条观察**：① `decompose` 对小任务（两模块）欠触发——模型理性判断「直接写更快」就跳过编排，说明 SYSTEM_PROMPT 的「大任务先 decompose」是建议非强制；② `auto` 模式下子 agent 走 `Full`，codex 式审批上抛（`ChildPermissionMode::None`）只在 `ask`/`deny` 触发，仍未真机验。
+- **另记两条观察**：① `decompose` 对小任务（两模块）欠触发——模型理性判断「直接写更快」就跳过编排，说明 SYSTEM_PROMPT 的「大任务先 decompose」是建议非强制；② `auto` 模式下子 agent 走 `Full`，codex 式审批上抛（`ChildPermissionMode::None`）只在 `ask`/`deny` 触发——后已在 ask 模式下真机验（见 Phase 5 记录）。
+
+### Phase 5 完成（2026-08-15）
+
+- **TUI（ratatui + crossterm）**：`src/ui/`（`input.rs` Composer 多行输入 / `app.rs` 状态机 / `render.rs` 画帧 / `mod.rs` run_tui 编排）。默认 UI，固定底部输入栏（Claude Code 风格 `> ` 前缀 + 圆角框，光标留框内、内容在上方滚动），`--inline` 降级 opt-in（`--no-tui`/rustyline REPL 已删）。
+- **审批内联（5b）**：`QueuedApprovalHandler`（mpsc 队列 + 每请求 oneshot），一次渲染一个 y/a/n 弹窗，解决并行子 agent 审批交错。
+- **inline 变体（5c，`src/inline.rs`）**：不进 alternate screen、`TextDelta` 直写 stdout 无缓冲（解决长答案「卡死」）、reasoning 折叠进 spinner 状态行（`\r\x1b[K` 原位覆写）、内联 y/a/n。
+- **帧日志（观测 UI）**：`run_tui` 把重绘脱机渲染成文本（`render::snapshot_text` 去色留布局），去重写 `<session>/frames.txt`（cap 2000 帧，`dirty` 门 + 100ms 节流）；inline 用 `Tee` 镜像字节流到 `inline.raw`，`src/bin/replay.rs` 迷你 ANSI 终端离线回放。用途＝让 Claude 能看到用户真实跑的 UI、离线评估。
+- **观感修复**：CJK 双宽（`unicode-width`：`wrap` 按显示宽度、`buffer_to_text` 跳宽字符续列、光标列按 `display_width`）；工具内联进 transcript（`LineKind::Tool`/`ToolResult`，删独立工具 pane）。
+- **修两个 TUI 老 bug**：① 流式「卡死」——`pending_text` 只在结构事件 flush，加 `App::streaming_tail()` 尾部实时渲染；② 滚动坏——`scroll_y` 首可见行语义 → `scroll_offset` 离底行数 + `EnableMouseCapture` 处理滚轮。
+- **inline 两 bug**：① 右漂移（raw mode 裸 `\n` 不回车 → 全改 `\r\n`）；② 冻结 spinner（`stream`/`line` 遇 `LiveStatus` 用 `\r\x1b[K` 原位擦除而非提交）。
+- 单测 97 全绿。
+
+**压测/测试发现**：
+
+1. **TUI 真机测试难**：ratatui 在 PTY 里默认 winsize 0x0 → 渲染空屏（frames.txt 空，易误判为 bug）。用 Python `pty.fork()` + `fcntl.ioctl(TIOCSWINSZ)` 设 winsize 驱动真实 TUI；完成信号＝轮询 `turn_NNN.jsonl` 出现 `run_finished`，审批弹窗＝轮询 PTY 字节流出现 `Approval required`。
+2. **顶层审批 + 子 agent 审批上抛真机验**：`--approval ask` 下 `write_file`→Sensitive 弹窗，`y`=放行（文件建）/`n`=拦截（文件未建）；`--approval deny` 无弹窗自动拒（`denied:true`）。多 agent：decompose 拆 3 文件→parallel→spawn 3 子 agent→各自 `write_file` 一路上抛到父 TUI 弹窗（子 agent 工具调用带 `[root/create-doc-X]` 前缀渲染在父 transcript）→逐条 `y`→3 文件全建、merge 跑完。小瑕疵：`decompose.rs` 的 `format_plan` 让 spawn 传 `full_permission=true`，被 `ChildPermissionMode::None` 无视（无害但文案误导）。
+
+### Phase 6a 完成（2026-08-16）
+
+- **强制 verify 闸门**：`src/gate.rs` 的 `VerifyEnforcementMiddleware`（consumer-side `Middleware`，零改框架，见 §8.3）。dirty 跟踪＝`write_file`/`edit_file` 落在 `.rs`/`Cargo.toml`/`Cargo.lock` 置位，`verify`/`merge` 清位，文档写不置位；`on_post_llm` 纯文本 + dirty → `skip_push` + `follow_up_message` 逼循环再来一轮，`max_nudges`(3) 后降级追加「⚠️ Unverified」；`on_user_message` 每轮重置；`deny` 模式（`writes_possible=false`）整体关闭不误伤只读 agent。
+- 接线：`agent.rs::build` 加 `.middleware(...)`；`main.rs` 传 `cli.approval != "deny"`。
+- 单测 114 全绿（+17 gate：veto / verify+merge 清位 / 文档写不置位 / 降级 / 每轮重置 / deny 关闭）。
+- **真机 smoke**（PTY + 临时 crate）：`middleware_count` 1→2；`write_file extra.rs`→「done」被拦（`verify gate: suppressing unverified done`，nudge 1）→`verify cargo check` ✓→done。一次 nudge 自纠，无死锁、无误报。
+
+**已知边界**：① `execute_command cargo check` 不清 dirty（只认 `verify`/`merge`）——agent 用 shell 验证会多 nudge 一次，无害；② 路径过滤 Rust-first（`.rs`+Cargo 文件），多语言时需扩展。

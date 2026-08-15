@@ -8,6 +8,7 @@ use agent_base::StreamClient;
 use phi_agent::{ApprovalHandler, ChildPermissionMode, MultiAgentConfig, OpenAiClient, PhiAgent, PhiAgentConfig, ToolPolicy, base_agent_builder_with_excludes};
 use phi_kernel_tools::local_shell::LocalShellTool;
 
+use crate::gate::{VerifyEnforcementConfig, VerifyEnforcementMiddleware};
 use crate::tools::decompose::DecomposeTool;
 use crate::tools::merge::MergeTool;
 use crate::tools::workspace::WorkspaceTracker;
@@ -54,6 +55,7 @@ pub fn build(
     policy: Option<Arc<dyn ToolPolicy>>,
     shell_timeout_ms: u64,
     workspace_root: PathBuf,
+    writes_possible: bool,
 ) -> Result<PhiAgent> {
     // Coerce the concrete client to `Arc<dyn StreamClient>` once; the builder and
     // the `decompose` tool (which makes its own nested LLM call) each need a clone.
@@ -106,6 +108,17 @@ pub fn build(
     if let Some(p) = policy {
         builder = builder.tool_policy(p);
     }
+
+    // Phase 6a: forced-verify gate. When the agent edits files and then tries to
+    // report "done" without running `verify` (or `merge`, which runs cargo check
+    // itself), this middleware suppresses that final text and injects a nudge to
+    // verify first — the "never hand back non-compiling code" promise, enforced
+    // as phiforge policy (the framework stays neutral; see design §8.3). In
+    // `deny` mode no writes can happen, so the gate is disabled (`writes_possible`).
+    builder = builder.middleware(VerifyEnforcementMiddleware::new(VerifyEnforcementConfig {
+        writes_possible,
+        ..VerifyEnforcementConfig::default()
+    }));
 
     let agent = PhiAgent::build(builder, PhiAgentConfig::default())?;
     Ok(agent)
