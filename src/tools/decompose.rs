@@ -5,10 +5,12 @@
 //! point of the framework) and returns a `Decomposition`: either `serial` ("do it
 //! inline, not worth fanning out" — §7.4) or `parallel` with N independent slices.
 //!
-//! Each slice declares its file boundary (`files`), the minimal context to hand a
-//! sub-agent (`context` — problem #2), and the concrete ask (`task`). The
+//! Each slice declares the files its sub-agent will *investigate* (`files`), the
+//! minimal context to hand that sub-agent (`context` — problem #2), and the
+//! concrete ask (`task`). Sub-agents are **read-only** (option A): they read,
+//! search, and report; the main agent applies every edit itself. The
 //! decomposition is stashed in the shared [`WorkspaceTracker`] so `merge` can
-//! later attribute changes to slices and detect conflicts (problem #3).
+//! later attribute changes and detect conflicts (problem #3).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -59,8 +61,8 @@ const DECOMPOSE_PROMPT: &str = r#"You decompose a coding task for a multi-agent 
 Rules:
 1. Judge whether the task is genuinely parallelizable (§parallel vs serial). Prefer SERIAL unless there are 2+ clearly independent sub-tasks that touch DISJOINT files and don't depend on each other's results.
 2. Cut on module/file boundaries — never split a single file across two slices.
-3. Each slice's `files` is the exact set of files it will create or modify (workspace-relative paths). Slices must NOT overlap on files.
-4. `context` is the minimal orientation a sub-agent needs (relevant existing symbols/interfaces), `task` is the concrete instruction.
+3. Each slice's `files` is the exact set of files its sub-agent will INVESTIGATE (read + report on), workspace-relative paths. Sub-agents are READ-ONLY: they never modify files — the main agent performs every edit. Slices must NOT overlap on files.
+4. `context` is the minimal orientation a sub-agent needs (relevant existing symbols/interfaces), `task` is the concrete instruction: what to investigate and what to report back so the main agent can implement it.
 5. For `serial`, return an empty `slices` array.
 
 Return ONLY a JSON object, no prose, no markdown:
@@ -134,7 +136,7 @@ pub fn format_plan(decomp: &Decomposition) -> String {
                 out.push_str(&format!("    files: {}\n", slice.files.join(", ")));
                 out.push_str(&format!("    task: {}\n", slice.task.trim()));
             }
-            out.push_str("\nSpawn one sub-agent per slice (spawn_agent task_name=<name>, message = context + task, full_permission=true), wait for each, then call `merge`.");
+            out.push_str("\nSpawn one READ-ONLY sub-agent per slice (spawn_agent task_name=<name>, message = \"Context: <context>\\nInvestigate and report: <task>\"), wait for each, then implement all the changes yourself with edit_file/write_file and call `verify`.");
             out
         }
     }
@@ -147,7 +149,7 @@ impl Tool for DecomposeTool {
     }
 
     fn description(&self) -> &'static str {
-        "Decompose a task into either a serial plan (do it inline) or parallel independent slices (each with a disjoint file boundary). Call this FIRST for any multi-step task; if it returns `parallel`, spawn one sub-agent per slice, then call `merge` to reconcile."
+        "Decompose a task into either a serial plan (do it inline) or parallel independent investigation slices (each with a disjoint file boundary). Call this FIRST for any multi-step task; if it returns `parallel`, spawn one read-only sub-agent per slice to investigate and report, then implement the changes yourself and call `verify`."
     }
 
     fn schema(&self) -> Value {

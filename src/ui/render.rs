@@ -14,7 +14,7 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::ui::app::{AgentStatus, App, LineKind, WRAP_WIDTH, wrap};
+use crate::ui::app::{AgentStatus, App, LineKind};
 
 /// Max composer rows shown (its box grows with the buffer up to this).
 const MAX_COMPOSER_ROWS: usize = 8;
@@ -44,20 +44,15 @@ fn render_output(f: &mut Frame, app: &App, area: Rect) {
 
     // Committed lines + the live streaming tail (uncommitted text renders
     // progressively, then flushes into `output` on the next structural event).
-    // Only the visible window is materialized: cloning every historical line on
-    // each frame would make scrolling sluggish as the buffer grows.
-    let tail: Vec<Line> = app
-        .streaming_tail()
-        .map(|(tail, kind)| {
-            wrap(tail, WRAP_WIDTH)
-                .into_iter()
-                .map(|line| Line::from(Span::styled(line, style_for(kind))))
-                .collect()
-        })
-        .unwrap_or_default();
+    // The tail is wrapped incrementally as deltas arrive (see `WrapCache`), so
+    // this frame only styles the visible window — no re-wrap of the full tail.
+    let (tail_lines, tail_kind) = match app.streaming_tail_lines() {
+        Some((lines, kind)) => (lines, kind),
+        None => (&[][..], LineKind::Normal),
+    };
 
     let committed = app.output.len();
-    let window = window_range(committed + tail.len(), app, height);
+    let window = window_range(committed + tail_lines.len(), app, height);
 
     let mut lines: Vec<Line> = Vec::with_capacity(window.len());
     for i in window {
@@ -65,7 +60,8 @@ fn render_output(f: &mut Frame, app: &App, area: Rect) {
             let l = &app.output[i];
             lines.push(Line::from(Span::styled(l.text.clone(), style_for(l.kind))));
         } else {
-            lines.push(tail[i - committed].clone());
+            let text = &tail_lines[i - committed];
+            lines.push(Line::from(Span::styled(text.clone(), style_for(tail_kind))));
         }
     }
 

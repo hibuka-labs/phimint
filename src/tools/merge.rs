@@ -118,7 +118,7 @@ impl Tool for MergeTool {
     }
 
     fn description(&self) -> &'static str {
-        "Reconcile sub-agent work after a parallel decompose: diff the workspace against the pre-decompose snapshot, report changed files and conflicts (overlapping or out-of-scope edits), and run `cargo check` to verify the whole still compiles. Call this after all spawned sub-agents have finished."
+        "Reconcile changes after a `decompose`: diff the workspace against the pre-decompose snapshot, report changed files and conflicts (overlapping or out-of-scope edits), and run `cargo check` to verify the whole still compiles. Optional — `verify` alone is enough for the common single-writer flow."
     }
 
     fn schema(&self) -> Value {

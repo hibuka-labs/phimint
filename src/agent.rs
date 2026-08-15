@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
-use agent_base::StreamClient;
+use agent_base::{ReasoningEffort, StreamClient};
 use phi_agent::{ApprovalHandler, ChildPermissionMode, MultiAgentConfig, OpenAiClient, PhiAgent, PhiAgentConfig, ToolPolicy, base_agent_builder_with_excludes};
 use phi_kernel_tools::local_shell::LocalShellTool;
 
@@ -26,7 +26,7 @@ Tools available:
 - execute_command — run shell commands (e.g. cargo build, cargo check, cargo test).
 - verify — run a build/test command (default `cargo check`) and get a terse error summary. Prefer this for compiling.
 - diagnostics — pull rust-analyzer errors/warnings for the workspace (fast, no recompile). Use after edits for a quick check; `verify` is the authoritative full check.
-- decompose / merge — for large multi-part tasks, split into parallel sub-agent slices and reconcile them (see below).
+- decompose / merge — decompose splits a large task into parallel read-only investigation slices; merge reconciles changes and checks compilation (see below).
 
 Note: tool output is capped (~16k chars); oversized output is rejected, not truncated.
 read_file takes `offset` and `limit` (lines) — read files longer than ~300 lines in chunks.
@@ -38,12 +38,11 @@ How to work:
 4. When a command fails, read the error, fix the code, and re-run until it passes.
 
 Multi-agent (for tasks with clearly independent parts):
-1. Call `decompose` with the full task. It returns either `serial` (do it inline) or `parallel` with independent slices.
-2. If `parallel`: spawn one sub-agent per slice — `spawn_agent` with `task_name` = slice name, `message` = "Context: <slice.context>\nTask: <slice.task>". Then `wait_agent` for each (generous timeout_ms, e.g. 300000).
-3. After all sub-agents finish, call `merge` — it diffs the workspace against the pre-decompose snapshot, flags conflicts (overlapping or out-of-scope edits), and runs `cargo check`.
-4. If `merge` reports conflicts or a failing verify, fix them and re-run `merge` until green.
-
-Sub-agent write permissions follow the session's approval mode: in `ask` mode their file writes prompt for approval just like your own; in `deny` mode they are read-only. Never assume a spawned sub-agent can write — if it reports a denied tool, do that slice's edit yourself.
+Sub-agents are READ-ONLY investigators: they read, search, and report — they CANNOT write files or run mutating commands. You (the main agent) perform every edit yourself, so you never lose track of what changed.
+1. Call `decompose` with the full task. It returns either `serial` (do it inline) or `parallel` with independent investigation slices.
+2. If `parallel`: spawn one read-only sub-agent per slice — `spawn_agent` with `task_name` = slice name, `message` = "Context: <slice.context>\nInvestigate and report: <slice.task>". Then `wait_agent` for each (generous timeout_ms, e.g. 300000).
+3. Read each sub-agent's report, then implement the changes yourself with edit_file / write_file.
+4. Call `verify` (or `execute_command` `cargo check`) until the whole workspace compiles; fix anything failing and re-verify.
 
 Be precise and minimal. Don't rewrite code that already works. When done, briefly report what you changed."#;
 
@@ -111,6 +110,28 @@ pub fn build(
     };
     builder = builder.with_multi_agent(MultiAgentConfig {
         child_permission_mode,
+        // Option A: sub-agents are READ-ONLY investigators (they read/search/
+        // report; the main agent writes everything). The hard gate is here —
+        // excluding the three mutating tools a child must never hold — while the
+        // framework only *suggests* read-only via `child_read_only` (below).
+        // `decompose`/`merge` are additionally root-level orchestration tools: a
+        // leaf agent has no `spawn_agent`, so handing it `decompose` would let it
+        // plan parallel sub-agent work it cannot execute (the "fake completion"
+        // bug). Exclude all five so children can only inspect.
+        child_excluded_tools: vec![
+            "decompose".to_string(),
+            "merge".to_string(),
+            "write_file".to_string(),
+            "edit_file".to_string(),
+            "execute_command".to_string(),
+        ],
+        // Children do narrow slices; cap their reasoning depth so a reasoning-heavy
+        // model (deepseek-v4-pro) can't "think" itself into a runaway on long
+        // multi-agent contexts.
+        child_reasoning_effort: Some(ReasoningEffort::Low),
+        // Redundant with the default, but explicit: children get the framework's
+        // read-only nudge on top of the hard gate above.
+        child_read_only: true,
         ..MultiAgentConfig::default()
     });
 
