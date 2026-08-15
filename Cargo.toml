@@ -1,0 +1,37 @@
+[package]
+name = "phiforge"
+version = "0.1.0"
+edition = "2024"
+description = "phiforge — an AI coding agent built on phi-agent, used to stress-test the framework by writing code."
+license = "MIT"
+
+[[bin]]
+name = "phiforge"
+path = "src/main.rs"
+
+[dependencies]
+# The framework (library) we build on. `shell` enables the local_shell tool.
+phi-agent = { path = "../phi-agent", features = ["shell"] }
+# Kernel tools: LocalShellTool lives here (not re-exported by phi-agent's lib).
+phi-kernel-tools = { path = "../phi-kernel-tools", features = ["shell"] }
+
+tokio = { version = "1", features = ["full"] }
+# CancellationToken for the interactive approval handler's `approve` signature.
+tokio-util = "0.7"
+anyhow = "1"
+async-trait = "0.1"
+serde_json = "1"
+clap = { version = "4", features = ["derive", "env"] }
+rustyline = "15"
+dotenvy = "0.15"
+
+# Observability: mirror phi-agent's CLI — write `tracing` records to a
+# session.log file (via log-core's LogCoreLayer) and per-turn event JSONL
+# (via phi_agent::save_turn_log).
+log-core = { path = "../log-core" }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# RepoMap (Phase 2): tree-sitter Rust grammar for symbol extraction.
+tree-sitter = "0.25"
+tree-sitter-rust = "0.23"
