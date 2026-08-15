@@ -9,7 +9,9 @@ use phi_agent::{ApprovalHandler, ChildPermissionMode, MultiAgentConfig, OpenAiCl
 use phi_kernel_tools::local_shell::LocalShellTool;
 
 use crate::gate::{VerifyEnforcementConfig, VerifyEnforcementMiddleware};
+use crate::lsp::LspClient;
 use crate::tools::decompose::DecomposeTool;
+use crate::tools::diagnostics::DiagnosticsTool;
 use crate::tools::merge::MergeTool;
 use crate::tools::workspace::WorkspaceTracker;
 use crate::tools::{repomap::RepoMapTool, ripgrep::RipgrepTool, verify::VerifyTool};
@@ -23,6 +25,7 @@ Tools available:
 - read_file / write_file / edit_file / list_files — inspect and modify files (paths are workspace-relative).
 - execute_command — run shell commands (e.g. cargo build, cargo check, cargo test).
 - verify — run a build/test command (default `cargo check`) and get a terse error summary. Prefer this for compiling.
+- diagnostics — pull rust-analyzer errors/warnings for the workspace (fast, no recompile). Use after edits for a quick check; `verify` is the authoritative full check.
 - decompose / merge — for large multi-part tasks, split into parallel sub-agent slices and reconcile them (see below).
 
 Note: tool output is capped (~16k chars); oversized output is rejected, not truncated.
@@ -87,6 +90,15 @@ pub fn build(
     builder = builder
         .register_tool(DecomposeTool::new(llm, tracker.clone(), workspace_root.clone()))
         .register_tool(MergeTool::new(tracker, workspace_root.clone(), shell_timeout_ms));
+
+    // Phase 6b: LSP diagnostics (rust-analyzer). One process-level singleton is
+    // started here and shared by the `diagnostics` pull tool, which reads its
+    // `publishDiagnostics` cache. The tool degrades gracefully (reports an error
+    // and suggests `verify`) if rust-analyzer can't be started.
+    builder = builder.register_tool(DiagnosticsTool::new(
+        LspClient::start(&workspace_root, "rust-analyzer"),
+        workspace_root.clone(),
+    ));
 
     // Child permission follows the approval mode (codex-style delegation lives in
     // agent-works). `auto` (no policy) → children full-permission; `ask`/`deny`

@@ -47,6 +47,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tree-sitter = "0.25"
 tree-sitter-rust = "0.23"
 
+# LSP diagnostics (Phase 6b): protocol types only — the client is hand-rolled
+# (JSON-RPC framing + rust-analyzer process) to stay dependency-light.
+lsp-types = "0.95"
+
 [dev-dependencies]
 # Needed only to name `futures_core::Stream` in the `StreamClient` test stub
 # for the `decompose` tool (the trait's `stream` return type).

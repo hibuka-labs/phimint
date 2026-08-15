@@ -20,7 +20,12 @@
 1. `execute_command cargo check` 不清 dirty（只认 `verify`/`merge`）——agent 用 shell 验证会多 nudge 一次，无害（verify 幂等便宜）。后续可解析 shell 命令补上。
 2. 路径过滤 Rust-first（`.rs`+Cargo 文件）；多语言时需扩展 `is_code_path`。
 
-## 6b LSP 诊断 🔧（下一步）
+## 6b LSP 诊断 ✅（已完成，2026-08-16）
+
+- `src/lsp.rs`：手写最小 LSP 客户端（reader/driver 双线程 + `Arc<Mutex<HashMap<path, Vec<DiagnosticEntry>>>>` 缓存），`initialize`/`initialized` 握手 + `didOpen`/`didChange`/`didSave` + 收 `publishDiagnostics`；`Drop` 杀进程收尾；启动/握手失败记 `state.error` 并降级。
+- `src/tools/diagnostics.rs`：pull 工具，同步工作区 `.rs` → 等握手 + 沉降 2s → 读缓存返回 `file:line:col  code  message` 摘要（只保留 error/warning、多行 message 压单行、截断 4000 字）。
+- 接线 `agent.rs`（`register_tool` + 系统提示）+ `main.rs`（`mod lsp`）。`lsp-types = "0.95"` 仅作协议类型基础。
+- 单测 133 全绿（+18）；真机 smoke：改坏 `src/main.rs` → `diagnostics` 秒级报 `2 error(s):\n  src/main.rs:2:22  E0308  mismatched types …`，`tool_count` 10→11。
 
 目标：把「编译报错」提前到敲完代码的秒级，不用每次 `cargo check` 重编译。
 

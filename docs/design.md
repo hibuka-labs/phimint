@@ -406,9 +406,9 @@ Idle ──用户输入──▶ Running ──RunFinished──▶ Idle
 - REPL 升级为 ratatui TUI（§9）：计划面板 / 输出区 / 审批内联弹窗 / 输入框。
 - 压测点：事件流够不够驱动富 TUI、`agent_id` 多 agent 归属、`AwaitingApproval` 内联审批。
 
-### Phase 6 — 验证闭环产品化（先验再交）🔧
+### Phase 6 — 验证闭环产品化（先验再交）✅
 - **6a 强制 verify 闸门** ✅：`VerifyEnforcementMiddleware`（consumer-side，零改框架）——动过代码文件未 verify 就拦下「报 done」逼先验，`max_nudges` 后降级为「⚠️ 未验证」标记（§8.3）。
-- **6b LSP 诊断** 🔧：`lsp-types` + rust-analyzer，`diagnostics` 工具拉 `publishDiagnostics`（不重编译的快速内环）。首版只 diagnostics，不做 completion/goto（§8.4）。
+- **6b LSP 诊断** ✅：`lsp-types` + rust-analyzer，`diagnostics` 工具拉 `publishDiagnostics`（不重编译的快速内环）。首版只 diagnostics，不做 completion/goto（§8.4）。
 - **顺序**：6a 先（强需求 + 便宜 + 不依赖 LSP），6b 后（加速器）。
 
 ---
@@ -578,3 +578,13 @@ Idle ──用户输入──▶ Running ──RunFinished──▶ Idle
 - **真机 smoke**（PTY + 临时 crate）：`middleware_count` 1→2；`write_file extra.rs`→「done」被拦（`verify gate: suppressing unverified done`，nudge 1）→`verify cargo check` ✓→done。一次 nudge 自纠，无死锁、无误报。
 
 **已知边界**：① `execute_command cargo check` 不清 dirty（只认 `verify`/`merge`）——agent 用 shell 验证会多 nudge 一次，无害；② 路径过滤 Rust-first（`.rs`+Cargo 文件），多语言时需扩展。
+
+### Phase 6b 完成（2026-08-16）
+
+- **LSP 诊断**：`src/lsp.rs` 手写最小 LSP 客户端（只 diagnostics，不做 completion/goto）+ `src/tools/diagnostics.rs` pull 工具。依赖 `lsp-types` 仅作协议类型基础；JSON-RPC 帧（Content-Length）、`initialize`/`initialized` 握手、`didOpen`/`didChange`/`didSave`、`publishDiagnostics` 缓存全手写，零重依赖（§8.4）。
+- 架构：reader/driver 两个后台线程读 stdout / 写 stdin，诊断缓存进 `Arc<Mutex<HashMap<path, Vec<DiagnosticEntry>>>>`；启动/握手失败记 `state.error`，工具层经 `health()` 感知并降级到 `verify`。`didSave` 触发 checkOnSave → cargo check → publish。
+- 接线：`agent.rs` 注册 `diagnostics` 工具 + 系统提示加说明；`main.rs` 加 `mod lsp`。进程级单例 rust-analyzer，`Drop` 杀进程收尾。
+- 单测 133 全绿（+18：lsp 帧编解码 / 握手消息构造 / publishDiagnostics 解析 / 诊断扁平化，diagnostics 摘要格式 / 文件收集）。
+- **真机 smoke**（PTY + 临时 crate）：改坏 `src/main.rs`（`let x: u32 = "..."`）→ agent 调 `diagnostics` → 秒级返回 `2 error(s):\n  src/main.rs:2:22  E0308  mismatched types …`。`tool_count` 10→11。
+
+**已知边界**：① rust-analyzer 对同一处类型错误可能发多条 error 级诊断（如「expected u32, found &str」+「mismatched types」），`diagnostics` 忠实上报、不 dedup（`verify`/`cargo check` 只报 1 条）；② 只 Rust（rust-analyzer）；③ hint/info 级诊断被 `format_diagnostics` 舍弃（对「编不过」无意义）；④ 依赖 rust-analyzer 在 PATH，缺失时工具优雅报错并建议 `verify`。

@@ -7,6 +7,7 @@
 //! terse error summary back.
 
 pub mod decompose;
+pub mod diagnostics;
 pub mod merge;
 pub mod repomap;
 pub mod ripgrep;

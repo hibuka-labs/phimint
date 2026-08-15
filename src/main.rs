@@ -8,6 +8,7 @@ mod agent;
 mod approval;
 mod gate;
 mod inline;
+mod lsp;
 mod tools;
 mod ui;
 
