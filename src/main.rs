@@ -1,23 +1,21 @@
 //! phiforge — an AI coding agent built on phi-agent.
 //!
-//! Phase 1 vertical slice: single agent + file/shell tools + a terminal REPL.
-//! The TUI (ratatui) is a later phase; for now we render `RuntimeEvent`s to
-//! stdout, which also exercises the exact event stream the TUI will consume.
+//! The default UI is a ratatui TUI with a fixed input bar at the bottom (the
+//! cursor stays in the bar while output scrolls above it). The inline chat is
+//! opt-in via `--inline` for native-terminal-scrollback use.
 
 mod agent;
 mod approval;
+mod inline;
 mod tools;
+mod ui;
 
-use std::io::Write as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use phi_agent::{
-    OpenAiClient, PhiAgent, RuntimeEvent, SessionContext, SessionId, resolve_llm_config,
-    resolve_session, save_turn_log,
-};
+use phi_agent::{OpenAiClient, SessionContext, resolve_llm_config, resolve_session};
 
 #[derive(Parser)]
 #[command(name = "phiforge", version, about = "AI coding agent built on phi-agent")]
@@ -47,6 +45,10 @@ struct Cli {
     #[arg(long)]
     session: Option<String>,
 
+    /// Run the inline chat instead of the ratatui TUI (TUI is the default).
+    #[arg(long)]
+    inline: bool,
+
     /// Log level for the session.log file (debug/info/warn/error)
     #[arg(long, default_value = "info")]
     log_level: String,
@@ -68,9 +70,20 @@ async fn main() -> Result<()> {
     let llm = resolve_llm_config(cli.model.as_deref(), cli.base_url.as_deref())?;
     let llm_client = Arc::new(OpenAiClient::new(llm.api_key, llm.model, Some(llm.base_url)));
 
+    // The ratatui TUI is the default; `--inline` opts into the inline chat.
+    let use_tui = !cli.inline;
+
     // Approval is two layers (see approval.rs): a policy (the gate) + a handler
-    // (the decision). `build_approval` wires both for the chosen CLI mode.
-    let (approval, policy) = approval::build_approval(&cli.approval);
+    // (the decision). In `ask` mode the handler enqueues requests for the inline
+    // (or TUI) approval prompt instead of reading stdin; the queue receiver is
+    // handed to whichever UI runs.
+    let (approval, policy, approval_rx) = if cli.approval == "ask" {
+        let (handler, policy, rx) = approval::build_queued_approval();
+        (handler, policy, Some(rx))
+    } else {
+        let (handler, policy) = approval::build_approval(&cli.approval);
+        (handler, policy, None)
+    };
 
     // Session + logging. Sessions live under `~/.phiforge/sessions/<id>/`; the
     // human-readable tracing log is `session.log`, and each turn's structured
@@ -82,7 +95,12 @@ async fn main() -> Result<()> {
     let agent = agent::build(llm_client, approval, policy, cli.shell_timeout_ms, workspace.clone())?;
     let session = agent.create_session().await;
 
-    run_repl(&agent, session, &session_ctx).await
+    // Ratatui TUI by default; `--inline` → the inline chat.
+    if use_tui {
+        ui::run_tui(agent, session, session_ctx, workspace, approval_rx).await
+    } else {
+        inline::run_inline(agent, session, session_ctx, workspace, approval_rx).await
+    }
 }
 
 /// Base directory for all phiforge session data (~/.phiforge).
@@ -123,122 +141,4 @@ async fn init_logging(session_ctx: &SessionContext, log_level: &str) -> Result<(
     tracing::info!(path = %session_log_path.display(), "logging initialized");
 
     Ok(())
-}
-
-async fn run_repl(agent: &PhiAgent, session: SessionId, session_ctx: &SessionContext) -> Result<()> {
-    println!("phiforge — coding agent on phi-agent.");
-    println!("Workspace: {}", std::env::current_dir()?.display());
-    println!("Logs:     {}", session_ctx.session_dir.display());
-    println!("Type a task, or `exit` / `quit` to leave.\n");
-
-    let mut rl = rustyline::Editor::<(), rustyline::history::FileHistory>::new()?;
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let history_path = std::path::PathBuf::from(home).join(".phiforge").join("history");
-    let _ = rl.load_history(&history_path);
-
-    // Resume turn numbering from any turns already logged for this session, so
-    // reusing `--session` across runs continues the sequence (turn_001..N from
-    // run 1, turn_N+1.. from run 2) instead of appending into turn_001.jsonl again.
-    let mut turn_number: u32 = session_ctx.last_turn_number();
-
-    loop {
-        match rl.readline("\x1b[1mphiforge>\x1b[0m ") {
-            Ok(line) => {
-                let line = line.trim().to_string();
-                if line.is_empty() {
-                    continue;
-                }
-                if line == "exit" || line == "quit" {
-                    break;
-                }
-
-                turn_number += 1;
-
-                // Collect the full event stream for this turn so we can persist
-                // it as structured JSONL — this is the "process log" that lets
-                // us post-mortem how many tool calls / error iterations a turn
-                // took, beyond what's printed to the terminal.
-                let mut turn_events: Vec<RuntimeEvent> = Vec::new();
-                let result = agent
-                    .run_turn(session.clone(), &line, |ev| {
-                        turn_events.push(ev.clone());
-                        print_event(&ev);
-                        Ok(())
-                    })
-                    .await;
-
-                // Persist regardless of whether the turn succeeded or errored.
-                if let Err(e) = save_turn_log(session_ctx, turn_number, &turn_events, &line) {
-                    eprintln!("\nwarning: failed to save turn log: {e}");
-                }
-
-                if let Err(e) = result {
-                    eprintln!("\n\x1b[31m❌ {}\x1b[0m", e);
-                }
-            }
-            Err(rustyline::error::ReadlineError::Interrupted) => continue,
-            Err(rustyline::error::ReadlineError::Eof) => break,
-            Err(e) => return Err(e.into()),
-        }
-    }
-
-    Ok(())
-}
-
-/// Render a `RuntimeEvent` to stdout.
-///
-/// This is the seed of the Phase-N TUI's event consumer: it maps each event
-/// to a visible effect. `run_turn` feeds events one at a time through the
-/// `on_event` closure; the TUI will instead forward them into its own channel.
-fn print_event(ev: &RuntimeEvent) {
-    match ev {
-        RuntimeEvent::TextDelta { text, .. } => {
-            print!("{}", text);
-            let _ = std::io::stdout().flush();
-        }
-        RuntimeEvent::ThoughtDelta { text, .. } => {
-            print!("\x1b[2m{}\x1b[0m", text);
-            let _ = std::io::stdout().flush();
-        }
-        RuntimeEvent::ToolCallStarted {
-            tool_name, args_json, ..
-        } => {
-            println!("\n\x1b[1m🔧 {}\x1b[0m {}", tool_name, args_json);
-        }
-        RuntimeEvent::ToolCallFinished {
-            tool_name,
-            denied,
-            summary,
-            ..
-        } => {
-            if *denied {
-                println!("\x1b[31m⛔ {} denied\x1b[0m", tool_name);
-                return;
-            }
-            let preview: String = summary.chars().take(240).collect();
-            if !preview.is_empty() {
-                println!("   ↳ {}", preview.replace('\n', "\n   "));
-            }
-        }
-        RuntimeEvent::PlanUpdated {
-            objective, plan, ..
-        } => {
-            println!("\n📋 {}", objective);
-            for item in plan {
-                println!("   - {:?}", item);
-            }
-        }
-        RuntimeEvent::AwaitingApproval { .. } => {
-            // The approval handler (`CliApprovalHandler`) prints the prompt to
-            // stderr itself; nothing to render here. In a later TUI phase this
-            // event will drive the inline approval dialog instead.
-        }
-        RuntimeEvent::RunFinished { .. } => {
-            println!("\n\x1b[32m✅ done\x1b[0m");
-        }
-        RuntimeEvent::RunCancelled { .. } => {
-            println!("\n⏹️  cancelled");
-        }
-        _ => {}
-    }
 }

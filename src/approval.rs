@@ -19,6 +19,7 @@ use phi_agent::{
     AutoApprovalHandler, RiskLevel, ToolPolicy,
 };
 use serde_json::Value;
+use tokio::sync::{mpsc, oneshot};
 
 // ── Command risk classification ─────────────────────────────────────────────
 
@@ -267,6 +268,54 @@ impl ApprovalHandler for CliApprovalHandler {
     }
 }
 
+// ── The decision: QueuedApprovalHandler (Phase 5b) ─────────────────────────────
+
+/// A pending approval request handed to the UI, carrying the channel the
+/// user's decision is returned on.
+#[derive(Debug)]
+pub struct ApprovalItem {
+    pub request: ApprovalRequest,
+    pub decision_tx: oneshot::Sender<ApprovalDecision>,
+}
+
+/// Queued approval handler: enqueue each request and let the UI render one
+/// prompt at a time, then return the user's decision.
+///
+/// Unlike [`CliApprovalHandler`] (which reads stdin) this never touches the
+/// terminal itself. It pushes the request into a queue the UI drains and waits
+/// on a per-request oneshot. Parallel sub-agents each call `approve`; the queue
+/// serializes them so only one prompt is shown at a time (fixing the REPL's
+/// interleaved multi-sub-agent prompts).
+#[derive(Debug, Clone)]
+pub struct QueuedApprovalHandler {
+    queue_tx: mpsc::UnboundedSender<ApprovalItem>,
+}
+
+impl QueuedApprovalHandler {
+    /// Create a handler wired to `queue_tx`. The caller keeps the matching
+    /// `UnboundedReceiver` and feeds it to the UI.
+    pub fn new(queue_tx: mpsc::UnboundedSender<ApprovalItem>) -> Self {
+        Self { queue_tx }
+    }
+}
+
+#[async_trait]
+impl ApprovalHandler for QueuedApprovalHandler {
+    async fn approve(
+        &self,
+        request: ApprovalRequest,
+        cancel_token: tokio_util::sync::CancellationToken,
+    ) -> AgentResult<ApprovalDecision> {
+        let (decision_tx, decision_rx) = oneshot::channel();
+        let _ = self.queue_tx.send(ApprovalItem { request, decision_tx });
+
+        tokio::select! {
+            _ = cancel_token.cancelled() => Err(AgentError::Cancelled),
+            result = decision_rx => result.map_err(|_| AgentError::Cancelled),
+        }
+    }
+}
+
 /// Read a stdin line, racing against `cancel_token` so the prompt doesn't block
 /// the runtime or ignore Ctrl+C.
 async fn read_stdin_line_cancellable(
@@ -310,6 +359,24 @@ pub fn build_approval(mode: &str) -> (Arc<dyn ApprovalHandler>, Option<Arc<dyn T
             None,
         ),
     }
+}
+
+/// Build the queued approval handler + policy for `ask` mode (Phase 5b).
+///
+/// The handler enqueues requests instead of reading stdin; the caller keeps the
+/// returned receiver and feeds it to the UI (TUI popup or inline prompt), which
+/// drains it and renders one prompt at a time.
+pub fn build_queued_approval() -> (
+    Arc<dyn ApprovalHandler>,
+    Option<Arc<dyn ToolPolicy>>,
+    mpsc::UnboundedReceiver<ApprovalItem>,
+) {
+    let (queue_tx, queue_rx) = mpsc::unbounded_channel();
+    (
+        Arc::new(QueuedApprovalHandler::new(queue_tx)),
+        Some(Arc::new(ApprovalPolicy)),
+        queue_rx,
+    )
 }
 
 #[cfg(test)]
@@ -490,5 +557,65 @@ mod tests {
         assert!(policy.is_some(), "ask must have a policy");
         let (_, policy) = build_approval("bogus");
         assert!(policy.is_none(), "unknown mode falls back to auto");
+    }
+
+    #[tokio::test]
+    async fn queued_handler_roundtrips_decision() {
+        let (queue_tx, mut queue_rx) = tokio::sync::mpsc::unbounded_channel();
+        let handler = QueuedApprovalHandler::new(queue_tx);
+        let cancel = tokio_util::sync::CancellationToken::new();
+
+        let request = ApprovalRequest {
+            title: "write_file".to_string(),
+            message: "Write file: src/lib.rs".to_string(),
+            action_key: Some("write_file:src/lib.rs".to_string()),
+            risk_level: RiskLevel::Sensitive,
+            raw: None,
+        };
+
+        let handle = {
+            let handler = handler.clone();
+            let request = request.clone();
+            let cancel = cancel.clone();
+            tokio::spawn(async move { handler.approve(request, cancel).await })
+        };
+
+        // The TUI side receives the queued item and answers "allow always".
+        let item = queue_rx.recv().await.expect("request should be queued");
+        assert_eq!(item.request.title, "write_file");
+        item.decision_tx
+            .send(ApprovalDecision::AllowAlways)
+            .expect("TUI should be able to answer");
+
+        let decision = handle.await.expect("handler task").expect("approve");
+        assert_eq!(decision, ApprovalDecision::AllowAlways);
+    }
+
+    #[tokio::test]
+    async fn queued_handler_respects_cancel() {
+        let (queue_tx, mut queue_rx) = tokio::sync::mpsc::unbounded_channel();
+        let handler = QueuedApprovalHandler::new(queue_tx);
+        let cancel = tokio_util::sync::CancellationToken::new();
+
+        let request = ApprovalRequest {
+            title: "t".to_string(),
+            message: "m".to_string(),
+            action_key: None,
+            risk_level: RiskLevel::Safe,
+            raw: None,
+        };
+
+        let handle = {
+            let handler = handler.clone();
+            let request = request.clone();
+            let cancel = cancel.clone();
+            tokio::spawn(async move { handler.approve(request, cancel).await })
+        };
+
+        let _item = queue_rx.recv().await.expect("request queued");
+        cancel.cancel();
+
+        let result = handle.await.expect("handler task");
+        assert!(matches!(result, Err(AgentError::Cancelled)));
     }
 }

@@ -270,8 +270,11 @@ mod tests {
 
     #[test]
     fn build_repo_map_extracts_known_symbols() {
-        let map = build_repo_map(&crate_root(), None).unwrap();
-        assert!(map.contains("src/tools/ripgrep.rs"), "should list ripgrep.rs:\n{map}");
+        // Scope to a stable subdirectory: a full-repo map can exceed the output
+        // budget (MAX_OUTPUT_CHARS) as the codebase grows, and symbol extraction
+        // shouldn't be asserted against truncation order.
+        let map = build_repo_map(&crate_root(), Some("src/tools")).unwrap();
+        assert!(map.contains("ripgrep.rs"), "should list ripgrep.rs:\n{map}");
         assert!(map.contains("struct RipgrepTool"), "should extract struct:\n{map}");
         assert!(map.contains("fn search"), "should extract fn signature:\n{map}");
         assert!(!map.contains("target/"), "must not map build output:\n{map}");
