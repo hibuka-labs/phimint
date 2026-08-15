@@ -133,21 +133,44 @@ fn short_title(command: &str) -> String {
     }
 }
 
+/// A scoped `action_key` for a shell command: the full command, whitespace-
+/// normalised.
+///
+/// `action_key` is what `AllowAlways` caches (`tool_engine.rs` caches the key
+/// verbatim and later skips approval on an exact match). Scoping it to the
+/// concrete command — rather than the tool name — means "allow always" grants a
+/// *narrow* standing approval (this exact command), not carte blanche for every
+/// `execute_command`. Mirrors codex's `prefix_rule` intent: authorise the
+/// concrete action, not the whole tool. Commands that `classify_command` deems
+/// Safe never reach here, so only Sensitive/Destructive commands get scoped.
+fn command_action_key(command: &str) -> String {
+    let normalized = command.split_whitespace().collect::<Vec<_>>().join(" ");
+    format!("execute_command:{normalized}")
+}
+
 #[async_trait]
 impl ToolPolicy for ApprovalPolicy {
     async fn evaluate_approval(&self, tool_name: &str, args: &Value) -> Option<ApprovalRequest> {
         match tool_name {
-            // Read-only context tools + the verify tool — always auto-approved.
-            "read_file" | "list_files" | "search_content" | "repo_map" | "verify" => None,
+            // Read-only context tools + verify/orchestration — always auto-approved.
+            // `decompose`/`merge` only read the workspace / run `cargo check`; the
+            // actual writes happen via write_file/edit_file, which are gated above.
+            "read_file" | "list_files" | "search_content" | "repo_map" | "verify" | "decompose"
+            | "merge" => None,
 
-            // File mutations — prompt (Sensitive).
-            "write_file" | "edit_file" => Some(ApprovalRequest {
-                title: tool_name.to_string(),
-                message: describe_write(tool_name, args),
-                action_key: Some(tool_name.to_string()),
-                risk_level: RiskLevel::Sensitive,
-                raw: Some(args.clone()),
-            }),
+            // File mutations — prompt (Sensitive). `action_key` is scoped to the
+            // path so `AllowAlways` grants a narrow standing approval (this file
+            // only), not every write_file/edit_file.
+            "write_file" | "edit_file" => {
+                let path = args.get("path").and_then(Value::as_str).unwrap_or("?");
+                Some(ApprovalRequest {
+                    title: tool_name.to_string(),
+                    message: describe_write(tool_name, args),
+                    action_key: Some(format!("{tool_name}:{path}")),
+                    risk_level: RiskLevel::Sensitive,
+                    raw: Some(args.clone()),
+                })
+            }
 
             // Shell — classify the command; Safe commands auto-approve.
             "execute_command" => {
@@ -157,7 +180,7 @@ impl ToolPolicy for ApprovalPolicy {
                     level => Some(ApprovalRequest {
                         title: format!("execute_command: {}", short_title(command)),
                         message: command.to_string(),
-                        action_key: Some("execute_command".to_string()),
+                        action_key: Some(command_action_key(command)),
                         risk_level: level,
                         raw: Some(args.clone()),
                     }),
@@ -379,8 +402,47 @@ mod tests {
             .await
             .expect("write_file should prompt");
         assert_eq!(req.risk_level, RiskLevel::Sensitive);
-        assert_eq!(req.action_key.as_deref(), Some("write_file"));
+        assert_eq!(req.action_key.as_deref(), Some("write_file:src/lib.rs"));
         assert!(req.message.contains("src/lib.rs"));
+    }
+
+    #[tokio::test]
+    async fn write_approval_key_is_scoped_to_path() {
+        // `AllowAlways` must grant a narrow standing approval (this file), not
+        // every write_file — two different paths must produce different keys.
+        let p = ApprovalPolicy;
+        let a = p
+            .evaluate_approval("write_file", &serde_json::json!({"path": "src/cache.rs"}))
+            .await
+            .unwrap();
+        let b = p
+            .evaluate_approval("write_file", &serde_json::json!({"path": "src/logging.rs"}))
+            .await
+            .unwrap();
+        assert_eq!(a.action_key.as_deref(), Some("write_file:src/cache.rs"));
+        assert_eq!(b.action_key.as_deref(), Some("write_file:src/logging.rs"));
+        assert_ne!(a.action_key, b.action_key);
+    }
+
+    #[tokio::test]
+    async fn command_approval_key_is_scoped_to_command() {
+        let p = ApprovalPolicy;
+        let req = p
+            .evaluate_approval("execute_command", &serde_json::json!({"command": "rm -rf /tmp/x"}))
+            .await
+            .expect("rm should prompt");
+        assert_eq!(req.risk_level, RiskLevel::Destructive);
+        assert_eq!(req.action_key.as_deref(), Some("execute_command:rm -rf /tmp/x"));
+        // Whitespace is normalised so `touch X` and `touch   X` share a key.
+        let a = p
+            .evaluate_approval("execute_command", &serde_json::json!({"command": "touch  X"}))
+            .await
+            .unwrap();
+        let b = p
+            .evaluate_approval("execute_command", &serde_json::json!({"command": "touch X"}))
+            .await
+            .unwrap();
+        assert_eq!(a.action_key, b.action_key);
     }
 
     #[tokio::test]

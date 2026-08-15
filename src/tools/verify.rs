@@ -126,6 +126,66 @@ impl VerifyTool {
     }
 }
 
+/// Run `sh -c <command>` in the workspace and return a terse summary.
+///
+/// Extracted from [`VerifyTool::call`] so the Phase-4 `merge` tool can reuse the
+/// exact same command-running + timeout + error-summarising behaviour (design
+/// §7.3 "合并后跑一次验证").
+pub async fn run_and_summarize(command: &str, timeout_ms: u64) -> String {
+    let mut cmd = tokio::process::Command::new("sh");
+    cmd.arg("-c")
+        .arg(command)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .stdin(Stdio::null())
+        .kill_on_drop(true);
+
+    let child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            return format!("[Error]: verify spawn failed: {e}");
+        }
+    };
+
+    let pid = child.id();
+    let sleep = tokio::time::sleep(Duration::from_millis(timeout_ms));
+    tokio::pin!(sleep);
+
+    let summary = tokio::select! {
+        result = child.wait_with_output() => match result {
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                let code = output.status.code().unwrap_or(-1);
+                tracing::info!(command = %command, exit_code = code, "verify done");
+                if code == 0 {
+                    "✓ passed".to_string()
+                } else {
+                    summarize_errors(&stderr)
+                }
+            }
+            Err(e) => format!("[Error]: verify wait failed: {e}"),
+        },
+        _ = &mut sleep => {
+            if let Some(pid) = pid {
+                let _ = tokio::process::Command::new("kill")
+                    .arg("-9").arg(pid.to_string())
+                    .stdout(Stdio::null()).stderr(Stdio::null())
+                    .status().await;
+            }
+            tracing::warn!(command = %command, timeout_ms = timeout_ms, "verify timed out and killed");
+            format!("[verify timed out after {}ms]\ncommand: {}", timeout_ms, command)
+        }
+    };
+
+    // Defensive cap: a pathological command (e.g. thousands of errors, or a
+    // huge unparsed stderr tail) shouldn't flood the LLM.
+    if summary.chars().count() > MAX_SUMMARY_CHARS {
+        summary.chars().take(MAX_SUMMARY_CHARS).collect::<String>()
+    } else {
+        summary
+    }
+}
+
 #[async_trait]
 impl Tool for VerifyTool {
     fn name(&self) -> &'static str {
@@ -170,60 +230,7 @@ impl Tool for VerifyTool {
 
         tracing::info!(command = %command, "verify start");
 
-        let mut cmd = tokio::process::Command::new("sh");
-        cmd.arg("-c")
-            .arg(&command)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .stdin(Stdio::null())
-            .kill_on_drop(true);
-
-        let child = match cmd.spawn() {
-            Ok(c) => c,
-            Err(e) => {
-                return Ok(vec![Content::text(format!(
-                    "[Error]: verify spawn failed: {e}"
-                ))]);
-            }
-        };
-
-        let pid = child.id();
-        let sleep = tokio::time::sleep(Duration::from_millis(self.timeout_ms));
-        tokio::pin!(sleep);
-
-        let summary = tokio::select! {
-            result = child.wait_with_output() => match result {
-                Ok(output) => {
-                    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                    let code = output.status.code().unwrap_or(-1);
-                    tracing::info!(command = %command, exit_code = code, "verify done");
-                    if code == 0 {
-                        "✓ passed".to_string()
-                    } else {
-                        summarize_errors(&stderr)
-                    }
-                }
-                Err(e) => format!("[Error]: verify wait failed: {e}"),
-            },
-            _ = &mut sleep => {
-                if let Some(pid) = pid {
-                    let _ = tokio::process::Command::new("kill")
-                        .arg("-9").arg(pid.to_string())
-                        .stdout(Stdio::null()).stderr(Stdio::null())
-                        .status().await;
-                }
-                tracing::warn!(command = %command, timeout_ms = self.timeout_ms, "verify timed out and killed");
-                format!("[verify timed out after {}ms]\ncommand: {}", self.timeout_ms, command)
-            }
-        };
-
-        // Defensive cap: a pathological command (e.g. thousands of errors, or a
-        // huge unparsed stderr tail) shouldn't flood the LLM.
-        let summary = if summary.chars().count() > MAX_SUMMARY_CHARS {
-            summary.chars().take(MAX_SUMMARY_CHARS).collect::<String>()
-        } else {
-            summary
-        };
+        let summary = run_and_summarize(&command, self.timeout_ms).await;
 
         Ok(vec![Content::text(summary)])
     }

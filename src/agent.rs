@@ -4,9 +4,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
-use phi_agent::{ApprovalHandler, OpenAiClient, PhiAgent, PhiAgentConfig, ToolPolicy, base_agent_builder_with_excludes};
+use agent_base::StreamClient;
+use phi_agent::{ApprovalHandler, ChildPermissionMode, MultiAgentConfig, OpenAiClient, PhiAgent, PhiAgentConfig, ToolPolicy, base_agent_builder_with_excludes};
 use phi_kernel_tools::local_shell::LocalShellTool;
 
+use crate::tools::decompose::DecomposeTool;
+use crate::tools::merge::MergeTool;
+use crate::tools::workspace::WorkspaceTracker;
 use crate::tools::{repomap::RepoMapTool, ripgrep::RipgrepTool, verify::VerifyTool};
 
 /// Coding-oriented system prompt.
@@ -18,6 +22,7 @@ Tools available:
 - read_file / write_file / edit_file / list_files — inspect and modify files (paths are workspace-relative).
 - execute_command — run shell commands (e.g. cargo build, cargo check, cargo test).
 - verify — run a build/test command (default `cargo check`) and get a terse error summary. Prefer this for compiling.
+- decompose / merge — for large multi-part tasks, split into parallel sub-agent slices and reconcile them (see below).
 
 Note: tool output is capped (~16k chars); oversized output is rejected, not truncated.
 read_file takes `offset` and `limit` (lines) — read files longer than ~300 lines in chunks.
@@ -27,6 +32,14 @@ How to work:
 2. Edit with edit_file (or write_file for new files). For edit_file, `old_text` must match the file exactly and appear exactly once.
 3. Verify your work: call `verify` (or `execute_command` `cargo check` / `cargo build` / `cargo test`). `verify` returns compact `file:line:col  code  message` errors.
 4. When a command fails, read the error, fix the code, and re-run until it passes.
+
+Multi-agent (for tasks with clearly independent parts):
+1. Call `decompose` with the full task. It returns either `serial` (do it inline) or `parallel` with independent slices.
+2. If `parallel`: spawn one sub-agent per slice — `spawn_agent` with `task_name` = slice name, `message` = "Context: <slice.context>\nTask: <slice.task>". Then `wait_agent` for each (generous timeout_ms, e.g. 300000).
+3. After all sub-agents finish, call `merge` — it diffs the workspace against the pre-decompose snapshot, flags conflicts (overlapping or out-of-scope edits), and runs `cargo check`.
+4. If `merge` reports conflicts or a failing verify, fix them and re-run `merge` until green.
+
+Sub-agent write permissions follow the session's approval mode: in `ask` mode their file writes prompt for approval just like your own; in `deny` mode they are read-only. Never assume a spawned sub-agent can write — if it reports a denied tool, do that slice's edit yourself.
 
 Be precise and minimal. Don't rewrite code that already works. When done, briefly report what you changed."#;
 
@@ -42,6 +55,10 @@ pub fn build(
     shell_timeout_ms: u64,
     workspace_root: PathBuf,
 ) -> Result<PhiAgent> {
+    // Coerce the concrete client to `Arc<dyn StreamClient>` once; the builder and
+    // the `decompose` tool (which makes its own nested LLM call) each need a clone.
+    let llm: Arc<dyn StreamClient> = llm_client.clone();
+
     let mut builder = base_agent_builder_with_excludes(
         llm_client,
         // Coding-specific noise the framework (domain-agnostic) must not know
@@ -61,6 +78,27 @@ pub fn build(
         .register_tool(VerifyTool::new(shell_timeout_ms))
         .register_tool(RipgrepTool::new(workspace_root.clone()))
         .register_tool(RepoMapTool::new(workspace_root.clone()));
+
+    // Phase 4 multi-agent orchestration: `decompose` and `merge` share a
+    // `WorkspaceTracker` so the latter can diff against the former's snapshot.
+    let tracker = Arc::new(WorkspaceTracker::new());
+    builder = builder
+        .register_tool(DecomposeTool::new(llm, tracker.clone(), workspace_root.clone()))
+        .register_tool(MergeTool::new(tracker, workspace_root.clone(), shell_timeout_ms));
+
+    // Child permission follows the approval mode (codex-style delegation lives in
+    // agent-works). `auto` (no policy) → children full-permission; `ask`/`deny`
+    // (a policy is present) → children restricted, routing approval decisions up
+    // to the parent's handler instead of hard-denying locally.
+    let child_permission_mode = if policy.is_some() {
+        ChildPermissionMode::None
+    } else {
+        ChildPermissionMode::Full
+    };
+    builder = builder.with_multi_agent(MultiAgentConfig {
+        child_permission_mode,
+        ..MultiAgentConfig::default()
+    });
 
     // A policy is what makes approval meaningful (see approval.rs). Only `ask`
     // and `deny` modes carry one; `auto` leaves it unset, so every call is

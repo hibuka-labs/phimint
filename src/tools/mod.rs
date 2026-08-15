@@ -6,9 +6,12 @@
 //! the verification-loop tool (design §6): run a build/test command and get a
 //! terse error summary back.
 
+pub mod decompose;
+pub mod merge;
 pub mod repomap;
 pub mod ripgrep;
 pub mod verify;
+pub mod workspace;
 
 use std::path::{Component, Path};
 

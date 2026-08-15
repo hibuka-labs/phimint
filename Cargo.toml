@@ -10,16 +10,21 @@ name = "phiforge"
 path = "src/main.rs"
 
 [dependencies]
-# The framework (library) we build on. `shell` enables the local_shell tool.
-phi-agent = { path = "../phi-agent", features = ["shell"] }
+# The framework (library) we build on. `shell` enables the local_shell tool;
+# `multi-agent` enables the spawn/send/wait/close sub-agent tools.
+phi-agent = { path = "../phi-agent", features = ["shell", "multi-agent"] }
 # Kernel tools: LocalShellTool lives here (not re-exported by phi-agent's lib).
 phi-kernel-tools = { path = "../phi-kernel-tools", features = ["shell"] }
+# Runtime types not re-exported by phi-agent (ChatMessage, ResponseFormat,
+# StreamClient) — needed by the `decompose` tool's nested structured LLM call.
+agent-base = { version = "0.2.0", path = "../agent-base" }
 
 tokio = { version = "1", features = ["full"] }
 # CancellationToken for the interactive approval handler's `approve` signature.
 tokio-util = "0.7"
 anyhow = "1"
 async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 clap = { version = "4", features = ["derive", "env"] }
 rustyline = "15"
@@ -35,3 +40,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # RepoMap (Phase 2): tree-sitter Rust grammar for symbol extraction.
 tree-sitter = "0.25"
 tree-sitter-rust = "0.23"
+
+[dev-dependencies]
+# Needed only to name `futures_core::Stream` in the `StreamClient` test stub
+# for the `decompose` tool (the trait's `stream` return type).
+futures-core = "0.3"

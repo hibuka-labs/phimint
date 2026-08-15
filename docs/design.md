@@ -42,7 +42,7 @@
 7. **流式 TUI** —— 逐字流式、工具调用可视化、diff 高亮、内联审批。
 8. **上下文预算** —— 长对话的截断 / 摘要 / 压缩。
 
-**phiforge 已覆盖 1/2/4/5/6/7/8，当前最大缺口是 #3（上下文架构）**，对应 §4 的 RepoMap。
+**phiforge 已覆盖 1/2/3/4/5/6/8，当前最大缺口是 #7（流式 TUI）**，对应 §9 的 TUI 设计（Phase 5）。
 
 ---
 
@@ -361,10 +361,14 @@ Idle ──用户输入──▶ Running ──RunFinished──▶ Idle
 - `tools/verify.rs`（`verify` 工具：编译/测试失败摘要喂回 LLM，rustc 报错解析为 `file:line:col  code  message`）。
 - 审批两层（`approval.rs`：`ApprovalPolicy` 闸门 + `CliApprovalHandler` 决策；`--approval auto/ask/deny`）。
 
-### Phase 4 — 多 agent 大任务分解（核心验证点）
+### Phase 4 — 多 agent 大任务分解（核心验证点）✅
 - `decompose.rs` / `merge.rs`，解决 §7 四个难问题。
 
-### Phase 5 — LSP 诊断（优化，后置）
+### Phase 5 — TUI（ratatui）🔧
+- REPL 升级为 ratatui TUI（§9）：计划面板 / 输出区 / 审批内联弹窗 / 输入框。
+- 压测点：事件流够不够驱动富 TUI、`agent_id` 多 agent 归属、`AwaitingApproval` 内联审批。
+
+### Phase 6 — LSP 诊断（优化，后置）
 - 视「盲写 + 等编译」痛点引入 LSP client（§8.3）。
 
 ---
@@ -380,6 +384,7 @@ Idle ──用户输入──▶ Running ──RunFinished──▶ Idle
 
 1. **多 agent 时机**：Phase 1 先单 agent 再上多 agent，还是因为「多 agent 是首要验证点」而提前？
 2. **验证深度**：写代码的「对错」如何自动判定？方向：L1（编译）+ L2（现有测试）当骨架、L3（生成测试）当闭环压测器而非对错证明、diff 当真值。
+3. **exec-policy 层（后置）**：codex 式「子 agent 提议 `prefix_rule` → 传播回父 → 合并进可变 exec-policy」需把 `ToolPolicy` 从无状态 `Arc` 改为可累积规则策略。当前用「委托审批 + 收窄 `action_key`」覆盖了 80% 安全价值，完整层待真需再上。
 
 ---
 
@@ -438,7 +443,7 @@ Idle ──用户输入──▶ Running ──RunFinished──▶ Idle
 
 **P2 — 截断元数据 / 字节上限（评审通过，后置）**：
 
-- **P2-a · `TruncationResult`**（`totalLines`/`totalBytes`/`truncatedBy`/`firstLineExceedsLimit`…）：即 §6.5 说「框架缺的那个类型」，demo/pi 的 `truncate.ts` 已有。收益在**渲染层**（TUI 显示「截断了 N 行」），对 agent 无增量——agent 只看文本，现有文本标记（`...(truncated, use offset=N)`、`[N entries limit reached]`）已把信息给足。→ **触发条件**：建 TUI（Phase 3/4）时做，走 `ToolContext::emit_user_event(UserEvent::Structured{..})` 侧信道（无需动 `Tool` trait 返回结构）。
+- **P2-a · `TruncationResult`**（`totalLines`/`totalBytes`/`truncatedBy`/`firstLineExceedsLimit`…）：即 §6.5 说「框架缺的那个类型」，demo/pi 的 `truncate.ts` 已有。收益在**渲染层**（TUI 显示「截断了 N 行」），对 agent 无增量——agent 只看文本，现有文本标记（`...(truncated, use offset=N)`、`[N entries limit reached]`）已把信息给足。→ **触发条件**：建 TUI（Phase 5）时做，走 `ToolContext::emit_user_event(UserEvent::Structured{..})` 侧信道（无需动 `Tool` trait 返回结构）。
 - **P2-b · `max_output_chars` 字符 → 字节**：字节更贴近 token，但字符/字节都非真 token 数、都只是粗略兜底；单独换单位要横跨 agent-base + 3 工具 + phiforge + 测试重命名，churn 大收益小。→ **触发条件**：引入真 token 计数的整体改造时再议，不单独做。
 
 **开发态依赖（path 依赖）**：
@@ -478,3 +483,30 @@ Idle ──用户输入──▶ Running ──RunFinished──▶ Idle
 
 - 审批三态 + verify 各自跑通：`deny` 写被拒、`auto` 写成功、`ask` 弹窗 y/n 双向、`verify` 返回精简报错摘要。
 - 三次编码任务递增（单行 bug → 泛型化 → 跨文件签名变更）全绿；第三次完整走通「编译错 → 读报错 → 修 → 重跑」迭代闭环（`tests/integration.rs` 隐藏调用方被 `verify` 的 `E0061` 摘要兜住，回头读文件再修）。
+
+### Phase 4 完成（2026-08-15）
+
+- **共享基础设施**（`tools/workspace.rs`）：`WorkspaceTracker`（`Arc<Mutex<TrackerState>>`）+ `snapshot`/`diff`/`normalize_path` 纯函数。`decompose` 时记内容 hash 快照（跳过 `target`/`node_modules`/`.git`/`.hg`/`.svn` 及隐藏项），`merge` 时重扫 diff 出 `Added`/`Modified`/`Removed`——不依赖 git，覆盖裸目录工作区（§10）。
+- **`decompose` 工具**（`tools/decompose.rs`）：持 `Arc<dyn StreamClient>`，`call()` 内做一次**嵌套 LLM 调用**（`response_format=JsonObject`），产出结构化 `Decomposition { strategy: Serial|Parallel, slices: [{name, files, context, task}] }`。`strategy` 落地 §7.4「分解器判断该不该并行」；`slice.files` 是 merge 做冲突归属的结构化边界。复用 `repomap::build_repo_map` 喂结构。
+- **`merge` 工具**（`tools/merge.rs`）：从共享 `WorkspaceTracker` 读上次 decompose 的快照 + slices（LLM 不回传列表，接口最简），diff 出变更、算冲突（① 一文件被 ≥2 slice 声明 = 重叠；② 改动落在任何 slice 边界外 = 越界编辑），再复用 `verify::run_and_summarize` 跑 `cargo check` 折叠错误摘要。无快照时提示「先 decompose」。
+- **接线**：`Cargo.toml` 开 `multi-agent` feature（拉起 6 个框架工具 `spawn_agent`/`send_message`/`followup_task`/`wait_agent`/`list_agents`/`close_agent`）；`agent.rs` 注册两工具 + SYSTEM_PROMPT 补「大任务 decompose → parallel 则每 slice 一个 `spawn_agent` + `wait_agent` → merge → 修再 verify」；`approval.rs` 放行名单补 `decompose`/`merge`；子 agent 权限随审批模式走（auto=`Full`，ask/deny=`None`，见下）。
+- **验证**：phiforge 40/40 单测通过（workspace diff 三态 / decompose JSON 解析+围栏剥离+未知策略回退 serial / merge 冲突四类 / normalize_path 折叠 `./`+反斜杠）；`cargo build` 通过——`multi-agent` feature 使 `base_agent_builder_with_excludes` 的 `with_multi_agent` 块（`phi-agent/src/agent/builder.rs:103-111`）生效，6 工具注册。
+
+**压测发现（框架观察，非修复）**：
+
+1. **子 agent 继承编排工具**：`register_tool` 一律进 `business_tools`，子 agent 按 Arc clone 继承——`decompose`/`merge` 也随之进了子 agent 的工具面。`PhiAgent` 不暴露 post-build `tools_mut`，无法注册「父专用」工具。实践上子 agent 任务是「实现切片」不会调编排工具；即便误调，父 agent 重跑 `decompose` 会重录快照。→ 列为已知 caveat，未为此绕过 `PhiAgent`。
+
+**框架缺陷四 + 修复（受限子 agent 本地硬拒，而非上抛父）**：
+
+- **现象**：`--approval deny` 下，`spawn_agent(full_permission=true)` 的子 agent 仍能写文件——「deny 只读」语义在多 agent 场景不闭合。
+- **根因（两层）**：① phiforge 用 `MultiAgentConfig::default()`（`ChildPermissionMode::Full`，`effective_permission` 无条件放行），LLM 传的 `full_permission` flag 被覆盖；② 即便切到 `ChildPermissionMode::None`，框架的 `build_child_runtime` 受限分支给子 agent 挂的是 `DenyAllApprovalHandler`——**本地硬拒**，审批请求既上抛不到父、也到不了人，`ask` 模式下子 agent 写文件无法交互审批。
+- **参考 codex 的解法**：`codex-rs/core/src/codex_delegate.rs:443-523` 的 `handle_exec_approval` 把子 agent 的 shell/patch 审批请求转成 `parent_session.request_command_approval(...)`（来源标 `GuardianApprovalRequestSource::DelegatedSubagent`），**上抛给父 session 统一裁决**；子 agent 从不「本地自动通过」或「本地硬拒」，另有逐 agent 的 `permissions.approval_policy` + `prefix_rule` 修订传播回父（`approvals.rs:2081`）。
+- **修复（改框架，学 codex）**：`MultiAgentRuntime` 增 `approval_handler` 字段，`build_child_runtime` 受限分支把子 agent 的 `ApprovalHandler` 从硬编码 `DenyAllApprovalHandler` 改为**委托父的 handler**（父无 handler 时回退 `DenyAll` 保住「无策略→只读」不变量）；`setup_multi_agent` 传入 `runtime.approval_handler()`。
+- **phiforge 侧**：`agent.rs::build` 按审批模式设 `child_permission_mode`——`auto`（无 policy）=`Full`，`ask`/`deny`（有 policy）=`None`；SYSTEM_PROMPT 不再硬编码 `full_permission=true`，改提示「子 agent 写权限随审批模式，被拒则该切片自己写」。另把 `approval.rs` 的 `action_key` 从工具名收窄为「`write_file:<path>` / `execute_command:<命令>`」，使 `AllowAlways` 只放行具体对象而非整个工具（codex `prefix_rule` 的收窄语义，复用 `tool_engine` 的按 key 精确缓存，无需改框架）。
+- **验证**：agent-works 97/97（新增 `build_child_runtime_none_delegates_to_parent_approval_handler` + `build_child_runtime_none_denies_when_parent_has_no_handler`）；phi-agent builder 5/5；phiforge 40/40。
+- **仍存的窄限制（记录，不阻塞）**：`ask` 模式下子 agent 的写审批走父的 `CliApprovalHandler`（读 stdin），多个并行子 agent 同时弹窗会**交错**——REPL 里可逐个回答，但交互体验不如 codex 的父 session 统一审批队列。属 TUI（Phase 5）要处理的交互问题，非正确性缺口。
+
+**已真机验证（2026-08-15，deepseek-v4-pro）**：跑了一次「三模块 + 单测」的较大任务，完整走通 `decompose`（判 `parallel`，4 切片文件边界清晰，主动把共享 `lib.rs` 编辑单列成独立切片）→ `spawn_agent ×4`（`full_permission=true`，各写各文件）→ `wait_agent ×4` 全 `ok`（0 denied）→ `merge`（报 changed files + 越界检测 + `✓ passed`），最终 `cargo test` 24 单测绿、`session.log` 0 ERROR/WARN。§7 四个难问题（分解质量/上下文传递/冲突处理/合并验证）真机跑通。
+
+- **发现并修复**：子 agent 跑 `cargo check` 生成的 `Cargo.lock` 被 `merge` 误报为 out-of-scope 冲突——snapshot 排除列表只排目录（`target` 等）没排文件。补 `EXCLUDED_FILES = ["Cargo.lock"]`（`workspace.rs`，附 `snapshot_skips_cargo_lock` 单测），现单测 43/43。
+- **另记两条观察**：① `decompose` 对小任务（两模块）欠触发——模型理性判断「直接写更快」就跳过编排，说明 SYSTEM_PROMPT 的「大任务先 decompose」是建议非强制；② `auto` 模式下子 agent 走 `Full`，codex 式审批上抛（`ChildPermissionMode::None`）只在 `ask`/`deny` 触发，仍未真机验。
