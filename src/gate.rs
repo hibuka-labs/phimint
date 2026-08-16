@@ -11,7 +11,6 @@
 //! `follow_up_message`）与 `on_user_message`（每轮重置），不向框架塞任何
 //! 「必须验」策略——那是 phiforge 的强需求，其他业务不需要（design §8.3）。
 
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -33,18 +32,9 @@ fn is_code_edit(args: &str) -> bool {
         .ok()
         .and_then(|v| v.get("path").and_then(Value::as_str).map(str::to_owned));
     match path {
-        Some(p) => is_code_path(&p),
+        Some(p) => crate::lang::is_code_path(&p),
         None => true,
     }
-}
-
-/// 路径是否影响 cargo 编译：`.rs` 源文件，或 Cargo 清单/锁文件。
-fn is_code_path(path: &str) -> bool {
-    if path.ends_with(".rs") {
-        return true;
-    }
-    let name = Path::new(path).file_name().and_then(|n| n.to_str()).unwrap_or(path);
-    name == "Cargo.toml" || name == "Cargo.lock"
 }
 
 /// 闸门配置。
@@ -263,6 +253,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn multilang_code_edit_marks_dirty() {
+        for path in ["src/Foo.java", "src/a.ts", "src/b.cpp"] {
+            let mw = VerifyEnforcementMiddleware::new(VerifyEnforcementConfig::default());
+
+            let mut edit = ctx(true, "", vec![write_call("edit_file", path)]);
+            mw.on_post_llm(&mut edit).await.unwrap();
+
+            let mut done = ctx(false, "done", vec![]);
+            mw.on_post_llm(&mut done).await.unwrap();
+            assert!(done.skip_push, "{path} edit must trigger the gate");
+        }
+    }
+
+    #[tokio::test]
     async fn cargo_manifest_marks_dirty() {
         let mw = VerifyEnforcementMiddleware::new(VerifyEnforcementConfig::default());
 
@@ -276,14 +280,18 @@ mod tests {
 
     #[test]
     fn is_code_path_classifies() {
-        assert!(is_code_path("src/lib.rs"));
-        assert!(is_code_path("build.rs"));
-        assert!(is_code_path("Cargo.toml"));
-        assert!(is_code_path("Cargo.lock"));
-        assert!(is_code_path("docs/Cargo.toml"));
-        assert!(!is_code_path("README.md"));
-        assert!(!is_code_path("docs/notes.txt"));
-        assert!(!is_code_path("src/"));
+        assert!(crate::lang::is_code_path("src/lib.rs"));
+        assert!(crate::lang::is_code_path("build.rs"));
+        assert!(crate::lang::is_code_path("Cargo.toml"));
+        assert!(crate::lang::is_code_path("Cargo.lock"));
+        assert!(crate::lang::is_code_path("docs/Cargo.toml"));
+        assert!(crate::lang::is_code_path("Foo.java"));
+        assert!(crate::lang::is_code_path("src/a.ts"));
+        assert!(crate::lang::is_code_path("src/b.tsx"));
+        assert!(crate::lang::is_code_path("src/c.cpp"));
+        assert!(!crate::lang::is_code_path("README.md"));
+        assert!(!crate::lang::is_code_path("docs/notes.txt"));
+        assert!(!crate::lang::is_code_path("src/"));
     }
 
     #[test]

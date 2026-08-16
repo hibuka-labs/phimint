@@ -1,15 +1,17 @@
-//! 手写的最小 LSP 客户端（Phase 6b）：只做 diagnostics。
+//! 手写的最小 LSP 客户端（多 server）：只做 diagnostics。
 //!
 //! 依赖 `lsp-types` 仅作协议类型基础（`InitializeParams`/`Diagnostic` 等）；
-//! JSON-RPC 帧（Content-Length）、握手、rust-analyzer 进程管理、`publishDiagnostics`
+//! JSON-RPC 帧（Content-Length）、握手、server 进程管理、`publishDiagnostics`
 //! 缓存全部手写，不引入 nexo-lsp / codive-lsp 这类重依赖（design §8.4）。
 //!
 //! 架构（高内聚低耦合）：
 //! - 纯函数（无 I/O，可单测）：`frame_message` / `decode_frames` 帧编解码、
 //!   `build_*` 消息构造、`parse_publish_diagnostics` / `flatten_diagnostic` 解析。
-//! - `LspClient`（有状态）：启动一次 rust-analyzer，起 reader / driver 两个后台
-//!   线程负责读 stdout / 写 stdin，诊断缓存进 `Arc<Mutex<HashMap<…>>>` 供工具层读。
-//!   启动或握手失败会记进 `state.error`，工具层经 `health()` 感知并降级到 `verify`。
+//! - `LspClient`（有状态）：启动一个 server（argv 由注册表 `lang::LspSpec` 给定），
+//!   起 reader / driver 两个后台线程负责读 stdout / 写 stdin，诊断缓存进
+//!   `Arc<Mutex<HashMap<…>>>` 供工具层读。启动或握手失败记进 `state.error`，
+//!   工具层经 `health()` 感知并降级到 `verify`。
+//! - `LspManager`：按文件语言惰性路由到对应 server（进程共享）。
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -178,10 +180,11 @@ pub fn build_initialized_notification() -> Value {
     )
 }
 
-/// 构造 `textDocument/didOpen` 通知（version=1，语言 rust）。
-pub fn build_did_open(uri: &Url, text: &str) -> Value {
+/// 构造 `textDocument/didOpen` 通知（version=1）。`language_id` 来自注册表
+/// （`lang::lsp_language_id`），例如 "rust"/"typescript"/"cpp"。
+pub fn build_did_open(uri: &Url, text: &str, language_id: &str) -> Value {
     let params = DidOpenTextDocumentParams {
-        text_document: TextDocumentItem::new(uri.clone(), "rust".into(), 1, text.to_string()),
+        text_document: TextDocumentItem::new(uri.clone(), language_id.into(), 1, text.to_string()),
     };
     notification(
         DidOpenTextDocument::METHOD,
@@ -262,8 +265,8 @@ pub fn parse_publish_diagnostics(params: &Value) -> Option<(PathBuf, Vec<Diagnos
 
 /// 发往 driver 线程的指令。
 enum LspCommand {
-    /// 打开/更新一个文件（didOpen 或 didChange，随后 didSave 触发 check）。
-    Sync { path: PathBuf, content: String },
+    /// 打开/更新一个文件（didOpen 或 didChange，随后 didSave 触发 save-time 检查）。
+    Sync { path: PathBuf, content: String, language_id: String },
 }
 
 /// 可观测状态：工具层读，driver 线程写。
@@ -273,8 +276,9 @@ struct LspState {
     error: Option<String>,
 }
 
-/// rust-analyzer 客户端句柄。克隆它共享同一进程 + 缓存。
+/// LSP server 客户端句柄。克隆它共享同一进程 + 缓存。
 pub struct LspClient {
+    server_name: String,
     tx: Sender<LspCommand>,
     diagnostics: Arc<Mutex<HashMap<PathBuf, Vec<DiagnosticEntry>>>>,
     state: Arc<Mutex<LspState>>,
@@ -284,17 +288,22 @@ pub struct LspClient {
 }
 
 impl LspClient {
-    /// 启动 rust-analyzer 并完成后台握手。
+    /// 启动一个 LSP server 并完成后台握手。
     ///
-    /// 永不 panic：spawn 失败把错误记进 `state.error`，`health()` 会报告；
-    /// `sync` / `snapshot` 变成 no-op / 空，工具层据此降级到 `verify`。
-    pub fn start(workspace_root: &Path, binary: &str) -> Arc<LspClient> {
+    /// `command` 是 argv（第一个元素是二进制名，其余是参数）。永不 panic：spawn
+    /// 失败把错误记进 `state.error`，`health()` 会报告；`sync` / `snapshot` 变成
+    /// no-op / 空，工具层据此降级到 `verify`。
+    pub fn start(workspace_root: &Path, command: &[&str]) -> Arc<LspClient> {
+        let server_name = command.first().copied().unwrap_or("lsp-server");
+        let args = command.get(1..).unwrap_or(&[]);
+
         let diagnostics = Arc::new(Mutex::new(HashMap::new()));
         let state = Arc::new(Mutex::new(LspState::default()));
         let child = Arc::new(Mutex::new(None::<Child>));
         let (tx, rx) = mpsc::channel::<LspCommand>();
 
         let client = Arc::new(LspClient {
+            server_name: server_name.to_string(),
             tx,
             diagnostics: diagnostics.clone(),
             state: state.clone(),
@@ -303,7 +312,8 @@ impl LspClient {
             driver: Mutex::new(None),
         });
 
-        let mut proc = match std::process::Command::new(binary)
+        let mut proc = match std::process::Command::new(server_name)
+            .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -311,7 +321,7 @@ impl LspClient {
         {
             Ok(p) => p,
             Err(e) => {
-                state.lock().unwrap().error = Some(format!("failed to spawn {binary}: {e}"));
+                state.lock().unwrap().error = Some(format!("failed to spawn {server_name}: {e}"));
                 return client;
             }
         };
@@ -321,7 +331,8 @@ impl LspClient {
         *child.lock().unwrap() = Some(proc);
 
         let (Some(mut stdin), Some(stdout)) = (stdin, stdout) else {
-            state.lock().unwrap().error = Some(format!("{binary} did not expose stdin/stdout"));
+            state.lock().unwrap().error =
+                Some(format!("{server_name} did not expose stdin/stdout"));
             return client;
         };
 
@@ -353,6 +364,7 @@ impl LspClient {
         let workspace = workspace_root.to_path_buf();
         let diag = diagnostics.clone();
         let st = state.clone();
+        let name = server_name.to_string();
         let driver = std::thread::spawn(move || {
             // 1) initialize。
             if stdin_write(&mut stdin, &build_initialize_request(1, &workspace)).is_err() {
@@ -380,7 +392,7 @@ impl LspClient {
                     }
                     Err(RecvTimeoutError::Disconnected) => {
                         st.lock().unwrap().error =
-                            Some("rust-analyzer exited during handshake".into());
+                            Some(format!("{name} exited during handshake"));
                         return;
                     }
                 }
@@ -399,7 +411,11 @@ impl LspClient {
                 // 先消费 sync 指令（非阻塞，保证冷启动前累积的指令也被处理）。
                 loop {
                     match rx.try_recv() {
-                        Ok(LspCommand::Sync { path, content }) => {
+                        Ok(LspCommand::Sync {
+                            path,
+                            content,
+                            language_id,
+                        }) => {
                             let uri = uri_from_path(&path);
                             match open_versions.get(&path) {
                                 Some(_) => {
@@ -412,11 +428,14 @@ impl LspClient {
                                 }
                                 None => {
                                     open_versions.insert(path.clone(), 1);
-                                    let _ =
-                                        stdin_write(&mut stdin, &build_did_open(&uri, &content));
+                                    let _ = stdin_write(
+                                        &mut stdin,
+                                        &build_did_open(&uri, &content, &language_id),
+                                    );
                                 }
                             }
-                            // didSave 触发 checkOnSave → cargo check → publish。
+                            // didSave 触发 save-time 检查（如 rust-analyzer 的
+                            // checkOnSave → cargo check → publish）。
                             let _ = stdin_write(&mut stdin, &build_did_save(&uri, &content));
                         }
                         Err(TryRecvError::Empty) => break,
@@ -445,7 +464,7 @@ impl LspClient {
             return Err(e.clone());
         }
         if !st.ready {
-            return Err("rust-analyzer is still starting".into());
+            return Err(format!("{} is still starting", self.server_name));
         }
         Ok(())
     }
@@ -456,10 +475,11 @@ impl LspClient {
     }
 
     /// 打开/更新一个文件的诊断（fire-and-forget，driver 线程消费）。
-    pub fn sync(&self, path: &Path, content: &str) {
+    pub fn sync(&self, path: &Path, content: &str, language_id: &str) {
         let _ = self.tx.send(LspCommand::Sync {
             path: path.to_path_buf(),
             content: content.to_string(),
+            language_id: language_id.to_string(),
         });
     }
 
@@ -524,11 +544,48 @@ fn handle_server_message(
     // 其余纯通知（window/logMessage、$/progress 等）忽略。
 }
 
-/// 写一条消息到 rust-analyzer 的 stdin（driver 线程独占写）。
+/// 写一条消息到 server 的 stdin（driver 线程独占写）。
 fn stdin_write(stdin: &mut ChildStdin, msg: &Value) -> std::io::Result<()> {
     let framed = frame_message(msg);
     stdin.write_all(framed.as_bytes())?;
     stdin.flush()
+}
+
+// ---------------- 多 server 路由 ----------------
+
+/// 惰性启动的 LSP server 集合，按文件语言路由。
+///
+/// rust-analyzer（Rust）、typescript-language-server（TS/JS）、clangd（C/C++）
+/// 各自在首次用到时启动，并供所有映射到它的文件共享。没有注册 server 的语言
+/// （`lsp: None`，当前 Java）返回 `None`，`diagnostics` 工具据此降级到 `verify`。
+pub struct LspManager {
+    workspace_root: PathBuf,
+    /// key = server 二进制名（首元素）：一个 server 进程被多门语言共享（TS 和
+    /// JS 共用 typescript-language-server）。
+    clients: Mutex<HashMap<String, Arc<LspClient>>>,
+}
+
+impl LspManager {
+    pub fn new(workspace_root: PathBuf) -> Self {
+        Self {
+            workspace_root,
+            clients: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// `path` 所属语言的 LspClient（惰性启动，进程共享）；该语言没有注册 server
+    /// 时返回 None。
+    pub fn client_for(&self, path: &Path) -> Option<Arc<LspClient>> {
+        let spec = crate::lang::lsp_spec_for_path(&path.to_string_lossy())?;
+        let key = spec.command.first()?.to_string();
+        let mut clients = self.clients.lock().unwrap();
+        Some(
+            clients
+                .entry(key)
+                .or_insert_with(|| LspClient::start(&self.workspace_root, spec.command))
+                .clone(),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -599,11 +656,21 @@ mod tests {
     #[test]
     fn build_did_open_has_correct_shape() {
         let uri = Url::parse("file:///tmp/a.rs").unwrap();
-        let msg = build_did_open(&uri, "fn main() {}");
+        let msg = build_did_open(&uri, "fn main() {}", "rust");
         assert_eq!(msg["method"], "textDocument/didOpen");
         assert_eq!(msg["params"]["textDocument"]["uri"], "file:///tmp/a.rs");
         assert_eq!(msg["params"]["textDocument"]["languageId"], "rust");
         assert_eq!(msg["params"]["textDocument"]["version"], 1);
+    }
+
+    #[test]
+    fn build_did_open_respects_language_id() {
+        let uri = Url::parse("file:///tmp/a.tsx").unwrap();
+        let msg = build_did_open(&uri, "const x = 1;", "typescriptreact");
+        assert_eq!(
+            msg["params"]["textDocument"]["languageId"],
+            "typescriptreact"
+        );
     }
 
     #[test]

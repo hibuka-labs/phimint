@@ -14,25 +14,37 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::ui::app::{AgentStatus, App, LineKind};
+use crate::ui::app::{AgentStatus, App, LineKind, SubAgentStatus};
 
 /// Max composer rows shown (its box grows with the buffer up to this).
 const MAX_COMPOSER_ROWS: usize = 8;
 
 pub fn draw(f: &mut Frame, app: &App) {
     let composer_height = app.composer.height().min(MAX_COMPOSER_ROWS) as u16 + 2;
+    let has_sub_agents = !app.sub_agents.is_empty();
+
+    let mut constraints = vec![
+        Constraint::Min(3),                  // output (transcript)
+        Constraint::Length(composer_height), // composer
+    ];
+    if has_sub_agents {
+        constraints.push(Constraint::Length(1)); // sub-agent strip
+    }
+    constraints.push(Constraint::Length(1)); // status bar
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(3),                  // output (transcript)
-            Constraint::Length(composer_height), // composer
-            Constraint::Length(1),               // status bar
-        ])
+        .constraints(constraints)
         .split(f.area());
 
     render_output(f, app, chunks[0]);
     render_composer(f, app, chunks[1]);
-    render_status(f, app, chunks[2]);
+    if has_sub_agents {
+        render_sub_agents(f, app, chunks[2]);
+        render_status(f, app, chunks[3]);
+    } else {
+        render_status(f, app, chunks[2]);
+    }
 
     if app.has_pending_approval() {
         render_approval_popup(f, app);
@@ -123,6 +135,32 @@ fn render_status(f: &mut Frame, app: &App, area: Rect) {
         AgentStatus::Running { .. } => Style::default().fg(Color::Yellow),
     };
     f.render_widget(Paragraph::new(Line::from(Span::styled(app.status_line(), style))), area);
+}
+
+/// A one-row "sub-agents" strip (Claude Code style): `● [p]` in cyan while
+/// running, `✓ [p]` in green once done, joined by ` · `. Static markers (not an
+/// animated spinner) keep the offscreen frame-capture dedup stable.
+fn render_sub_agents(f: &mut Frame, app: &App, area: Rect) {
+    let spans: Vec<Span> = app
+        .sub_agents
+        .iter()
+        .enumerate()
+        .flat_map(|(i, (path, status))| {
+            let (marker, color) = match status {
+                SubAgentStatus::Running => ("●", Color::Cyan),
+                SubAgentStatus::Done => ("✓", Color::Green),
+            };
+            let mut items = vec![Span::styled(
+                format!("{marker} [{path}]"),
+                Style::default().fg(color),
+            )];
+            if i + 1 < app.sub_agents.len() {
+                items.push(Span::styled(" · ", Style::default().fg(Color::DarkGray)));
+            }
+            items
+        })
+        .collect();
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 /// A centered modal popup showing the current approval request + y/a/n hint.
@@ -265,7 +303,7 @@ pub fn snapshot_text(app: &App, width: u16, height: u16) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::app::{AgentStatus, App, LineKind, OutputLine, Phase, TuiEvent};
+    use crate::ui::app::{AgentStatus, App, LineKind, OutputLine, Phase, SubAgentStatus, TuiEvent};
     use phi_agent::{RuntimeEvent, SessionId};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
@@ -421,5 +459,22 @@ mod tests {
         let text = buffer_to_text(terminal.backend().buffer());
         assert!(text.contains("你好"), "got: {text:?}");
         assert!(!text.contains("你 好"), "wide chars should be adjacent, got: {text:?}");
+    }
+
+    #[test]
+    fn snapshot_shows_sub_agent_strip() {
+        let mut app = App::new();
+        app.sub_agents.insert("root/a".to_string(), SubAgentStatus::Running);
+        app.sub_agents.insert("root/b".to_string(), SubAgentStatus::Done);
+        let text = snapshot_text(&app, 80, 24);
+        assert!(text.contains("● [root/a]"), "running marker missing:\n{text}");
+        assert!(text.contains("✓ [root/b]"), "done marker missing:\n{text}");
+    }
+
+    #[test]
+    fn snapshot_omits_strip_when_no_sub_agents() {
+        let app = App::new();
+        let text = snapshot_text(&app, 80, 24);
+        assert!(!text.contains("● ["), "strip should be absent:\n{text}");
     }
 }

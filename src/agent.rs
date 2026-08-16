@@ -9,7 +9,7 @@ use phi_agent::{ApprovalHandler, ChildPermissionMode, MultiAgentConfig, OpenAiCl
 use phi_kernel_tools::local_shell::LocalShellTool;
 
 use crate::gate::{VerifyEnforcementConfig, VerifyEnforcementMiddleware};
-use crate::lsp::LspClient;
+use crate::lsp::LspManager;
 use crate::tools::decompose::DecomposeTool;
 use crate::tools::diagnostics::DiagnosticsTool;
 use crate::tools::merge::MergeTool;
@@ -20,12 +20,12 @@ use crate::tools::{repomap::RepoMapTool, ripgrep::RipgrepTool, verify::VerifyToo
 const SYSTEM_PROMPT: &str = r#"You are phiforge, an AI coding agent. You write, edit, and debug code inside a workspace.
 
 Tools available:
-- repo_map — get a structural map of the codebase (files + top-level symbols). Use this FIRST to orient.
+- repo_map — get the codebase layout. With no argument it returns a directory skeleton (module → package tree, file counts); pass a workspace-relative `path` to get per-file symbols (classes, methods, fields). Use this FIRST to orient, then scope it to the area you're working in.
 - search_content — search file contents with ripgrep (regex) to locate symbols or strings.
 - read_file / write_file / edit_file / list_files — inspect and modify files (paths are workspace-relative).
-- execute_command — run shell commands (e.g. cargo build, cargo check, cargo test).
-- verify — run a build/test command (default `cargo check`) and get a terse error summary. Prefer this for compiling.
-- diagnostics — pull rust-analyzer errors/warnings for the workspace (fast, no recompile). Use after edits for a quick check; `verify` is the authoritative full check.
+- execute_command — run shell commands (e.g. the workspace's build/test/lint commands).
+- verify — run a build/test command and get a terse error summary. With no `command` it auto-selects the workspace's build command (`cargo check`, `mvn -q compile`, `npx tsc --noEmit`, `make`, …). Prefer this for compiling.
+- diagnostics — pull LSP errors/warnings for the workspace (fast, no recompile; rust-analyzer / typescript-language-server / clangd). Use after edits for a quick check; `verify` is the authoritative full check.
 - decompose / merge — decompose splits a large task into parallel read-only investigation slices; merge reconciles changes and checks compilation (see below).
 
 Note: tool output is capped (~16k chars); oversized output is rejected, not truncated.
@@ -34,7 +34,7 @@ read_file takes `offset` and `limit` (lines) — read files longer than ~300 lin
 How to work:
 1. Understand the request: call repo_map for the layout and search_content to locate symbols, then read the relevant files.
 2. Edit with edit_file (or write_file for new files). For edit_file, `old_text` must match the file exactly and appear exactly once.
-3. Verify your work: call `verify` (or `execute_command` `cargo check` / `cargo build` / `cargo test`). `verify` returns compact `file:line:col  code  message` errors.
+3. Verify your work: call `verify` (or `execute_command` with the workspace's build/test command). `verify` returns compact `file:line:col  code  message` errors.
 4. When a command fails, read the error, fix the code, and re-run until it passes.
 
 Multi-agent (for tasks with clearly independent parts):
@@ -42,7 +42,7 @@ Sub-agents are READ-ONLY investigators: they read, search, and report — they C
 1. Call `decompose` with the full task. It returns either `serial` (do it inline) or `parallel` with independent investigation slices.
 2. If `parallel`: spawn one read-only sub-agent per slice — `spawn_agent` with `task_name` = slice name, `message` = "Context: <slice.context>\nInvestigate and report: <slice.task>". Then `wait_agent` for each (generous timeout_ms, e.g. 300000).
 3. Read each sub-agent's report, then implement the changes yourself with edit_file / write_file.
-4. Call `verify` (or `execute_command` `cargo check`) until the whole workspace compiles; fix anything failing and re-verify.
+4. Call `verify` (or `execute_command` with the workspace's build command) until the whole workspace compiles; fix anything failing and re-verify.
 
 Be precise and minimal. Don't rewrite code that already works. When done, briefly report what you changed."#;
 
@@ -79,7 +79,7 @@ pub fn build(
         // hundred lines; the system prompt tells the agent to paginate beyond.
         .max_tool_output_chars(16_000)
         .register_tool(LocalShellTool::new(shell_timeout_ms))
-        .register_tool(VerifyTool::new(shell_timeout_ms))
+        .register_tool(VerifyTool::new(&workspace_root, shell_timeout_ms))
         .register_tool(RipgrepTool::new(workspace_root.clone()))
         .register_tool(RepoMapTool::new(workspace_root.clone()));
 
@@ -90,12 +90,12 @@ pub fn build(
         .register_tool(DecomposeTool::new(llm, tracker.clone(), workspace_root.clone()))
         .register_tool(MergeTool::new(tracker, workspace_root.clone(), shell_timeout_ms));
 
-    // Phase 6b: LSP diagnostics (rust-analyzer). One process-level singleton is
-    // started here and shared by the `diagnostics` pull tool, which reads its
-    // `publishDiagnostics` cache. The tool degrades gracefully (reports an error
-    // and suggests `verify`) if rust-analyzer can't be started.
+    // LSP diagnostics (multi-server). `LspManager` lazily starts one server per
+    // language (rust-analyzer / typescript-language-server / clangd) and shares
+    // them with the `diagnostics` pull tool, which reads each `publishDiagnostics`
+    // cache. A server that can't be started degrades gracefully to `verify`.
     builder = builder.register_tool(DiagnosticsTool::new(
-        LspClient::start(&workspace_root, "rust-analyzer"),
+        Arc::new(LspManager::new(workspace_root.clone())),
         workspace_root.clone(),
     ));
 

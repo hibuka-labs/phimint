@@ -33,7 +33,7 @@ use tokio::sync::mpsc;
 use unicode_width::UnicodeWidthStr;
 
 use crate::approval::ApprovalItem;
-use crate::ui::app::{Phase, TuiEvent};
+use crate::ui::app::{Phase, TuiEvent, agent_prefix};
 use crate::ui::input::Composer;
 
 /// A command from the main loop to the agent task.
@@ -335,6 +335,9 @@ struct Inline {
     prompt_drawn: bool,
     spinner_idx: usize,
     quit: bool,
+    /// The agent whose text is currently streaming, so a sub-agent's first chunk
+    /// can be `[path]`-prefixed (once, at the head of its stream).
+    text_agent: Option<String>,
 }
 
 impl Inline {
@@ -347,6 +350,7 @@ impl Inline {
             prompt_drawn: false,
             spinner_idx: 0,
             quit: false,
+            text_agent: None,
         }
     }
 
@@ -354,6 +358,7 @@ impl Inline {
         self.running = true;
         self.phase = Phase::Thinking;
         self.prompt_drawn = false;
+        self.text_agent = None;
     }
 
     fn on_event<W: Write>(&mut self, ev: TuiEvent, r: &mut Renderer<W>) {
@@ -373,8 +378,13 @@ impl Inline {
 
     fn on_runtime<W: Write>(&mut self, ev: RuntimeEvent, r: &mut Renderer<W>) {
         match ev {
-            RuntimeEvent::TextDelta { text, .. } => {
+            RuntimeEvent::TextDelta { text, agent_id, .. } => {
                 self.phase = Phase::Streaming;
+                let prefix = agent_prefix(agent_id.as_deref());
+                if !prefix.is_empty() && self.text_agent.as_deref() != agent_id.as_deref() {
+                    r.stream_prefix(&prefix);
+                }
+                self.text_agent = agent_id;
                 r.stream(&text, false);
             }
             // Reasoning is hidden behind the spinner (still in the turn JSONL).
@@ -390,13 +400,15 @@ impl Inline {
                 tool_name,
                 denied,
                 summary,
+                agent_id,
                 ..
             } => {
                 self.phase = Phase::Thinking;
+                let prefix = agent_prefix(agent_id.as_deref());
                 if denied {
-                    r.line(&format!("⛔ {tool_name} denied"));
+                    r.line(&format!("{prefix}⛔ {tool_name} denied"));
                 } else {
-                    r.line(&format!("✓ {tool_name} {}", one_line(&summary, 120)));
+                    r.line(&format!("{prefix}✓ {tool_name} {}", one_line(&summary, 120)));
                 }
             }
             RuntimeEvent::PlanUpdated { .. } => {
@@ -489,6 +501,17 @@ impl<W: Write> Renderer<W> {
             LineState::Content
         };
         self.flush();
+    }
+
+    /// Write a `[path] ` prefix at the head of a sub-agent's stream, on the same
+    /// line as the text that follows. Erases any live status (spinner) first so
+    /// the prefix starts the agent's own line.
+    fn stream_prefix(&mut self, prefix: &str) {
+        if matches!(self.line, LineState::LiveStatus) {
+            let _ = write!(self.out, "\r\x1b[K");
+        }
+        let _ = write!(self.out, "{prefix}");
+        self.line = LineState::Content;
     }
 
     /// Overwrite the current line with a status string. If the line is already a

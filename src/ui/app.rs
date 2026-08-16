@@ -6,7 +6,7 @@
 //! This is the same event stream the `print_event` REPL renderer consumed, so
 //! nothing in the framework needed to change for the TUI to exist.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 
 use crossterm::event::{KeyCode, KeyModifiers};
 use phi_agent::{ApprovalDecision, ApprovalRequest, RuntimeEvent};
@@ -35,6 +35,13 @@ pub enum Phase {
 pub enum AgentStatus {
     Idle,
     Running { phase: Phase },
+}
+
+/// Live state of a sub-agent shown in the sub-agent status strip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubAgentStatus {
+    Running,
+    Done,
 }
 
 /// Visual kind of an output line (mapped to a ratatui style in render.rs).
@@ -90,8 +97,13 @@ pub struct App {
     pub follow_bottom: bool,
     /// Pending approval requests (front = the popup currently shown).
     pub approval_queue: VecDeque<ApprovalItem>,
+    /// Live sub-agent states, keyed by `agent_id` (`root/<task_name>`).
+    pub sub_agents: BTreeMap<String, SubAgentStatus>,
     pending_text: String,
     pending_thought: String,
+    /// The agent whose text/thought is currently accumulating in the pending
+    /// buffer, so a sub-agent's stream can be `[path]`-prefixed on flush.
+    pending_agent: Option<String>,
     /// Incrementally-wrapped form of the live streaming tail, kept in sync with
     /// `pending_text`/`pending_thought` so rendering a long stream is O(new
     /// delta) per frame instead of re-wrapping the whole buffer.
@@ -114,8 +126,10 @@ impl App {
             scroll_offset: 0,
             follow_bottom: true,
             approval_queue: VecDeque::new(),
+            sub_agents: BTreeMap::new(),
             pending_text: String::new(),
             pending_thought: String::new(),
+            pending_agent: None,
             tail_wrap: WrapCache::new(WRAP_WIDTH),
         }
     }
@@ -145,6 +159,7 @@ impl App {
                 }
                 self.status = AgentStatus::Idle;
                 self.running = false;
+                self.sub_agents.clear();
             }
             TuiEvent::TurnDone => {
                 // `RunFinished` (root) already handles the normal path; this is
@@ -152,20 +167,23 @@ impl App {
                 self.flush_pending();
                 self.status = AgentStatus::Idle;
                 self.running = false;
+                self.sub_agents.clear();
             }
         }
     }
 
     fn handle_runtime(&mut self, ev: RuntimeEvent) {
         match ev {
-            RuntimeEvent::TextDelta { text, .. } => {
-                self.push_text(&text);
+            RuntimeEvent::TextDelta { text, agent_id, .. } => {
+                self.track_agent(agent_id.as_deref());
+                self.push_text(&text, agent_id.as_deref());
                 self.status = AgentStatus::Running {
                     phase: Phase::Streaming,
                 };
             }
-            RuntimeEvent::ThoughtDelta { text, .. } => {
-                self.push_thought(&text);
+            RuntimeEvent::ThoughtDelta { text, agent_id, .. } => {
+                self.track_agent(agent_id.as_deref());
+                self.push_thought(&text, agent_id.as_deref());
                 self.status = AgentStatus::Running {
                     phase: Phase::Thinking,
                 };
@@ -179,15 +197,13 @@ impl App {
                 self.flush_pending();
                 // Tools render inline in the transcript (Claude Code style): an
                 // invocation line now, a result line on `ToolCallFinished`.
-                let agent = agent_id
-                    .as_deref()
-                    .map(|a| format!("[{a}] "))
-                    .unwrap_or_default();
+                self.track_agent(agent_id.as_deref());
+                let prefix = agent_prefix(agent_id.as_deref());
                 let args = one_line(&args_json, 80);
                 let text = if args.is_empty() {
-                    format!("⏺ {agent}{tool_name}")
+                    format!("⏺ {prefix}{tool_name}")
                 } else {
-                    format!("⏺ {agent}{tool_name} {args}")
+                    format!("⏺ {prefix}{tool_name} {args}")
                 };
                 self.output.push(OutputLine {
                     text,
@@ -201,16 +217,19 @@ impl App {
                 tool_name,
                 summary,
                 denied,
+                agent_id,
                 ..
             } => {
+                self.track_agent(agent_id.as_deref());
+                let prefix = agent_prefix(agent_id.as_deref());
                 let (text, kind) = if denied {
-                    (format!("  ⛔ {tool_name} denied"), LineKind::Error)
+                    (format!("  {prefix}⛔ {tool_name} denied"), LineKind::Error)
                 } else {
                     let s = one_line(&summary, 80);
                     let text = if s.is_empty() {
-                        format!("  ✓ {tool_name}")
+                        format!("  {prefix}✓ {tool_name}")
                     } else {
-                        format!("  ✓ {tool_name} {s}")
+                        format!("  {prefix}✓ {tool_name} {s}")
                     };
                     (text, LineKind::ToolResult)
                 };
@@ -253,28 +272,69 @@ impl App {
             RuntimeEvent::RunFinished { agent_id, .. } => {
                 self.flush_pending();
                 // Only the root agent's finish ends the turn; sub-agents report
-                // their own `RunFinished` with a non-empty `agent_id`.
-                if agent_id.is_none() {
-                    self.output.push(OutputLine {
-                        text: "✅ done".to_string(),
-                        kind: LineKind::Done,
-                    });
-                    self.status = AgentStatus::Idle;
-                    self.running = false;
+                // their own `RunFinished` with a non-empty `agent_id` (marking
+                // that sub-agent done in the transcript + status strip).
+                match agent_id.as_deref() {
+                    Some(p) if !p.is_empty() => {
+                        self.sub_agents.insert(p.to_string(), SubAgentStatus::Done);
+                        self.output.push(OutputLine {
+                            text: format!("✓ [{p}] done"),
+                            kind: LineKind::Done,
+                        });
+                    }
+                    _ => {
+                        self.output.push(OutputLine {
+                            text: "✅ done".to_string(),
+                            kind: LineKind::Done,
+                        });
+                        self.status = AgentStatus::Idle;
+                        self.running = false;
+                        self.sub_agents.clear();
+                    }
                 }
             }
             RuntimeEvent::RunCancelled { agent_id, .. } => {
                 self.flush_pending();
-                if agent_id.is_none() {
-                    self.output.push(OutputLine {
-                        text: "⏹ cancelled".to_string(),
-                        kind: LineKind::Cancelled,
-                    });
-                    self.status = AgentStatus::Idle;
-                    self.running = false;
+                match agent_id.as_deref() {
+                    Some(p) if !p.is_empty() => {
+                        self.sub_agents.insert(p.to_string(), SubAgentStatus::Done);
+                        self.output.push(OutputLine {
+                            text: format!("✓ [{p}] done"),
+                            kind: LineKind::Done,
+                        });
+                    }
+                    _ => {
+                        self.output.push(OutputLine {
+                            text: "⏹ cancelled".to_string(),
+                            kind: LineKind::Cancelled,
+                        });
+                        self.status = AgentStatus::Idle;
+                        self.running = false;
+                        self.sub_agents.clear();
+                    }
                 }
             }
             _ => {}
+        }
+    }
+
+    /// Record a sub-agent's first appearance — emitting a `⏺ [p] started` marker
+    /// and registering it in `sub_agents` — so the transcript and status strip
+    /// show its lifecycle. No-op for the root agent (`agent_id == None`) and for
+    /// sub-agents already seen this turn.
+    fn track_agent(&mut self, agent_id: Option<&str>) {
+        let Some(p) = agent_id.filter(|p| !p.is_empty()) else {
+            return;
+        };
+        if !self.sub_agents.contains_key(p) {
+            // Any pending root text precedes the first sub-agent event, so flush
+            // it before the `started` marker to keep transcript order correct.
+            self.flush_pending();
+            self.sub_agents.insert(p.to_string(), SubAgentStatus::Running);
+            self.output.push(OutputLine {
+                text: format!("⏺ [{p}] started"),
+                kind: LineKind::Tool,
+            });
         }
     }
 
@@ -283,17 +343,31 @@ impl App {
     // style switch forces a flush. This keeps ~1000 deltas/turn from producing
     // ~1000 output rows.
 
-    fn push_text(&mut self, text: &str) {
+    fn push_text(&mut self, text: &str, agent: Option<&str>) {
         if !self.pending_thought.is_empty() {
             self.flush_thought();
+        }
+        let agent = agent.map(str::to_string);
+        if !self.pending_text.is_empty() && self.pending_agent != agent {
+            self.flush_text();
+        }
+        if self.pending_text.is_empty() {
+            self.pending_agent = agent;
         }
         self.pending_text.push_str(text);
         self.tail_wrap.extend(text);
     }
 
-    fn push_thought(&mut self, text: &str) {
+    fn push_thought(&mut self, text: &str, agent: Option<&str>) {
         if !self.pending_text.is_empty() {
             self.flush_text();
+        }
+        let agent = agent.map(str::to_string);
+        if !self.pending_thought.is_empty() && self.pending_agent != agent {
+            self.flush_thought();
+        }
+        if self.pending_thought.is_empty() {
+            self.pending_agent = agent;
         }
         self.pending_thought.push_str(text);
         self.tail_wrap.extend(text);
@@ -309,9 +383,20 @@ impl App {
             return;
         }
         self.pending_thought.clear();
-        for line in self.tail_wrap.lines() {
+        let prefix = self
+            .pending_agent
+            .take()
+            .map(|p| format!("[{p}] "))
+            .unwrap_or_default();
+        let prefix = prefix.as_str();
+        for (i, line) in self.tail_wrap.lines().iter().enumerate() {
+            let text = if i == 0 && !prefix.is_empty() {
+                format!("{prefix}{line}")
+            } else {
+                line.clone()
+            };
             self.output.push(OutputLine {
-                text: line.clone(),
+                text,
                 kind: LineKind::Thought,
             });
         }
@@ -323,9 +408,20 @@ impl App {
             return;
         }
         self.pending_text.clear();
-        for line in self.tail_wrap.lines() {
+        let prefix = self
+            .pending_agent
+            .take()
+            .map(|p| format!("[{p}] "))
+            .unwrap_or_default();
+        let prefix = prefix.as_str();
+        for (i, line) in self.tail_wrap.lines().iter().enumerate() {
+            let text = if i == 0 && !prefix.is_empty() {
+                format!("{prefix}{line}")
+            } else {
+                line.clone()
+            };
             self.output.push(OutputLine {
-                text: line.clone(),
+                text,
                 kind: LineKind::Normal,
             });
         }
@@ -592,6 +688,15 @@ fn one_line(s: &str, max: usize) -> String {
     }
 }
 
+/// `"[path] "` for a sub-agent, `""` for the root agent — labels a sub-agent's
+/// lines so they read `[root/searcher] …` in the transcript.
+pub fn agent_prefix(agent_id: Option<&str>) -> String {
+    match agent_id {
+        Some(p) if !p.is_empty() => format!("[{p}] "),
+        _ => String::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -641,6 +746,36 @@ mod tests {
             session_id: SessionId::new(1),
             agent_id: agent_id.map(String::from),
             trace_id: None,
+        }
+    }
+
+    fn child_text(agent: &str, s: &str) -> RuntimeEvent {
+        RuntimeEvent::TextDelta {
+            session_id: SessionId::new(1),
+            text: s.to_string(),
+            agent_id: Some(agent.to_string()),
+            trace_id: None,
+        }
+    }
+
+    fn child_tool_started(agent: &str, name: &str) -> RuntimeEvent {
+        RuntimeEvent::ToolCallStarted {
+            session_id: SessionId::new(1),
+            tool_name: name.to_string(),
+            args_json: "{}".to_string(),
+            agent_id: Some(agent.to_string()),
+            trace_id: None,
+        }
+    }
+
+    fn child_tool_finished(agent: &str, name: &str) -> RuntimeEvent {
+        RuntimeEvent::ToolCallFinished {
+            session_id: SessionId::new(1),
+            tool_name: name.to_string(),
+            summary: "done".to_string(),
+            agent_id: Some(agent.to_string()),
+            trace_id: None,
+            denied: false,
         }
     }
 
@@ -1021,5 +1156,67 @@ mod tests {
             app.status,
             AgentStatus::Running { phase: Phase::AwaitingApproval }
         );
+    }
+
+    #[test]
+    fn sub_agent_text_is_labeled_and_lifecycle_tracked() {
+        let mut app = App::new();
+        app.handle_event(TuiEvent::Runtime(child_text("root/a", "found a thing")));
+        assert_eq!(app.sub_agents.get("root/a"), Some(&SubAgentStatus::Running));
+        app.handle_event(TuiEvent::Runtime(run_finished(Some("root/a"))));
+        assert_eq!(app.sub_agents.get("root/a"), Some(&SubAgentStatus::Done));
+        let texts: Vec<&str> = app.output.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            vec![
+                "⏺ [root/a] started",
+                "[root/a] found a thing",
+                "✓ [root/a] done",
+            ]
+        );
+    }
+
+    #[test]
+    fn sub_agent_tool_calls_are_labeled() {
+        let mut app = App::new();
+        app.handle_event(TuiEvent::Runtime(child_tool_started("root/a", "read_file")));
+        app.handle_event(TuiEvent::Runtime(child_tool_finished("root/a", "read_file")));
+        let texts: Vec<&str> = app.output.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(
+            texts,
+            vec![
+                "⏺ [root/a] started",
+                "⏺ [root/a] read_file {}",
+                "  [root/a] ✓ read_file done",
+            ]
+        );
+    }
+
+    #[test]
+    fn sub_agents_cleared_on_root_finish() {
+        let mut app = App::new();
+        app.handle_event(TuiEvent::Runtime(child_text("root/a", "hi")));
+        app.handle_event(TuiEvent::Runtime(run_finished(Some("root/a"))));
+        assert!(!app.sub_agents.is_empty());
+        app.handle_event(TuiEvent::Runtime(run_finished(None)));
+        assert!(app.sub_agents.is_empty());
+    }
+
+    #[test]
+    fn sub_agent_run_finished_does_not_end_turn() {
+        let mut app = App::new();
+        app.running = true;
+        app.handle_event(TuiEvent::Runtime(child_text("root/a", "hi")));
+        app.handle_event(TuiEvent::Runtime(run_finished(Some("root/a"))));
+        assert!(app.running);
+        assert!(matches!(app.status, AgentStatus::Running { .. }));
+        assert_eq!(app.sub_agents.get("root/a"), Some(&SubAgentStatus::Done));
+    }
+
+    #[test]
+    fn agent_prefix_labels_sub_agents_only() {
+        assert_eq!(agent_prefix(None), "");
+        assert_eq!(agent_prefix(Some("")), "");
+        assert_eq!(agent_prefix(Some("root/a")), "[root/a] ");
     }
 }
