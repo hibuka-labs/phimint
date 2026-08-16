@@ -9,6 +9,7 @@
 use std::collections::{BTreeMap, VecDeque};
 
 use crossterm::event::{KeyCode, KeyModifiers};
+use agent_base::UserEvent;
 use phi_agent::{ApprovalDecision, ApprovalRequest, RuntimeEvent};
 use unicode_width::UnicodeWidthChar;
 
@@ -57,6 +58,7 @@ pub enum LineKind {
     System,
     Cancelled,
     Approval,
+    User,
 }
 
 #[derive(Debug, Clone)]
@@ -104,6 +106,9 @@ pub struct App {
     /// The agent whose text/thought is currently accumulating in the pending
     /// buffer, so a sub-agent's stream can be `[path]`-prefixed on flush.
     pending_agent: Option<String>,
+    /// Latest live tool-progress line (e.g. streaming `execute_command` output),
+    /// shown in the status bar and cleared when the tool call finishes.
+    live_progress: Option<String>,
     /// Incrementally-wrapped form of the live streaming tail, kept in sync with
     /// `pending_text`/`pending_thought` so rendering a long stream is O(new
     /// delta) per frame instead of re-wrapping the whole buffer.
@@ -130,6 +135,7 @@ impl App {
             pending_text: String::new(),
             pending_thought: String::new(),
             pending_agent: None,
+            live_progress: None,
             tail_wrap: WrapCache::new(WRAP_WIDTH),
         }
     }
@@ -140,6 +146,26 @@ impl App {
             self.output.push(OutputLine {
                 text: line,
                 kind: LineKind::System,
+            });
+        }
+    }
+
+    /// Echo the user's submitted message into the transcript, so the frame log
+    /// and output buffer retain the human side of the conversation (the JSONL
+    /// turn log already stores `user_input`, but the rendered transcript didn't
+    /// show it). `❯` on the first line, indented continuations after.
+    pub fn push_user(&mut self, text: &str) {
+        let mut first = true;
+        for line in wrap(text, WRAP_WIDTH) {
+            let text = if first {
+                first = false;
+                format!("❯ {line}")
+            } else {
+                format!("  {line}")
+            };
+            self.output.push(OutputLine {
+                text,
+                kind: LineKind::User,
             });
         }
     }
@@ -195,6 +221,8 @@ impl App {
                 ..
             } => {
                 self.flush_pending();
+                // Fresh tool call → drop any progress from the previous one.
+                self.live_progress = None;
                 // Tools render inline in the transcript (Claude Code style): an
                 // invocation line now, a result line on `ToolCallFinished`.
                 self.track_agent(agent_id.as_deref());
@@ -234,6 +262,7 @@ impl App {
                     (text, LineKind::ToolResult)
                 };
                 self.output.push(OutputLine { text, kind });
+                self.live_progress = None;
                 self.status = AgentStatus::Running {
                     phase: Phase::Thinking,
                 };
@@ -314,6 +343,16 @@ impl App {
                     }
                 }
             }
+            RuntimeEvent::UserEvent { event, .. } => match event {
+                // Live tool progress (e.g. streaming `execute_command` output):
+                // surface the latest line in the status bar. Full output is
+                // still delivered as the tool's final summary, so this is
+                // feedback only — no transcript pollution.
+                UserEvent::Progress { text } => {
+                    self.live_progress = Some(text);
+                }
+                _ => {}
+            },
             _ => {}
         }
     }
@@ -481,6 +520,9 @@ impl App {
                 } else if !self.running && !self.composer.is_empty() {
                     let text = self.composer.text();
                     self.composer.clear();
+                    // Echo the user's message into the transcript before the
+                    // agent's reply, so the record keeps the human turn too.
+                    self.push_user(&text);
                     self.running = true;
                     self.follow_bottom = true;
                     self.scroll_offset = 0;
@@ -566,7 +608,10 @@ impl App {
             AgentStatus::Running { phase } => match phase {
                 Phase::Thinking => "🤔 thinking… (Ctrl+C cancel)".to_string(),
                 Phase::Streaming => "💬 streaming… (Ctrl+C cancel)".to_string(),
-                Phase::ToolCall { tool } => format!("🔧 {tool} (Ctrl+C cancel)"),
+                Phase::ToolCall { tool } => match &self.live_progress {
+                    Some(p) => format!("🔧 {tool}: {p}"),
+                    None => format!("🔧 {tool} (Ctrl+C cancel)"),
+                },
                 Phase::AwaitingApproval => "⚠️ waiting approval… (y/a/n, Ctrl+C cancel)".to_string(),
             },
         }
@@ -907,6 +952,45 @@ mod tests {
         // Already running → Enter ignored.
         app.composer.insert_str("second");
         assert_eq!(app.handle_key(KeyCode::Enter, KeyModifiers::NONE), None);
+    }
+
+    #[test]
+    fn submit_echoes_user_message() {
+        let mut app = App::new();
+        let action = submit(&mut app, "hello world");
+        assert_eq!(action, Action::Submit("hello world".to_string()));
+        let users: Vec<&str> = app
+            .output
+            .iter()
+            .filter(|l| l.kind == LineKind::User)
+            .map(|l| l.text.as_str())
+            .collect();
+        assert_eq!(users, vec!["❯ hello world"]);
+    }
+
+    #[test]
+    fn progress_updates_and_clears_live_progress() {
+        let mut app = App::new();
+        app.handle_event(TuiEvent::Runtime(tool_started("execute_command")));
+        assert_eq!(app.status_line(), "🔧 execute_command (Ctrl+C cancel)");
+
+        let prog = RuntimeEvent::UserEvent {
+            session_id: SessionId::new(1),
+            event: UserEvent::Progress {
+                text: "Compiling phiforge v0.1.0".to_string(),
+            },
+            agent_id: None,
+            trace_id: None,
+        };
+        app.handle_event(TuiEvent::Runtime(prog));
+        assert_eq!(
+            app.status_line(),
+            "🔧 execute_command: Compiling phiforge v0.1.0"
+        );
+
+        // A new tool call drops the previous tool's live progress.
+        app.handle_event(TuiEvent::Runtime(tool_started("read_file")));
+        assert_eq!(app.status_line(), "🔧 read_file (Ctrl+C cancel)");
     }
 
     #[test]

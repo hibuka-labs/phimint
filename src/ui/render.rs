@@ -247,6 +247,7 @@ fn style_for(kind: LineKind) -> Style {
         LineKind::System => Style::default().fg(Color::DarkGray),
         LineKind::Cancelled => Style::default().fg(Color::Yellow),
         LineKind::Approval => Style::default().fg(Color::Yellow),
+        LineKind::User => Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
     }
 }
 
