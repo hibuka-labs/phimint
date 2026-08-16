@@ -7,9 +7,10 @@
 //! nothing in the framework needed to change for the TUI to exist.
 
 use std::collections::{BTreeMap, VecDeque};
+use std::ops::Range;
 
 use crossterm::event::{KeyCode, KeyModifiers};
-use agent_base::UserEvent;
+use agent_base::{PlanStepStatus, UserEvent};
 use phi_agent::{ApprovalDecision, ApprovalRequest, RuntimeEvent};
 use unicode_width::UnicodeWidthChar;
 
@@ -74,6 +75,8 @@ pub enum Action {
     Quit,
     Cancel,
     Approve(ApprovalDecision),
+    /// Copy the assistant's last reply to the system clipboard (Ctrl+Y).
+    CopyLastReply,
 }
 
 /// An event delivered from the agent task to the TUI.
@@ -89,6 +92,11 @@ pub enum TuiEvent {
 #[derive(Debug)]
 pub struct App {
     pub output: Vec<OutputLine>,
+    /// Start of the current plan block in `output`. `update_plan`'s contract is
+    /// "full plan replaces previous", so a later update splices this range out
+    /// and re-inserts at the same position instead of appending a duplicate.
+    /// Cleared at each turn start.
+    plan_range: Option<Range<usize>>,
     pub composer: Composer,
     pub status: AgentStatus,
     /// True while a turn is running (gates submitting another task).
@@ -109,6 +117,8 @@ pub struct App {
     /// Latest live tool-progress line (e.g. streaming `execute_command` output),
     /// shown in the status bar and cleared when the tool call finishes.
     live_progress: Option<String>,
+    /// Transient status-bar notice (e.g. "📋 copied …"), cleared on the next key.
+    notice: Option<String>,
     /// Incrementally-wrapped form of the live streaming tail, kept in sync with
     /// `pending_text`/`pending_thought` so rendering a long stream is O(new
     /// delta) per frame instead of re-wrapping the whole buffer.
@@ -125,6 +135,7 @@ impl App {
     pub fn new() -> Self {
         Self {
             output: Vec::new(),
+            plan_range: None,
             composer: Composer::new(),
             status: AgentStatus::Idle,
             running: false,
@@ -136,6 +147,7 @@ impl App {
             pending_thought: String::new(),
             pending_agent: None,
             live_progress: None,
+            notice: None,
             tail_wrap: WrapCache::new(WRAP_WIDTH),
         }
     }
@@ -227,16 +239,21 @@ impl App {
                 // invocation line now, a result line on `ToolCallFinished`.
                 self.track_agent(agent_id.as_deref());
                 let prefix = agent_prefix(agent_id.as_deref());
-                let args = one_line(&args_json, 80);
-                let text = if args.is_empty() {
-                    format!("⏺ {prefix}{tool_name}")
-                } else {
-                    format!("⏺ {prefix}{tool_name} {args}")
-                };
-                self.output.push(OutputLine {
-                    text,
-                    kind: LineKind::Tool,
-                });
+                // `update_plan` renders as a plan block (see `PlanUpdated`), so both
+                // its invocation line (raw JSON args) and result line are noise —
+                // suppress them. Its status transition is still applied.
+                if tool_name != "update_plan" {
+                    let args = one_line(&args_json, 80);
+                    let text = if args.is_empty() {
+                        format!("⏺ {prefix}{tool_name}")
+                    } else {
+                        format!("⏺ {prefix}{tool_name} {args}")
+                    };
+                    self.output.push(OutputLine {
+                        text,
+                        kind: LineKind::Tool,
+                    });
+                }
                 self.status = AgentStatus::Running {
                     phase: Phase::ToolCall { tool: tool_name },
                 };
@@ -250,37 +267,84 @@ impl App {
             } => {
                 self.track_agent(agent_id.as_deref());
                 let prefix = agent_prefix(agent_id.as_deref());
-                let (text, kind) = if denied {
-                    (format!("  {prefix}⛔ {tool_name} denied"), LineKind::Error)
-                } else {
-                    let s = one_line(&summary, 80);
-                    let text = if s.is_empty() {
-                        format!("  {prefix}✓ {tool_name}")
+                // `update_plan` renders as a plan block (see `PlanUpdated`), so its
+                // tool-result line is redundant — suppress it. Everything else
+                // still finalizes the tool-progress state.
+                if tool_name != "update_plan" {
+                    let (text, kind) = if denied {
+                        (format!("  {prefix}⛔ {tool_name} denied"), LineKind::Error)
                     } else {
-                        format!("  {prefix}✓ {tool_name} {s}")
+                        let s = one_line(&summary, 80);
+                        let text = if s.is_empty() {
+                            format!("  {prefix}✓ {tool_name}")
+                        } else {
+                            format!("  {prefix}✓ {tool_name} {s}")
+                        };
+                        (text, LineKind::ToolResult)
                     };
-                    (text, LineKind::ToolResult)
-                };
-                self.output.push(OutputLine { text, kind });
+                    self.output.push(OutputLine { text, kind });
+                }
                 self.live_progress = None;
                 self.status = AgentStatus::Running {
                     phase: Phase::Thinking,
                 };
             }
             RuntimeEvent::PlanUpdated {
-                objective, plan, ..
+                objective,
+                explanation,
+                plan,
+                ..
             } => {
                 self.flush_pending();
-                self.output.push(OutputLine {
-                    text: format!("📋 {objective}"),
-                    kind: LineKind::Plan,
-                });
+
+                // Build the new plan block: objective + status-marked steps + an
+                // optional explanation. Steps are normalized to ≤60 chars by the
+                // tool (fits one line); objective/explanation wrap with a hanging
+                // indent.
+                let mut block: Vec<OutputLine> = Vec::new();
+                for (i, line) in wrap(&objective, WRAP_WIDTH).into_iter().enumerate() {
+                    let text = if i == 0 {
+                        format!("📋 {line}")
+                    } else {
+                        format!("   {line}")
+                    };
+                    block.push(OutputLine { text, kind: LineKind::Plan });
+                }
                 for item in &plan {
-                    self.output.push(OutputLine {
-                        text: format!("   - {}", item.step),
+                    let marker = match item.status {
+                        PlanStepStatus::Completed => "✅",
+                        PlanStepStatus::InProgress => "🔄",
+                        PlanStepStatus::Pending => "○",
+                    };
+                    block.push(OutputLine {
+                        text: format!("   {marker} {}", item.step),
                         kind: LineKind::Plan,
                     });
                 }
+                if let Some(exp) = &explanation {
+                    let exp = exp.trim();
+                    if !exp.is_empty() {
+                        for (i, line) in wrap(exp, WRAP_WIDTH).into_iter().enumerate() {
+                            let text = if i == 0 {
+                                format!("   ↳ {line}")
+                            } else {
+                                format!("     {line}")
+                            };
+                            block.push(OutputLine { text, kind: LineKind::Plan });
+                        }
+                    }
+                }
+
+                // Replace the previous block in place so it stays anchored where
+                // it first appeared (the tool always sends the full plan).
+                let new_len = block.len();
+                let start = self.plan_range.as_ref().map_or(self.output.len(), |r| r.start);
+                if let Some(range) = self.plan_range.take() {
+                    self.output.splice(range, block);
+                } else {
+                    self.output.extend(block);
+                }
+                self.plan_range = Some(start..start + new_len);
             }
             RuntimeEvent::AwaitingApproval { request, .. } => {
                 // Log line for history; the interactive popup (5b) is driven by
@@ -479,6 +543,47 @@ impl App {
         }
     }
 
+    /// The assistant's last reply as plain text: every committed `Normal` line
+    /// since the last user turn, plus any reply still streaming. Tool calls,
+    /// tool results, plan lines and the `✅ done` marker are excluded — this is
+    /// the prose the user most often wants to grab (e.g. a URL the AI printed).
+    pub fn last_reply_text(&self) -> String {
+        let mut lines: Vec<String> = Vec::new();
+        for line in self.output.iter().rev() {
+            match line.kind {
+                LineKind::User => break,
+                LineKind::Normal => lines.push(line.text.clone()),
+                _ => {}
+            }
+        }
+        lines.reverse();
+
+        // Include the uncommitted streaming tail, prefixed like `flush_text` would.
+        if let Some((tail, LineKind::Normal)) = self.streaming_tail_lines() {
+            let prefix = self
+                .pending_agent
+                .as_ref()
+                .map(|p| format!("[{p}] "))
+                .unwrap_or_default();
+            for (i, line) in tail.iter().enumerate() {
+                let text = if i == 0 && !prefix.is_empty() {
+                    format!("{prefix}{line}")
+                } else {
+                    line.clone()
+                };
+                lines.push(text);
+            }
+        }
+
+        lines.join("\n")
+    }
+
+    /// Show a transient status-bar notice (e.g. copy feedback), cleared on the
+    /// next keypress.
+    pub fn set_notice(&mut self, text: impl Into<String>) {
+        self.notice = Some(text.into());
+    }
+
     // ── Key handling ──────────────────────────────────────────────────────
 
     pub fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Option<Action> {
@@ -486,6 +591,9 @@ impl App {
 
         let ctrl = modifiers.contains(KeyModifiers::CONTROL);
         let shift = modifiers.contains(KeyModifiers::SHIFT);
+
+        // Any key dismisses a transient notice (copy feedback) before handling.
+        self.notice = None;
 
         // Ctrl+C always wins: cancel a running turn (or a pending approval),
         // otherwise quit.
@@ -509,6 +617,9 @@ impl App {
 
         match code {
             Char('d') if ctrl => Some(Action::Quit),
+            // Ctrl+Y copies the last reply (vim-yank convention); plain 'y'
+            // still falls through to `Char(c)` and types a literal 'y'.
+            Char('y') if ctrl => Some(Action::CopyLastReply),
             Esc => {
                 self.composer.clear();
                 None
@@ -523,6 +634,7 @@ impl App {
                     // Echo the user's message into the transcript before the
                     // agent's reply, so the record keeps the human turn too.
                     self.push_user(&text);
+                    self.plan_range = None;
                     self.running = true;
                     self.follow_bottom = true;
                     self.scroll_offset = 0;
@@ -603,7 +715,11 @@ impl App {
     pub fn status_line(&self) -> String {
         match &self.status {
             AgentStatus::Idle => {
-                "⏸ Idle — Enter send · Shift+Enter newline · wheel/PgUp/PgDn scroll · Ctrl+C quit".to_string()
+                if let Some(n) = &self.notice {
+                    n.clone()
+                } else {
+                    "⏸ Idle — Enter send · Shift+Enter newline · Ctrl+Y copy · PgUp/PgDn scroll · Ctrl+C quit".to_string()
+                }
             }
             AgentStatus::Running { phase } => match phase {
                 Phase::Thinking => "🤔 thinking… (Ctrl+C cancel)".to_string(),
@@ -745,6 +861,7 @@ pub fn agent_prefix(agent_id: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_base::{PlanItem, PlanStepStatus};
     use phi_agent::SessionId;
 
     fn text(s: &str) -> RuntimeEvent {
@@ -821,6 +938,31 @@ mod tests {
             agent_id: Some(agent.to_string()),
             trace_id: None,
             denied: false,
+        }
+    }
+
+    fn plan(objective: &str, steps: Vec<(&str, PlanStepStatus)>) -> RuntimeEvent {
+        plan_ex(objective, None, steps)
+    }
+
+    fn plan_ex(
+        objective: &str,
+        explanation: Option<&str>,
+        steps: Vec<(&str, PlanStepStatus)>,
+    ) -> RuntimeEvent {
+        RuntimeEvent::PlanUpdated {
+            session_id: SessionId::new(1),
+            objective: objective.to_string(),
+            explanation: explanation.map(String::from),
+            plan: steps
+                .into_iter()
+                .map(|(step, status)| PlanItem {
+                    step: step.to_string(),
+                    status,
+                })
+                .collect(),
+            agent_id: None,
+            trace_id: None,
         }
     }
 
@@ -1302,5 +1444,143 @@ mod tests {
         assert_eq!(agent_prefix(None), "");
         assert_eq!(agent_prefix(Some("")), "");
         assert_eq!(agent_prefix(Some("root/a")), "[root/a] ");
+    }
+
+    #[test]
+    fn last_reply_text_captures_reply_after_last_user() {
+        let mut app = App::new();
+        app.push_user("give me a url");
+        app.handle_event(TuiEvent::Runtime(text("here: https://example.com/x")));
+        app.handle_event(TuiEvent::Runtime(run_finished(None)));
+        assert_eq!(app.last_reply_text(), "here: https://example.com/x");
+    }
+
+    #[test]
+    fn last_reply_text_skips_tools_and_stops_at_previous_user() {
+        let mut app = App::new();
+        app.push_user("turn one");
+        app.handle_event(TuiEvent::Runtime(text("old answer")));
+        app.handle_event(TuiEvent::Runtime(run_finished(None)));
+
+        app.push_user("turn two");
+        app.handle_event(TuiEvent::Runtime(text("part one")));
+        app.handle_event(TuiEvent::Runtime(tool_started("verify")));
+        app.handle_event(TuiEvent::Runtime(tool_finished("verify", false)));
+        app.handle_event(TuiEvent::Runtime(text("part two")));
+        app.handle_event(TuiEvent::Runtime(run_finished(None)));
+
+        // Only turn two's prose; tool lines, results and the `✅ done` marker
+        // are excluded, and the scan stops at the previous user turn.
+        assert_eq!(app.last_reply_text(), "part one\npart two");
+    }
+
+    #[test]
+    fn last_reply_text_empty_without_reply() {
+        let app = App::new();
+        assert_eq!(app.last_reply_text(), "");
+    }
+
+    #[test]
+    fn ctrl_y_emits_copy_last_reply_and_plain_y_types() {
+        let mut app = App::new();
+        assert_eq!(
+            app.handle_key(KeyCode::Char('y'), KeyModifiers::CONTROL),
+            Some(Action::CopyLastReply)
+        );
+        // Plain 'y' (no Ctrl) still inserts a literal 'y'.
+        assert_eq!(app.handle_key(KeyCode::Char('y'), KeyModifiers::NONE), None);
+        assert_eq!(app.composer.text(), "y");
+    }
+
+    #[test]
+    fn notice_shows_in_status_line_and_clears_on_key() {
+        let mut app = App::new();
+        assert!(app.status_line().starts_with("⏸ Idle"));
+        app.set_notice("📋 copied 5 chars");
+        assert_eq!(app.status_line(), "📋 copied 5 chars");
+        // Any keypress clears the notice before being handled.
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.status_line().starts_with("⏸ Idle"));
+    }
+
+    #[test]
+    fn plan_renders_status_markers() {
+        let mut app = App::new();
+        app.handle_event(TuiEvent::Runtime(plan(
+            "目标",
+            vec![
+                ("已完成", PlanStepStatus::Completed),
+                ("进行中", PlanStepStatus::InProgress),
+                ("待办", PlanStepStatus::Pending),
+            ],
+        )));
+        let lines: Vec<&str> = app.output.iter().map(|l| l.text.as_str()).collect();
+        assert!(lines.iter().any(|l| l.contains("📋 目标")), "got: {lines:?}");
+        assert!(lines.iter().any(|l| l.contains("✅ 已完成")), "got: {lines:?}");
+        assert!(lines.iter().any(|l| l.contains("🔄 进行中")), "got: {lines:?}");
+        assert!(lines.iter().any(|l| l.contains("○ 待办")), "got: {lines:?}");
+    }
+
+    #[test]
+    fn plan_replaces_in_place_instead_of_appending() {
+        let mut app = App::new();
+        app.handle_event(TuiEvent::Runtime(plan(
+            "目标",
+            vec![("步骤1", PlanStepStatus::Completed)],
+        )));
+        app.handle_event(TuiEvent::Runtime(plan(
+            "目标",
+            vec![
+                ("步骤1", PlanStepStatus::Completed),
+                ("步骤2", PlanStepStatus::Completed),
+            ],
+        )));
+        let texts: Vec<&str> = app.output.iter().map(|l| l.text.as_str()).collect();
+        assert_eq!(
+            texts.iter().filter(|t| t.contains("📋 目标")).count(),
+            1,
+            "plan replaced, not duplicated: {texts:?}"
+        );
+        assert_eq!(texts.iter().filter(|t| t.contains("✅ 步骤1")).count(), 1);
+        assert_eq!(texts.iter().filter(|t| t.contains("✅ 步骤2")).count(), 1);
+    }
+
+    #[test]
+    fn plan_renders_explanation() {
+        let mut app = App::new();
+        app.handle_event(TuiEvent::Runtime(plan_ex(
+            "目标",
+            Some("检测到已有配置，直接复用"),
+            vec![("步骤", PlanStepStatus::Pending)],
+        )));
+        assert!(app.output.iter().any(|l| l.text.contains("↳ 检测到已有配置")));
+    }
+
+    #[test]
+    fn update_plan_tool_result_line_is_suppressed() {
+        let mut app = App::new();
+        app.handle_event(TuiEvent::Runtime(tool_started("update_plan")));
+        app.handle_event(TuiEvent::Runtime(tool_finished("update_plan", false)));
+        assert!(!app.output.iter().any(|l| l.text.contains("update_plan")));
+    }
+
+    #[test]
+    fn plan_resets_across_turns() {
+        let mut app = App::new();
+        app.handle_event(TuiEvent::Runtime(plan(
+            "目标A",
+            vec![("步骤", PlanStepStatus::Pending)],
+        )));
+        // Starting a new turn (submit) clears the tracked plan range, so the next
+        // plan appends instead of replacing the previous turn's plan.
+        assert_eq!(submit(&mut app, "next"), Action::Submit("next".to_string()));
+        app.handle_event(TuiEvent::Runtime(plan(
+            "目标B",
+            vec![("步骤B", PlanStepStatus::Pending)],
+        )));
+        let texts: Vec<&str> = app.output.iter().map(|l| l.text.as_str()).collect();
+        assert!(texts.iter().any(|t| t.contains("📋 目标A")), "target A kept: {texts:?}");
+        assert!(texts.iter().any(|t| t.contains("📋 目标B")), "target B appended: {texts:?}");
+        assert_eq!(texts.iter().filter(|t| t.contains("📋")).count(), 2);
     }
 }

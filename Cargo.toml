@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 description = "phiforge — an AI coding agent built on phi-agent, used to stress-test the framework by writing code."
 license = "MIT"
+# `src/bin/replay.rs` is auto-discovered as a second binary; make `cargo run`
+# default to the main one.
+default-run = "phiforge"
 
 [[bin]]
 name = "phiforge"
@@ -35,6 +38,8 @@ ratatui = "0.29"
 crossterm = "0.28"
 # Display width for wide CJK glyphs (TUI wrap + inline cursor column).
 unicode-width = "0.1"
+# Clipboard for the TUI's Ctrl+Y "copy last reply" (arboard is cross-platform).
+arboard = "3"
 
 # Observability: mirror phi-agent's CLI — write `tracing` records to a
 # session.log file (via log-core's LogCoreLayer) and per-turn event JSONL

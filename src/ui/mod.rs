@@ -89,6 +89,11 @@ pub async fn run_tui(
     app.push_system(&format!("Logs: {log_path}"));
     app.push_system(&format!("Session: {session_dir}"));
 
+    // Clipboard for Ctrl+Y "copy last reply". Optional: on headless or
+    // Linux/Wayland setups `arboard` may fail to open a clipboard; copy then
+    // just reports "clipboard unavailable" instead of crashing.
+    let mut clipboard = arboard::Clipboard::new().ok();
+
     // Frame-capture log: a deduplicated flipbook of the rendered screen, so a
     // TUI session can be reviewed after the fact (colors dropped, layout kept).
     let mut frames = std::io::BufWriter::new(std::fs::File::create(&frames_path)?);
@@ -129,6 +134,23 @@ pub async fn run_tui(
                                 let _ = cmd_tx.send(Cmd::Run(text));
                             }
                             Action::Approve(decision) => app.approve_front(decision),
+                            Action::CopyLastReply => {
+                                let text = app.last_reply_text();
+                                if text.is_empty() {
+                                    app.set_notice("nothing to copy");
+                                } else {
+                                    match clipboard.as_mut() {
+                                        Some(cb) => match cb.set_text(text.clone()) {
+                                            Ok(_) => app.set_notice(format!(
+                                                "📋 copied {} chars",
+                                                text.chars().count()
+                                            )),
+                                            Err(e) => app.set_notice(format!("copy failed: {e}")),
+                                        },
+                                        None => app.set_notice("clipboard unavailable"),
+                                    }
+                                }
+                            }
                             Action::Cancel => {
                                 agent.cancel();
                                 // Dismiss the popup(s) and drop any in-flight

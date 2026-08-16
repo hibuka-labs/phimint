@@ -5,9 +5,10 @@
 //! 1. **Scroll** — it never enters the alternate screen, so stdout scrolls into
 //!    the terminal's native scrollback. Trackpad/wheel and terminal scrollback
 //!    "just work"; nothing is pinned to the last screen.
-//! 2. **"Stuck" during streaming** — `TextDelta` chunks are written straight to
-//!    stdout (flushed each time). There is no `pending_text` buffer to wait on a
-//!    structural event, so a long answer appears token-by-token.
+//! 2. **"Stuck" during streaming** — `TextDelta` chunks feed a streaming markdown
+//!    renderer that emits each completed line at once (code blocks, bold, headings)
+//!    and flushes a long partial line raw past a threshold. There is no whole-turn
+//!    `pending_text` buffer, so a long answer appears line-by-line, not all at once.
 //! 3. **Noise** — reasoning is hidden behind an animated `thinking…` status line
 //!    (still persisted to the turn JSONL), and tool results collapse to one line.
 //!
@@ -33,6 +34,7 @@ use tokio::sync::mpsc;
 use unicode_width::UnicodeWidthStr;
 
 use crate::approval::ApprovalItem;
+use crate::markdown::Markdown;
 use crate::ui::app::{Phase, TuiEvent, agent_prefix};
 use crate::ui::input::Composer;
 
@@ -204,6 +206,7 @@ pub async fn run_inline(
                                     renderer.clear_input(cursor_line);
                                     renderer.status(&status_text(0, &Phase::Thinking));
                                     state.start_turn();
+                                    renderer.reset_markdown();
                                     let _ = cmd_tx.send(Cmd::Run(text));
                                 }
                             }
@@ -385,7 +388,7 @@ impl Inline {
                     r.stream_prefix(&prefix);
                 }
                 self.text_agent = agent_id;
-                r.stream(&text, false);
+                r.stream(&text);
             }
             // Reasoning is hidden behind the spinner (still in the turn JSONL).
             RuntimeEvent::ThoughtDelta { .. } => {
@@ -464,6 +467,7 @@ enum LineState {
 struct Renderer<W: Write> {
     out: W,
     line: LineState,
+    md: Markdown,
 }
 
 impl<W: Write> Renderer<W> {
@@ -471,6 +475,7 @@ impl<W: Write> Renderer<W> {
         Self {
             out,
             line: LineState::Fresh,
+            md: Markdown::new(),
         }
     }
 
@@ -478,29 +483,37 @@ impl<W: Write> Renderer<W> {
         let _ = self.out.flush();
     }
 
-    /// Stream a chunk of text. Commits any live status line first so the text
-    /// starts on its own line, then writes the chunk immediately (no buffering).
-    fn stream(&mut self, text: &str, dim: bool) {
-        // Erase a live status (spinner) in place — it is transient, and committing
-        // it would leave a dead "🔧 …" line in scrollback ahead of the answer.
+    /// Stream a chunk of assistant text, markdown-rendered. Commits any live
+    /// status line first, then feeds the chunk to the streaming markdown renderer:
+    /// completed lines render styled (code blocks, bold, headings) while the
+    /// trailing partial line is buffered until its `\n` — or flushed raw past
+    /// [`Markdown`]'s long-line threshold so a long paragraph still streams.
+    fn stream(&mut self, text: &str) {
         if matches!(self.line, LineState::LiveStatus) {
             let _ = write!(self.out, "\r\x1b[K");
         }
-        // Raw mode clears OPOST, so a bare \n line-feeds without returning the
-        // carriage. Translate any newlines in streamed model text to \r\n so a
-        // multi-line answer doesn't drift rightward.
-        let text = text.replace('\n', "\r\n");
-        if dim {
-            let _ = write!(self.out, "\x1b[2m{text}\x1b[0m");
-        } else {
-            let _ = write!(self.out, "{text}");
-        }
-        self.line = if text.ends_with('\n') {
+        self.md.feed(text, &mut self.out);
+        self.line = if self.md.at_line_start() {
             LineState::Fresh
         } else {
             LineState::Content
         };
         self.flush();
+    }
+
+    /// Emit any partial markdown line buffered by [`Self::stream`] before a
+    /// structural line is drawn, so streamed text is never lost.
+    fn flush_md(&mut self) {
+        if self.md.flush(&mut self.out) {
+            // A flushed partial line renders as a complete line (\r\n-terminated).
+            self.line = LineState::Fresh;
+        }
+    }
+
+    /// Reset markdown state between turns (an unbalanced fence in one answer must
+    /// not leave the next answer dimmed).
+    fn reset_markdown(&mut self) {
+        self.md.reset();
     }
 
     /// Write a `[path] ` prefix at the head of a sub-agent's stream, on the same
@@ -517,6 +530,7 @@ impl<W: Write> Renderer<W> {
     /// Overwrite the current line with a status string. If the line is already a
     /// live status, rewrite in place (`\r\x1b[K`); otherwise start a new line.
     fn status(&mut self, text: &str) {
+        self.flush_md();
         match self.line {
             LineState::LiveStatus => {}
             LineState::Content => {
@@ -531,6 +545,7 @@ impl<W: Write> Renderer<W> {
 
     /// Print a full line, finalizing any in-progress content or status first.
     fn line(&mut self, text: &str) {
+        self.flush_md();
         match self.line {
             // A live status (spinner) is transient — erase it in place rather than
             // committing a dead "🔧 …" line to scrollback.
@@ -694,21 +709,23 @@ mod tests {
     fn stream_erases_live_status() {
         let out = render_to_string(|r| {
             r.status("thinking");
-            r.stream("hello", false);
+            r.stream("hello\n");
         });
         // The spinner is erased in place, not committed as a dead line; the
         // answer starts on the same line.
-        assert!(out.contains("\r\x1b[Khello"), "got: {out:?}");
+        assert!(out.contains("\r\x1b[Khello\r\n"), "got: {out:?}");
         assert!(!out.contains("thinking\n"), "got: {out:?}");
     }
 
     #[test]
-    fn stream_is_written_immediately() {
+    fn stream_renders_markdown() {
         let out = render_to_string(|r| {
-            r.stream("one", false);
-            r.stream("two", false);
+            r.stream("use **bold** and `code`\n");
+            r.stream("```\nlet x = 1;\n```\n");
         });
-        assert!(out.contains("onetwo"), "got: {out:?}");
+        assert!(out.contains("\x1b[1mbold\x1b[0m"), "got: {out:?}");
+        assert!(out.contains("\x1b[2m  let x = 1;\x1b[0m\r\n"), "got: {out:?}");
+        assert!(!out.contains("```"), "fence markers stripped, got: {out:?}");
     }
 
     #[test]
@@ -725,7 +742,7 @@ mod tests {
     #[test]
     fn status_after_stream_starts_new_line() {
         let out = render_to_string(|r| {
-            r.stream("text", false);
+            r.stream("text");
             r.status("s");
         });
         assert!(out.contains("text\r\n"), "got: {out:?}");
@@ -750,7 +767,7 @@ mod tests {
         let out = render_to_string(|r| {
             r.line("a");
             r.status("s");
-            r.stream("text\nmulti", false);
+            r.stream("text\nmulti");
             r.line("b");
             let mut c = Composer::new();
             c.insert_char('\n'); // two composer lines
@@ -863,8 +880,8 @@ mod tests {
 
         // final reasoning, then the answer streams
         r.status(&status_text(5, &Phase::Thinking));
-        r.stream("phiforge 是一个基于 phi-agent 的 AI 编码 agent。", false);
-        r.stream("它通过写代码来压测框架。", false);
+        r.stream("phiforge 是一个基于 phi-agent 的 AI 编码 agent。");
+        r.stream("它通过写代码来压测框架。");
 
         // done + prompt redraw
         r.line("✅ done");

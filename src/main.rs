@@ -10,6 +10,7 @@ mod gate;
 mod inline;
 mod lang;
 mod lsp;
+mod markdown;
 mod tools;
 mod ui;
 
