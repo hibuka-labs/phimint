@@ -18,7 +18,8 @@ use anyhow::Result;
 use crossterm::{
     event::{
         DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event, KeyEventKind,
-        MouseEvent, MouseEventKind,
+        KeyboardEnhancementFlags, MouseEvent, MouseEventKind, PopKeyboardEnhancementFlags,
+        PushKeyboardEnhancementFlags,
     },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -79,6 +80,16 @@ pub async fn run_tui(
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableBracketedPaste, EnableMouseCapture)?;
+    // Kitty keyboard protocol: lets crossterm read the Command (Super) modifier
+    // so Cmd+C can be bound to copy. Terminals that don't support it (e.g. the
+    // macOS Terminal.app) ignore this and keep legacy key reporting.
+    execute!(
+        stdout,
+        PushKeyboardEnhancementFlags(
+            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
+        )
+    )?;
     let _guard = TerminalGuard;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
@@ -136,20 +147,11 @@ pub async fn run_tui(
                             Action::Approve(decision) => app.approve_front(decision),
                             Action::CopyLastReply => {
                                 let text = app.last_reply_text();
-                                if text.is_empty() {
-                                    app.set_notice("nothing to copy");
-                                } else {
-                                    match clipboard.as_mut() {
-                                        Some(cb) => match cb.set_text(text.clone()) {
-                                            Ok(_) => app.set_notice(format!(
-                                                "📋 copied {} chars",
-                                                text.chars().count()
-                                            )),
-                                            Err(e) => app.set_notice(format!("copy failed: {e}")),
-                                        },
-                                        None => app.set_notice("clipboard unavailable"),
-                                    }
-                                }
+                                copy_text(&mut app, &mut clipboard, text);
+                            }
+                            Action::CopySelection => {
+                                let text = app.selection_text();
+                                copy_text(&mut app, &mut clipboard, text);
                             }
                             Action::Cancel => {
                                 agent.cancel();
@@ -177,12 +179,18 @@ pub async fn run_tui(
                     kind: MouseEventKind::ScrollDown,
                     ..
                 }) => app.scroll_down(),
+                Event::Mouse(MouseEvent {
+                    kind,
+                    column,
+                    row,
+                    ..
+                }) => app.handle_mouse(kind, column, row),
                 Event::Paste(text) => app.composer.insert_str(&text),
                 _ => {}
             }
         }
 
-        terminal.draw(|f| render::draw(f, &app))?;
+        terminal.draw(|f| render::draw(f, &mut app))?;
 
         // Record the frame if it changed since the last one (dedup keeps the
         // flipbook small — steady states and per-token deltas collapse away).
@@ -192,7 +200,7 @@ pub async fn run_tui(
             dirty = false;
             last_capture = Instant::now();
             let size = terminal.size()?;
-            let snap = render::snapshot_text(&app, size.width, size.height);
+            let snap = render::snapshot_text(&mut app, size.width, size.height);
             if snap != last_snapshot {
                 last_snapshot = snap.clone();
                 frame_id += 1;
@@ -208,6 +216,21 @@ pub async fn run_tui(
 
     let _ = frames.flush();
     Ok(())
+}
+
+/// Copy `text` to the clipboard (if available), surfacing a status-bar notice.
+fn copy_text(app: &mut App, clipboard: &mut Option<arboard::Clipboard>, text: String) {
+    if text.is_empty() {
+        app.set_notice("nothing to copy");
+    } else {
+        match clipboard.as_mut() {
+            Some(cb) => match cb.set_text(text.clone()) {
+                Ok(_) => app.set_notice(format!("📋 copied {} chars", text.chars().count())),
+                Err(e) => app.set_notice(format!("copy failed: {e}")),
+            },
+            None => app.set_notice("clipboard unavailable"),
+        }
+    }
 }
 
 /// The agent-side task: run turns on command, forward events to the TUI, and
@@ -261,6 +284,11 @@ struct TerminalGuard;
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
+        let _ = execute!(
+            io::stdout(),
+            DisableMouseCapture,
+            PopKeyboardEnhancementFlags,
+            LeaveAlternateScreen
+        );
     }
 }

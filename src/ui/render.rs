@@ -1,7 +1,5 @@
 //! ratatui frame rendering: transcript (output) / composer / status bar.
 
-use std::ops::Range;
-
 use phi_agent::RiskLevel;
 use ratatui::{
     Frame, Terminal,
@@ -14,12 +12,12 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::ui::app::{AgentStatus, App, LineKind, SubAgentStatus};
+use crate::ui::app::{AgentStatus, App, LineKind, SubAgentStatus, window_range};
 
 /// Max composer rows shown (its box grows with the buffer up to this).
 const MAX_COMPOSER_ROWS: usize = 8;
 
-pub fn draw(f: &mut Frame, app: &App) {
+pub fn draw(f: &mut Frame, app: &mut App) {
     let composer_height = app.composer.height().min(MAX_COMPOSER_ROWS) as u16 + 2;
     let has_sub_agents = !app.sub_agents.is_empty();
 
@@ -37,6 +35,10 @@ pub fn draw(f: &mut Frame, app: &App) {
         .constraints(constraints)
         .split(f.area());
 
+    // Record the output pane rect so mouse events can hit-test transcript rows.
+    let out = chunks[0];
+    app.output_area = Some((out.x, out.y, out.width, out.height));
+
     render_output(f, app, chunks[0]);
     render_composer(f, app, chunks[1]);
     if has_sub_agents {
@@ -48,6 +50,9 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     if app.has_pending_approval() {
         render_approval_popup(f, app);
+    }
+    if app.context_menu().is_some() {
+        render_context_menu(f, app);
     }
 }
 
@@ -68,13 +73,21 @@ fn render_output(f: &mut Frame, app: &App, area: Rect) {
 
     let mut lines: Vec<Line> = Vec::with_capacity(window.len());
     for i in window {
-        if i < committed {
-            let l = &app.output[i];
-            lines.push(Line::from(Span::styled(l.text.clone(), style_for(l.kind))));
+        let mut style = if i < committed {
+            style_for(app.output[i].kind)
         } else {
-            let text = &tail_lines[i - committed];
-            lines.push(Line::from(Span::styled(text.clone(), style_for(tail_kind))));
+            style_for(tail_kind)
+        };
+        // Highlight lines inside the active mouse selection.
+        if i < committed && app.is_selected(i) {
+            style = style.bg(Color::DarkGray);
         }
+        let text = if i < committed {
+            app.output[i].text.as_str()
+        } else {
+            tail_lines[i - committed].as_str()
+        };
+        lines.push(Line::from(Span::styled(text.to_string(), style)));
     }
 
     // No border/title — the transcript flows freely (Claude Code style); the
@@ -205,6 +218,42 @@ fn render_approval_popup(f: &mut Frame, app: &App) {
     f.render_widget(Paragraph::new(lines).block(block).wrap(Wrap { trim: true }), area);
 }
 
+/// A small context menu at the right-click cell, with a highlighted "copy" /
+/// "cancel" choice (keyboard-driven: Up/Down/Enter/Esc).
+fn render_context_menu(f: &mut Frame, app: &App) {
+    let Some(menu) = app.context_menu() else {
+        return;
+    };
+
+    const MENU_W: u16 = 12;
+    const MENU_H: u16 = 4; // border + two items
+    let area = f.area();
+    let x = menu.x.min(area.width.saturating_sub(MENU_W));
+    let y = menu.y.min(area.height.saturating_sub(MENU_H));
+    let rect = Rect::new(x, y, MENU_W, MENU_H);
+    f.render_widget(Clear, rect);
+
+    let items = [" 拷贝 ", " 取消 "];
+    let lines: Vec<Line> = items
+        .iter()
+        .enumerate()
+        .map(|(i, label)| {
+            let style = if i == menu.selected {
+                Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            Line::from(Span::styled(label.to_string(), style))
+        })
+        .collect();
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .title("copy");
+    f.render_widget(Paragraph::new(lines).block(block), rect);
+}
+
 /// A centered rectangle occupying `percent_x`/`percent_y` of `area`.
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     let vertical = Layout::default()
@@ -251,18 +300,6 @@ fn style_for(kind: LineKind) -> Style {
     }
 }
 
-/// The `[start, end)` range of `total` lines to show in a window of `height` rows.
-fn window_range(total: usize, app: &App, height: usize) -> Range<usize> {
-    if total <= height {
-        return 0..total;
-    }
-    if app.follow_bottom {
-        return total - height..total;
-    }
-    let start = total.saturating_sub(height).saturating_sub(app.scroll_offset);
-    start..(start + height).min(total)
-}
-
 /// Serialize a rendered buffer to a plain-text grid (one row per line).
 ///
 /// Box-drawing borders and emoji markers survive as UTF-8; styles (color, bold)
@@ -294,7 +331,7 @@ pub fn buffer_to_text(buf: &Buffer) -> String {
 ///
 /// Mirrors the on-screen `draw` (same layout, status bar, and popups), so the
 /// captured frames match what a live terminal shows.
-pub fn snapshot_text(app: &App, width: u16, height: u16) -> String {
+pub fn snapshot_text(app: &mut App, width: u16, height: u16) -> String {
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("offscreen terminal");
     terminal.draw(|f| draw(f, app)).expect("offscreen draw");
@@ -305,6 +342,7 @@ pub fn snapshot_text(app: &App, width: u16, height: u16) -> String {
 mod tests {
     use super::*;
     use crate::ui::app::{AgentStatus, App, LineKind, OutputLine, Phase, SubAgentStatus, TuiEvent};
+    use crossterm::event::{MouseButton, MouseEventKind};
     use phi_agent::{RuntimeEvent, SessionId};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
@@ -340,8 +378,8 @@ mod tests {
     fn draw_does_not_panic_on_populated_state() {
         let backend = TestBackend::new(100, 40);
         let mut terminal = Terminal::new(backend).unwrap();
-        let app = populated_app();
-        terminal.draw(|f| draw(f, &app)).unwrap();
+        let mut app = populated_app();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
     }
 
     #[test]
@@ -350,8 +388,8 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
 
         // Fresh (empty) state.
-        let app = App::new();
-        terminal.draw(|f| draw(f, &app)).unwrap();
+        let mut app = App::new();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
 
         // Scrolled up (not following bottom).
         let mut app = App::new();
@@ -363,7 +401,7 @@ mod tests {
         }
         app.follow_bottom = false;
         app.scroll_offset = 50;
-        terminal.draw(|f| draw(f, &app)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
     }
 
     #[test]
@@ -374,7 +412,7 @@ mod tests {
         app.composer.insert_str("héllo");
         app.composer.move_home();
         app.composer.move_right(); // cursor after 'h' (byte 1), before the 2-byte 'é'
-        terminal.draw(|f| draw(f, &app)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
     }
 
     #[test]
@@ -393,7 +431,7 @@ mod tests {
             },
             decision_tx: tx,
         });
-        terminal.draw(|f| draw(f, &app)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
     }
 
     #[test]
@@ -413,7 +451,7 @@ mod tests {
             decision_tx: tx,
         });
 
-        let text = snapshot_text(&app, 80, 24);
+        let text = snapshot_text(&mut app, 80, 24);
         assert!(text.contains("approval"), "popup title missing:\n{text}");
         assert!(text.contains("do a thing"), "composer content missing:\n{text}");
         assert!(text.contains('\n'), "snapshot should be multi-line:\n{text}");
@@ -444,7 +482,7 @@ mod tests {
             agent_id: None,
             trace_id: None,
         }));
-        let text = snapshot_text(&app, 80, 24);
+        let text = snapshot_text(&mut app, 80, 24);
         assert!(text.contains("partial answer"), "tail missing:\n{text}");
     }
 
@@ -467,15 +505,35 @@ mod tests {
         let mut app = App::new();
         app.sub_agents.insert("root/a".to_string(), SubAgentStatus::Running);
         app.sub_agents.insert("root/b".to_string(), SubAgentStatus::Done);
-        let text = snapshot_text(&app, 80, 24);
+        let text = snapshot_text(&mut app, 80, 24);
         assert!(text.contains("● [root/a]"), "running marker missing:\n{text}");
         assert!(text.contains("✓ [root/b]"), "done marker missing:\n{text}");
     }
 
     #[test]
     fn snapshot_omits_strip_when_no_sub_agents() {
-        let app = App::new();
-        let text = snapshot_text(&app, 80, 24);
+        let mut app = App::new();
+        let text = snapshot_text(&mut app, 80, 24);
         assert!(!text.contains("● ["), "strip should be absent:\n{text}");
+    }
+
+    #[test]
+    fn draw_with_selection_and_context_menu_does_not_panic() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new();
+        for i in 0..20 {
+            app.output.push(OutputLine {
+                text: format!("line {i}"),
+                kind: LineKind::Normal,
+            });
+        }
+        app.output_area = Some((0, 0, 80, 20));
+        app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 2);
+        app.handle_mouse(MouseEventKind::Drag(MouseButton::Left), 0, 5);
+        app.handle_mouse(MouseEventKind::Down(MouseButton::Right), 10, 5);
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        // The selection text round-trips even after rendering.
+        assert_eq!(app.selection_text(), "line 2\nline 3\nline 4\nline 5");
     }
 }

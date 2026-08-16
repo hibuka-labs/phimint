@@ -9,7 +9,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::ops::Range;
 
-use crossterm::event::{KeyCode, KeyModifiers};
+use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use agent_base::{PlanStepStatus, UserEvent};
 use phi_agent::{ApprovalDecision, ApprovalRequest, RuntimeEvent};
 use unicode_width::UnicodeWidthChar;
@@ -68,6 +68,31 @@ pub struct OutputLine {
     pub kind: LineKind,
 }
 
+/// A line-range selection into `output` (inclusive). `anchor` is the drag
+/// start and `head` the current line; they may be in either order, so
+/// [`Selection::bounds`] normalizes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Selection {
+    pub anchor: usize,
+    pub head: usize,
+}
+
+impl Selection {
+    /// Normalized inclusive `(lo, hi)` bounds, `lo <= hi`.
+    fn bounds(self) -> (usize, usize) {
+        (self.anchor.min(self.head), self.anchor.max(self.head))
+    }
+}
+
+/// Right-click copy menu: anchor cell (top-left) and highlighted item index
+/// (0 = copy, 1 = cancel).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContextMenu {
+    pub x: u16,
+    pub y: u16,
+    pub selected: usize,
+}
+
 /// A user action surfaced from key handling, consumed by the TUI loop.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Action {
@@ -77,6 +102,9 @@ pub enum Action {
     Approve(ApprovalDecision),
     /// Copy the assistant's last reply to the system clipboard (Ctrl+Y).
     CopyLastReply,
+    /// Copy the active transcript selection to the system clipboard (Ctrl+C
+    /// with a selection, or right-click → copy).
+    CopySelection,
 }
 
 /// An event delivered from the agent task to the TUI.
@@ -109,6 +137,14 @@ pub struct App {
     pub approval_queue: VecDeque<ApprovalItem>,
     /// Live sub-agent states, keyed by `agent_id` (`root/<task_name>`).
     pub sub_agents: BTreeMap<String, SubAgentStatus>,
+    /// Active transcript selection (line indices into `output`), built by mouse
+    /// drag. Stored as `anchor`/`head` so drag-up is supported.
+    selection: Option<Selection>,
+    /// Right-click copy menu, shown while a selection is active.
+    context_menu: Option<ContextMenu>,
+    /// Output pane rect `(x, y, w, h)` in cells, refreshed each draw so mouse
+    /// events can be hit-tested against the transcript.
+    pub(crate) output_area: Option<(u16, u16, u16, u16)>,
     pending_text: String,
     pending_thought: String,
     /// The agent whose text/thought is currently accumulating in the pending
@@ -143,6 +179,9 @@ impl App {
             follow_bottom: true,
             approval_queue: VecDeque::new(),
             sub_agents: BTreeMap::new(),
+            selection: None,
+            context_menu: None,
+            output_area: None,
             pending_text: String::new(),
             pending_thought: String::new(),
             pending_agent: None,
@@ -584,6 +623,89 @@ impl App {
         self.notice = Some(text.into());
     }
 
+    // ── Mouse selection ───────────────────────────────────────────────────
+
+    /// Handle a mouse event at `(x, y)` (terminal cells): left-press anchors a
+    /// selection, left-drag extends it, right-press opens the copy menu.
+    pub(crate) fn handle_mouse(&mut self, kind: MouseEventKind, x: u16, y: u16) {
+        use MouseEventKind::*;
+        match kind {
+            Down(MouseButton::Left) => {
+                self.context_menu = None;
+                self.selection = self
+                    .line_index_at(x, y)
+                    .map(|idx| Selection { anchor: idx, head: idx });
+            }
+            Drag(MouseButton::Left) => {
+                if let Some(idx) = self.line_index_at(x, y) {
+                    if let Some(sel) = self.selection.as_mut() {
+                        sel.head = idx;
+                    }
+                }
+            }
+            Up(MouseButton::Left) => {}
+            Down(MouseButton::Right) => {
+                if self.selection.is_some() {
+                    self.context_menu = Some(ContextMenu { x, y, selected: 0 });
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Map a screen cell `(x, y)` to an `output` line index, or `None` when
+    /// outside the output pane or over a still-streaming (uncommitted) line.
+    fn line_index_at(&self, x: u16, y: u16) -> Option<usize> {
+        let (ax, ay, aw, ah) = self.output_area?;
+        if x < ax || x >= ax.saturating_add(aw) || y < ay || y >= ay.saturating_add(ah) {
+            return None;
+        }
+        let row = (y - ay) as usize;
+        let committed = self.output.len();
+        let tail = self.streaming_tail_lines().map(|(l, _)| l.len()).unwrap_or(0);
+        let window = window_range(committed + tail, self, ah as usize);
+        let idx = window.start + row;
+        if idx < window.end && idx < committed {
+            Some(idx)
+        } else {
+            None
+        }
+    }
+
+    /// The active selection as a normalized, `output`-len-clamped inclusive
+    /// range, or `None` when empty/stale.
+    fn selection_range(&self) -> Option<(usize, usize)> {
+        let sel = self.selection?;
+        let (lo, hi) = sel.bounds();
+        if self.output.is_empty() || lo >= self.output.len() {
+            return None;
+        }
+        Some((lo, hi.min(self.output.len() - 1)))
+    }
+
+    /// True when output line `i` falls inside the active selection.
+    pub fn is_selected(&self, i: usize) -> bool {
+        self.selection_range()
+            .map_or(false, |(lo, hi)| lo <= i && i <= hi)
+    }
+
+    /// The selected lines joined as plain text (what-you-see-is-what-you-copy).
+    pub fn selection_text(&self) -> String {
+        let Some((lo, hi)) = self.selection_range() else {
+            return String::new();
+        };
+        self.output[lo..=hi]
+            .iter()
+            .map(|l| l.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The right-click menu, if open.
+    pub fn context_menu(&self) -> Option<&ContextMenu> {
+        self.context_menu.as_ref()
+    }
+
     // ── Key handling ──────────────────────────────────────────────────────
 
     pub fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Option<Action> {
@@ -591,18 +713,67 @@ impl App {
 
         let ctrl = modifiers.contains(KeyModifiers::CONTROL);
         let shift = modifiers.contains(KeyModifiers::SHIFT);
+        let super_key = modifiers.contains(KeyModifiers::SUPER);
 
         // Any key dismisses a transient notice (copy feedback) before handling.
         self.notice = None;
 
-        // Ctrl+C always wins: cancel a running turn (or a pending approval),
-        // otherwise quit.
+        // Cmd+C (Super) is the macOS copy shortcut: copy the selection, and do
+        // nothing when there's no selection — it never cancels/quits (that's
+        // Ctrl+C's job).
+        if super_key && code == Char('c') {
+            if self.selection.is_some() {
+                self.context_menu = None;
+                return Some(Action::CopySelection);
+            }
+            return None;
+        }
+
+        // Ctrl+C always wins: with an active selection it copies the selection;
+        // otherwise it cancels a running turn (or pending approval) / quits.
         if ctrl && code == Char('c') {
+            if self.selection.is_some() {
+                self.context_menu = None;
+                return Some(Action::CopySelection);
+            }
             return Some(if self.running || !self.approval_queue.is_empty() {
                 Action::Cancel
             } else {
                 Action::Quit
             });
+        }
+
+        // Right-click copy menu: Up/Down move the highlight, Enter copies (or
+        // cancels), Esc closes; everything else is swallowed.
+        if self.context_menu.is_some() {
+            let selected = self.context_menu.as_ref().map_or(0, |m| m.selected);
+            return match code {
+                Up => {
+                    if let Some(m) = self.context_menu.as_mut() {
+                        m.selected = m.selected.saturating_sub(1);
+                    }
+                    None
+                }
+                Down => {
+                    if let Some(m) = self.context_menu.as_mut() {
+                        m.selected = (m.selected + 1).min(1);
+                    }
+                    None
+                }
+                Enter => {
+                    self.context_menu = None;
+                    if selected == 0 {
+                        Some(Action::CopySelection)
+                    } else {
+                        None
+                    }
+                }
+                Esc => {
+                    self.context_menu = None;
+                    None
+                }
+                _ => None,
+            };
         }
 
         // While an approval popup is showing, route y/a/n and swallow the rest.
@@ -621,7 +792,13 @@ impl App {
             // still falls through to `Char(c)` and types a literal 'y'.
             Char('y') if ctrl => Some(Action::CopyLastReply),
             Esc => {
-                self.composer.clear();
+                // No menu is open here (handled above); clear a selection if
+                // present, else clear the composer.
+                if self.selection.is_some() {
+                    self.selection = None;
+                } else {
+                    self.composer.clear();
+                }
                 None
             }
             Enter => {
@@ -807,6 +984,19 @@ impl WrapCache {
     fn lines(&self) -> &[String] {
         &self.lines
     }
+}
+
+/// The `[start, end)` range of `total` lines to show in a window of `height`
+/// rows, honoring `follow_bottom` and `scroll_offset`.
+pub(crate) fn window_range(total: usize, app: &App, height: usize) -> Range<usize> {
+    if total <= height {
+        return 0..total;
+    }
+    if app.follow_bottom {
+        return total - height..total;
+    }
+    let start = total.saturating_sub(height).saturating_sub(app.scroll_offset);
+    start..(start + height).min(total)
 }
 
 /// Hard-wrap text to `width` display columns: split on existing newlines, then
@@ -1582,5 +1772,116 @@ mod tests {
         assert!(texts.iter().any(|t| t.contains("📋 目标A")), "target A kept: {texts:?}");
         assert!(texts.iter().any(|t| t.contains("📋 目标B")), "target B appended: {texts:?}");
         assert_eq!(texts.iter().filter(|t| t.contains("📋")).count(), 2);
+    }
+
+    #[test]
+    fn mouse_drag_selects_line_range() {
+        let mut app = App::new();
+        for i in 0..10 {
+            app.output.push(OutputLine { text: format!("line {i}"), kind: LineKind::Normal });
+        }
+        app.output_area = Some((0, 0, 100, 10));
+        app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 2);
+        app.handle_mouse(MouseEventKind::Drag(MouseButton::Left), 0, 5);
+        assert_eq!(app.selection, Some(Selection { anchor: 2, head: 5 }));
+        assert_eq!(app.selection_text(), "line 2\nline 3\nline 4\nline 5");
+    }
+
+    #[test]
+    fn mouse_drag_up_normalizes_selection() {
+        let mut app = App::new();
+        for i in 0..10 {
+            app.output.push(OutputLine { text: format!("line {i}"), kind: LineKind::Normal });
+        }
+        app.output_area = Some((0, 0, 100, 10));
+        app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 5);
+        app.handle_mouse(MouseEventKind::Drag(MouseButton::Left), 0, 2);
+        assert!(app.is_selected(3));
+        assert_eq!(app.selection_text(), "line 2\nline 3\nline 4\nline 5");
+    }
+
+    #[test]
+    fn click_outside_output_clears_selection() {
+        let mut app = App::new();
+        app.output.push(OutputLine { text: "x".into(), kind: LineKind::Normal });
+        app.output_area = Some((0, 0, 10, 5));
+        app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 0);
+        assert!(app.selection.is_some());
+        app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 50); // below pane
+        assert!(app.selection.is_none());
+    }
+
+    #[test]
+    fn selection_text_clamps_stale_indices() {
+        let mut app = App::new();
+        app.output.push(OutputLine { text: "a".into(), kind: LineKind::Normal });
+        app.selection = Some(Selection { anchor: 0, head: 5 });
+        assert_eq!(app.selection_text(), "a");
+    }
+
+    #[test]
+    fn ctrl_c_copies_selection_else_cancel_quit() {
+        let mut app = App::new();
+        assert_eq!(
+            app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            Some(Action::Quit)
+        );
+        app.selection = Some(Selection { anchor: 0, head: 0 });
+        assert_eq!(
+            app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            Some(Action::CopySelection)
+        );
+    }
+
+    #[test]
+    fn right_click_opens_menu_and_enter_copies() {
+        let mut app = App::new();
+        app.output.push(OutputLine { text: "x".into(), kind: LineKind::Normal });
+        app.output_area = Some((0, 0, 10, 10));
+        app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 0);
+        app.handle_mouse(MouseEventKind::Down(MouseButton::Right), 3, 4);
+        assert_eq!(app.context_menu, Some(ContextMenu { x: 3, y: 4, selected: 0 }));
+        assert_eq!(
+            app.handle_key(KeyCode::Enter, KeyModifiers::NONE),
+            Some(Action::CopySelection)
+        );
+        assert_eq!(app.context_menu, None);
+    }
+
+    #[test]
+    fn context_menu_arrows_move_highlight_and_esc_closes() {
+        let mut app = App::new();
+        app.output.push(OutputLine { text: "x".into(), kind: LineKind::Normal });
+        app.output_area = Some((0, 0, 10, 10));
+        app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 0);
+        app.handle_mouse(MouseEventKind::Down(MouseButton::Right), 0, 0);
+        assert_eq!(app.handle_key(KeyCode::Down, KeyModifiers::NONE), None);
+        assert_eq!(app.context_menu.as_ref().unwrap().selected, 1);
+        // Enter on the "cancel" item closes without copying.
+        assert_eq!(app.handle_key(KeyCode::Enter, KeyModifiers::NONE), None);
+        assert!(app.context_menu.is_none());
+    }
+
+    #[test]
+    fn esc_clears_selection_before_composer() {
+        let mut app = App::new();
+        app.selection = Some(Selection { anchor: 0, head: 2 });
+        app.composer.insert_str("keep");
+        assert_eq!(app.handle_key(KeyCode::Esc, KeyModifiers::NONE), None);
+        assert!(app.selection.is_none());
+        assert_eq!(app.composer.text(), "keep");
+    }
+
+    #[test]
+    fn cmd_c_copies_selection_but_never_quits() {
+        let mut app = App::new();
+        // No selection → Cmd+C does nothing (it must never quit).
+        assert_eq!(app.handle_key(KeyCode::Char('c'), KeyModifiers::SUPER), None);
+        // With a selection → copy.
+        app.selection = Some(Selection { anchor: 0, head: 0 });
+        assert_eq!(
+            app.handle_key(KeyCode::Char('c'), KeyModifiers::SUPER),
+            Some(Action::CopySelection)
+        );
     }
 }
