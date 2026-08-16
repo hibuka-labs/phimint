@@ -411,6 +411,26 @@ Idle ──用户输入──▶ Running ──RunFinished──▶ Idle
 - **6b LSP 诊断** ✅：`lsp-types` + rust-analyzer，`diagnostics` 工具拉 `publishDiagnostics`（不重编译的快速内环）。首版只 diagnostics，不做 completion/goto（§8.4）。
 - **顺序**：6a 先（强需求 + 便宜 + 不依赖 LSP），6b 后（加速器）。
 
+### Phase 7 — Skills 生态接入（复用 Claude Code skills）📋
+- **7a 目录对齐 + 扫描配置口**（必做先做）：扫 `.claude/skills` + `~/.claude/skills`（+ 现有 `.phi/skills`），复用 Claude Code skill 生态。框架暴露 `with_skill_dirs()` 配置口（框架中立、consumer 决定）。
+- **7b `/skill` 斜杠入口**（必做）：TUI/inline Composer 解析 `/skill-name args`，查 registry（`user-invocable`）+ `resolve_body` 参数化，注入上下文。
+- **7c 执行语义**（可选，重，框架层）：`allowed-tools`/`context: fork`/`paths` 从「死字段」变真语义（工具门控 / 子 agent 隔离 / 路径触发）。
+- **7d 自带 skills**（可选，内容）：`commit`/`code-review`/`explain` 三个开箱 skill。
+- **7e 上下文硬截断**（可选，顺手）：开 `ContextWindowManager`（`has_context_window:false→true`）作 SummarizingMiddleware 的确定性兜底。
+- 详见 `docs/phase7-plan.md`。
+
+### Phase 8 — 斜杠命令系统（内置命令 + 分发器）📋
+- Composer 识别 `/` 前缀 + 命令注册表 + 分发器（`CommandEffect` 三态：`Local`/`Run`/`NotACommand`），是 skills / memory / `@` 三者共用的地基。
+- 首批内置命令：`/help` `/clear` `/status` `/model`（immediate 类）+ `/verify` `/diagnostics`（turn-triggering 类，直接调工具不经 LLM）。
+- **明确不做**：自定义命令（并入 Phase 7 skills）、`@` 提及（Phase 10）、Memory（Phase 9）。
+- 详见 `docs/phase8-plan.md`。
+
+### Phase 9 — Memory（PHIFORGE.md + CLAUDE.md 兼容）📋
+- 启动常驻注入：读自己的 `PHIFORGE.md`（项目根 / 全局 `~/.config/phiforge/`），无则兜底读 `CLAUDE.md`，让已写 CLAUDE.md 的项目开箱即用。命名待定（`PHIFORGE.md` vs `.phi/PHIFORGE.md`）。
+
+### Phase 10 — `@` 上下文提及 📋
+- 输入 `@path` 把文件内容 / 目录结构注入本轮上下文（文件/目录自动补全）。语义与 `/`（动作）不同，是「往上下文塞内容」，UX 重、独立 phase。
+
 ---
 
 ## 13. 决策记录
