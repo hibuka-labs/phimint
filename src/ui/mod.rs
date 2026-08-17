@@ -186,7 +186,18 @@ pub async fn run_tui(
                     column,
                     row,
                     ..
-                }) => app.handle_mouse(kind, column, row),
+                }) => {
+                    // The copy-menu hit-test needs the terminal size to locate
+                    // the popup exactly where it was drawn.
+                    let size = terminal.size()?;
+                    if let Some(action) = app.handle_mouse(kind, column, row, size.width, size.height)
+                    {
+                        if let Action::CopySelection = action {
+                            let text = app.selection_text();
+                            copy_text(&mut app, &mut clipboard, text);
+                        }
+                    }
+                }
                 Event::Paste(text) => app.paste(&text),
                 _ => {}
             }

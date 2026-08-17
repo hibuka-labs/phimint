@@ -12,7 +12,10 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::ui::app::{AgentStatus, App, LineKind, SubAgentStatus, window_range};
+use crate::ui::app::{
+    AgentStatus, App, CONTEXT_MENU_H, CONTEXT_MENU_W, LineKind, SubAgentStatus, context_menu_pos,
+    window_range,
+};
 
 /// Max composer rows shown (its box grows with the buffer up to this).
 const MAX_COMPOSER_ROWS: usize = 8;
@@ -228,12 +231,11 @@ fn render_context_menu(f: &mut Frame, app: &App) {
         return;
     };
 
-    const MENU_W: u16 = 12;
-    const MENU_H: u16 = 4; // border + two items
     let area = f.area();
-    let x = menu.x.min(area.width.saturating_sub(MENU_W));
-    let y = menu.y.min(area.height.saturating_sub(MENU_H));
-    let rect = Rect::new(x, y, MENU_W, MENU_H);
+    // Geometry shared with mouse hit-testing (App::handle_mouse): one source of
+    // truth for where the popup actually lands on screen.
+    let (x, y) = context_menu_pos(menu.x, menu.y, area.width, area.height);
+    let rect = Rect::new(x, y, CONTEXT_MENU_W, CONTEXT_MENU_H);
     f.render_widget(Clear, rect);
 
     let items = [" 拷贝 ", " 取消 "];
@@ -597,9 +599,9 @@ mod tests {
             });
         }
         app.output_area = Some((0, 0, 80, 20));
-        app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 2);
-        app.handle_mouse(MouseEventKind::Drag(MouseButton::Left), 0, 5);
-        app.handle_mouse(MouseEventKind::Down(MouseButton::Right), 10, 5);
+        app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 2, 80, 24);
+        app.handle_mouse(MouseEventKind::Drag(MouseButton::Left), 0, 5, 80, 24);
+        app.handle_mouse(MouseEventKind::Down(MouseButton::Right), 10, 5, 80, 24);
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         // The selection text round-trips even after rendering.
         assert_eq!(app.selection_text(), "line 2\nline 3\nline 4\nline 5");

@@ -95,6 +95,19 @@ pub struct ContextMenu {
     pub selected: usize,
 }
 
+/// Context-menu popup geometry, shared between rendering and mouse hit-testing
+/// so a click lands exactly on the drawn popup.
+pub const CONTEXT_MENU_W: u16 = 12;
+pub const CONTEXT_MENU_H: u16 = 4; // border + two items
+
+/// Clamp the menu's top-left so the fixed-size popup stays fully on screen.
+pub fn context_menu_pos(x: u16, y: u16, area_w: u16, area_h: u16) -> (u16, u16) {
+    (
+        x.min(area_w.saturating_sub(CONTEXT_MENU_W)),
+        y.min(area_h.saturating_sub(CONTEXT_MENU_H)),
+    )
+}
+
 /// `@` mention picker state: the typed prefix (also echoed into the composer),
 /// the directory it resolves to, the listed entries (synthetic `.` first), and
 /// the highlighted index.
@@ -647,16 +660,46 @@ impl App {
 
     // ── Mouse selection ───────────────────────────────────────────────────
 
-    /// Handle a mouse event at `(x, y)` (terminal cells): left-press anchors a
-    /// selection, left-drag extends it, right-press opens the copy menu.
-    pub(crate) fn handle_mouse(&mut self, kind: MouseEventKind, x: u16, y: u16) {
+    /// Handle a mouse event at `(x, y)` (terminal cells) against a terminal of
+    /// `(area_w, area_h)` cells: left-press anchors a selection, left-drag
+    /// extends it, right-press opens the copy menu. While the copy menu is
+    /// open, a click inside its popup activates that item — "拷贝" copies the
+    /// selection, "取消" closes — and returns `Action::CopySelection` for the
+    /// caller to run (mirrors the keyboard Enter path).
+    pub(crate) fn handle_mouse(
+        &mut self,
+        kind: MouseEventKind,
+        x: u16,
+        y: u16,
+        area_w: u16,
+        area_h: u16,
+    ) -> Option<Action> {
         use MouseEventKind::*;
+
+        // Menu is open: a click (either button) inside the drawn popup activates
+        // the item under the cursor instead of falling through to selection.
+        if let Some(menu) = self.context_menu {
+            let (mx, my) = context_menu_pos(menu.x, menu.y, area_w, area_h);
+            if x >= mx && x < mx + CONTEXT_MENU_W && y >= my && y < my + CONTEXT_MENU_H
+                && matches!(kind, Down(MouseButton::Left) | Down(MouseButton::Right))
+            {
+                let clicked_copy = y.saturating_sub(my + 1) == 0;
+                self.context_menu = None;
+                return if clicked_copy {
+                    Some(Action::CopySelection)
+                } else {
+                    None
+                };
+            }
+        }
+
         match kind {
             Down(MouseButton::Left) => {
                 self.context_menu = None;
                 self.selection = self
                     .line_index_at(x, y)
                     .map(|idx| Selection { anchor: idx, head: idx });
+                None
             }
             Drag(MouseButton::Left) => {
                 if let Some(idx) = self.line_index_at(x, y) {
@@ -664,14 +707,16 @@ impl App {
                         sel.head = idx;
                     }
                 }
+                None
             }
-            Up(MouseButton::Left) => {}
+            Up(MouseButton::Left) => None,
             Down(MouseButton::Right) => {
                 if self.selection.is_some() {
                     self.context_menu = Some(ContextMenu { x, y, selected: 0 });
                 }
+                None
             }
-            _ => {}
+            _ => None,
         }
     }
 
@@ -1975,8 +2020,8 @@ mod tests {
             app.output.push(OutputLine { text: format!("line {i}"), kind: LineKind::Normal });
         }
         app.output_area = Some((0, 0, 100, 10));
-        app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 2);
-        app.handle_mouse(MouseEventKind::Drag(MouseButton::Left), 0, 5);
+        app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 2, 100, 10);
+        app.handle_mouse(MouseEventKind::Drag(MouseButton::Left), 0, 5, 100, 10);
         assert_eq!(app.selection, Some(Selection { anchor: 2, head: 5 }));
         assert_eq!(app.selection_text(), "line 2\nline 3\nline 4\nline 5");
     }
@@ -1988,8 +2033,8 @@ mod tests {
             app.output.push(OutputLine { text: format!("line {i}"), kind: LineKind::Normal });
         }
         app.output_area = Some((0, 0, 100, 10));
-        app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 5);
-        app.handle_mouse(MouseEventKind::Drag(MouseButton::Left), 0, 2);
+        app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 5, 100, 10);
+        app.handle_mouse(MouseEventKind::Drag(MouseButton::Left), 0, 2, 100, 10);
         assert!(app.is_selected(3));
         assert_eq!(app.selection_text(), "line 2\nline 3\nline 4\nline 5");
     }
@@ -1999,9 +2044,9 @@ mod tests {
         let mut app = App::new();
         app.output.push(OutputLine { text: "x".into(), kind: LineKind::Normal });
         app.output_area = Some((0, 0, 10, 5));
-        app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 0);
+        app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 0, 10, 5);
         assert!(app.selection.is_some());
-        app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 50); // below pane
+        app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 50, 10, 5); // below pane
         assert!(app.selection.is_none());
     }
 
@@ -2032,8 +2077,8 @@ mod tests {
         let mut app = App::new();
         app.output.push(OutputLine { text: "x".into(), kind: LineKind::Normal });
         app.output_area = Some((0, 0, 10, 10));
-        app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 0);
-        app.handle_mouse(MouseEventKind::Down(MouseButton::Right), 3, 4);
+        app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 0, 20, 20);
+        app.handle_mouse(MouseEventKind::Down(MouseButton::Right), 3, 4, 20, 20);
         assert_eq!(app.context_menu, Some(ContextMenu { x: 3, y: 4, selected: 0 }));
         assert_eq!(
             app.handle_key(KeyCode::Enter, KeyModifiers::NONE),
@@ -2047,12 +2092,68 @@ mod tests {
         let mut app = App::new();
         app.output.push(OutputLine { text: "x".into(), kind: LineKind::Normal });
         app.output_area = Some((0, 0, 10, 10));
-        app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 0);
-        app.handle_mouse(MouseEventKind::Down(MouseButton::Right), 0, 0);
+        app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 0, 20, 20);
+        app.handle_mouse(MouseEventKind::Down(MouseButton::Right), 0, 0, 20, 20);
         assert_eq!(app.handle_key(KeyCode::Down, KeyModifiers::NONE), None);
         assert_eq!(app.context_menu.as_ref().unwrap().selected, 1);
         // Enter on the "cancel" item closes without copying.
         assert_eq!(app.handle_key(KeyCode::Enter, KeyModifiers::NONE), None);
+        assert!(app.context_menu.is_none());
+    }
+
+    #[test]
+    fn clicking_menu_copy_item_copies_and_closes() {
+        let mut app = App::new();
+        app.output.push(OutputLine { text: "x".into(), kind: LineKind::Normal });
+        app.output_area = Some((0, 0, 10, 10));
+        app.selection = Some(Selection { anchor: 0, head: 0 });
+        // Open the menu at (0,0): 12×4 box, items at rows y+1 ("拷贝") and y+2
+        // ("取消").
+        assert_eq!(
+            app.handle_mouse(MouseEventKind::Down(MouseButton::Right), 0, 0, 20, 20),
+            None
+        );
+        assert!(app.context_menu.is_some());
+        // Left-click the "拷贝" row → copy, menu closes, selection preserved.
+        assert_eq!(
+            app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 1, 1, 20, 20),
+            Some(Action::CopySelection)
+        );
+        assert!(app.context_menu.is_none());
+        assert!(app.selection.is_some());
+    }
+
+    #[test]
+    fn clicking_menu_cancel_item_closes_without_copy() {
+        let mut app = App::new();
+        app.output.push(OutputLine { text: "x".into(), kind: LineKind::Normal });
+        app.output_area = Some((0, 0, 10, 10));
+        app.selection = Some(Selection { anchor: 0, head: 0 });
+        app.handle_mouse(MouseEventKind::Down(MouseButton::Right), 0, 0, 20, 20);
+        // "取消" is the second item, row y+2. It closes the menu but keeps the
+        // selection.
+        assert_eq!(
+            app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 1, 2, 20, 20),
+            None
+        );
+        assert!(app.context_menu.is_none());
+        assert!(app.selection.is_some());
+    }
+
+    #[test]
+    fn clicking_outside_menu_closes_it_and_restarts_selection() {
+        let mut app = App::new();
+        app.output.push(OutputLine { text: "x".into(), kind: LineKind::Normal });
+        app.output_area = Some((0, 0, 10, 10));
+        app.selection = Some(Selection { anchor: 0, head: 0 });
+        app.handle_mouse(MouseEventKind::Down(MouseButton::Right), 0, 0, 20, 20);
+        assert!(app.context_menu.is_some());
+        // A click far outside the popup closes the menu (and starts a new
+        // selection) exactly as before.
+        assert_eq!(
+            app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 15, 15, 20, 20),
+            None
+        );
         assert!(app.context_menu.is_none());
     }
 
