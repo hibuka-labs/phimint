@@ -396,4 +396,25 @@ mod tests {
         assert_eq!(parse_osc11(""), None);
         assert_eq!(parse_osc11("junk"), None);
     }
+
+    #[test]
+    fn to_runs_produces_byte_ranges_skipping_default() {
+        use BannerStyle as S;
+        let row = BannerRow {
+            spans: vec![
+                ("██".to_string(), S::LogoA),
+                (" ".to_string(), S::Default),
+                ("abc".to_string(), S::Brand),
+            ],
+        };
+        let (text, runs) = row.to_runs();
+        assert_eq!(text, "██ abc");
+        assert_eq!(
+            runs,
+            vec![
+                SpanSpec { start: 0, len: 6, style: S::LogoA },
+                SpanSpec { start: 7, len: 3, style: S::Brand },
+            ]
+        );
+    }
 }

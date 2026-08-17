@@ -12,6 +12,7 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
+use crate::banner::{BannerStyle, ColorScheme, SpanSpec};
 use crate::ui::app::{
     AgentStatus, App, CONTEXT_MENU_H, CONTEXT_MENU_W, LineKind, SubAgentStatus, context_menu_pos,
     window_range,
@@ -79,21 +80,23 @@ fn render_output(f: &mut Frame, app: &App, area: Rect) {
 
     let mut lines: Vec<Line> = Vec::with_capacity(window.len());
     for i in window {
-        let mut style = if i < committed {
+        let mut base = if i < committed {
             style_for(app.output[i].kind)
         } else {
             style_for(tail_kind)
         };
-        // Highlight lines inside the active mouse selection.
+        // Highlight lines inside the active mouse selection — the background
+        // overlays every segment below, including banner span colors.
         if i < committed && app.is_selected(i) {
-            style = style.bg(Color::DarkGray);
+            base = base.bg(Color::DarkGray);
         }
-        let text = if i < committed {
-            app.output[i].text.as_str()
+        let (text, spans): (&str, &[SpanSpec]) = if i < committed {
+            let line = &app.output[i];
+            (line.text.as_str(), line.spans.as_deref().unwrap_or(&[]))
         } else {
-            tail_lines[i - committed].as_str()
+            (tail_lines[i - committed].as_str(), &[])
         };
-        lines.push(Line::from(Span::styled(text.to_string(), style)));
+        lines.push(span_line(text, spans, base, app.scheme()));
     }
 
     // No border/title — the transcript flows freely (Claude Code style); the
@@ -370,6 +373,44 @@ fn style_for(kind: LineKind) -> Style {
     }
 }
 
+/// A banner run's style for the given scheme: 24-bit fg + bold for the brand.
+/// `BannerStyle::Default` never reaches here (spans exclude it).
+fn banner_style(style: BannerStyle, scheme: ColorScheme) -> Style {
+    let (r, g, b) = style.rgb(scheme);
+    let mut s = Style::default().fg(Color::Rgb(r, g, b));
+    if style.is_bold() {
+        s = s.add_modifier(Modifier::BOLD);
+    }
+    s
+}
+
+/// Build the styled line for `text`, with styled byte-runs overriding the base
+/// style. Segments outside the runs keep `base`; each run takes `base` patched
+/// with its banner palette color (so a selection background survives).
+fn span_line(text: &str, spans: &[SpanSpec], base: Style, scheme: ColorScheme) -> Line<'static> {
+    if spans.is_empty() {
+        return Line::from(Span::styled(text.to_string(), base));
+    }
+    let mut out = Vec::with_capacity(spans.len() * 2 + 1);
+    let mut cur = 0usize;
+    for SpanSpec { start, len, style } in spans {
+        let start = *start;
+        let end = start + *len;
+        if start > cur {
+            out.push(Span::styled(text[cur..start].to_string(), base));
+        }
+        out.push(Span::styled(
+            text[start..end].to_string(),
+            base.patch(banner_style(*style, scheme)),
+        ));
+        cur = end;
+    }
+    if cur < text.len() {
+        out.push(Span::styled(text[cur..].to_string(), base));
+    }
+    Line::from(out)
+}
+
 /// Serialize a rendered buffer to a plain-text grid (one row per line).
 ///
 /// Box-drawing borders and emoji markers survive as UTF-8; styles (color, bold)
@@ -627,5 +668,34 @@ mod tests {
         let text = snapshot_text(&mut app, 100, 40);
         assert!(text.contains("mention"), "popup title missing:\n{text}");
         assert!(text.contains("@m"), "prefix header missing:\n{text}");
+    }
+
+    #[test]
+    fn banner_spans_render_palette_on_top_of_system_style() {
+        use crate::banner::build;
+        use std::path::Path;
+
+        let backend = TestBackend::new(120, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new();
+        app.push_banner(build(
+            Path::new("/tmp/ws"),
+            Path::new("/tmp/ws/.phiforge/s/1/session.log"),
+            "0.1.0",
+        ));
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let w = 120usize;
+        let cell = |x: usize, y: usize| buf.content()[y * w + x].clone();
+
+        // Wordmark row 0: glyph 0 ('p') is LogoA dark fg; connector (col 8)
+        // is Default → falls back to the System base (DarkGray).
+        assert_eq!(cell(0, 0).style().fg, Some(Color::Rgb(0xff, 0x78, 0x47)));
+        assert_eq!(cell(8, 0).style().fg, Some(Color::DarkGray));
+
+        // Tagline row (index 6): "PhiForge" is bold Brand.
+        let brand = cell(0, 6).style();
+        assert_eq!(brand.fg, Some(Color::Rgb(0xff, 0xb0, 0x66)));
+        assert!(brand.add_modifier.contains(Modifier::BOLD));
     }
 }
