@@ -57,7 +57,8 @@ cargo run -- [OPTIONS]
 
 ### 界面与模式
 
-- **TUI（默认）**：底部固定输入栏，输出在上方滚动，支持鼠标滚轮、括号粘贴、CJK 双宽。`Ctrl+Y` 复制最后一条 AI 回复到剪贴板；退出 `Ctrl+C`（或输入后按 `Esc`/`Ctrl+D`）。
+- **TUI（默认）**：底部固定输入栏，输出在上方滚动，支持鼠标滚轮、括号粘贴、CJK 双宽。`Ctrl+Y` 复制最后一条 AI 回复到剪贴板；复制任意文本＝左键拖选出行范围 → `Ctrl+C`，或右键（弹出「拷贝 / 取消」菜单后**鼠标点击**或方向键+`Enter`）；退出 `Ctrl+C`（或输入后按 `Esc`/`Ctrl+D`）。
+  > macOS 提示：`Cmd+C` 只在终端把该组合键转发给程序时才生效（需把终端自己的「复制」快捷键改为别的组合）。macOS 自带 Terminal.app 不支持转发 `Cmd` 修饰键**，`Cmd+C` 无法进程序，请用 `Ctrl+C` 或右键菜单。iTerm2 可在 Preferences → Keys 将 Copy 重绑到 `⌘⇧C` 后让 `Cmd+C` 生效。
 - **行内聊天（`--inline`）**：不进 alternate screen，`TextDelta` 直写 stdout，适合原生终端回滚 / 管道。
 - **审批三态**：
   | 模式 | 行为 |
