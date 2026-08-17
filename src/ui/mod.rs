@@ -7,6 +7,7 @@
 
 pub mod app;
 pub mod input;
+pub mod mention;
 pub mod render;
 
 use std::io::{self, Write as _};
@@ -95,6 +96,7 @@ pub async fn run_tui(
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = App::new();
+    app.set_workspace_root(workspace.clone());
     app.push_system("phiforge — coding agent on phi-agent.");
     app.push_system(&format!("Workspace: {}", workspace.display()));
     app.push_system(&format!("Logs: {log_path}"));
@@ -185,7 +187,7 @@ pub async fn run_tui(
                     row,
                     ..
                 }) => app.handle_mouse(kind, column, row),
-                Event::Paste(text) => app.composer.insert_str(&text),
+                Event::Paste(text) => app.paste(&text),
                 _ => {}
             }
         }

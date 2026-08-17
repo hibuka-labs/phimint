@@ -8,6 +8,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::ops::Range;
+use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use agent_base::{PlanStepStatus, UserEvent};
@@ -16,6 +17,7 @@ use unicode_width::UnicodeWidthChar;
 
 use crate::approval::ApprovalItem;
 use crate::ui::input::Composer;
+use crate::ui::mention::{self, Entry};
 
 /// Columns the output buffer wraps at. Fixed (rather than terminal-width) so a
 /// resize doesn't reflow history; greedy char-boundary wrap, 1 column per char.
@@ -93,6 +95,20 @@ pub struct ContextMenu {
     pub selected: usize,
 }
 
+/// `@` mention picker state: the typed prefix (also echoed into the composer),
+/// the directory it resolves to, the listed entries (synthetic `.` first), and
+/// the highlighted index.
+#[derive(Debug, Clone)]
+pub struct Mention {
+    /// What the user typed after `@` (e.g. `src/`, `../../demo/codex/`).
+    pub prefix: String,
+    /// Directory the prefix resolves to (what `entries` lists).
+    pub dir: PathBuf,
+    /// Listed entries; `entries[0]` is always the synthetic "use what I typed".
+    pub entries: Vec<Entry>,
+    pub selected: usize,
+}
+
 /// A user action surfaced from key handling, consumed by the TUI loop.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Action {
@@ -142,6 +158,10 @@ pub struct App {
     selection: Option<Selection>,
     /// Right-click copy menu, shown while a selection is active.
     context_menu: Option<ContextMenu>,
+    /// `@` mention picker, open while the user is choosing a path.
+    mention: Option<Mention>,
+    /// The workspace root — in-workspace paths render relative to it.
+    pub workspace_root: PathBuf,
     /// Output pane rect `(x, y, w, h)` in cells, refreshed each draw so mouse
     /// events can be hit-tested against the transcript.
     pub(crate) output_area: Option<(u16, u16, u16, u16)>,
@@ -181,6 +201,8 @@ impl App {
             sub_agents: BTreeMap::new(),
             selection: None,
             context_menu: None,
+            mention: None,
+            workspace_root: PathBuf::new(),
             output_area: None,
             pending_text: String::new(),
             pending_thought: String::new(),
@@ -706,6 +728,167 @@ impl App {
         self.context_menu.as_ref()
     }
 
+    // ── @ mention picker ─────────────────────────────────────────────────
+
+    /// Set the workspace root (once, at TUI start); relative paths are rendered
+    /// relative to this, outside paths as absolute.
+    pub fn set_workspace_root(&mut self, root: PathBuf) {
+        self.workspace_root = root;
+    }
+
+    /// The active mention picker, if open.
+    pub fn mention(&self) -> Option<&Mention> {
+        self.mention.as_ref()
+    }
+
+    /// Open the picker with an empty prefix. The caller has already inserted
+    /// `@` into the composer.
+    fn start_mention(&mut self) {
+        self.mention = Some(Mention {
+            prefix: String::new(),
+            dir: self.workspace_root.clone(),
+            entries: Vec::new(),
+            selected: 0,
+        });
+        self.refresh_mention();
+    }
+
+    /// Re-list entries from the current prefix, prepending the synthetic
+    /// "use what I typed" row (always first; `selected` clamped into range).
+    fn refresh_mention(&mut self) {
+        let Some(m) = self.mention.as_mut() else {
+            return;
+        };
+        let (dir, name) = mention::split_prefix(&self.workspace_root, &m.prefix);
+        let mut entries = mention::list_entries(&dir, &name);
+
+        // Synthetic row: the resolved form of whatever was typed, so Enter with
+        // nothing highlighted inserts the typed path (`../../demo/codex/`).
+        let full = if name.is_empty() { dir.clone() } else { dir.join(&name) };
+        entries.insert(
+            0,
+            Entry {
+                name: mention::rel_or_abs(&self.workspace_root, &full),
+                path: full,
+                is_dir: false,
+                synthetic: true,
+            },
+        );
+
+        m.dir = dir;
+        m.entries = entries;
+        m.selected = m.selected.min(m.entries.len().saturating_sub(1));
+    }
+
+    /// Append a char to the typed prefix, echoing it into the composer so the
+    /// picker reads as an inline filter. Newlines are dropped (paths only).
+    fn mention_push_char(&mut self, c: char) {
+        if c == '\n' {
+            return;
+        }
+        self.composer.insert_char(c);
+        if let Some(m) = self.mention.as_mut() {
+            m.prefix.push(c);
+            m.selected = 0;
+        }
+        self.refresh_mention();
+    }
+
+    /// Remove the last prefix char (and the matching composer char), or cancel
+    /// the picker entirely when the prefix is already empty.
+    fn mention_backspace(&mut self) {
+        let empty = self.mention.as_ref().map_or(true, |m| m.prefix.is_empty());
+        if empty {
+            self.mention = None;
+            self.composer.backspace(); // remove the `@`
+        } else {
+            self.composer.backspace();
+            if let Some(m) = self.mention.as_mut() {
+                m.prefix.pop();
+                m.selected = 0;
+            }
+            self.refresh_mention();
+        }
+    }
+
+    fn move_mention(&mut self, delta: i32) {
+        let Some(m) = self.mention.as_mut() else {
+            return;
+        };
+        let n = m.entries.len() as i32;
+        if n == 0 {
+            return;
+        }
+        m.selected = (m.selected as i32 + delta).clamp(0, n - 1) as usize;
+    }
+
+    /// Replace `@<prefix>` in the composer with the selected path (or the typed
+    /// prefix, when the synthetic row is highlighted).
+    fn finish_mention(&mut self) {
+        let Some(m) = self.mention.take() else {
+            return;
+        };
+        let to_delete = 1 + m.prefix.chars().count();
+        for _ in 0..to_delete {
+            self.composer.backspace();
+        }
+        let text = m
+            .entries
+            .get(m.selected)
+            .map(|e| mention::rel_or_abs(&self.workspace_root, &e.path))
+            .unwrap_or_else(|| mention::rel_or_abs(&self.workspace_root, &m.dir));
+        self.composer.insert_str(&text);
+    }
+
+    /// Key handling while the mention picker is open (swallows everything).
+    fn handle_mention_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Option<Action> {
+        use KeyCode::*;
+        let _ = modifiers;
+        match code {
+            Esc => {
+                let to_delete = 1 + self.mention.as_ref().map_or(0, |m| m.prefix.chars().count());
+                self.mention = None;
+                for _ in 0..to_delete {
+                    self.composer.backspace();
+                }
+                None
+            }
+            Up => {
+                self.move_mention(-1);
+                None
+            }
+            Down => {
+                self.move_mention(1);
+                None
+            }
+            Backspace => {
+                self.mention_backspace();
+                None
+            }
+            Enter => {
+                self.finish_mention();
+                None
+            }
+            Char(c) => {
+                self.mention_push_char(c);
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Paste text into the composer — or into the mention prefix when the picker
+    /// is open (newlines are dropped from a path prefix).
+    pub fn paste(&mut self, text: &str) {
+        if self.mention.is_some() {
+            for c in text.chars() {
+                self.mention_push_char(c);
+            }
+        } else {
+            self.composer.insert_str(text);
+        }
+    }
+
     // ── Key handling ──────────────────────────────────────────────────────
 
     pub fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Option<Action> {
@@ -786,6 +969,12 @@ impl App {
             };
         }
 
+        // While the @ mention picker is open, every key drives the picker — the
+        // composer only receives the final path on Enter/Esc.
+        if self.mention.is_some() {
+            return self.handle_mention_key(code, modifiers);
+        }
+
         match code {
             Char('d') if ctrl => Some(Action::Quit),
             // Ctrl+Y copies the last reply (vim-yank convention); plain 'y'
@@ -861,6 +1050,11 @@ impl App {
             }
             PageDown => {
                 self.scroll_down();
+                None
+            }
+            Char('@') => {
+                self.composer.insert_char('@');
+                self.start_mention();
                 None
             }
             Char(c) => {
@@ -1883,5 +2077,133 @@ mod tests {
             app.handle_key(KeyCode::Char('c'), KeyModifiers::SUPER),
             Some(Action::CopySelection)
         );
+    }
+
+    fn mention_scratch(tag: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "phiforge-app-mention-{tag}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn at_opens_mention_picker_listing_root() {
+        let mut app = App::new();
+        let root = mention_scratch("open");
+        std::fs::write(root.join("a.txt"), "x").unwrap();
+        app.set_workspace_root(root.clone());
+
+        assert_eq!(app.handle_key(KeyCode::Char('@'), KeyModifiers::NONE), None);
+        let m = app.mention().expect("mention open");
+        assert_eq!(m.prefix, "");
+        assert!(m.entries[0].synthetic, "synthetic row is first");
+        assert!(m.entries.iter().any(|e| e.name == "a.txt"));
+        assert_eq!(app.composer.text(), "@");
+    }
+
+    #[test]
+    fn enter_on_empty_prefix_inserts_dot_and_closes() {
+        let mut app = App::new();
+        let root = mention_scratch("enter-empty");
+        app.set_workspace_root(root.clone());
+
+        app.handle_key(KeyCode::Char('@'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.mention().is_none());
+        assert_eq!(app.composer.text(), ".");
+    }
+
+    #[test]
+    fn dotdot_prefix_inserts_absolute_parent_path() {
+        let mut app = App::new();
+        let root = mention_scratch("dotdot-app");
+        app.set_workspace_root(root.clone());
+
+        app.handle_key(KeyCode::Char('@'), KeyModifiers::NONE);
+        for c in "../".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        assert!(app.mention().is_some(), "picker stays open while typing");
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        let text = app.composer.text();
+        assert!(!text.contains('@'), "composer holds the path, got {text:?}");
+        assert!(text.starts_with('/'), "outside path is absolute, got {text:?}");
+    }
+
+    #[test]
+    fn typing_name_then_arrow_selects_file() {
+        let mut app = App::new();
+        let root = mention_scratch("select");
+        std::fs::write(root.join("main.rs"), "x").unwrap();
+        std::fs::write(root.join("other.rs"), "x").unwrap();
+        app.set_workspace_root(root.clone());
+
+        app.handle_key(KeyCode::Char('@'), KeyModifiers::NONE);
+        for c in "main".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        // Arrow down off the synthetic row onto the single real match, accept it.
+        app.handle_key(KeyCode::Down, KeyModifiers::NONE);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.composer.text(), "main.rs");
+    }
+
+    #[test]
+    fn esc_cancels_mention_removing_at_and_prefix() {
+        let mut app = App::new();
+        let root = mention_scratch("esc");
+        app.set_workspace_root(root.clone());
+
+        app.handle_key(KeyCode::Char('@'), KeyModifiers::NONE);
+        for c in "src".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.mention().is_none());
+        assert_eq!(app.composer.text(), "");
+    }
+
+    #[test]
+    fn backspace_with_empty_prefix_cancels_mention() {
+        let mut app = App::new();
+        let root = mention_scratch("bsp");
+        app.set_workspace_root(root.clone());
+
+        app.handle_key(KeyCode::Char('@'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Backspace, KeyModifiers::NONE);
+        assert!(app.mention().is_none());
+        assert_eq!(app.composer.text(), "");
+    }
+
+    #[test]
+    fn mention_inserts_after_existing_text() {
+        let mut app = App::new();
+        let root = mention_scratch("mid");
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        app.set_workspace_root(root.clone());
+
+        app.composer.insert_str("read ");
+        app.handle_key(KeyCode::Char('@'), KeyModifiers::NONE);
+        for c in "sub".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.composer.text(), "read sub");
+    }
+
+    #[test]
+    fn paste_routes_to_mention_prefix_when_open() {
+        let mut app = App::new();
+        let root = mention_scratch("paste");
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        app.set_workspace_root(root.clone());
+
+        app.handle_key(KeyCode::Char('@'), KeyModifiers::NONE);
+        app.paste("sub");
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.composer.text(), "sub");
     }
 }

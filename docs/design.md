@@ -37,7 +37,7 @@
 3. **上下文架构（分水岭）** —— 不把整个仓库塞进 context；给一张「仓库地图」让 LLM 知道结构；agent 主动搜、主动读它需要的（拉取式，非推送式）。**这是好 coder 和差 coder 最大的差别。**
 4. **精准编辑** —— SEARCH/REPLACE 块、精确匹配、原子写，编辑必须无歧义、可验证。
 5. **验证闭环** —— 改完跑测试/编译，失败喂回，迭代到绿。
-6. **安全** —— 危险操作审批、工作区沙箱、diff 呈现。
+6. **安全** —— 危险操作审批、diff 呈现。（无工作区沙箱——对齐 Claude Code，安全靠审批层。）
 7. **流式 TUI** —— 逐字流式、工具调用可视化、diff 高亮、内联审批。
 8. **上下文预算** —— 长对话的截断 / 摘要 / 压缩。
 
@@ -359,7 +359,7 @@ Idle ──用户输入──▶ Running ──RunFinished──▶ Idle
 
 ### 10.5 其他安全底线
 
-- **工作区沙箱**：文件操作受 `workspace_root` 约束 + 路径穿越拒绝（`phi-kernel-tools` 已内置）。
+- **无工作区沙箱**：文件操作允许工作区外路径（绝对路径 + `..`），安全靠审批层（`auto`/`ask`/`deny`）而非路径边界，对齐 Claude Code。`resolve_path`（phi-kernel-tools）+ `validate_workspace_path`（phiforge）均已放宽，只拒绝空路径。
 - **原子写**：`edit_file` 写临时文件再 rename，改坏可回滚。
 - **diff 逐条审**：改动以 diff 呈现，用户逐条确认。
 
@@ -428,8 +428,10 @@ Idle ──用户输入──▶ Running ──RunFinished──▶ Idle
 ### Phase 9 — Memory（PHIFORGE.md + CLAUDE.md 兼容）📋
 - 启动常驻注入：读自己的 `PHIFORGE.md`（项目根 / 全局 `~/.config/phiforge/`），无则兜底读 `CLAUDE.md`，让已写 CLAUDE.md 的项目开箱即用。命名待定（`PHIFORGE.md` vs `.phi/PHIFORGE.md`）。
 
-### Phase 10 — `@` 上下文提及 📋
-- 输入 `@path` 把文件内容 / 目录结构注入本轮上下文（文件/目录自动补全）。语义与 `/`（动作）不同，是「往上下文塞内容」，UX 重、独立 phase。
+### Phase 10 — `@` 文件提及 / 路径选择器 📋
+- 输入 `@` 弹出路径选择器（TUI）：输路径（`..` 回退、`/` 下钻、绝对路径）+ 实时列目录，选中后把路径当普通文字插进输入，agent 自己 `read_file`/`repo_map` 去读。不注入内容、不做补全。
+- 配套「读写都放开」：`read_file`/`write_file`/`edit_file`/`repo_map`/`search_content`/`list_files` 全部允许工作区外（无沙箱、不加 flag，安全靠审批层）。
+- 详见 `docs/phase10-plan.md`。
 
 ---
 

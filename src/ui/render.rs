@@ -54,6 +54,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if app.context_menu().is_some() {
         render_context_menu(f, app);
     }
+    if app.mention().is_some() {
+        render_mention_popup(f, app, chunks[1]);
+    }
 }
 
 fn render_output(f: &mut Frame, app: &App, area: Rect) {
@@ -254,6 +257,71 @@ fn render_context_menu(f: &mut Frame, app: &App) {
     f.render_widget(Paragraph::new(lines).block(block), rect);
 }
 
+/// The `@` mention popup (Phase 10): anchored above the composer, listing the
+/// current directory's entries with the highlighted row reverse-video'd. A
+/// scrolling window keeps the selection visible in large directories.
+fn render_mention_popup(f: &mut Frame, app: &App, composer: Rect) {
+    let Some(m) = app.mention() else {
+        return;
+    };
+
+    const WIDTH: u16 = 64;
+    const LIST_HEIGHT: usize = 9;
+
+    // Scroll the entry window so the highlighted row stays on screen.
+    let total = m.entries.len();
+    let start = if total <= LIST_HEIGHT {
+        0
+    } else if m.selected < LIST_HEIGHT / 2 {
+        0
+    } else {
+        (m.selected - LIST_HEIGHT / 2).min(total - LIST_HEIGHT)
+    };
+    let end = (start + LIST_HEIGHT).min(total);
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        format!("@{}", m.prefix),
+        Style::default().fg(Color::Cyan),
+    )));
+    lines.push(Line::from(Span::styled(
+        "──────────────────────────",
+        Style::default().fg(Color::DarkGray),
+    )));
+    for (i, e) in m.entries[start..end].iter().enumerate() {
+        let idx = start + i;
+        let marker = if e.synthetic {
+            "» "
+        } else if e.is_dir {
+            "📁 "
+        } else {
+            "📄 "
+        };
+        let style = if idx == m.selected {
+            Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        lines.push(Line::from(Span::styled(
+            format!("{marker}{}", e.name),
+            style,
+        )));
+    }
+
+    let width = WIDTH.min(f.area().width.saturating_sub(2));
+    let height = (lines.len() as u16 + 2).min(f.area().height.saturating_sub(2));
+    let x = composer.x.min(f.area().width.saturating_sub(width));
+    let y = composer.y.saturating_sub(height).max(1);
+    let rect = Rect::new(x, y, width, height);
+    f.render_widget(Clear, rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .title("mention");
+    f.render_widget(Paragraph::new(lines).block(block), rect);
+}
+
 /// A centered rectangle occupying `percent_x`/`percent_y` of `area`.
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
     let vertical = Layout::default()
@@ -342,7 +410,7 @@ pub fn snapshot_text(app: &mut App, width: u16, height: u16) -> String {
 mod tests {
     use super::*;
     use crate::ui::app::{AgentStatus, App, LineKind, OutputLine, Phase, SubAgentStatus, TuiEvent};
-    use crossterm::event::{MouseButton, MouseEventKind};
+    use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
     use phi_agent::{RuntimeEvent, SessionId};
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
@@ -535,5 +603,27 @@ mod tests {
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         // The selection text round-trips even after rendering.
         assert_eq!(app.selection_text(), "line 2\nline 3\nline 4\nline 5");
+    }
+
+    #[test]
+    fn draw_and_snapshot_show_mention_popup() {
+        let mut app = App::new();
+        let root = std::env::temp_dir().join(format!(
+            "phiforge-render-mention-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("main.rs"), "x").unwrap();
+        app.set_workspace_root(root);
+
+        // Open the picker and type a partial prefix.
+        app.handle_key(KeyCode::Char('@'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('m'), KeyModifiers::NONE);
+
+        // Offscreen draw must not panic, and the snapshot shows the popup.
+        let text = snapshot_text(&mut app, 100, 40);
+        assert!(text.contains("mention"), "popup title missing:\n{text}");
+        assert!(text.contains("@m"), "prefix header missing:\n{text}");
     }
 }
