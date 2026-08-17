@@ -412,7 +412,7 @@ Idle ──用户输入──▶ Running ──RunFinished──▶ Idle
 - **顺序**：6a 先（强需求 + 便宜 + 不依赖 LSP），6b 后（加速器）。
 
 ### Phase 7 — Skills 生态接入（复用 Claude Code skills）📋
-- **7a 目录对齐 + 扫描配置口**（必做先做）：扫 `.claude/skills` + `~/.claude/skills`（+ 现有 `.phi/skills`），复用 Claude Code skill 生态。框架暴露 `with_skill_dirs()` 配置口（框架中立、consumer 决定）。
+- **7a 目录对齐**（必做先做，已完成）：框架默认扫 `.claude/skills` + `~/.claude/skills`，复用 Claude Code skill 生态，不建 `.phi/`。
 - **7b `/skill` 斜杠入口**（必做）：TUI/inline Composer 解析 `/skill-name args`，查 registry（`user-invocable`）+ `resolve_body` 参数化，注入上下文。
 - **7c 执行语义**（可选，重，框架层）：`allowed-tools`/`context: fork`/`paths` 从「死字段」变真语义（工具门控 / 子 agent 隔离 / 路径触发）。
 - **7d 自带 skills**（可选，内容）：`commit`/`code-review`/`explain` 三个开箱 skill。
@@ -425,8 +425,8 @@ Idle ──用户输入──▶ Running ──RunFinished──▶ Idle
 - **明确不做**：自定义命令（并入 Phase 7 skills）、`@` 提及（Phase 10）、Memory（Phase 9）。
 - 详见 `docs/phase8-plan.md`。
 
-### Phase 9 — Memory（PHIFORGE.md + CLAUDE.md 兼容）📋
-- 启动常驻注入：读自己的 `PHIFORGE.md`（项目根 / 全局 `~/.config/phiforge/`），无则兜底读 `CLAUDE.md`，让已写 CLAUDE.md 的项目开箱即用。命名待定（`PHIFORGE.md` vs `.phi/PHIFORGE.md`）。
+### Phase 9 — Memory（CLAUDE.md 兼容）📋
+- 启动常驻注入：读 `CLAUDE.md`（项目根 / 全局 `~/.claude/CLAUDE.md`），与 Claude Code 共享同一份指令文件，零迁移成本。
 
 ### Phase 10 — `@` 文件提及 / 路径选择器 📋
 - 输入 `@` 弹出路径选择器（TUI）：输路径（`..` 回退、`/` 下钻、绝对路径）+ 实时列目录，选中后把路径当普通文字插进输入，agent 自己 `read_file`/`repo_map` 去读。不注入内容、不做补全。
