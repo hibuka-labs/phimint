@@ -1309,14 +1309,27 @@ impl App {
         }
     }
 
-    pub(crate) fn scroll_up(&mut self) {
+    /// Scroll up by `SCROLL_STEP` lines. Returns `true` if the viewport moved.
+    pub(crate) fn scroll_up(&mut self) -> bool {
         self.follow_bottom = false;
+        let old = self.scroll_offset;
         self.scroll_offset += SCROLL_STEP;
+        // Clamp to the maximum useful offset so scrolling past the top of
+        // content is a no-op instead of accumulating thousands of phantom lines.
+        if let Some((_x, _y, _w, h)) = self.output_area {
+            let total = self.output.len();
+            let max_offset = total.saturating_sub(h as usize);
+            if self.scroll_offset > max_offset {
+                self.scroll_offset = max_offset;
+            }
+        }
+        self.scroll_offset != old
     }
 
-    pub(crate) fn scroll_down(&mut self) {
+    /// Scroll down by `SCROLL_STEP` lines. Returns `true` if the viewport moved.
+    pub(crate) fn scroll_down(&mut self) -> bool {
         if self.follow_bottom {
-            return;
+            return false;
         }
         if self.scroll_offset <= SCROLL_STEP {
             self.scroll_offset = 0;
@@ -1324,6 +1337,7 @@ impl App {
         } else {
             self.scroll_offset -= SCROLL_STEP;
         }
+        true
     }
 
     /// The status-bar text for the current state (§9.6).

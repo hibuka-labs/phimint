@@ -67,6 +67,7 @@ pub async fn run_tui(
     let mut approval_rx = approval_rx;
     let log_path = session_ctx.log_path().display().to_string();
     let frames_path = session_ctx.session_dir.join("frames.txt");
+    let perf_path = session_ctx.session_dir.join("perf.log");
 
     // Two channels: events flow agent → TUI, commands flow TUI → agent. Both
     // unbounded — the TUI drains eagerly and the agent must never be throttled
@@ -133,8 +134,14 @@ pub async fn run_tui(
     let mut dirty = true; // capture the initial screen
     let mut last_capture = Instant::now() - CAPTURE_INTERVAL;
 
+    // Perf log: per-frame timing for diagnosing scroll jank.
+    let mut perf_log = std::io::BufWriter::new(std::fs::File::create(&perf_path)?);
+    let _ = writeln!(perf_log, "frame_id,draw_ms,capture_ms,loop_ms,dirty,scroll_offset,follow_bottom,output_lines,crossterm_events,slept,event_types");
+
     let mut quit = false;
     while !quit {
+        let loop_start = Instant::now();
+
         // Drain any events queued since the last frame into state.
         while let Ok(ev) = event_rx.try_recv() {
             app.handle_event(ev);
@@ -151,12 +158,25 @@ pub async fn run_tui(
         }
 
         // Poll input with a short timeout so the frame rate stays bounded even
-        // while a long turn streams events.
-        if crossterm::event::poll(Duration::from_millis(16))? {
+        // while a long turn streams events. 2 ms keeps scroll responsive (~500 Hz
+        // poll rate, gated by draw cost); the old 16 ms added perceptible jank
+        // on mouse-wheel scrolling because each event blocked for a full frame.
+        //
+        // Drain ALL pending crossterm events in one go — `read()` returns one
+        // event at a time, so a fast scroll-wheel burst leaves the rest queued.
+        // Without this loop, each leftover event waits an extra 2 ms poll cycle,
+        // creating visible stutter on track-pad / inertial scrolling.
+        let mut crossterm_count: u32 = 0;
+        let mut has_scroll = false;
+        let mut has_key = false;
+        let mut has_mouse = false;
+        while crossterm::event::poll(Duration::ZERO)? {
             let event = crossterm::event::read()?;
+            crossterm_count += 1;
             dirty = true;
             match event {
                 Event::Key(key) if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) => {
+                    has_key = true;
                     if let Some(action) = app.handle_key(key.code, key.modifiers) {
                         match action {
                             Action::Submit(text) => {
@@ -192,17 +212,18 @@ pub async fn run_tui(
                 Event::Mouse(MouseEvent {
                     kind: MouseEventKind::ScrollUp,
                     ..
-                }) => app.scroll_up(),
+                }) => { has_scroll = true; if !app.scroll_up() { dirty = false; } }
                 Event::Mouse(MouseEvent {
                     kind: MouseEventKind::ScrollDown,
                     ..
-                }) => app.scroll_down(),
+                }) => { has_scroll = true; if !app.scroll_down() { dirty = false; } }
                 Event::Mouse(MouseEvent {
                     kind,
                     column,
                     row,
                     ..
                 }) => {
+                    has_mouse = true;
                     // The copy-menu hit-test needs the terminal size to locate
                     // the popup exactly where it was drawn.
                     let size = terminal.size()?;
@@ -218,18 +239,38 @@ pub async fn run_tui(
                 _ => {}
             }
         }
+        // Build a compact event-type tag for the log (e.g. "S" / "K" / "SM" / "SK").
+        let mut event_types = String::new();
+        if has_scroll { event_types.push('S'); }
+        if has_key { event_types.push('K'); }
+        if has_mouse { event_types.push('M'); }
 
-        terminal.draw(|f| render::draw(f, &mut app))?;
+        // If no events arrived, sleep briefly to avoid busy-spinning.
+        let slept = !dirty;
+        if slept {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+
+        // Only redraw when state actually changed (dirty flag). With a 2 ms
+        // poll timeout the idle loop would otherwise burn ~500 useless draws/s.
+        let mut draw_elapsed = Duration::ZERO;
+        if dirty {
+            let draw_start = Instant::now();
+            terminal.draw(|f| render::draw(f, &mut app))?;
+            draw_elapsed = draw_start.elapsed();
+        }
 
         // Record the frame if it changed since the last one (dedup keeps the
         // flipbook small — steady states and per-token deltas collapse away).
         // Gated on `dirty` + `CAPTURE_INTERVAL` so the offscreen render only
         // runs after a real change, at most ~10×/s.
-        if frame_id < MAX_CAPTURE_FRAMES && dirty && last_capture.elapsed() >= CAPTURE_INTERVAL {
-            dirty = false;
+        let mut capture_elapsed = Duration::ZERO;
+        if dirty && frame_id < MAX_CAPTURE_FRAMES && last_capture.elapsed() >= CAPTURE_INTERVAL {
             last_capture = Instant::now();
             let size = terminal.size()?;
+            let cap_start = Instant::now();
             let snap = render::snapshot_text(&mut app, size.width, size.height);
+            capture_elapsed = cap_start.elapsed();
             if snap != last_snapshot {
                 last_snapshot = snap.clone();
                 frame_id += 1;
@@ -237,6 +278,27 @@ pub async fn run_tui(
                 let _ = writeln!(frames, "{snap}");
             }
         }
+        let loop_elapsed = loop_start.elapsed();
+        // Log every frame to perf.log (CSV) for post-hoc analysis.
+        // Note: dirty is logged BEFORE reset so the column reflects whether
+        // a draw/capture actually happened this iteration.
+        let _ = writeln!(
+            perf_log,
+            "{},{},{},{},{},{},{},{},{},{},{}",
+            frame_id,
+            draw_elapsed.as_millis(),
+            capture_elapsed.as_millis(),
+            loop_elapsed.as_millis(),
+            dirty,
+            app.scroll_offset,
+            app.follow_bottom,
+            app.output.len(),
+            crossterm_count,
+            slept,
+            event_types,
+        );
+        // Reset dirty after draw + optional capture so idle loops skip both.
+        dirty = false;
     }
 
     // Ensure the agent task is told to stop and has a chance to finish.
@@ -244,6 +306,7 @@ pub async fn run_tui(
     let _ = agent_task.await;
 
     let _ = frames.flush();
+    let _ = perf_log.flush();
     Ok(())
 }
 
