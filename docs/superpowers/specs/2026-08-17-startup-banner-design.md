@@ -1,4 +1,4 @@
-# phiforge 启动 Banner 设计
+# phimint 启动 Banner 设计
 
 日期：2026-08-17
 状态：已与用户逐屏确认（布局 / 配色 / 内容构成 / 品牌大小写）
@@ -8,10 +8,10 @@
 当前启动时打印 4 行纯文本（`src/ui/mod.rs:100-103` 与 `src/inline.rs:114-117` 各一份）：
 
 ```
-phiforge — coding agent on phi-agent.
-Workspace: /Users/kangzengchen/source/buka/buka-works/phiforge
-Logs: /Users/kangzengchen/.phiforge/sessions/<id>/session.log
-Session: /Users/kangzengchen/.phiforge/sessions/<id>
+phimint — coding agent on phi-agent.
+Workspace: /Users/kangzengchen/source/buka/buka-works/phimint
+Logs: /Users/kangzengchen/.phimint/sessions/<id>/session.log
+Session: /Users/kangzengchen/.phimint/sessions/<id>
 ```
 
 全部使用 `LineKind::System` → `Color::DarkGray`（`src/ui/render.rs:366`），在黑色背景终端上接近隐形；形态随意、无品牌感。这是工具每次启动的"门面"，需要重新设计。
@@ -28,20 +28,20 @@ Session: /Users/kangzengchen/.phiforge/sessions/<id>
 
 ### 布局（方案 B：ASCII 大字）
 
-- **图案行**：`ANSI Shadow` 字形拼出的 `phiforge`，6 行、约 70 列。块状字形下 7/8 字母大小写轮廓相同，故统一全大写轮廓——它是"图案（logo）"，不是被朗读的句子。
+- **图案行**：`ANSI Shadow` 字形拼出的 `phimint`，6 行、约 70 列。块状字形下 7/8 字母大小写轮廓相同，故统一全大写轮廓——它是"图案（logo）"，不是被朗读的句子。
 - **tagline 行**：真实的品牌拼写放这里（文字行才有大小写语义）：
 
   ```
-  PhiForge · product-first coding agent on phi-agent · 先验再交 · v0.1.0
+  Phimint · product-first coding agent on phi-agent · 先验再交 · v0.1.0
   ```
 
-  - 品牌名官方拼写 **`PhiForge`**（用户确认；仓库路径/标识符维持现状小写）。
+  - 品牌名官方拼写 **`Phimint`**（用户确认；仓库路径/标识符维持现状小写）。
   - `v0.1.0` 取值 `env!("CARGO_PKG_VERSION")`，与 `--version` 永远一致。
-- **信息行（V2 精简）**：仅两行，去掉 `Session`（它与 `Logs` 指向同一 `~/.phiforge/sessions/<id>` 目录，冗余）：
+- **信息行（V2 精简）**：仅两行，去掉 `Session`（它与 `Logs` 指向同一 `~/.phimint/sessions/<id>` 目录，冗余）：
 
   ```
-  Workspace  ~/source/buka/buka-works/phiforge
-  Logs       ~/.phiforge/sessions/<id>/session.log
+  Workspace  ~/source/buka/buka-works/phimint
+  Logs       ~/.phimint/sessions/<id>/session.log
   ```
 
   - label 列定宽对齐（`Workspace` 9 字符 + 2 空格）。
@@ -118,7 +118,7 @@ pub fn build(workspace: &Path, session_dir: &Path, log_path: &Path, scheme: Colo
 1. `shorten_home`：home 前缀替换、非 home 路径原样、路径恰等于 home、尾部斜杠边界。
 2. `resolve_scheme`：`light`/`dark` 覆盖；auto + `COLORFGBG=*;7` → Light；auto + OSC 回复亮 → Light；auto + 超时/None → Dark。
 3. `ANSI_LOGO`：8 字母片段拼接后 6 行等宽；字符集仅含框线字符（`█╔══╝╗║══╚║╔║` 等）。
-4. `build()`：行数 = 9；tagline 含 `PhiForge` 与 `v{env!("CARGO_PKG_VERSION")}`；路径已 `~` 缩短；纯文本 golden 对比（`concat` 后与手写期望一致）。
+4. `build()`：行数 = 9；tagline 含 `Phimint` 与 `v{env!("CARGO_PKG_VERSION")}`；路径已 `~` 缩短；纯文本 golden 对比（`concat` 后与手写期望一致）。
 
 集成冒烟（手动）：`cargo test` 全绿；`cargo run --inline` 与默认 TUI 各启动一次，肉眼核对颜色与对齐；`--color-scheme light` 与 `--banner off` 生效。
 
@@ -127,8 +127,8 @@ pub fn build(workspace: &Path, session_dir: &Path, log_path: &Path, scheme: Colo
 - 不引入 figlet 库；字形静态嵌入（构建期确定、零依赖）。
 - 不做终端底色双向协商以外的探测协议；OSC 11 单向查询即可。
 - 不修改 `Session` 之外的字段集合（已确认精简为 Workspace/Logs 两行）。
-- 不改动仓库内既有的小写 `phiforge` 标识符与目录名；品牌拼写 `PhiForge` 仅用于 banner tagline 文案。
+- 不改动仓库内既有的小写 `phimint` 标识符与目录名；品牌拼写 `Phimint` 仅用于 banner tagline 文案。
 
 ## 开放问题
 
-无（品牌拼写已确认为 `PhiForge`，可后续在 README 等文档处统一，但不属于本次范围）。
+无（品牌拼写已确认为 `Phimint`，可后续在 README 等文档处统一，但不属于本次范围）。

@@ -9,7 +9,7 @@
 //!
 //! 只依赖框架已有的中性钩子 `Middleware::on_post_llm`（`skip_push` /
 //! `follow_up_message`）与 `on_user_message`（每轮重置），不向框架塞任何
-//! 「必须验」策略——那是 phiforge 的强需求，其他业务不需要（design §8.3）。
+//! 「必须验」策略——那是 phimint 的强需求，其他业务不需要（design §8.3）。
 
 use std::sync::{Arc, Mutex};
 

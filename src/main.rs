@@ -1,4 +1,4 @@
-//! phiforge — an AI coding agent built on phi-agent.
+//! phimint — an AI coding agent built on phi-agent.
 //!
 //! The default UI is a ratatui TUI with a fixed input bar at the bottom (the
 //! cursor stays in the bar while output scrolls above it). The inline chat is
@@ -24,7 +24,7 @@ use clap::Parser;
 use phi_agent::{OpenAiClient, SessionContext, resolve_llm_config, resolve_session};
 
 #[derive(Parser)]
-#[command(name = "phiforge", version, about = "AI coding agent built on phi-agent")]
+#[command(name = "phimint", version, about = "AI coding agent built on phi-agent")]
 struct Cli {
     /// Workspace directory to operate in (default: current directory)
     #[arg(short, long, default_value = ".")]
@@ -100,7 +100,7 @@ async fn main() -> Result<()> {
         (handler, policy, None)
     };
 
-    // Session + logging. Sessions live under `~/.phiforge/sessions/<id>/`; the
+    // Session + logging. Sessions live under `~/.phimint/sessions/<id>/`; the
     // human-readable tracing log is `session.log`, and each turn's structured
     // event stream (tool calls, text deltas, …) is `turn_NNN.jsonl`.
     let base_dir = sessions_base_dir();
@@ -136,10 +136,10 @@ async fn main() -> Result<()> {
     }
 }
 
-/// Base directory for all phiforge session data (~/.phiforge).
+/// Base directory for all phimint session data (~/.phimint).
 fn sessions_base_dir() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".phiforge")
+    PathBuf::from(home).join(".phimint")
 }
 
 /// Initialize tracing to write to the session's `session.log` file (no console).
@@ -161,7 +161,7 @@ async fn init_logging(session_ctx: &SessionContext, log_level: &str) -> Result<(
         _ => LogLevel::Info,
     };
 
-    let layer = LogCoreLayer::file(session_log_path.to_str().unwrap_or("phiforge.log"), level).await?;
+    let layer = LogCoreLayer::file(session_log_path.to_str().unwrap_or("phimint.log"), level).await?;
 
     tracing_subscriber::registry()
         .with(

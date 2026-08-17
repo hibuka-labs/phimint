@@ -1,4 +1,4 @@
-//! Startup brand banner: a figlet "phiforge" wordmark + tagline + workspace/log
+//! Startup brand banner: a figlet "phimint" wordmark + tagline + workspace/log
 //! metadata. Single source of truth for both the TUI (ratatui) and inline
 //! (`--inline`) renderers; row spans keep the text pure so copy/selection and
 //! the frame capture never see styling.
@@ -25,7 +25,7 @@ pub enum BannerStyle {
     LogoA,
     /// Second tone of the wordmark gradient.
     LogoB,
-    /// The "PhiForge" brand name on the tagline (bold).
+    /// The "Phimint" brand name on the tagline (bold).
     Brand,
     /// Tagline text after the brand name.
     Tagline,
@@ -115,26 +115,24 @@ impl BannerRow {
     }
 }
 
-/// `ANSI Shadow` figlet glyphs for the letters of "phiforge". Each entry is
+/// `ANSI Shadow` figlet glyphs for the letters of "phimint". Each entry is
 /// `[row; 6]`, row 0 at the top, and every row of one glyph has the same width
 /// (asserted by test). `GLYPHS[i][row]` is the `i`th letter's `row`-th row.
-const GLYPHS: [[&str; 6]; 8] = [
+const GLYPHS: [[&str; 6]; 7] = [
     // P
     ["██████╗ ", "██╔══██╗", "██████╔╝", "██╔═══╝ ", "██║     ", "╚═╝     "],
     // H
     ["██╗  ██╗", "██║  ██║", "███████║", "██╔══██║", "██║  ██║", "╚═╝  ╚═╝"],
     // I
     ["██╗", "██║", "██║", "██║", "██║", "╚═╝"],
-    // F
-    ["███████╗", "██╔════╝", "█████╗  ", "██╔══╝  ", "██║     ", "╚═╝     "],
-    // O
-    [" ██████╗ ", "██╔═══██╗", "██║   ██║", "██║   ██║", "╚██████╔╝", " ╚═════╝ "],
-    // R
-    ["██████╗ ", "██╔══██╗", "██████╔╝", "██╔══██╗", "██║  ██║", "╚═╝  ╚═╝"],
-    // G
-    [" ██████╗ ", "██╔════╝ ", "██║  ███╗", "██║   ██║", "╚██████╔╝", " ╚═════╝ "],
-    // E
-    ["███████╗", "██╔════╝", "█████╗  ", "██╔══╝  ", "███████╗", "╚══════╝"],
+    // M
+    ["███╗   ███╗", "████╗ ████║", "██╔████╔██║", "██║╚██╔╝██║", "██║ ╚═╝ ██║", "╚═╝     ╚═╝"],
+    // I
+    ["██╗", "██║", "██║", "██║", "██║", "╚═╝"],
+    // N
+    ["███╗   ██╗", "████╗  ██║", "██╔██╗ ██║", "██║╚██╗██║", "██║ ╚████║", "╚═╝  ╚═══╝"],
+    // T
+    ["████████╗", "╚══██╔══╝", "   ██║   ", "   ██║   ", "   ██║   ", "   ╚═╝   "],
 ];
 
 /// The six wordmark rows: letters joined by single `Default` connector spaces,
@@ -183,7 +181,7 @@ pub fn shorten_home(path: &Path) -> String {
 fn tagline_row(version: &str) -> BannerRow {
     BannerRow {
         spans: vec![
-            ("PhiForge".to_string(), BannerStyle::Brand),
+            ("Phimint".to_string(), BannerStyle::Brand),
             (format!(" v{version} · Forged with intent. Shipped with care. · Built on phi-agent"), BannerStyle::Tagline),
         ],
     }
@@ -401,16 +399,16 @@ mod tests {
 
     #[test]
     fn build_emits_nine_rows_with_brand_and_version() {
-        let rows = build(Path::new("/Users/eve/w"), Path::new("/Users/eve/.phiforge/s/1/session.log"), "0.1.0");
+        let rows = build(Path::new("/Users/eve/w"), Path::new("/Users/eve/.phimint/s/1/session.log"), "0.1.0");
         assert_eq!(rows.len(), 9, "6 art + tagline + 2 info");
         let tagline = rows[6].text();
-        assert!(tagline.contains("PhiForge"), "missing brand: {tagline}");
+        assert!(tagline.contains("Phimint"), "missing brand: {tagline}");
         assert!(tagline.contains("Forged with intent"), "missing slogan: {tagline}");
         assert!(tagline.contains("v0.1.0"), "missing version: {tagline}");
         let ws = rows[7].text();
         let logs = rows[8].text();
         let want_ws = shorten_home(Path::new("/Users/eve/w"));
-        let want_logs = shorten_home(Path::new("/Users/eve/.phiforge/s/1/session.log"));
+        let want_logs = shorten_home(Path::new("/Users/eve/.phimint/s/1/session.log"));
         assert!(ws.starts_with("Workspace") && ws.ends_with(&want_ws), "bad workspace row: {ws}");
         assert!(logs.starts_with("Logs") && logs.ends_with(&want_logs), "bad logs row: {logs}");
         assert!(rows[7].spans.iter().any(|(t, s)| *s == BannerStyle::Label && t.len() == 11));
@@ -421,7 +419,7 @@ mod tests {
         let row = BannerRow {
             spans: vec![
                 (" ".to_string(), BannerStyle::Default),
-                ("PhiForge".to_string(), BannerStyle::Brand),
+                ("Phimint".to_string(), BannerStyle::Brand),
             ],
         };
         let line = render_ansi(&[row], ColorScheme::Dark)[0].clone();

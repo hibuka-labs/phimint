@@ -138,7 +138,7 @@ impl Tool for MergeTool {
         ToolMetadata {
             name: self.name().to_string(),
             description: "Merge sub-agent work and verify the workspace.".to_string(),
-            origin: "phiforge".to_string(),
+            origin: "phimint".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             requirements: vec![],
         }

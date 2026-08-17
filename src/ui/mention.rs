@@ -141,11 +141,11 @@ fn canonicalize_loose(path: &Path) -> PathBuf {
 mod tests {
     use super::*;
 
-    /// A unique throwaway directory under the system temp dir (phiforge has no
+    /// A unique throwaway directory under the system temp dir (phimint has no
     /// `tempfile` dev-dependency). Tagged per-test and wiped on entry so a
     /// previous interrupted run can't leak stale state.
     fn scratch(tag: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!("phiforge-mention-{tag}-{}", std::process::id()));
+        let path = std::env::temp_dir().join(format!("phimint-mention-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).unwrap();
         path

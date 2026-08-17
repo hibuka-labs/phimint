@@ -1,11 +1,11 @@
-# phiforge 设计文档
+# phimint 设计文档
 
 > 状态：Phase 1–5 完成，Phase 6 设计中（产品定位已反转，§1）
 > 关联框架：`phi-agent`（本仓库的运行时框架）
 
 ## 1. 定位
 
-**phiforge 是一个基于 `phi-agent` 的 AI 编码 agent —— 产品优先，验证框架是副产品。**
+**phimint 是一个基于 `phi-agent` 的 AI 编码 agent —— 产品优先，验证框架是副产品。**
 
 - 首要目标：**做一款好用的编码产品**。招牌是「**永远不把编不过的代码交给你**」——改完先验、验过才交。
 - 次要目标：**验证 `phi-agent`**。做好产品与压测框架是一件事的两面：只有真实用户会因框架的弱点而痛，框架的 bug 才会暴露；产品够好，本身就是框架的证明。
@@ -30,7 +30,7 @@
 
 ## 3. 参照标准（好 AI coder 的通用架构）
 
-研究 Claude Code / Aider / Cursor / Cline 这些成熟工具，抽出 8 条共性模式，phiforge 按这套标准设计：
+研究 Claude Code / Aider / Cursor / Cline 这些成熟工具，抽出 8 条共性模式，phimint 按这套标准设计：
 
 1. **Agent 循环** —— LLM 想 → 调工具 → 看结果 → 再想，循环到完成。所有好 coder 都是这个 ReAct 循环。
 2. **最小工具面** —— 读 / 写 / 搜 / 列 / 跑，不多不少。工具的「形状」（参数、返回格式）决定 agent 能不能用好。
@@ -41,7 +41,7 @@
 7. **流式 TUI** —— 逐字流式、工具调用可视化、diff 高亮、内联审批。
 8. **上下文预算** —— 长对话的截断 / 摘要 / 压缩。
 
-**phiforge 已覆盖 1/2/3/4/5/6/8，当前最大缺口是 #7（流式 TUI）**，对应 §9 的 TUI 设计（Phase 5）。
+**phimint 已覆盖 1/2/3/4/5/6/8，当前最大缺口是 #7（流式 TUI）**，对应 §9 的 TUI 设计（Phase 5）。
 
 ---
 
@@ -72,13 +72,13 @@ agent-works (MCP / Skills)
     ↑
 phi-agent (框架 + CLI)          ← 复用，不修改
     ↑
-phiforge (本工具)               ← consumer，注入应用工具
+phimint (本工具)               ← consumer，注入应用工具
 ```
 
 ### 5.2 仓库结构（规划）
 
 ```
-phiforge/
+phimint/
 ├── src/
 │   ├── main.rs            # CLI 入口：启动 TUI REPL
 │   ├── repomap.rs         # 仓库地图：tree-sitter 符号/结构索引
@@ -200,7 +200,7 @@ trait LanguageAdapter {
 
 「必须验」不是 prompt 劝告，而是框架层卡死：本 turn 动过文件（`write_file`/`edit_file`）又没跑过 `verify`，「报 done」就被拦下、强制先验。
 
-**机制（框架已有，零改框架）**：`agent-base` 的 `Middleware` trait 有 `on_post_llm` 钩子，`PostLlmCtx` 的 `skip_push`（压掉本次结束）+ `follow_up_message`（注入下一条）就是「拦截结束 + 逼再走一轮」的通用能力，已有 `ToolEnforcementMiddleware` 先例（逼 agent 必须调工具，带 `max_nudges=3` 防死循环）。phiforge 写一个 `VerifyEnforcementMiddleware`：
+**机制（框架已有，零改框架）**：`agent-base` 的 `Middleware` trait 有 `on_post_llm` 钩子，`PostLlmCtx` 的 `skip_push`（压掉本次结束）+ `follow_up_message`（注入下一条）就是「拦截结束 + 逼再走一轮」的通用能力，已有 `ToolEnforcementMiddleware` 先例（逼 agent 必须调工具，带 `max_nudges=3` 防死循环）。phimint 写一个 `VerifyEnforcementMiddleware`：
 
 ```rust
 struct VerifyEnforcementMiddleware { tracker: Arc<EditTracker> }
@@ -217,7 +217,7 @@ impl Middleware for VerifyEnforcementMiddleware {
 }
 ```
 
-`EditTracker` 是 phiforge 的共享状态：包装 `write_file`/`edit_file` → 置脏，`verify` → 清脏。**框架完全不知道「verify」「编译」是什么**——它只提供「响应可压掉、可注入下一条」这个通用能力；「编码必须验」是 phiforge 的策略，不是框架的默认。**底线：编码专属的强制策略不硬编码进框架**（别的业务不适用）。
+`EditTracker` 是 phimint 的共享状态：包装 `write_file`/`edit_file` → 置脏，`verify` → 清脏。**框架完全不知道「verify」「编译」是什么**——它只提供「响应可压掉、可注入下一条」这个通用能力；「编码必须验」是 phimint 的策略，不是框架的默认。**底线：编码专属的强制策略不硬编码进框架**（别的业务不适用）。
 
 三个兜底（防「绝对化」引出 bug）：
 
@@ -268,7 +268,7 @@ impl Middleware for VerifyEnforcementMiddleware {
 agent 循环（phi-agent，不动）
    │  RuntimeEvent 经 mpsc channel 流出
    ▼
-phiforge TUI（ratatui）
+phimint TUI（ratatui）
    ├─ 事件接收 task：消费事件 → 更新状态 → 画帧
    └─ 输入 task：键盘 → 用户输入 → agent；审批键 → ApprovalHandler
 ```
@@ -359,7 +359,7 @@ Idle ──用户输入──▶ Running ──RunFinished──▶ Idle
 
 ### 10.5 其他安全底线
 
-- **无工作区沙箱**：文件操作允许工作区外路径（绝对路径 + `..`），安全靠审批层（`auto`/`ask`/`deny`）而非路径边界，对齐 Claude Code。`resolve_path`（phi-kernel-tools）+ `validate_workspace_path`（phiforge）均已放宽，只拒绝空路径。
+- **无工作区沙箱**：文件操作允许工作区外路径（绝对路径 + `..`），安全靠审批层（`auto`/`ask`/`deny`）而非路径边界，对齐 Claude Code。`resolve_path`（phi-kernel-tools）+ `validate_workspace_path`（phimint）均已放宽，只拒绝空路径。
 - **原子写**：`edit_file` 写临时文件再 rename，改坏可回滚。
 - **diff 逐条审**：改动以 diff 呈现，用户逐条确认。
 
@@ -367,7 +367,7 @@ Idle ──用户输入──▶ Running ──RunFinished──▶ Idle
 
 ## 11. 验证目标（对 phi-agent 的能力压测）
 
-| 能力点 | phiforge 如何压测它 |
+| 能力点 | phimint 如何压测它 |
 |---|---|
 | React/计划执行 | 需求 → 计划 → 多步执行 |
 | 工具编排 | 读/写/搜索/跑测试的组合调用 |
@@ -416,7 +416,7 @@ Idle ──用户输入──▶ Running ──RunFinished──▶ Idle
 - **7b `/skill` 斜杠入口**（已完成）：`SkillResolver`（exact → suffix → contains → word-overlap 模糊匹配）+ TUI `/` picker（名字 + 描述），解析 `/skill-name args` 注入上下文。
 - **7c 执行语义**（可选，重，框架层）：`allowed-tools`/`context: fork`/`paths` 从「死字段」变真语义（工具门控 / 子 agent 隔离 / 路径触发）。
 - **7d 自带 skills**（可选，内容）：`commit`/`code-review`/`explain` 三个开箱 skill。
-- **7e 上下文硬截断**（可选，顺手）：开 `ContextWindowManager`（`has_context_window:false→true`）作 SummarizingMiddleware 的确定性兜底。
+- **7e+ 上下文窗口自适应**（已规划，框架层）：自动压缩触发点随模型窗口缩放（现写死 30k，1M 窗口模型只占 3% 过早压缩）+ 开 `ContextWindowManager` 硬截断（`has_context_window:false→true`）+ 压缩失败熔断（连续 3 次停用），对标 Claude Code。
 - 详见 `docs/phase7-plan.md`。
 
 ### Phase 8 — 斜杠命令系统（内置命令 + 分发器）📋
@@ -425,8 +425,11 @@ Idle ──用户输入──▶ Running ──RunFinished──▶ Idle
 - **明确不做**：自定义命令（并入 Phase 7 skills）、`@` 提及（Phase 10）、Memory（Phase 9）。
 - 详见 `docs/phase8-plan.md`。
 
-### Phase 9 — Memory（CLAUDE.md 兼容）📋
-- 启动常驻注入：读 `CLAUDE.md`（项目根 / 全局 `~/.claude/CLAUDE.md`），与 Claude Code 共享同一份指令文件，零迁移成本。
+### Phase 9 — Memory（CLAUDE.md + auto-memory）📋
+- **L1 CLAUDE.md 启动注入**：读项目根 `CLAUDE.md` + 用户 `~/.claude/CLAUDE.md`，常驻注入 system prompt，与 Claude Code 共享同一份指令文件，零迁移成本。
+- **L2 auto-memory**（方案 A）：`~/.claude/projects/<slug>/memory/`（对齐 Claude Code 真实格式 → 互通）。`memory` 工具（write/list/read/delete + frontmatter 校验 + MEMORY.md 索引自动同步 + 同名即更新）；启动注入 MEMORY.md 索引，具体记忆按需 recall。机制在框架层（agent-works），phimint 只接线。
+- **已否决方案 B**：项目内 `.claude/memory/`（可进 git 团队共享，但与 Claude Code 不互通）。
+- 详见 `docs/phase9-plan.md`。
 
 ### Phase 10 — `@` 文件提及 / 路径选择器 📋
 - 输入 `@` 弹出路径选择器（TUI）：输路径（`..` 回退、`/` 下钻、绝对路径）+ 实时列目录，选中后把路径当普通文字插进输入，agent 自己 `read_file`/`repo_map` 去读。不注入内容、不做补全。
@@ -442,7 +445,7 @@ Idle ──用户输入──▶ Running ──RunFinished──▶ Idle
 - **语言范围**：**多语言为目标**，首版 Rust 起步。`LanguageAdapter` 边界 + tree-sitter RepoMap（天生多语言；加语言 = 加配置 + 一个 tree-sitter query，约 1～2 天/门）。
 - **形态**：仅 REPL + TUI（ratatui），类似 Claude Code，不做单次任务模式。
 - **产品定位（2026-08-16 定）**：产品优先，「永远不把编不过的代码交给你」是招牌，框架验证是副产品（§1 已反转）。
-- **强制 verify 闸门（6a）**：作为 phiforge 的 `Middleware` 实现（consumer-side），**不把「必须验」硬编码进框架**——框架只提供 `skip_push`/`follow_up_message` 通用能力，编码专属策略留在 consumer。防死锁走 `max_nudges` 降级。
+- **强制 verify 闸门（6a）**：作为 phimint 的 `Middleware` 实现（consumer-side），**不把「必须验」硬编码进框架**——框架只提供 `skip_push`/`follow_up_message` 通用能力，编码专属策略留在 consumer。防死锁走 `max_nudges` 降级。
 - **Phase 6 顺序**：6a（强制闸门）先于 6b（LSP）。闸门是保证、不依赖 LSP；LSP 是加速。
 
 ### 开放
@@ -457,8 +460,8 @@ Idle ──用户输入──▶ Running ──RunFinished──▶ Idle
 
 ### Phase 1 完成（2026-08-15）
 
-- `phiforge`（CLI + REPL）基于 `phi-agent` 0.11.0 本地源码构建。
-- 可观测性：`session.log`（`log-core` tracing）+ `turn_NNN.jsonl`（`save_turn_log`），落在 `~/.phiforge/sessions/<id>/`。
+- `phimint`（CLI + REPL）基于 `phi-agent` 0.11.0 本地源码构建。
+- 可观测性：`session.log`（`log-core` tracing）+ `turn_NNN.jsonl`（`save_turn_log`），落在 `~/.phimint/sessions/<id>/`。
 - smoke test（空工作区 → 脚手架 + 带缓存 `get_user` + `cargo check`）：8 轮 / 9 工具调用 / 0 失败。
 
 **压测发现（喂给后续 phase）**：
@@ -479,12 +482,12 @@ Idle ──用户输入──▶ Running ──RunFinished──▶ Idle
   1. `base_agent_builder` 设 `max_tool_output_chars = 4000`（`phi-agent/src/agent/builder.rs`），但 `read_file` 默认 `limit = 2000 行`（`phi-kernel-tools/src/file/read_file.rs`）。带行号格式化后 ~60 行就超 4000 字符，读任何正经源文件都硬失败。
   2. §6.5 写「工具应自己截断再返回」，但 `ToolContext` 无 output 预算字段，工具不知道上限，无法配合 —— 指引对框架自己的工具也无效。
   3. `builder.rs` 注释声称「截断 + TruncationInfo」，但该类型不存在，`pipeline.rs` 实际是 reject —— 契约未统一。
-- **修复（改框架，非 phiforge 侧绕过）**：
+- **修复（改框架，非 phimint 侧绕过）**：
   1. `ToolContext` 加 `max_output_chars: Option<usize>`，`tool_engine.rs` 注入引擎预算。
   2. `read_file` 按行边界自截断到预算，超界打 `...(truncated, use offset=N to continue)` 续读标记。
   3. 修 `builder.rs` 陈旧注释，统一「reject 作引擎兜底、能自界的工具自截断」契约。
-- **验证**：read_file 12/12 通过（含自截断 + offset 续读）；agent-base 350 通过；phiforge 4 通过。
-- **phiforge 侧**：`.max_tool_output_chars(16_000)` 从「绕过 bug」变为正当偏好（一次读更大块）。
+- **验证**：read_file 12/12 通过（含自截断 + offset 续读）；agent-base 350 通过；phimint 4 通过。
+- **phimint 侧**：`.max_tool_output_chars(16_000)` 从「绕过 bug」变为正当偏好（一次读更大块）。
 
 **框架缺陷二 + 修复（list_files 无忽略逻辑 + 无自截断）**：
 
@@ -495,8 +498,8 @@ Idle ──用户输入──▶ Running ──RunFinished──▶ Idle
   1. `ListFilesTool` 加 `with_excludes(Vec<String>)` 构造 + 按名跳过（通用口子，默认空）。
   2. `list_files` 按 `ctx.max_output_chars` 自截断 + `...(truncated)` 标记（与 read_file 同一套）。
   3. `base_agent_builder_with_excludes(llm, excludes)` 变体；`base_agent_builder` 委托为默认空。
-- **phiforge 侧**：`build()` 传 `["target", "node_modules"]`——代码专属名单只出现在 consumer。
-- **验证**：list_files 13/13 通过（含 excludes + 自截断）；phiforge 4 通过；phi-agent builder 3 通过。
+- **phimint 侧**：`build()` 传 `["target", "node_modules"]`——代码专属名单只出现在 consumer。
+- **验证**：list_files 13/13 通过（含 excludes + 自截断）；phimint 4 通过；phi-agent builder 3 通过。
 
 **框架缺陷二·补强（list_files 递归改走 gitignore-aware + limit 上限）**：
 
@@ -504,31 +507,31 @@ Idle ──用户输入──▶ Running ──RunFinished──▶ Idle
 - **修复（框架通用化，不掺代码专属逻辑）**：
   1. **P0 — gitignore-aware**：`collect_entries_recursive` 从裸 `read_dir` 递归改为 `ignore::WalkBuilder`（ripgrep 同款 ignore 逻辑）。`hidden(false)` 含点文件、`git_ignore/ignore/parents(true)` 吃 `.gitignore`/`.ignore`+父级、`require_git(false)` 非 git 仓库也生效、`follow_links(false)` 防环、`max_depth(64)`。`.git/.hg/.svn` 与 consumer `excludes` 经 `filter_entry` 在**下降前剪枝**（不再走进 target/ 再逐个跳过）。`git_global/git_exclude(false)` 跳过用户全局 ignore，保证行为确定。
   2. **P1 — limit 上限**：schema 加 `limit`（默认 500），收集阶段早停；触发时末尾追加 `[N entries limit reached. use limit=2N for more, or narrow path/pattern]`（范围提示，非翻页——文件无自然顺序，故不用 read_file 的 offset 式续读）。
-- **验证**：list_files 15/15 通过（含 `test_list_files_recursive_respects_gitignore` + `test_list_files_limit`）；全 crate 133/133；phiforge 编译通过。
+- **验证**：list_files 15/15 通过（含 `test_list_files_recursive_respects_gitignore` + `test_list_files_limit`）；全 crate 133/133；phimint 编译通过。
 
 **P2 — 截断元数据 / 字节上限（评审通过，后置）**：
 
 - **P2-a · `TruncationResult`**（`totalLines`/`totalBytes`/`truncatedBy`/`firstLineExceedsLimit`…）：即 §6.5 说「框架缺的那个类型」，demo/pi 的 `truncate.ts` 已有。收益在**渲染层**（TUI 显示「截断了 N 行」），对 agent 无增量——agent 只看文本，现有文本标记（`...(truncated, use offset=N)`、`[N entries limit reached]`）已把信息给足。→ **触发条件**：建 TUI（Phase 5）时做，走 `ToolContext::emit_user_event(UserEvent::Structured{..})` 侧信道（无需动 `Tool` trait 返回结构）。
-- **P2-b · `max_output_chars` 字符 → 字节**：字节更贴近 token，但字符/字节都非真 token 数、都只是粗略兜底；单独换单位要横跨 agent-base + 3 工具 + phiforge + 测试重命名，churn 大收益小。→ **触发条件**：引入真 token 计数的整体改造时再议，不单独做。
+- **P2-b · `max_output_chars` 字符 → 字节**：字节更贴近 token，但字符/字节都非真 token 数、都只是粗略兜底；单独换单位要横跨 agent-base + 3 工具 + phimint + 测试重命名，churn 大收益小。→ **触发条件**：引入真 token 计数的整体改造时再议，不单独做。
 
 **开发态依赖（path 依赖）**：
 
-- 弃用 phiforge 的 `[patch.crates-io]`，改为给 sibling crates（agent-works / phi-tools / phi-telemetry / phi-kernel-tools / phi-agent）的依赖加 `path = "../xxx"`（保留 `version` 以便将来 crates.io 发布）。
+- 弃用 phimint 的 `[patch.crates-io]`，改为给 sibling crates（agent-works / phi-tools / phi-telemetry / phi-kernel-tools / phi-agent）的依赖加 `path = "../xxx"`（保留 `version` 以便将来 crates.io 发布）。
 - 效果：任一 crate 目录里 `cargo test` 直接吃本地源码，无需临时 patch；发布时 cargo 自动用 `version` 字段。
 
 **可观测性修复（turn log 跨进程混跑）**：
 
 - **现象**：复用 `--session p2` 跑两次，两次的 `turn_001.jsonl` 追加进同一个文件，无法一眼区分哪次是旧二进制。
-- **根因**：`turn_number` 每个进程都从 0 起算（phiforge `run_repl` 与 phi CLI `run.rs` 都是 `let mut turn_number = 0`），而 `save_turn_log` 用 `.append(true)` 写 `turn_NNN.jsonl`——同 session 复用时 turn 1 撞车。
+- **根因**：`turn_number` 每个进程都从 0 起算（phimint `run_repl` 与 phi CLI `run.rs` 都是 `let mut turn_number = 0`），而 `save_turn_log` 用 `.append(true)` 写 `turn_NNN.jsonl`——同 session 复用时 turn 1 撞车。
 - **修复**：`SessionContext` 加 `last_turn_number()`（扫描现有 `turn_NNN.jsonl` 取最大 N）；两处 consumer 用它初始化计数器，复用 session 时续号而非归零；phi CLI 的 `reset` 同理续号。
-- **验证**：session 21/21 通过（含新 `test_last_turn_number_scans_existing_turns`）；phi CLI + phiforge 均编译通过。
+- **验证**：session 21/21 通过（含新 `test_last_turn_number_scans_existing_turns`）；phi CLI + phimint 均编译通过。
 
 **框架缺陷三 + 修复（execute_command 输出不自截断）**：
 
 - **现象**：p3 smoke test 里 `list_files` 修复已生效（12 文件、`target/` 排除、无报错），但 agent 紧接着用 shell 跑 `find . -not -path './.git/*' | sort`，`find` 不认 .gitignore 递归进 `target/`，产出 1,071,869 字符，被引擎按 16000 硬拒 —— "Tool 'execute_command' output exceeds the 16000-char limit"。
 - **根因**：`phi-kernel-tools/src/local_shell.rs` 的 `call` 用 `_ctx`（预算字段没读），`format_result` 拼完 stdout+stderr 直接返回，无自截断——与 read_file / list_files 同一类缺陷（能产出无界文本 + 不自截断），只是换到了 shell 工具。
 - **修复（通用化，不掺代码专属逻辑）**：`call` 读 `ctx.max_output_chars`，对 `format_result` 的最终字符串做 `truncate_output` 自截断——**head + tail 双端保留**（头部 1/3、尾部 2/3，中间打 `...[output truncated]` 标记）。理由：shell 输出不像文件/目录那样「从头读就够」，`cargo build/test` 的报错在**尾部**、`ls/find` 的开头也有意义，双端保留对命令输出最通用。
-- **验证**：local_shell 18/18 通过（含新增 `test_truncate_output_keeps_head_and_tail` + `test_call_self_truncates_large_output`）；phiforge 编译通过。
+- **验证**：local_shell 18/18 通过（含新增 `test_truncate_output_keeps_head_and_tail` + `test_call_self_truncates_large_output`）；phimint 编译通过。
 - **备注**：agent 用裸 `find` 探测结构本身是「拿 shell 当劣质地图」——正是 §3/Phase 2 要解决的上下文架构缺口，`repo_map`/`search_content` 落地后应减少这类调用；框架侧只保证「超限不自截断」这层兜底不再炸。
 
 ### Phase 3 完成（2026-08-15）
@@ -539,10 +542,10 @@ Idle ──用户输入──▶ Running ──RunFinished──▶ Idle
 
 **框架缺陷发现（审批 `deny` 是空操作）**：
 
-- **现象**：phiforge 此前只设了 `ApprovalHandler`（Auto/DenyAll），没设 `ToolPolicy`。而 agent-base `process_approval` 里「无 policy → 直接 `return Ok(())`」根本不进 handler → **`--approval deny` 实际什么都没拒**。
+- **现象**：phimint 此前只设了 `ApprovalHandler`（Auto/DenyAll），没设 `ToolPolicy`。而 agent-base `process_approval` 里「无 policy → 直接 `return Ok(())`」根本不进 handler → **`--approval deny` 实际什么都没拒**。
 - **根因**：审批是两层——`ToolPolicy`（闸门：决定「要不要审」+ 赋 `risk_level`/`action_key`，返回 `None` = 放行）+ `ApprovalHandler`（决策：AllowOnce/AllowAlways/Deny）。只设 handler 不设 policy = 闸门永远放行。
-- **修复（phiforge 侧补 policy，不动框架默认）**：`ApprovalPolicy` 给写操作/危险命令返回 `Some(request)` 才触发 handler；`deny`/`ask` 都带上它。读工具/安全命令（`cargo check`/`git status`/`ls`…）仍放行，维持「只读模式」语义。
-- **验证**：phiforge 19/19 通过（policy 分级 + `build_approval` 三态 + `classify_command` + `map_input` + verify 解析器）；`cargo build` 通过。
+- **修复（phimint 侧补 policy，不动框架默认）**：`ApprovalPolicy` 给写操作/危险命令返回 `Some(request)` 才触发 handler；`deny`/`ask` 都带上它。读工具/安全命令（`cargo check`/`git status`/`ls`…）仍放行，维持「只读模式」语义。
+- **验证**：phimint 19/19 通过（policy 分级 + `build_approval` 三态 + `classify_command` + `map_input` + verify 解析器）；`cargo build` 通过。
 
 **live smoke（真机）**：
 
@@ -555,7 +558,7 @@ Idle ──用户输入──▶ Running ──RunFinished──▶ Idle
 - **`decompose` 工具**（`tools/decompose.rs`）：持 `Arc<dyn StreamClient>`，`call()` 内做一次**嵌套 LLM 调用**（`response_format=JsonObject`），产出结构化 `Decomposition { strategy: Serial|Parallel, slices: [{name, files, context, task}] }`。`strategy` 落地 §7.4「分解器判断该不该并行」；`slice.files` 是 merge 做冲突归属的结构化边界。复用 `repomap::build_repo_map` 喂结构。
 - **`merge` 工具**（`tools/merge.rs`）：从共享 `WorkspaceTracker` 读上次 decompose 的快照 + slices（LLM 不回传列表，接口最简），diff 出变更、算冲突（① 一文件被 ≥2 slice 声明 = 重叠；② 改动落在任何 slice 边界外 = 越界编辑），再复用 `verify::run_and_summarize` 跑 `cargo check` 折叠错误摘要。无快照时提示「先 decompose」。
 - **接线**：`Cargo.toml` 开 `multi-agent` feature（拉起 6 个框架工具 `spawn_agent`/`send_message`/`followup_task`/`wait_agent`/`list_agents`/`close_agent`）；`agent.rs` 注册两工具 + SYSTEM_PROMPT 补「大任务 decompose → parallel 则每 slice 一个 `spawn_agent` + `wait_agent` → merge → 修再 verify」；`approval.rs` 放行名单补 `decompose`/`merge`；子 agent 权限随审批模式走（auto=`Full`，ask/deny=`None`，见下）。
-- **验证**：phiforge 40/40 单测通过（workspace diff 三态 / decompose JSON 解析+围栏剥离+未知策略回退 serial / merge 冲突四类 / normalize_path 折叠 `./`+反斜杠）；`cargo build` 通过——`multi-agent` feature 使 `base_agent_builder_with_excludes` 的 `with_multi_agent` 块（`phi-agent/src/agent/builder.rs:103-111`）生效，6 工具注册。
+- **验证**：phimint 40/40 单测通过（workspace diff 三态 / decompose JSON 解析+围栏剥离+未知策略回退 serial / merge 冲突四类 / normalize_path 折叠 `./`+反斜杠）；`cargo build` 通过——`multi-agent` feature 使 `base_agent_builder_with_excludes` 的 `with_multi_agent` 块（`phi-agent/src/agent/builder.rs:103-111`）生效，6 工具注册。
 
 **压测发现（框架观察，非修复）**：
 
@@ -564,11 +567,11 @@ Idle ──用户输入──▶ Running ──RunFinished──▶ Idle
 **框架缺陷四 + 修复（受限子 agent 本地硬拒，而非上抛父）**：
 
 - **现象**：`--approval deny` 下，`spawn_agent(full_permission=true)` 的子 agent 仍能写文件——「deny 只读」语义在多 agent 场景不闭合。
-- **根因（两层）**：① phiforge 用 `MultiAgentConfig::default()`（`ChildPermissionMode::Full`，`effective_permission` 无条件放行），LLM 传的 `full_permission` flag 被覆盖；② 即便切到 `ChildPermissionMode::None`，框架的 `build_child_runtime` 受限分支给子 agent 挂的是 `DenyAllApprovalHandler`——**本地硬拒**，审批请求既上抛不到父、也到不了人，`ask` 模式下子 agent 写文件无法交互审批。
+- **根因（两层）**：① phimint 用 `MultiAgentConfig::default()`（`ChildPermissionMode::Full`，`effective_permission` 无条件放行），LLM 传的 `full_permission` flag 被覆盖；② 即便切到 `ChildPermissionMode::None`，框架的 `build_child_runtime` 受限分支给子 agent 挂的是 `DenyAllApprovalHandler`——**本地硬拒**，审批请求既上抛不到父、也到不了人，`ask` 模式下子 agent 写文件无法交互审批。
 - **参考 codex 的解法**：`codex-rs/core/src/codex_delegate.rs:443-523` 的 `handle_exec_approval` 把子 agent 的 shell/patch 审批请求转成 `parent_session.request_command_approval(...)`（来源标 `GuardianApprovalRequestSource::DelegatedSubagent`），**上抛给父 session 统一裁决**；子 agent 从不「本地自动通过」或「本地硬拒」，另有逐 agent 的 `permissions.approval_policy` + `prefix_rule` 修订传播回父（`approvals.rs:2081`）。
 - **修复（改框架，学 codex）**：`MultiAgentRuntime` 增 `approval_handler` 字段，`build_child_runtime` 受限分支把子 agent 的 `ApprovalHandler` 从硬编码 `DenyAllApprovalHandler` 改为**委托父的 handler**（父无 handler 时回退 `DenyAll` 保住「无策略→只读」不变量）；`setup_multi_agent` 传入 `runtime.approval_handler()`。
-- **phiforge 侧**：`agent.rs::build` 按审批模式设 `child_permission_mode`——`auto`（无 policy）=`Full`，`ask`/`deny`（有 policy）=`None`；SYSTEM_PROMPT 不再硬编码 `full_permission=true`，改提示「子 agent 写权限随审批模式，被拒则该切片自己写」。另把 `approval.rs` 的 `action_key` 从工具名收窄为「`write_file:<path>` / `execute_command:<命令>`」，使 `AllowAlways` 只放行具体对象而非整个工具（codex `prefix_rule` 的收窄语义，复用 `tool_engine` 的按 key 精确缓存，无需改框架）。
-- **验证**：agent-works 97/97（新增 `build_child_runtime_none_delegates_to_parent_approval_handler` + `build_child_runtime_none_denies_when_parent_has_no_handler`）；phi-agent builder 5/5；phiforge 40/40。
+- **phimint 侧**：`agent.rs::build` 按审批模式设 `child_permission_mode`——`auto`（无 policy）=`Full`，`ask`/`deny`（有 policy）=`None`；SYSTEM_PROMPT 不再硬编码 `full_permission=true`，改提示「子 agent 写权限随审批模式，被拒则该切片自己写」。另把 `approval.rs` 的 `action_key` 从工具名收窄为「`write_file:<path>` / `execute_command:<命令>`」，使 `AllowAlways` 只放行具体对象而非整个工具（codex `prefix_rule` 的收窄语义，复用 `tool_engine` 的按 key 精确缓存，无需改框架）。
+- **验证**：agent-works 97/97（新增 `build_child_runtime_none_delegates_to_parent_approval_handler` + `build_child_runtime_none_denies_when_parent_has_no_handler`）；phi-agent builder 5/5；phimint 40/40。
 - **仍存的窄限制（记录，不阻塞）**：`ask` 模式下子 agent 的写审批走父的 `CliApprovalHandler`（读 stdin），多个并行子 agent 同时弹窗会**交错**——REPL 里可逐个回答，但交互体验不如 codex 的父 session 统一审批队列。属 TUI（Phase 5）要处理的交互问题，非正确性缺口。
 
 **已真机验证（2026-08-15，deepseek-v4-pro）**：跑了一次「三模块 + 单测」的较大任务，完整走通 `decompose`（判 `parallel`，4 切片文件边界清晰，主动把共享 `lib.rs` 编辑单列成独立切片）→ `spawn_agent ×4`（`full_permission=true`，各写各文件）→ `wait_agent ×4` 全 `ok`（0 denied）→ `merge`（报 changed files + 越界检测 + `✓ passed`），最终 `cargo test` 24 单测绿、`session.log` 0 ERROR/WARN。§7 四个难问题（分解质量/上下文传递/冲突处理/合并验证）真机跑通。

@@ -160,7 +160,7 @@ pub fn build_initialize_request(id: u64, workspace_root: &Path) -> Value {
         workspace_folders: Some(vec![WorkspaceFolder { uri, name }]),
         capabilities: ClientCapabilities::default(),
         client_info: Some(ClientInfo {
-            name: "phiforge".into(),
+            name: "phimint".into(),
             version: Some(env!("CARGO_PKG_VERSION").into()),
         }),
         ..Default::default()

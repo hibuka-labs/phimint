@@ -1,8 +1,8 @@
-# phiforge
+# phimint
 
 > 基于 [phi-agent](https://github.com/) 的 AI 编码 agent —— **永远不把编不过的代码交给你**。
 
-phiforge 在终端里做一款「产品优先」的编码工具：改完先验、验过才交。它同时是 `phi-agent` 框架的真实压测场——写代码是唯一把「理解需求 → 读码 → 多文件改 → 编译/测试 → 报错迭代」整条链路跑全的场景。
+phimint 在终端里做一款「产品优先」的编码工具：改完先验、验过才交。它同时是 `phi-agent` 框架的真实压测场——写代码是唯一把「理解需求 → 读码 → 多文件改 → 编译/测试 → 报错迭代」整条链路跑全的场景。
 
 ## 特性
 
@@ -20,7 +20,7 @@ phiforge 在终端里做一款「产品优先」的编码工具：改完先验�
 
 - Rust 工具链（edition 2024）
 - 一个 OpenAI 兼容的 LLM API（OpenAI / DeepSeek / Groq / Ollama / Copilot …）
-- 本仓库的 sibling crates：`phi-agent` / `phi-kernel-tools` / `agent-base` / `log-core`（与 phiforge 同级目录，`Cargo.toml` 用 `path` 引用）
+- 本仓库的 sibling crates：`phi-agent` / `phi-kernel-tools` / `agent-base` / `log-core`（与 phimint 同级目录，`Cargo.toml` 用 `path` 引用）
 - （可选）`cargo` / `npm` / `make` 等构建工具，以及对应语言的 LSP server 在 `PATH` 上
 
 ### 配置
@@ -94,7 +94,7 @@ cargo run -- [OPTIONS]
 
 ## 工作原理
 
-phiforge 是 `phi-agent` 框架的 consumer：复用框架的 agent 循环 / ReAct / 审批 / 会话事件流，注入编码专属工具与策略。
+phimint 是 `phi-agent` 框架的 consumer：复用框架的 agent 循环 / ReAct / 审批 / 会话事件流，注入编码专属工具与策略。
 
 - **强制 verify 闸门**：`EditTracker` 包装 `write_file`/`edit_file` 置脏、`verify`/`merge` 清脏；agent 改了代码却想「报 done」时，`on_post_llm` 压掉本次结束并注入「先 verify」，`max_nudges`(3) 后降级为「⚠️ 未验证」标记交用户仲裁。框架只提供 `skip_push`/`follow_up_message` 通用能力，编码专属策略留在 consumer。
 - **多 agent**：`decompose` 用一次嵌套 LLM 调用产出 `{strategy, slices}`；`parallel` 时每 slice 一个**只读**子 agent 调查，主 agent 汇总报告后自行编辑；`merge` 按文件聚合 diff、标冲突、再跑一次编译验证。
@@ -103,7 +103,7 @@ phiforge 是 `phi-agent` 框架的 consumer：复用框架的 agent 循环 / ReA
 
 ## 会话与可观测性
 
-每次运行落一份会话到 `~/.phiforge/sessions/<id>/`：
+每次运行落一份会话到 `~/.phimint/sessions/<id>/`：
 
 | 文件 | 内容 |
 |---|---|
@@ -117,7 +117,7 @@ phiforge 是 `phi-agent` 框架的 consumer：复用框架的 agent 循环 / ReA
 ## 项目结构
 
 ```
-phiforge/
+phimint/
 ├── src/
 │   ├── main.rs        # CLI 入口（clap），组装 agent + 选择 UI
 │   ├── agent.rs       # 系统提示 + 工具注册 + 审批/多 agent/闸门接线

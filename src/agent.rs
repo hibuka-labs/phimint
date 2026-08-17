@@ -1,4 +1,4 @@
-//! Build the phiforge coding agent: system prompt + tool registration.
+//! Build the phimint coding agent: system prompt + tool registration.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -18,7 +18,7 @@ use crate::tools::workspace::WorkspaceTracker;
 use crate::tools::{repomap::RepoMapTool, ripgrep::RipgrepTool, verify::VerifyTool};
 
 /// Coding-oriented system prompt.
-const SYSTEM_PROMPT: &str = r#"You are phiforge, an AI coding agent. You write, edit, and debug code inside a workspace.
+const SYSTEM_PROMPT: &str = r#"You are phimint, an AI coding agent. You write, edit, and debug code inside a workspace.
 
 Tools available:
 - repo_map — get the codebase layout. With no argument it returns a directory skeleton (module → package tree, file counts); pass a workspace-relative `path` to get per-file symbols (classes, methods, fields). Use this FIRST to orient, then scope it to the area you're working in.
@@ -49,7 +49,7 @@ Sub-agents are READ-ONLY investigators: they read, search, and report — they C
 
 Be precise and minimal. Don't rewrite code that already works. When done, briefly report what you changed."#;
 
-/// Build a phiforge agent bound to `workspace_root`.
+/// Build a phimint agent bound to `workspace_root`.
 ///
 /// `base_agent_builder` already registers the file tools (read/write/edit/list).
 /// We add the shell, verify, search, and repo-map tools ourselves — none of them
@@ -152,7 +152,7 @@ pub fn build(
     // report "done" without running `verify` (or `merge`, which runs cargo check
     // itself), this middleware suppresses that final text and injects a nudge to
     // verify first — the "never hand back non-compiling code" promise, enforced
-    // as phiforge policy (the framework stays neutral; see design §8.3). In
+    // as phimint policy (the framework stays neutral; see design §8.3). In
     // `deny` mode no writes can happen, so the gate is disabled (`writes_possible`).
     builder = builder.middleware(VerifyEnforcementMiddleware::new(VerifyEnforcementConfig {
         writes_possible,

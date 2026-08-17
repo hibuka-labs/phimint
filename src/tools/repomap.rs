@@ -597,7 +597,7 @@ impl Tool for RepoMapTool {
         ToolMetadata {
             name: self.name().to_string(),
             description: "Produce a structural map of the codebase.".to_string(),
-            origin: "phiforge".to_string(),
+            origin: "phimint".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             requirements: vec![],
         }
@@ -646,7 +646,7 @@ mod tests {
 
     /// Create a temp dir holding `name: content` files, run the map, clean up.
     fn map_of_temp_files(tag: &str, files: &[(&str, &str)]) -> String {
-        let root = std::env::temp_dir().join(format!("phiforge_repomap_{tag}_test"));
+        let root = std::env::temp_dir().join(format!("phimint_repomap_{tag}_test"));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         for (name, content) in files {
@@ -720,7 +720,7 @@ mod tests {
 
     #[test]
     fn build_dir_tree_lists_modules_packages_and_strips_prefix() {
-        let root = std::env::temp_dir().join("phiforge_dirtree_test");
+        let root = std::env::temp_dir().join("phimint_dirtree_test");
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("app/src/main/java/com/x/controller")).unwrap();
         std::fs::create_dir_all(root.join("app/src/main/java/com/x/repo")).unwrap();

@@ -1,4 +1,4 @@
-# phiforge Phase 1 任务清单
+# phimint Phase 1 任务清单
 
 > 目标：跑通「需求 → 写 → 跑测试 → 迭代修」的核心闭环 + 最小 TUI。
 > 原则：每步可运行、可验收，不憋大招。核心循环先用 phi-agent 现成的 rustyline + TerminalRenderer，TUI 后置替换。

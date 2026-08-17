@@ -11,7 +11,7 @@ use super::{apply_common_excludes, validate_workspace_path};
 
 /// Hard cap on the formatted result so a broad search can't flood the LLM.
 /// Deliberately smaller than the framework's `max_tool_output_chars` (which
-/// phiforge raises to 16_000 in `agent::build`) — search hits should stay terse.
+/// phimint raises to 16_000 in `agent::build`) — search hits should stay terse.
 const MAX_RESULT_CHARS: usize = 4000;
 /// Matches-per-file cap used when the caller doesn't specify one.
 const DEFAULT_MAX_MATCHES: usize = 20;
@@ -137,7 +137,7 @@ impl Tool for RipgrepTool {
         ToolMetadata {
             name: self.name().to_string(),
             description: "Search file contents with ripgrep (regex), workspace-scoped.".to_string(),
-            origin: "phiforge".to_string(),
+            origin: "phimint".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             requirements: vec![],
         }

@@ -1,12 +1,12 @@
 # Phase 10 实施计划（`@` 文件提及 / 路径选择器）
 
-把 phiforge 从「手动拷贝路径」接到「输入框敲 `@` 快速选一个文件/目录路径，选中即插进输入」。本质是一个**文件浏览器选择器**，自动管理路径，省去用户手动拷贝。核心场景：参考工作区外的项目（`@../../demo/codex/`）。
+把 phimint 从「手动拷贝路径」接到「输入框敲 `@` 快速选一个文件/目录路径，选中即插进输入」。本质是一个**文件浏览器选择器**，自动管理路径，省去用户手动拷贝。核心场景：参考工作区外的项目（`@../../demo/codex/`）。
 
 ## 背景（现状盘点，2026-08-16 查证）
 
 - **输入链路**：`src/ui/input.rs` 的 `Composer` 是纯文本缓冲，无任何 `@` 感知；`run_tui`（`src/ui/mod.rs`）收到 Enter → `Action::Submit(text)` → `Cmd::Run(text)` → `agent.run_turn(session, &text, ..)`，整段当普通文本喂给 LLM。
 - **读工具被锁在工作区内**：
-  - phiforge 侧 `repo_map` / `search_content` 用 `validate_workspace_path`（`src/tools/mod.rs:26`），拒绝 `..` 越界 + 绝对路径。
+  - phimint 侧 `repo_map` / `search_content` 用 `validate_workspace_path`（`src/tools/mod.rs:26`），拒绝 `..` 越界 + 绝对路径。
   - 框架侧 `read_file` / `list_files`（`base_agent_builder` 注册，phi-kernel-tools 私有 `resolve_path`）行为一致，同样拒绝越界。
 - **但读侧的锁不是安全边界**：agent 已有 `execute_command`（shell），`auto` 模式下本来就能 `cat` 任意文件。锁是「组织/聚焦」边界（让 `repo_map`/`list_files` 无参时知道「当前项目」是什么），不是能力边界。
 
@@ -31,7 +31,7 @@
 
 ### 10b 工具放开（跨框架，读写都放）
 
-- **phiforge 侧**：`validate_workspace_path`（`src/tools/mod.rs`）直接放宽——不再拒绝 `..` 越界、放行绝对路径，只拒绝空路径。`repo_map` / `search_content` / `diagnostics` 调用点不变（它们把结果传给 `rg` 或 `root.join`，绝对/`..` 路径语义本就正确）。
+- **phimint 侧**：`validate_workspace_path`（`src/tools/mod.rs`）直接放宽——不再拒绝 `..` 越界、放行绝对路径，只拒绝空路径。`repo_map` / `search_content` / `diagnostics` 调用点不变（它们把结果传给 `rg` 或 `root.join`，绝对/`..` 路径语义本就正确）。
 - **框架侧**：phi-kernel-tools 的 `resolve_path`（`file/mod.rs`）直接放宽——绝对路径原样用、相对路径 join 到 workspace、不再拒绝越界。`read_file` / `write_file` / `edit_file` / `list_files` 四个工具的描述 + schema + metadata 同步更新，让 LLM 知道「工作区相对或绝对路径」都允许。
 - **写工具同样放开**：`write_file` / `edit_file` 也可写工作区外（同 Claude Code）。
 
@@ -43,7 +43,7 @@
 
 ## 已定决策
 
-1. **放开方式**：直接放宽框架（`resolve_path`）+ phiforge（`validate_workspace_path`）的路径校验，读写都放，**不加 flag**。不自注册覆盖。
+1. **放开方式**：直接放宽框架（`resolve_path`）+ phimint（`validate_workspace_path`）的路径校验，读写都放，**不加 flag**。不自注册覆盖。
 2. **工作区外路径插入形态**：绝对路径（区内仍相对路径）。
 3. **安全模型**：无工作区沙箱，安全交给审批层（`auto`/`ask`/`deny`），对齐 Claude Code。
 

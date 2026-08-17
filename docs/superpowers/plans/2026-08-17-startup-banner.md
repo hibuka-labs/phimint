@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace the 4 plain dark-gray startup lines with a figlet "phiforge" wordmark + `PhiForge` tagline + Workspace/Logs metadata, colored per a dark/light palette, in both the TUI and `--inline` modes.
+**Goal:** Replace the 4 plain dark-gray startup lines with a figlet "phimint" wordmark + `Phimint` tagline + Workspace/Logs metadata, colored per a dark/light palette, in both the TUI and `--inline` modes.
 
 **Architecture:** A new `src/banner.rs` is the single source of truth: it builds 9 styled rows (`Vec<BannerRow>` where each row is `Vec<(String, BannerStyle)>`) plus a `render_ansi` helper for inline and an injectable color-scheme resolver. The TUI stores banner rows as ordinary `OutputLine`s that carry a per-line `spans` overlay (`Vec<SpanSpec>`, byte offsets into the plain `text`), so copy/selection/frame-capture see unchanged plain text while rendering applies per-run colors. `main.rs` gains `--color-scheme` and `--banner` flags and resolves the scheme once, before raw mode.
 
@@ -41,7 +41,7 @@ Reference points (may shift by a few lines as tasks land):
 Create `src/banner.rs` with the types plus tests only (no implementation bodies yet — stub everything to fail). Start by writing this complete file:
 
 ```rust
-//! Startup brand banner: a figlet "phiforge" wordmark + tagline + workspace/log
+//! Startup brand banner: a figlet "phimint" wordmark + tagline + workspace/log
 //! metadata. Single source of truth for both the TUI (ratatui) and inline
 //! (`--inline`) renderers; row spans keep the text pure so copy/selection and
 //! the frame capture never see styling.
@@ -67,7 +67,7 @@ pub enum BannerStyle {
     LogoA,
     /// Second tone of the wordmark gradient.
     LogoB,
-    /// The "PhiForge" brand name on the tagline (bold).
+    /// The "Phimint" brand name on the tagline (bold).
     Brand,
     /// Tagline text after the brand name.
     Tagline,
@@ -210,10 +210,10 @@ mod tests {
 
     #[test]
     fn build_emits_nine_rows_with_brand_and_version() {
-        let rows = build(Path::new("/Users/eve/w"), Path::new("/Users/eve/.phiforge/s/1/session.log"), "0.1.0");
+        let rows = build(Path::new("/Users/eve/w"), Path::new("/Users/eve/.phimint/s/1/session.log"), "0.1.0");
         assert_eq!(rows.len(), 9, "6 art + tagline + 2 info");
         let tagline = rows[6].text();
-        assert!(tagline.contains("PhiForge"), "missing brand: {tagline}");
+        assert!(tagline.contains("Phimint"), "missing brand: {tagline}");
         assert!(tagline.contains("先验再交"), "missing slogan: {tagline}");
         assert!(tagline.contains("· v0.1.0"), "missing version: {tagline}");
         let ws = rows[7].text();
@@ -229,7 +229,7 @@ mod tests {
         let row = BannerRow {
             spans: vec![
                 (" ".to_string(), BannerStyle::Default),
-                ("PhiForge".to_string(), BannerStyle::Brand),
+                ("Phimint".to_string(), BannerStyle::Brand),
             ],
         };
         let line = render_ansi(&[row], ColorScheme::Dark)[0].clone();
@@ -288,7 +288,7 @@ Expected: FAIL — `cannot find function 'logo_rows'`, `cannot find function 'sh
 Append to `src/banner.rs` (below the stubbed `probe_osc11`):
 
 ```rust
-/// `ANSI Shadow` figlet glyphs for the letters of "phiforge". Each entry is
+/// `ANSI Shadow` figlet glyphs for the letters of "phimint". Each entry is
 /// `[row; 6]`, row 0 at the top, and every row of one glyph has the same width
 /// (asserted by test). `GLYPHS[i][row]` is the `i`th letter's `row`-th row.
 const GLYPHS: [[&str; 6]; 8] = [
@@ -368,7 +368,7 @@ Replace the stubs:
 fn tagline_row(version: &str) -> BannerRow {
     BannerRow {
         spans: vec![
-            ("PhiForge".to_string(), BannerStyle::Brand),
+            ("Phimint".to_string(), BannerStyle::Brand),
             (" · product-first coding agent on phi-agent · 先验再交 ".to_string(), BannerStyle::Tagline),
             (format!("· v{version}"), BannerStyle::Version),
         ],
@@ -511,7 +511,7 @@ Append to the `#[cfg(test)] mod tests` in `src/ui/app.rs`:
         app.scheme = ColorScheme::Dark;
         let rows = crate::banner::build(
             Path::new("/Users/eve/w"),
-            Path::new("/Users/eve/.phiforge/s/1/session.log"),
+            Path::new("/Users/eve/.phimint/s/1/session.log"),
             "0.1.0",
         );
         app.push_banner(rows);
@@ -532,7 +532,7 @@ Append to the `#[cfg(test)] mod tests` in `src/ui/app.rs`:
         }
         // The tagline is still copyable as plain text.
         let tagline = &app.output[6];
-        assert!(tagline.text.contains("PhiForge · product-first"));
+        assert!(tagline.text.contains("Phimint · product-first"));
         assert_eq!(app.last_reply_text(), "", "banner must not become 'last reply'");
     }
 ```
@@ -656,7 +656,7 @@ In `src/ui/render.rs` `#[cfg(test)] mod tests`:
         // 9 banner lines + one normal line; snapshot at 80 cols shows the art
         // and the tagline text.
         let text = snapshot_text(&mut app, 80, 20);
-        assert!(text.contains("PhiForge"), "tagline missing:\n{text}");
+        assert!(text.contains("Phimint"), "tagline missing:\n{text}");
         assert!(text.contains("Workspace"), "workspace row missing:\n{text}");
         // A logo line must survive to the buffer (68-col art fits in 80).
         assert!(text.lines().next().unwrap().len() > 30, "logo line missing:\n{text}");
@@ -666,7 +666,7 @@ In `src/ui/render.rs` `#[cfg(test)] mod tests`:
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `cargo test banner_rows_render_spans 2>&1 | tail -15`
-Expected: current render only styles whole lines with `style_for(kind)`; with spans present the snapshot still renders the text (ratatui ignores extra data we don't use), so this test may already pass on text — the stronger fail-check is that the rendering ignores spans. Force the red: temporarily assert the test's first `.contains("PhiForge")` is fine, but add `assert!(false, "spans not implemented")`? No — the real red signal is that the snapshot renders but does NOT panic while spans are ignored. Since we can't diff style visually in a text snapshot, also add a span-count assertion by rendering via `TestBackend` and reading `Buffer` cells' styles:
+Expected: current render only styles whole lines with `style_for(kind)`; with spans present the snapshot still renders the text (ratatui ignores extra data we don't use), so this test may already pass on text — the stronger fail-check is that the rendering ignores spans. Force the red: temporarily assert the test's first `.contains("Phimint")` is fine, but add `assert!(false, "spans not implemented")`? No — the real red signal is that the snapshot renders but does NOT panic while spans are ignored. Since we can't diff style visually in a text snapshot, also add a span-count assertion by rendering via `TestBackend` and reading `Buffer` cells' styles:
 
 Replace the text assertions in the test with a style check:
 
@@ -859,7 +859,7 @@ At this point `cargo build` fails — `run_tui`/`run_inline` don't accept the tw
 Run: `cargo build 2>&1 | tail -5`
 Expected: still errors about argument count — expected until Task 5 updates the call sites. To keep the build green at this commit boundary, instead run:
 
-Run: `cargo check --bin phiforge 2>&1 | grep -E "run_tui|run_inline|error" | head -5`
+Run: `cargo check --bin phimint 2>&1 | grep -E "run_tui|run_inline|error" | head -5`
 Expected: errors naming `run_tui`/`run_inline` (the red is intentional at this intermediate commit; see Step 6 note).
 
 - [ ] **Step 6: Commit (commit the intended-red boundary, then land Task 5 before merging)**
@@ -975,7 +975,7 @@ Expected: usage lists `--color-scheme <dark|light|auto>` and `--banner <on|off>`
 
 Then run interactively in your terminal (black background expected):
 `cargo run -- --color-scheme dark`
-and once with `--color-scheme light`; and `--banner off` should print no wordmark. Both TUI and `--inline` variants. Check: wordmark glyphs are contiguous (no wrapping), "PhiForge" is bold orange, `Workspace`/`Logs` labels align, paths use `~`.
+and once with `--color-scheme light`; and `--banner off` should print no wordmark. Both TUI and `--inline` variants. Check: wordmark glyphs are contiguous (no wrapping), "Phimint" is bold orange, `Workspace`/`Logs` labels align, paths use `~`.
 
 - [ ] **Step 6: Commit — together with Task 4's staged main.rs**
 
@@ -1014,6 +1014,6 @@ git commit -m "style: clippy cleanups for banner wiring" || echo "nothing to com
 
 ## Self-Review (done during planning)
 
-- **Spec coverage:** logo+palette → Task 1; `PhiForge` tagline + version → `build`/`tagline_row`; `shorten_home` → Task 1; auto/dark/light + `--banner` → Task 4; TUI spans → Tasks 2–3; inline ANSI → Tasks 1 + 5; `COLORFGBG`/OSC 11 → Task 1. No spec section left unplanned.
+- **Spec coverage:** logo+palette → Task 1; `Phimint` tagline + version → `build`/`tagline_row`; `shorten_home` → Task 1; auto/dark/light + `--banner` → Task 4; TUI spans → Tasks 2–3; inline ANSI → Tasks 1 + 5; `COLORFGBG`/OSC 11 → Task 1. No spec section left unplanned.
 - **Type consistency:** `BannerStyle` variants used identically in `app.rs` (via re-export path `banner::BannerStyle`), `render.rs`, and `banner.rs`. `BannerRow`, `ColorScheme`, `SpanSpec` signatures consistent across tasks. `push_banner(rows: Vec<BannerRow>)`, `build(&Path, &Path, &str) -> Vec<BannerRow>`, `render_ansi(&[BannerRow], ColorScheme) -> Vec<String>`.
 - **Placeholders:** every step has exact code; the two intentional "find the literal, the compiler tells you where" steps are explicit mechanical procedures with verification greps.

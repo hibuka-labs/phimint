@@ -19,7 +19,7 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 
 /// Directory names never tracked — build output, vendored deps, and VCS state.
-/// Mirrors the excludes phiforge passes to `list_files` and ripgrep.
+/// Mirrors the excludes phimint passes to `list_files` and ripgrep.
 const EXCLUDED_DIRS: &[&str] = &["target", "node_modules", ".git", ".hg", ".svn"];
 
 /// File names never tracked — toolchain-generated, not agent edits. `Cargo.lock`
@@ -233,7 +233,7 @@ mod tests {
 
     #[test]
     fn snapshot_skips_excluded_and_hidden() {
-        let dir = std::env::temp_dir().join(format!("phiforge-snap-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("phimint-snap-{}", std::process::id()));
         let src = dir.join("src");
         std::fs::create_dir_all(&src).unwrap();
         std::fs::create_dir_all(dir.join("target")).unwrap();
@@ -261,7 +261,7 @@ mod tests {
     fn snapshot_skips_cargo_lock() {
         // `cargo check`/`build` (run by sub-agents to self-verify) generates
         // Cargo.lock; it must not be tracked, or `merge` flags it out-of-scope.
-        let dir = std::env::temp_dir().join(format!("phiforge-snap-lock-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("phimint-snap-lock-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("Cargo.lock"), "[[package]]").unwrap();
         std::fs::write(dir.join("src.rs"), "fn main() {}").unwrap();
@@ -276,7 +276,7 @@ mod tests {
 
     #[test]
     fn snapshot_is_sorted_and_deterministic() {
-        let dir = std::env::temp_dir().join(format!("phiforge-snap-sort-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("phimint-snap-sort-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("b.rs"), "b").unwrap();
         std::fs::write(dir.join("a.rs"), "a").unwrap();

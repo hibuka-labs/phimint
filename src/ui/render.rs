@@ -540,7 +540,7 @@ mod tests {
 
     fn populated_app() -> App {
         let mut app = App::new();
-        app.push_system("phiforge — welcome");
+        app.push_system("phimint — welcome");
         for i in 0..60 {
             app.output.push(OutputLine { spans: None,
                 text: format!("streamed line {i}"),
@@ -732,7 +732,7 @@ mod tests {
     fn draw_and_snapshot_show_mention_popup() {
         let mut app = App::new();
         let root = std::env::temp_dir().join(format!(
-            "phiforge-render-mention-{}",
+            "phimint-render-mention-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&root);
@@ -783,7 +783,7 @@ mod tests {
         let mut app = App::new();
         app.push_banner(build(
             Path::new("/tmp/ws"),
-            Path::new("/tmp/ws/.phiforge/s/1/session.log"),
+            Path::new("/tmp/ws/.phimint/s/1/session.log"),
             "0.1.0",
         ));
         terminal.draw(|f| draw(f, &mut app)).unwrap();
@@ -796,7 +796,7 @@ mod tests {
         assert_eq!(cell(0, 0).style().fg, Some(Color::Rgb(0xff, 0x78, 0x47)));
         assert_eq!(cell(8, 0).style().fg, Some(Color::DarkGray));
 
-        // Tagline row (index 6): "PhiForge" is bold Brand.
+        // Tagline row (index 6): "Phimint" is bold Brand.
         let brand = cell(0, 6).style();
         assert_eq!(brand.fg, Some(Color::Rgb(0xff, 0xb0, 0x66)));
         assert!(brand.add_modifier.contains(Modifier::BOLD));

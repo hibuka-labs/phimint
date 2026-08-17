@@ -238,7 +238,7 @@ mod tests {
 
     #[test]
     fn detect_languages_scans_extensions_and_skips_build_dirs() {
-        let root = std::env::temp_dir().join("phiforge_lang_detect_test");
+        let root = std::env::temp_dir().join("phimint_lang_detect_test");
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("src/main/java/com/x")).unwrap();
         std::fs::create_dir_all(root.join("target")).unwrap();
@@ -254,7 +254,7 @@ mod tests {
 
     #[test]
     fn default_verify_command_falls_back_to_cargo() {
-        let empty = std::env::temp_dir().join("phiforge_lang_empty_test");
+        let empty = std::env::temp_dir().join("phimint_lang_empty_test");
         let _ = std::fs::remove_dir_all(&empty);
         std::fs::create_dir_all(&empty).unwrap();
         assert_eq!(default_verify_command(&empty), "cargo check");

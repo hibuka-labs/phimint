@@ -6,7 +6,7 @@
 //!   `Some(ApprovalRequest)` defers to the handler.
 //! - [`ApprovalHandler`] (the *decision*): `AllowOnce` / `AllowAlways` / `Deny`.
 //!
-//! phiforge previously wired *only* a handler (`Auto`/`DenyAll`), so
+//! phimint previously wired *only* a handler (`Auto`/`DenyAll`), so
 //! `--approval deny` was a silent no-op — with no policy, `process_approval`
 //! short-circuits and never consults the handler. `ask` mode needs both layers.
 
@@ -109,7 +109,7 @@ pub fn classify_command(command: &str) -> RiskLevel {
 
 // ── The gate: ApprovalPolicy ────────────────────────────────────────────────
 
-/// phiforge's tool policy: auto-approve reads, prompt on writes and risky shell.
+/// phimint's tool policy: auto-approve reads, prompt on writes and risky shell.
 #[derive(Debug, Clone, Default)]
 pub struct ApprovalPolicy;
 

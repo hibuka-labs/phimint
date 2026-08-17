@@ -1,4 +1,4 @@
-//! phiforge application tools: content search, repository map, and verify.
+//! phimint application tools: content search, repository map, and verify.
 //!
 //! `search_content` and `repo_map` are "pull-based" context providers (design
 //! §3): rather than pushing the whole repository into the LLM, the agent asks

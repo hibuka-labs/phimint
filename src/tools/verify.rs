@@ -348,7 +348,7 @@ impl Tool for VerifyTool {
         ToolMetadata {
             name: self.name().to_string(),
             description: "Run a build/test command and summarize compiler errors.".to_string(),
-            origin: "phiforge".to_string(),
+            origin: "phimint".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             requirements: vec![],
         }

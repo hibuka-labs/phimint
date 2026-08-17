@@ -169,7 +169,7 @@ impl Tool for DecomposeTool {
         ToolMetadata {
             name: self.name().to_string(),
             description: "Decompose a task into parallel slices or a serial plan.".to_string(),
-            origin: "phiforge".to_string(),
+            origin: "phimint".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             requirements: vec![],
         }

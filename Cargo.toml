@@ -1,15 +1,15 @@
 [package]
-name = "phiforge"
+name = "phimint"
 version = "0.1.0"
 edition = "2024"
-description = "phiforge — an AI coding agent built on phi-agent, used to stress-test the framework by writing code."
+description = "phimint — an AI coding agent built on phi-agent, used to stress-test the framework by writing code."
 license = "MIT"
 # `src/bin/replay.rs` is auto-discovered as a second binary; make `cargo run`
 # default to the main one.
-default-run = "phiforge"
+default-run = "phimint"
 
 [[bin]]
-name = "phiforge"
+name = "phimint"
 path = "src/main.rs"
 
 [dependencies]

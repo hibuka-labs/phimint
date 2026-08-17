@@ -190,7 +190,7 @@ impl Tool for DiagnosticsTool {
         ToolMetadata {
             name: self.name().to_string(),
             description: "Pull rust-analyzer diagnostics for the workspace.".to_string(),
-            origin: "phiforge".to_string(),
+            origin: "phimint".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             requirements: vec![],
         }
@@ -378,7 +378,7 @@ mod tests {
 
     #[test]
     fn collect_code_files_includes_non_rust_languages() {
-        let root = std::env::temp_dir().join("phiforge_diag_collect_test");
+        let root = std::env::temp_dir().join("phimint_diag_collect_test");
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("a.ts"), "const x = 1;").unwrap();

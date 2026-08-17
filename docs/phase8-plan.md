@@ -1,6 +1,6 @@
 # Phase 8 实施计划（斜杠命令系统：内置命令 + 分发器）
 
-把 phiforge 从「`/xxx` 当普通文本提交」接到「打 `/` 触发动作」，对标 Claude Code 的斜杠命令，并顺手把分发器造成 skills / memory / `@` 三者共用的地基。
+把 phimint 从「`/xxx` 当普通文本提交」接到「打 `/` 触发动作」，对标 Claude Code 的斜杠命令，并顺手把分发器造成 skills / memory / `@` 三者共用的地基。
 
 ## 背景（现状盘点，2026-08-16 查证）
 
@@ -20,14 +20,14 @@
 **不做（明确边界）**：
 - **自定义命令（markdown 模板）**：并入 phase7 的 skills，不单独设计。skills 的 `user-invocable` 字段天生就是「自定义命令」机制，现在建两套是重复劳动、违反高内聚低耦合。
 - **`@` 上下文提及**：独立 Phase 10（语义是「往上下文塞内容」，非「触发动作」，UX 重）。
-- **Memory（PHIFORGE.md + CLAUDE.md 兼容）**：独立 Phase 9（启动常驻注入，非按需触发）。
+- **Memory（CLAUDE.md + auto-memory）**：独立 Phase 9（启动常驻注入，非按需触发；详见 `phase9-plan.md`）。
 - 不做 `/cost`（token 用量并进 `/status`，YAGNI）、`/compact`（`SummarizingMiddleware` 已 30k 自动压缩，手动压缩低价值）、`/mcp` `/login` `/init` `/add-dir`（不适用）。
 
 ## 全局路线图（输入/上下文面）
 
 ```
 Phase 8  斜杠命令（内置 + 分发器）   ← 本 phase，先做，造分发器地基
-Phase 9  Memory（PHIFORGE.md + CLAUDE.md 兼容）   ← 小、独立、紧随
+Phase 9  Memory（CLAUDE.md + auto-memory，见 phase9-plan）   ← 小、独立、紧随
 Phase 10 @ 上下文提及               ← 中成本、UX 重、独立
 Phase 7  Skills 生态（已有 plan）   ← 重、最后；7b 复用 Phase 8 的分发器
 ```
@@ -102,7 +102,7 @@ enum CommandEffect {
 
 ### 已查证（8/16，零框架改动）
 
-1. **`/model` —— 框架已支持，零改动**：`OpenAiClient::with_model(model)`（`openai.rs:74`）克隆出同 key/base_url 换 model 的新 client；`AgentRuntime::set_client(&mut self, Arc<dyn StreamClient>)`（`runtime/mod.rs:99`）换掉底层 `LlmEngine.client`（`RwLock<Arc<dyn StreamClient>>`，内部可变、全局可见）。`AgentRuntime` 是 `#[derive(Clone)]`（`Arc<RuntimeCore>`），故 `let mut rt = agent.runtime().clone(); rt.set_client(...)` 即切共享状态。**phiforge 侧唯一小事**：`main.rs` 需保留 `Arc<OpenAiClient>` 引用以便 `with_model` 重建。语义定为「下一轮生效」。
+1. **`/model` —— 框架已支持，零改动**：`OpenAiClient::with_model(model)`（`openai.rs:74`）克隆出同 key/base_url 换 model 的新 client；`AgentRuntime::set_client(&mut self, Arc<dyn StreamClient>)`（`runtime/mod.rs:99`）换掉底层 `LlmEngine.client`（`RwLock<Arc<dyn StreamClient>>`，内部可变、全局可见）。`AgentRuntime` 是 `#[derive(Clone)]`（`Arc<RuntimeCore>`），故 `let mut rt = agent.runtime().clone(); rt.set_client(...)` 即切共享状态。**phimint 侧唯一小事**：`main.rs` 需保留 `Arc<OpenAiClient>` 引用以便 `with_model` 重建。语义定为「下一轮生效」。
 2. **`/clear` —— 框架已支持，零改动**：`AgentRuntime::with_session_mut(&self, &session, f)`（`mod.rs:61`，`&self` 即可）+ `AgentSession::chat_messages_mut()`（`session.rs:80`，公开）。实现为 `chat_messages_mut().retain(仅 System)`：清 User/Assistant/Tool、保留 System，`turn_count()` 按 User 派生自动归零，session 目录与 turn 日志续号、approval 缓存保留。
 
 ### 仍待定（实施时定）
@@ -112,7 +112,7 @@ enum CommandEffect {
 
 ## 依赖 / 风险
 
-- **框架暴露口**：✅ 已查证（见「待定决策·已查证」）——`/model` 用 `set_client`+`with_model`、`/clear` 用 `with_session_mut`+`chat_messages_mut`，均零框架改动。唯一 phiforge 侧改动是 `main.rs` 保留 `Arc<OpenAiClient>` 引用供 `/model` 重建。
+- **框架暴露口**：✅ 已查证（见「待定决策·已查证」）——`/model` 用 `set_client`+`with_model`、`/clear` 用 `with_session_mut`+`chat_messages_mut`，均零框架改动。唯一 phimint 侧改动是 `main.rs` 保留 `Arc<OpenAiClient>` 引用供 `/model` 重建。
 - **token 计数来源**：`/status` 要展示 token 用量，需确认 `turn_NNN.jsonl` / 事件流里是否已带 usage 字段（memory 提到有 usage 观测，但需查是否暴露给 TUI 侧）；没有就只在 `/status` 展示「无 token 数据」或从 jsonl 累加。
 - **工具命令复用边界**：`/verify` `/diagnostics` 直接调工具核心，需确认核心函数与 agent 运行态（脏位、LSP 单例）解耦到可直接调用；若耦合，抽一个无状态入口（符合高内聚低耦合）。
 

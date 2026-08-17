@@ -1747,7 +1747,7 @@ mod tests {
         let prog = RuntimeEvent::UserEvent {
             session_id: SessionId::new(1),
             event: UserEvent::Progress {
-                text: "Compiling phiforge v0.1.0".to_string(),
+                text: "Compiling phimint v0.1.0".to_string(),
             },
             agent_id: None,
             trace_id: None,
@@ -1755,7 +1755,7 @@ mod tests {
         app.handle_event(TuiEvent::Runtime(prog));
         assert_eq!(
             app.status_line(),
-            "🔧 execute_command: Compiling phiforge v0.1.0"
+            "🔧 execute_command: Compiling phimint v0.1.0"
         );
 
         // A new tool call drops the previous tool's live progress.
@@ -2381,7 +2381,7 @@ mod tests {
 
     fn mention_scratch(tag: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!(
-            "phiforge-app-mention-{tag}-{}",
+            "phimint-app-mention-{tag}-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&path);
