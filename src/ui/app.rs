@@ -16,6 +16,7 @@ use phi_agent::{ApprovalDecision, ApprovalRequest, RuntimeEvent};
 use unicode_width::UnicodeWidthChar;
 
 use crate::approval::ApprovalItem;
+use crate::banner::{BannerRow, ColorScheme, SpanSpec};
 use crate::ui::input::Composer;
 use crate::ui::mention::{self, Entry};
 
@@ -68,6 +69,10 @@ pub enum LineKind {
 pub struct OutputLine {
     pub text: String,
     pub kind: LineKind,
+    /// Optional styled byte-ranges into `text` (startup banner runs). `None`
+    /// means the whole line takes the `kind` style. `text` is always the plain
+    /// concatenation, so copy/selection and the frame capture stay style-blind.
+    pub spans: Option<Vec<SpanSpec>>,
 }
 
 /// A line-range selection into `output` (inclusive). `anchor` is the drag
@@ -175,6 +180,9 @@ pub struct App {
     mention: Option<Mention>,
     /// The workspace root — in-workspace paths render relative to it.
     pub workspace_root: PathBuf,
+    /// The terminal color scheme (startup probe result, see main.rs). Banner
+    /// styled runs resolve their colors against this at render time.
+    scheme: ColorScheme,
     /// Output pane rect `(x, y, w, h)` in cells, refreshed each draw so mouse
     /// events can be hit-tested against the transcript.
     pub(crate) output_area: Option<(u16, u16, u16, u16)>,
@@ -216,6 +224,7 @@ impl App {
             context_menu: None,
             mention: None,
             workspace_root: PathBuf::new(),
+            scheme: ColorScheme::Dark,
             output_area: None,
             pending_text: String::new(),
             pending_thought: String::new(),
@@ -229,11 +238,36 @@ impl App {
     /// Append a system/banner line (welcome, workspace, log path).
     pub fn push_system(&mut self, text: &str) {
         for line in wrap(text, WRAP_WIDTH) {
-            self.output.push(OutputLine {
+            self.output.push(OutputLine { spans: None,
                 text: line,
                 kind: LineKind::System,
             });
         }
+    }
+
+    /// Append startup-banner rows verbatim: one output line per row, **no**
+    /// soft-wrap (the wordmark must stay whole; ratatui clips on narrow
+    /// terminals). Styled runs become `spans`, resolved against `scheme` at
+    /// render time; the plain `text` keeps copy/selection style-blind.
+    pub fn push_banner(&mut self, rows: Vec<BannerRow>) {
+        for row in rows {
+            let (text, spans) = row.to_runs();
+            self.output.push(OutputLine {
+                text,
+                kind: LineKind::System,
+                spans: Some(spans),
+            });
+        }
+    }
+
+    /// The terminal color scheme banner spans resolve against at render time.
+    pub fn scheme(&self) -> ColorScheme {
+        self.scheme
+    }
+
+    /// Set the terminal color scheme (called once at TUI start).
+    pub fn set_scheme(&mut self, scheme: ColorScheme) {
+        self.scheme = scheme;
     }
 
     /// Echo the user's submitted message into the transcript, so the frame log
@@ -249,7 +283,7 @@ impl App {
             } else {
                 format!("  {line}")
             };
-            self.output.push(OutputLine {
+            self.output.push(OutputLine { spans: None,
                 text,
                 kind: LineKind::User,
             });
@@ -264,7 +298,7 @@ impl App {
             TuiEvent::TurnError(msg) => {
                 self.flush_pending();
                 for line in wrap(&format!("❌ {msg}"), WRAP_WIDTH) {
-                    self.output.push(OutputLine {
+                    self.output.push(OutputLine { spans: None,
                         text: line,
                         kind: LineKind::Error,
                     });
@@ -323,7 +357,7 @@ impl App {
                     } else {
                         format!("⏺ {prefix}{tool_name} {args}")
                     };
-                    self.output.push(OutputLine {
+                    self.output.push(OutputLine { spans: None,
                         text,
                         kind: LineKind::Tool,
                     });
@@ -356,7 +390,7 @@ impl App {
                         };
                         (text, LineKind::ToolResult)
                     };
-                    self.output.push(OutputLine { text, kind });
+                    self.output.push(OutputLine { spans: None, text, kind });
                 }
                 self.live_progress = None;
                 self.status = AgentStatus::Running {
@@ -382,7 +416,7 @@ impl App {
                     } else {
                         format!("   {line}")
                     };
-                    block.push(OutputLine { text, kind: LineKind::Plan });
+                    block.push(OutputLine { spans: None, text, kind: LineKind::Plan });
                 }
                 for item in &plan {
                     let marker = match item.status {
@@ -390,7 +424,7 @@ impl App {
                         PlanStepStatus::InProgress => "🔄",
                         PlanStepStatus::Pending => "○",
                     };
-                    block.push(OutputLine {
+                    block.push(OutputLine { spans: None,
                         text: format!("   {marker} {}", item.step),
                         kind: LineKind::Plan,
                     });
@@ -404,7 +438,7 @@ impl App {
                             } else {
                                 format!("     {line}")
                             };
-                            block.push(OutputLine { text, kind: LineKind::Plan });
+                            block.push(OutputLine { spans: None, text, kind: LineKind::Plan });
                         }
                     }
                 }
@@ -424,11 +458,11 @@ impl App {
                 // Log line for history; the interactive popup (5b) is driven by
                 // the approval queue, which the QueuedApprovalHandler feeds.
                 self.flush_pending();
-                self.output.push(OutputLine {
+                self.output.push(OutputLine { spans: None,
                     text: format!("⚠️  approval: {}", request.title),
                     kind: LineKind::Approval,
                 });
-                self.output.push(OutputLine {
+                self.output.push(OutputLine { spans: None,
                     text: format!("     {}", request.message),
                     kind: LineKind::Approval,
                 });
@@ -444,13 +478,13 @@ impl App {
                 match agent_id.as_deref() {
                     Some(p) if !p.is_empty() => {
                         self.sub_agents.insert(p.to_string(), SubAgentStatus::Done);
-                        self.output.push(OutputLine {
+                        self.output.push(OutputLine { spans: None,
                             text: format!("✓ [{p}] done"),
                             kind: LineKind::Done,
                         });
                     }
                     _ => {
-                        self.output.push(OutputLine {
+                        self.output.push(OutputLine { spans: None,
                             text: "✅ done".to_string(),
                             kind: LineKind::Done,
                         });
@@ -465,13 +499,13 @@ impl App {
                 match agent_id.as_deref() {
                     Some(p) if !p.is_empty() => {
                         self.sub_agents.insert(p.to_string(), SubAgentStatus::Done);
-                        self.output.push(OutputLine {
+                        self.output.push(OutputLine { spans: None,
                             text: format!("✓ [{p}] done"),
                             kind: LineKind::Done,
                         });
                     }
                     _ => {
-                        self.output.push(OutputLine {
+                        self.output.push(OutputLine { spans: None,
                             text: "⏹ cancelled".to_string(),
                             kind: LineKind::Cancelled,
                         });
@@ -508,7 +542,7 @@ impl App {
             // it before the `started` marker to keep transcript order correct.
             self.flush_pending();
             self.sub_agents.insert(p.to_string(), SubAgentStatus::Running);
-            self.output.push(OutputLine {
+            self.output.push(OutputLine { spans: None,
                 text: format!("⏺ [{p}] started"),
                 kind: LineKind::Tool,
             });
@@ -572,7 +606,7 @@ impl App {
             } else {
                 line.clone()
             };
-            self.output.push(OutputLine {
+            self.output.push(OutputLine { spans: None,
                 text,
                 kind: LineKind::Thought,
             });
@@ -597,7 +631,7 @@ impl App {
             } else {
                 line.clone()
             };
-            self.output.push(OutputLine {
+            self.output.push(OutputLine { spans: None,
                 text,
                 kind: LineKind::Normal,
             });
@@ -1702,7 +1736,7 @@ mod tests {
     fn scroll_up_steps_from_bottom_not_noop() {
         let mut app = App::new();
         for i in 0..100 {
-            app.output.push(OutputLine { text: format!("line {i}"), kind: LineKind::Normal });
+            app.output.push(OutputLine { spans: None, text: format!("line {i}"), kind: LineKind::Normal });
         }
         app.scroll_up();
         assert!(!app.follow_bottom);
@@ -1713,7 +1747,7 @@ mod tests {
     fn scroll_down_reenters_follow_bottom() {
         let mut app = App::new();
         for i in 0..100 {
-            app.output.push(OutputLine { text: format!("line {i}"), kind: LineKind::Normal });
+            app.output.push(OutputLine { spans: None, text: format!("line {i}"), kind: LineKind::Normal });
         }
         app.scroll_up();
         app.scroll_up();
@@ -2017,7 +2051,7 @@ mod tests {
     fn mouse_drag_selects_line_range() {
         let mut app = App::new();
         for i in 0..10 {
-            app.output.push(OutputLine { text: format!("line {i}"), kind: LineKind::Normal });
+            app.output.push(OutputLine { spans: None, text: format!("line {i}"), kind: LineKind::Normal });
         }
         app.output_area = Some((0, 0, 100, 10));
         app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 2, 100, 10);
@@ -2030,7 +2064,7 @@ mod tests {
     fn mouse_drag_up_normalizes_selection() {
         let mut app = App::new();
         for i in 0..10 {
-            app.output.push(OutputLine { text: format!("line {i}"), kind: LineKind::Normal });
+            app.output.push(OutputLine { spans: None, text: format!("line {i}"), kind: LineKind::Normal });
         }
         app.output_area = Some((0, 0, 100, 10));
         app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 5, 100, 10);
@@ -2042,7 +2076,7 @@ mod tests {
     #[test]
     fn click_outside_output_clears_selection() {
         let mut app = App::new();
-        app.output.push(OutputLine { text: "x".into(), kind: LineKind::Normal });
+        app.output.push(OutputLine { spans: None, text: "x".into(), kind: LineKind::Normal });
         app.output_area = Some((0, 0, 10, 5));
         app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 0, 10, 5);
         assert!(app.selection.is_some());
@@ -2053,7 +2087,7 @@ mod tests {
     #[test]
     fn selection_text_clamps_stale_indices() {
         let mut app = App::new();
-        app.output.push(OutputLine { text: "a".into(), kind: LineKind::Normal });
+        app.output.push(OutputLine { spans: None, text: "a".into(), kind: LineKind::Normal });
         app.selection = Some(Selection { anchor: 0, head: 5 });
         assert_eq!(app.selection_text(), "a");
     }
@@ -2075,7 +2109,7 @@ mod tests {
     #[test]
     fn right_click_opens_menu_and_enter_copies() {
         let mut app = App::new();
-        app.output.push(OutputLine { text: "x".into(), kind: LineKind::Normal });
+        app.output.push(OutputLine { spans: None, text: "x".into(), kind: LineKind::Normal });
         app.output_area = Some((0, 0, 10, 10));
         app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 0, 20, 20);
         app.handle_mouse(MouseEventKind::Down(MouseButton::Right), 3, 4, 20, 20);
@@ -2090,7 +2124,7 @@ mod tests {
     #[test]
     fn context_menu_arrows_move_highlight_and_esc_closes() {
         let mut app = App::new();
-        app.output.push(OutputLine { text: "x".into(), kind: LineKind::Normal });
+        app.output.push(OutputLine { spans: None, text: "x".into(), kind: LineKind::Normal });
         app.output_area = Some((0, 0, 10, 10));
         app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 0, 20, 20);
         app.handle_mouse(MouseEventKind::Down(MouseButton::Right), 0, 0, 20, 20);
@@ -2104,7 +2138,7 @@ mod tests {
     #[test]
     fn clicking_menu_copy_item_copies_and_closes() {
         let mut app = App::new();
-        app.output.push(OutputLine { text: "x".into(), kind: LineKind::Normal });
+        app.output.push(OutputLine { spans: None, text: "x".into(), kind: LineKind::Normal });
         app.output_area = Some((0, 0, 10, 10));
         app.selection = Some(Selection { anchor: 0, head: 0 });
         // Open the menu at (0,0): 12×4 box, items at rows y+1 ("拷贝") and y+2
@@ -2126,7 +2160,7 @@ mod tests {
     #[test]
     fn clicking_menu_cancel_item_closes_without_copy() {
         let mut app = App::new();
-        app.output.push(OutputLine { text: "x".into(), kind: LineKind::Normal });
+        app.output.push(OutputLine { spans: None, text: "x".into(), kind: LineKind::Normal });
         app.output_area = Some((0, 0, 10, 10));
         app.selection = Some(Selection { anchor: 0, head: 0 });
         app.handle_mouse(MouseEventKind::Down(MouseButton::Right), 0, 0, 20, 20);
@@ -2143,7 +2177,7 @@ mod tests {
     #[test]
     fn clicking_outside_menu_closes_it_and_restarts_selection() {
         let mut app = App::new();
-        app.output.push(OutputLine { text: "x".into(), kind: LineKind::Normal });
+        app.output.push(OutputLine { spans: None, text: "x".into(), kind: LineKind::Normal });
         app.output_area = Some((0, 0, 10, 10));
         app.selection = Some(Selection { anchor: 0, head: 0 });
         app.handle_mouse(MouseEventKind::Down(MouseButton::Right), 0, 0, 20, 20);

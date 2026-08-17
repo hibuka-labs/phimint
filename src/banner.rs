@@ -83,10 +83,35 @@ pub struct BannerRow {
     pub spans: Vec<BannerSpan>,
 }
 
+/// A styled byte-range within an output line's plain text (TUI rendering).
+/// `start`/`len` align with the concatenated run strings in `BannerRow::text`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpanSpec {
+    pub start: usize,
+    pub len: usize,
+    pub style: BannerStyle,
+}
+
 impl BannerRow {
     /// The concatenated plain text of the row (used by renderers and tests).
     pub fn text(&self) -> String {
         self.spans.iter().map(|(t, _)| t.as_str()).collect()
+    }
+
+    /// The plain text plus its non-`Default` styled ranges (byte offsets into
+    /// the text). `Default` runs (e.g. wordmark connector spaces) are dropped —
+    /// renderers fall back to the line's own style for them.
+    pub fn to_runs(&self) -> (String, Vec<SpanSpec>) {
+        let text = self.text();
+        let mut spans = Vec::with_capacity(self.spans.len());
+        let mut off = 0usize;
+        for (s, style) in &self.spans {
+            if *style != BannerStyle::Default {
+                spans.push(SpanSpec { start: off, len: s.len(), style: *style });
+            }
+            off += s.len();
+        }
+        (text, spans)
     }
 }
 

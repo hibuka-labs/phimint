@@ -421,16 +421,16 @@ mod tests {
         let mut app = App::new();
         app.push_system("phiforge — welcome");
         for i in 0..60 {
-            app.output.push(OutputLine {
+            app.output.push(OutputLine { spans: None,
                 text: format!("streamed line {i}"),
                 kind: LineKind::Normal,
             });
         }
-        app.output.push(OutputLine {
+        app.output.push(OutputLine { spans: None,
             text: "⏺ [sub/1] read_file {\"path\":\"src/lib.rs\"}".into(),
             kind: LineKind::Tool,
         });
-        app.output.push(OutputLine {
+        app.output.push(OutputLine { spans: None,
             text: "  ⛔ execute_command denied".into(),
             kind: LineKind::Error,
         });
@@ -464,7 +464,7 @@ mod tests {
         // Scrolled up (not following bottom).
         let mut app = App::new();
         for i in 0..100 {
-            app.output.push(OutputLine {
+            app.output.push(OutputLine { spans: None,
                 text: format!("long line {i}"),
                 kind: LineKind::Normal,
             });
@@ -531,7 +531,7 @@ mod tests {
     fn window_range_shifts_by_scroll_offset() {
         let mut app = App::new();
         for i in 0..100 {
-            app.output.push(OutputLine { text: format!("line {i}"), kind: LineKind::Normal });
+            app.output.push(OutputLine { spans: None, text: format!("line {i}"), kind: LineKind::Normal });
         }
         assert_eq!(window_range(100, &app, 30), 70..100);
         app.follow_bottom = false;
@@ -593,7 +593,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new();
         for i in 0..20 {
-            app.output.push(OutputLine {
+            app.output.push(OutputLine { spans: None,
                 text: format!("line {i}"),
                 kind: LineKind::Normal,
             });
