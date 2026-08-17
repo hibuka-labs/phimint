@@ -10,19 +10,28 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap},
 };
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::banner::{BannerStyle, ColorScheme, SpanSpec};
 use crate::ui::app::{
     AgentStatus, App, CONTEXT_MENU_H, CONTEXT_MENU_W, LineKind, SubAgentStatus, context_menu_pos,
-    window_range,
+    window_range, wrap,
 };
 
 /// Max composer rows shown (its box grows with the buffer up to this).
 const MAX_COMPOSER_ROWS: usize = 8;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
-    let composer_height = app.composer.height().min(MAX_COMPOSER_ROWS) as u16 + 2;
+    // Keep output wrap width in sync with the terminal's content area
+    // (minus 2 for the composer's border). This ensures output and input
+    // widths stay aligned across terminal resizes.
+    let content_width = f.area().width.saturating_sub(2) as usize;
+    app.set_wrap_width(content_width);
+
+    // Composer height: visual rows (accounting for soft-wrap) + 2 for border.
+    let composer_inner_w = f.area().width;
+    let composer_vis = app.composer.visual_height(composer_inner_w).min(MAX_COMPOSER_ROWS);
+    let composer_height = composer_vis as u16 + 2;
     let has_sub_agents = !app.sub_agents.is_empty();
 
     let mut constraints = vec![
@@ -109,49 +118,98 @@ fn render_output(f: &mut Frame, app: &App, area: Rect) {
 
 fn render_composer(f: &mut Frame, app: &App, area: Rect) {
     let inner_height = area.height.saturating_sub(2) as usize;
+    let inner_width = area.width.saturating_sub(2) as usize; // border left+right
+    let prefix_w = 2usize; // "> " or "  "
     let lines = app.composer.lines();
-    // Show the tail of the buffer so the cursor (usually at the end) is visible.
-    let start = lines.len().saturating_sub(inner_height);
     let cursor = app.composer.cursor();
 
-    let items: Vec<Line> = lines[start..]
-        .iter()
-        .enumerate()
-        .map(|(i, line)| {
-            let idx = start + i;
-            // A `>` prompt marks the first line; continuation lines indent to
-            // the same column (Claude Code style).
-            let prefix = if idx == 0 { "> " } else { "  " };
-            let full = format!("{prefix}{line}");
-            if idx == cursor.0 {
-                line_with_cursor(&full, prefix.len() + cursor.1)
-            } else {
-                Line::from(full)
+    // Pre-wrap each logical line to `content_w` columns so each `Line` maps
+    // to exactly one ratatui row. This avoids double-wrapping (our slice +
+    // Paragraph::wrap) which caused misaligned display.
+    let mut items: Vec<Line> = Vec::new();
+    for (idx, line) in lines.iter().enumerate() {
+        let prefix = if idx == 0 { "> " } else { "  " };
+        let full = format!("{prefix}{line}");
+        let wrapped = wrap(&full, inner_width);
+
+        // Find which visual row the cursor falls on and its byte offset
+        // within that wrapped row.
+        let cursor_pos = if idx == cursor.0 {
+            let cursor_byte = prefix_w + cursor.1;
+            let mut col = 0usize;
+            let mut cur_row = 0usize;
+            let mut cur_col_in_row = 0usize;
+            let mut byte_offset = 0usize;
+            let mut found = None;
+            for ch in full.chars() {
+                let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+                if col > 0 && col + cw > inner_width {
+                    // Wrap: new row starts with this char.
+                    col = 0;
+                    cur_row += 1;
+                    cur_col_in_row = 0;
+                }
+                if byte_offset >= cursor_byte {
+                    // Cursor is at this column in this row.
+                    found = Some((cur_row, cur_col_in_row));
+                    break;
+                }
+                col += cw;
+                cur_col_in_row += cw;
+                byte_offset += ch.len_utf8();
             }
-        })
-        .collect();
+            // Cursor at end of text: place on last row at end.
+            if found.is_none() {
+                found = Some((cur_row, cur_col_in_row));
+            }
+            found
+        } else {
+            None
+        };
+
+        for (j, row) in wrapped.iter().enumerate() {
+            if let Some((vis_row, vis_col)) = cursor_pos {
+                if j == vis_row {
+                    // Byte offset into the wrapped row for the cursor.
+                    let mut b = 0usize;
+                    let mut c = 0usize;
+                    for ch in row.chars() {
+                        if c >= vis_col {
+                            break;
+                        }
+                        c += UnicodeWidthChar::width(ch).unwrap_or(0);
+                        b += ch.len_utf8();
+                    }
+                    let before = &row[..b];
+                    let at = row[b..].chars().next();
+                    let after_start = b + at.map(|ch| ch.len_utf8()).unwrap_or(0);
+                    let after = &row[after_start..];
+                    let cursor_style = Style::default().add_modifier(Modifier::REVERSED);
+                    let mut spans = vec![Span::raw(before.to_string())];
+                    match at {
+                        Some(ch) => spans.push(Span::styled(ch.to_string(), cursor_style)),
+                        None => spans.push(Span::styled(" ".to_string(), cursor_style)),
+                    }
+                    spans.push(Span::raw(after.to_string()));
+                    items.push(Line::from(spans));
+                    continue;
+                }
+            }
+            items.push(Line::from(row.clone()));
+        }
+    }
+
+    // Scroll to show the bottom of the buffer (cursor is usually at the end).
+    let total = items.len();
+    let scroll = total.saturating_sub(inner_height) as u16;
 
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded);
-    f.render_widget(Paragraph::new(items).block(block), area);
-}
-
-/// Render one composer line with a reversed-video cursor at `byte`.
-fn line_with_cursor(line: &str, byte: usize) -> Line<'static> {
-    let before = &line[..byte];
-    let at = line[byte..].chars().next();
-    let after_start = byte + at.map(|c| c.len_utf8()).unwrap_or(0);
-    let after = &line[after_start..];
-
-    let cursor_style = Style::default().add_modifier(Modifier::REVERSED);
-    let mut spans = vec![Span::raw(before.to_string())];
-    match at {
-        Some(c) => spans.push(Span::styled(c.to_string(), cursor_style)),
-        None => spans.push(Span::styled(" ".to_string(), cursor_style)),
-    }
-    spans.push(Span::raw(after.to_string()));
-    Line::from(spans)
+    f.render_widget(
+        Paragraph::new(items).block(block).scroll((scroll, 0)),
+        area,
+    );
 }
 
 fn render_status(f: &mut Frame, app: &App, area: Rect) {
@@ -542,16 +600,16 @@ mod tests {
         let mut app = App::new();
         app.push_system("phimint — welcome");
         for i in 0..60 {
-            app.output.push(OutputLine { spans: None,
+            app.output.push(OutputLine { spans: None, original: None,
                 text: format!("streamed line {i}"),
                 kind: LineKind::Normal,
             });
         }
-        app.output.push(OutputLine { spans: None,
+        app.output.push(OutputLine { spans: None, original: None,
             text: "⏺ [sub/1] read_file {\"path\":\"src/lib.rs\"}".into(),
             kind: LineKind::Tool,
         });
-        app.output.push(OutputLine { spans: None,
+        app.output.push(OutputLine { spans: None, original: None,
             text: "  ⛔ execute_command denied".into(),
             kind: LineKind::Error,
         });
@@ -585,7 +643,7 @@ mod tests {
         // Scrolled up (not following bottom).
         let mut app = App::new();
         for i in 0..100 {
-            app.output.push(OutputLine { spans: None,
+            app.output.push(OutputLine { spans: None, original: None,
                 text: format!("long line {i}"),
                 kind: LineKind::Normal,
             });
@@ -652,7 +710,7 @@ mod tests {
     fn window_range_shifts_by_scroll_offset() {
         let mut app = App::new();
         for i in 0..100 {
-            app.output.push(OutputLine { spans: None, text: format!("line {i}"), kind: LineKind::Normal });
+            app.output.push(OutputLine { spans: None, original: None, text: format!("line {i}"), kind: LineKind::Normal });
         }
         assert_eq!(window_range(100, &app, 30), 70..100);
         app.follow_bottom = false;
@@ -714,7 +772,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new();
         for i in 0..20 {
-            app.output.push(OutputLine { spans: None,
+            app.output.push(OutputLine { spans: None, original: None,
                 text: format!("line {i}"),
                 kind: LineKind::Normal,
             });

@@ -5,6 +5,8 @@
 //! being split into one turn per line). Enter sends the whole buffer, Shift+Enter
 //! inserts a newline, and pasted text with embedded newlines lands in one buffer.
 
+use unicode_width::UnicodeWidthStr;
+
 /// A multi-line text buffer with a cursor.
 ///
 /// The cursor is a `(line, byte_offset)` pair; every mutation keeps `byte_offset`
@@ -36,6 +38,25 @@ impl Composer {
     /// Number of lines currently in the buffer.
     pub fn height(&self) -> usize {
         self.lines.len()
+    }
+
+    /// Visual row count after accounting for soft-wrap at `inner_width` columns.
+    ///
+    /// Each logical line is prefixed with `"> "` (first) or `"  "` (continuation),
+    /// consuming 2 columns, so the effective content width is `inner_width - 2`.
+    /// A logical line that overflows this width wraps into multiple visual rows.
+    pub fn visual_height(&self, inner_width: u16) -> usize {
+        let content_w = inner_width.saturating_sub(2) as usize;
+        if content_w == 0 {
+            return self.lines.len();
+        }
+        self.lines
+            .iter()
+            .map(|line| {
+                let w = UnicodeWidthStr::width(line.as_str());
+                w.div_ceil(content_w).max(1)
+            })
+            .sum()
     }
 
     /// The raw lines (used by the render layer).

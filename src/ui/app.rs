@@ -9,6 +9,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::ops::Range;
 use std::path::PathBuf;
+use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use agent_base::{PlanStepStatus, UserEvent};
@@ -20,9 +21,9 @@ use crate::banner::{BannerRow, ColorScheme, SpanSpec};
 use crate::ui::input::Composer;
 use crate::ui::mention::{self, Entry};
 
-/// Columns the output buffer wraps at. Fixed (rather than terminal-width) so a
-/// resize doesn't reflow history; greedy char-boundary wrap, 1 column per char.
-pub const WRAP_WIDTH: usize = 100;
+/// Default columns the output buffer wraps at. Overridden at runtime to match
+/// the terminal width (see [`App::set_wrap_width`]).
+const DEFAULT_WRAP_WIDTH: usize = 100;
 
 /// Lines a PageUp/PageDown scrolls the output by.
 const SCROLL_STEP: usize = 10;
@@ -73,6 +74,13 @@ pub struct OutputLine {
     /// means the whole line takes the `kind` style. `text` is always the plain
     /// concatenation, so copy/selection and the frame capture stay style-blind.
     pub spans: Option<Vec<SpanSpec>>,
+    /// The original (unwrapped) text for this logical block. When the terminal
+    /// width changes, lines with a non-empty `original` are re-wrapped. Lines
+    /// without `original` (banners, tool calls, plan blocks) are kept as-is.
+    /// For multi-line originals (user text, thoughts), the `original` is stored
+    /// only on the *first* output line of the block; subsequent lines have
+    /// `original = None` and are replaced during re-wrap.
+    pub original: Option<String>,
 }
 
 /// A line-range selection into `output` (inclusive). `anchor` is the drag
@@ -189,6 +197,9 @@ pub struct App {
     selection: Option<Selection>,
     /// Right-click copy menu, shown while a selection is active.
     context_menu: Option<ContextMenu>,
+    /// Timestamp of the last "press Ctrl+C again to exit" hint. If set and
+    /// within `QUIT_HINT_TIMEOUT`, a second Ctrl+C actually quits.
+    quit_hint_at: Option<Instant>,
     /// `@` mention picker, open while the user is choosing a path.
     mention: Option<Mention>,
     /// `/` skill picker, open while the user is choosing a skill.
@@ -217,6 +228,9 @@ pub struct App {
     /// `pending_text`/`pending_thought` so rendering a long stream is O(new
     /// delta) per frame instead of re-wrapping the whole buffer.
     tail_wrap: WrapCache,
+    /// Dynamic wrap width for output lines, updated each frame to match the
+    /// terminal width (minus border). Keeps output and composer widths aligned.
+    wrap_width: usize,
 }
 
 impl Default for App {
@@ -239,6 +253,7 @@ impl App {
             sub_agents: BTreeMap::new(),
             selection: None,
             context_menu: None,
+            quit_hint_at: None,
             mention: None,
             slash: None,
             skill_summaries: Vec::new(),
@@ -250,14 +265,16 @@ impl App {
             pending_agent: None,
             live_progress: None,
             notice: None,
-            tail_wrap: WrapCache::new(WRAP_WIDTH),
+            tail_wrap: WrapCache::new(DEFAULT_WRAP_WIDTH),
+            wrap_width: DEFAULT_WRAP_WIDTH,
         }
     }
 
     /// Append a system/banner line (welcome, workspace, log path).
     pub fn push_system(&mut self, text: &str) {
-        for line in wrap(text, WRAP_WIDTH) {
+        for (i, line) in wrap(text, self.wrap_width).into_iter().enumerate() {
             self.output.push(OutputLine { spans: None,
+                original: if i == 0 { Some(text.to_string()) } else { None },
                 text: line,
                 kind: LineKind::System,
             });
@@ -275,6 +292,7 @@ impl App {
                 text,
                 kind: LineKind::System,
                 spans: Some(spans),
+                original: None,
             });
         }
     }
@@ -289,21 +307,82 @@ impl App {
         self.scheme = scheme;
     }
 
+    /// Update the output wrap width to match the terminal's content area.
+    /// Called each frame from `draw()` so output and composer widths stay
+    /// aligned. When the width changes, committed output lines are re-wrapped.
+    pub fn set_wrap_width(&mut self, width: usize) {
+        let width = width.max(1);
+        if width == self.wrap_width {
+            return;
+        }
+        self.wrap_width = width;
+        // Re-wrap committed output lines at the new width.
+        self.rewrap_output();
+        // Re-wrap the streaming tail at the new width.
+        if !self.pending_text.is_empty() || !self.pending_thought.is_empty() {
+            let source = if !self.pending_text.is_empty() {
+                self.pending_text.clone()
+            } else {
+                self.pending_thought.clone()
+            };
+            self.tail_wrap = WrapCache::new(width);
+            self.tail_wrap.extend(&source);
+        }
+    }
+
+    /// Re-wrap all committed output lines that have an `original` source.
+    /// Called when the terminal width changes so output lines follow the new
+    /// width instead of staying at the old wrap width.
+    fn rewrap_output(&mut self) {
+        let mut new: Vec<OutputLine> = Vec::with_capacity(self.output.len());
+        for line in self.output.drain(..) {
+            if let Some(ref original) = line.original {
+                if original.is_empty() || line.spans.is_some() {
+                    // Banner lines or empty originals: keep as-is.
+                    new.push(line);
+                    continue;
+                }
+                let kind = line.kind;
+                for (j, wrapped) in wrap(original, self.wrap_width).into_iter().enumerate() {
+                    let display = if kind == LineKind::User {
+                        if j == 0 {
+                            format!("❯ {wrapped}")
+                        } else {
+                            format!("  {wrapped}")
+                        }
+                    } else {
+                        wrapped
+                    };
+                    new.push(OutputLine {
+                        text: display,
+                        kind,
+                        spans: None,
+                        original: if j == 0 { Some(original.clone()) } else { None },
+                    });
+                }
+            } else {
+                new.push(line);
+            }
+        }
+        self.output = new;
+    }
+
     /// Echo the user's submitted message into the transcript, so the frame log
     /// and output buffer retain the human side of the conversation (the JSONL
     /// turn log already stores `user_input`, but the rendered transcript didn't
     /// show it). `❯` on the first line, indented continuations after.
     pub fn push_user(&mut self, text: &str) {
         let mut first = true;
-        for line in wrap(text, WRAP_WIDTH) {
-            let text = if first {
+        for (i, line) in wrap(text, self.wrap_width).into_iter().enumerate() {
+            let display = if first {
                 first = false;
                 format!("❯ {line}")
             } else {
                 format!("  {line}")
             };
             self.output.push(OutputLine { spans: None,
-                text,
+                original: if i == 0 { Some(text.to_string()) } else { None },
+                text: display,
                 kind: LineKind::User,
             });
         }
@@ -316,8 +395,10 @@ impl App {
             TuiEvent::Runtime(ev) => self.handle_runtime(ev),
             TuiEvent::TurnError(msg) => {
                 self.flush_pending();
-                for line in wrap(&format!("❌ {msg}"), WRAP_WIDTH) {
+                let err_text = format!("❌ {msg}");
+                for (i, line) in wrap(&err_text, self.wrap_width).into_iter().enumerate() {
                     self.output.push(OutputLine { spans: None,
+                        original: if i == 0 { Some(err_text.clone()) } else { None },
                         text: line,
                         kind: LineKind::Error,
                     });
@@ -376,7 +457,7 @@ impl App {
                     } else {
                         format!("⏺ {prefix}{tool_name} {args}")
                     };
-                    self.output.push(OutputLine { spans: None,
+                    self.output.push(OutputLine { spans: None, original: None,
                         text,
                         kind: LineKind::Tool,
                     });
@@ -409,7 +490,7 @@ impl App {
                         };
                         (text, LineKind::ToolResult)
                     };
-                    self.output.push(OutputLine { spans: None, text, kind });
+                    self.output.push(OutputLine { spans: None, original: None, text, kind });
                 }
                 self.live_progress = None;
                 self.status = AgentStatus::Running {
@@ -429,13 +510,13 @@ impl App {
                 // tool (fits one line); objective/explanation wrap with a hanging
                 // indent.
                 let mut block: Vec<OutputLine> = Vec::new();
-                for (i, line) in wrap(&objective, WRAP_WIDTH).into_iter().enumerate() {
+                for (i, line) in wrap(&objective, self.wrap_width).into_iter().enumerate() {
                     let text = if i == 0 {
                         format!("📋 {line}")
                     } else {
                         format!("   {line}")
                     };
-                    block.push(OutputLine { spans: None, text, kind: LineKind::Plan });
+                    block.push(OutputLine { spans: None, original: None, text, kind: LineKind::Plan });
                 }
                 for item in &plan {
                     let marker = match item.status {
@@ -443,7 +524,7 @@ impl App {
                         PlanStepStatus::InProgress => "🔄",
                         PlanStepStatus::Pending => "○",
                     };
-                    block.push(OutputLine { spans: None,
+                    block.push(OutputLine { spans: None, original: None,
                         text: format!("   {marker} {}", item.step),
                         kind: LineKind::Plan,
                     });
@@ -451,13 +532,13 @@ impl App {
                 if let Some(exp) = &explanation {
                     let exp = exp.trim();
                     if !exp.is_empty() {
-                        for (i, line) in wrap(exp, WRAP_WIDTH).into_iter().enumerate() {
+                        for (i, line) in wrap(exp, self.wrap_width).into_iter().enumerate() {
                             let text = if i == 0 {
                                 format!("   ↳ {line}")
                             } else {
                                 format!("     {line}")
                             };
-                            block.push(OutputLine { spans: None, text, kind: LineKind::Plan });
+                            block.push(OutputLine { spans: None, original: None, text, kind: LineKind::Plan });
                         }
                     }
                 }
@@ -477,11 +558,11 @@ impl App {
                 // Log line for history; the interactive popup (5b) is driven by
                 // the approval queue, which the QueuedApprovalHandler feeds.
                 self.flush_pending();
-                self.output.push(OutputLine { spans: None,
+                self.output.push(OutputLine { spans: None, original: None,
                     text: format!("⚠️  approval: {}", request.title),
                     kind: LineKind::Approval,
                 });
-                self.output.push(OutputLine { spans: None,
+                self.output.push(OutputLine { spans: None, original: None,
                     text: format!("     {}", request.message),
                     kind: LineKind::Approval,
                 });
@@ -497,13 +578,13 @@ impl App {
                 match agent_id.as_deref() {
                     Some(p) if !p.is_empty() => {
                         self.sub_agents.insert(p.to_string(), SubAgentStatus::Done);
-                        self.output.push(OutputLine { spans: None,
+                        self.output.push(OutputLine { spans: None, original: None,
                             text: format!("✓ [{p}] done"),
                             kind: LineKind::Done,
                         });
                     }
                     _ => {
-                        self.output.push(OutputLine { spans: None,
+                        self.output.push(OutputLine { spans: None, original: None,
                             text: "✅ done".to_string(),
                             kind: LineKind::Done,
                         });
@@ -518,13 +599,13 @@ impl App {
                 match agent_id.as_deref() {
                     Some(p) if !p.is_empty() => {
                         self.sub_agents.insert(p.to_string(), SubAgentStatus::Done);
-                        self.output.push(OutputLine { spans: None,
+                        self.output.push(OutputLine { spans: None, original: None,
                             text: format!("✓ [{p}] done"),
                             kind: LineKind::Done,
                         });
                     }
                     _ => {
-                        self.output.push(OutputLine { spans: None,
+                        self.output.push(OutputLine { spans: None, original: None,
                             text: "⏹ cancelled".to_string(),
                             kind: LineKind::Cancelled,
                         });
@@ -561,7 +642,7 @@ impl App {
             // it before the `started` marker to keep transcript order correct.
             self.flush_pending();
             self.sub_agents.insert(p.to_string(), SubAgentStatus::Running);
-            self.output.push(OutputLine { spans: None,
+            self.output.push(OutputLine { spans: None, original: None,
                 text: format!("⏺ [{p}] started"),
                 kind: LineKind::Tool,
             });
@@ -612,6 +693,7 @@ impl App {
         if self.pending_thought.is_empty() {
             return;
         }
+        let original = self.pending_thought.clone();
         self.pending_thought.clear();
         let prefix = self
             .pending_agent
@@ -626,6 +708,7 @@ impl App {
                 line.clone()
             };
             self.output.push(OutputLine { spans: None,
+                original: if i == 0 { Some(original.clone()) } else { None },
                 text,
                 kind: LineKind::Thought,
             });
@@ -637,6 +720,7 @@ impl App {
         if self.pending_text.is_empty() {
             return;
         }
+        let original = self.pending_text.clone();
         self.pending_text.clear();
         let prefix = self
             .pending_agent
@@ -651,6 +735,7 @@ impl App {
                 line.clone()
             };
             self.output.push(OutputLine { spans: None,
+                original: if i == 0 { Some(original.clone()) } else { None },
                 text,
                 kind: LineKind::Normal,
             });
@@ -819,6 +904,11 @@ impl App {
             .map(|l| l.text.as_str())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// Clear the active transcript selection.
+    pub fn clear_selection(&mut self) {
+        self.selection = None;
     }
 
     /// The right-click menu, if open.
@@ -1133,7 +1223,11 @@ impl App {
         let super_key = modifiers.contains(KeyModifiers::SUPER);
 
         // Any key dismisses a transient notice (copy feedback) before handling.
+        // Non-Ctrl+C keys also reset the quit-hint double-press window.
         self.notice = None;
+        if !(ctrl && code == Char('c')) {
+            self.quit_hint_at = None;
+        }
 
         // Cmd+C (Super) is the macOS copy shortcut: copy the selection, and do
         // nothing when there's no selection — it never cancels/quits (that's
@@ -1146,18 +1240,37 @@ impl App {
             return None;
         }
 
-        // Ctrl+C always wins: with an active selection it copies the selection;
-        // otherwise it cancels a running turn (or pending approval) / quits.
+        // Ctrl+C: copy selection → cancel running → double-press to quit.
+        //   1. If there's an active selection, copy it (caller clears selection).
+        //   2. If the agent is running (or approval pending), cancel it.
+        //   3. Otherwise, show a hint; a second Ctrl+C within timeout quits.
         if ctrl && code == Char('c') {
             if self.selection.is_some() {
+                tracing::info!("ctrl+c: has selection → copy");
                 self.context_menu = None;
+                self.quit_hint_at = None;
                 return Some(Action::CopySelection);
             }
-            return Some(if self.running || !self.approval_queue.is_empty() {
-                Action::Cancel
-            } else {
-                Action::Quit
-            });
+            if self.running || !self.approval_queue.is_empty() {
+                tracing::info!("ctrl+c: running/approval → cancel");
+                self.quit_hint_at = None;
+                return Some(Action::Cancel);
+            }
+            // Double-press to quit: first press shows hint, second press
+            // within timeout actually quits.
+            const QUIT_HINT_TIMEOUT: std::time::Duration =
+                std::time::Duration::from_secs(2);
+            if let Some(at) = self.quit_hint_at {
+                if at.elapsed() < QUIT_HINT_TIMEOUT {
+                    tracing::info!("ctrl+c: hint active → quit");
+                    self.quit_hint_at = None;
+                    return Some(Action::Quit);
+                }
+            }
+            tracing::info!("ctrl+c: idle → show quit hint");
+            self.quit_hint_at = Some(Instant::now());
+            self.set_notice("Press Ctrl+C again to exit");
+            return None;
         }
 
         // Right-click copy menu: Up/Down move the highlight, Enter copies (or
@@ -1790,10 +1903,17 @@ mod tests {
     fn ctrl_c_cancels_when_running() {
         let mut app = App::new();
         app.running = false;
+        // First Ctrl+C when idle → show hint (not quit yet).
+        assert_eq!(
+            app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            None
+        );
+        // Second Ctrl+C within timeout → quit.
         assert_eq!(
             app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL),
             Some(Action::Quit)
         );
+        // While running → cancel immediately (no hint).
         app.running = true;
         assert_eq!(
             app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL),
@@ -1870,7 +1990,7 @@ mod tests {
     #[test]
     fn streaming_tail_lines_wraps_long_text() {
         let mut app = App::new();
-        // 250 chars at WRAP_WIDTH=100 → three wrapped lines.
+        // 250 chars at DEFAULT_WRAP_WIDTH=100 → three wrapped lines.
         let long = "a".repeat(250);
         app.handle_event(TuiEvent::Runtime(text(&long)));
         let (lines, kind) = app.streaming_tail_lines().expect("tail present");
@@ -1915,7 +2035,7 @@ mod tests {
     fn scroll_up_steps_from_bottom_not_noop() {
         let mut app = App::new();
         for i in 0..100 {
-            app.output.push(OutputLine { spans: None, text: format!("line {i}"), kind: LineKind::Normal });
+            app.output.push(OutputLine { spans: None, original: None, text: format!("line {i}"), kind: LineKind::Normal });
         }
         app.scroll_up();
         assert!(!app.follow_bottom);
@@ -1926,7 +2046,7 @@ mod tests {
     fn scroll_down_reenters_follow_bottom() {
         let mut app = App::new();
         for i in 0..100 {
-            app.output.push(OutputLine { spans: None, text: format!("line {i}"), kind: LineKind::Normal });
+            app.output.push(OutputLine { spans: None, original: None, text: format!("line {i}"), kind: LineKind::Normal });
         }
         app.scroll_up();
         app.scroll_up();
@@ -2230,7 +2350,7 @@ mod tests {
     fn mouse_drag_selects_line_range() {
         let mut app = App::new();
         for i in 0..10 {
-            app.output.push(OutputLine { spans: None, text: format!("line {i}"), kind: LineKind::Normal });
+            app.output.push(OutputLine { spans: None, original: None, text: format!("line {i}"), kind: LineKind::Normal });
         }
         app.output_area = Some((0, 0, 100, 10));
         app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 2, 100, 10);
@@ -2243,7 +2363,7 @@ mod tests {
     fn mouse_drag_up_normalizes_selection() {
         let mut app = App::new();
         for i in 0..10 {
-            app.output.push(OutputLine { spans: None, text: format!("line {i}"), kind: LineKind::Normal });
+            app.output.push(OutputLine { spans: None, original: None, text: format!("line {i}"), kind: LineKind::Normal });
         }
         app.output_area = Some((0, 0, 100, 10));
         app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 5, 100, 10);
@@ -2255,7 +2375,7 @@ mod tests {
     #[test]
     fn click_outside_output_clears_selection() {
         let mut app = App::new();
-        app.output.push(OutputLine { spans: None, text: "x".into(), kind: LineKind::Normal });
+        app.output.push(OutputLine { spans: None, original: None, text: "x".into(), kind: LineKind::Normal });
         app.output_area = Some((0, 0, 10, 5));
         app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 0, 10, 5);
         assert!(app.selection.is_some());
@@ -2266,29 +2386,52 @@ mod tests {
     #[test]
     fn selection_text_clamps_stale_indices() {
         let mut app = App::new();
-        app.output.push(OutputLine { spans: None, text: "a".into(), kind: LineKind::Normal });
+        app.output.push(OutputLine { spans: None, original: None, text: "a".into(), kind: LineKind::Normal });
         app.selection = Some(Selection { anchor: 0, head: 5 });
         assert_eq!(app.selection_text(), "a");
     }
 
     #[test]
-    fn ctrl_c_copies_selection_else_cancel_quit() {
+    fn ctrl_c_copies_selection_then_double_press_quits() {
         let mut app = App::new();
+        // With selection → copy (caller clears selection after copy).
+        app.selection = Some(Selection { anchor: 0, head: 5 });
+        assert_eq!(
+            app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            Some(Action::CopySelection)
+        );
+        // Caller clears selection after copy. First Ctrl+C → show hint.
+        app.selection = None;
+        assert_eq!(
+            app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            None
+        );
+        assert!(app.notice.as_deref().unwrap_or("").contains("Ctrl+C"));
+        // Second Ctrl+C within timeout → quit.
         assert_eq!(
             app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL),
             Some(Action::Quit)
         );
-        app.selection = Some(Selection { anchor: 0, head: 0 });
+        // After timeout, hint resets: first press → hint again.
+        app.quit_hint_at =
+            Some(Instant::now() - std::time::Duration::from_secs(5));
         assert_eq!(
             app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL),
-            Some(Action::CopySelection)
+            None
+        );
+        // While running → cancel (no hint).
+        app.running = true;
+        app.quit_hint_at = None;
+        assert_eq!(
+            app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            Some(Action::Cancel)
         );
     }
 
     #[test]
     fn right_click_opens_menu_and_enter_copies() {
         let mut app = App::new();
-        app.output.push(OutputLine { spans: None, text: "x".into(), kind: LineKind::Normal });
+        app.output.push(OutputLine { spans: None, original: None, text: "x".into(), kind: LineKind::Normal });
         app.output_area = Some((0, 0, 10, 10));
         app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 0, 20, 20);
         app.handle_mouse(MouseEventKind::Down(MouseButton::Right), 3, 4, 20, 20);
@@ -2303,7 +2446,7 @@ mod tests {
     #[test]
     fn context_menu_arrows_move_highlight_and_esc_closes() {
         let mut app = App::new();
-        app.output.push(OutputLine { spans: None, text: "x".into(), kind: LineKind::Normal });
+        app.output.push(OutputLine { spans: None, original: None, text: "x".into(), kind: LineKind::Normal });
         app.output_area = Some((0, 0, 10, 10));
         app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 0, 20, 20);
         app.handle_mouse(MouseEventKind::Down(MouseButton::Right), 0, 0, 20, 20);
@@ -2317,7 +2460,7 @@ mod tests {
     #[test]
     fn clicking_menu_copy_item_copies_and_closes() {
         let mut app = App::new();
-        app.output.push(OutputLine { spans: None, text: "x".into(), kind: LineKind::Normal });
+        app.output.push(OutputLine { spans: None, original: None, text: "x".into(), kind: LineKind::Normal });
         app.output_area = Some((0, 0, 10, 10));
         app.selection = Some(Selection { anchor: 0, head: 0 });
         // Open the menu at (0,0): 12×4 box, items at rows y+1 ("拷贝") and y+2
@@ -2339,7 +2482,7 @@ mod tests {
     #[test]
     fn clicking_menu_cancel_item_closes_without_copy() {
         let mut app = App::new();
-        app.output.push(OutputLine { spans: None, text: "x".into(), kind: LineKind::Normal });
+        app.output.push(OutputLine { spans: None, original: None, text: "x".into(), kind: LineKind::Normal });
         app.output_area = Some((0, 0, 10, 10));
         app.selection = Some(Selection { anchor: 0, head: 0 });
         app.handle_mouse(MouseEventKind::Down(MouseButton::Right), 0, 0, 20, 20);
@@ -2356,7 +2499,7 @@ mod tests {
     #[test]
     fn clicking_outside_menu_closes_it_and_restarts_selection() {
         let mut app = App::new();
-        app.output.push(OutputLine { spans: None, text: "x".into(), kind: LineKind::Normal });
+        app.output.push(OutputLine { spans: None, original: None, text: "x".into(), kind: LineKind::Normal });
         app.output_area = Some((0, 0, 10, 10));
         app.selection = Some(Selection { anchor: 0, head: 0 });
         app.handle_mouse(MouseEventKind::Down(MouseButton::Right), 0, 0, 20, 20);

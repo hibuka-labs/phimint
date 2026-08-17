@@ -68,6 +68,7 @@ pub async fn run_tui(
     let log_path = session_ctx.log_path().display().to_string();
     let frames_path = session_ctx.session_dir.join("frames.txt");
     let perf_path = session_ctx.session_dir.join("perf.log");
+    let composer_log_path = session_ctx.session_dir.join("composer.log");
 
     // Two channels: events flow agent → TUI, commands flow TUI → agent. Both
     // unbounded — the TUI drains eagerly and the agent must never be throttled
@@ -138,6 +139,10 @@ pub async fn run_tui(
     let mut perf_log = std::io::BufWriter::new(std::fs::File::create(&perf_path)?);
     let _ = writeln!(perf_log, "frame_id,draw_ms,capture_ms,loop_ms,dirty,scroll_offset,follow_bottom,output_lines,crossterm_events,slept,event_types");
 
+    // Composer debug log: visual state of the input box each frame.
+    let mut composer_log = std::io::BufWriter::new(std::fs::File::create(&composer_log_path)?);
+    let mut prev_composer_state: Option<(usize, usize, usize, usize)> = None;
+
     let mut quit = false;
     while !quit {
         let loop_start = Instant::now();
@@ -190,6 +195,8 @@ pub async fn run_tui(
                             Action::CopySelection => {
                                 let text = app.selection_text();
                                 copy_text(&mut app, &mut clipboard, text);
+                                app.clear_selection();
+                                tracing::info!("selection cleared after copy");
                             }
                             Action::Cancel => {
                                 agent.cancel();
@@ -232,6 +239,7 @@ pub async fn run_tui(
                         if let Action::CopySelection = action {
                             let text = app.selection_text();
                             copy_text(&mut app, &mut clipboard, text);
+                            app.clear_selection();
                         }
                     }
                 }
@@ -258,6 +266,34 @@ pub async fn run_tui(
             let draw_start = Instant::now();
             terminal.draw(|f| render::draw(f, &mut app))?;
             draw_elapsed = draw_start.elapsed();
+
+            // Log composer state after each draw (only when state changes).
+            {
+                let cursor = app.composer.cursor();
+                let line0_len = app.composer.lines().first().map_or(0, |l| l.len());
+                let n_lines = app.composer.lines().len();
+                let state = (cursor.0, cursor.1, n_lines, line0_len);
+                if !app.composer.is_empty() && Some(state) != prev_composer_state {
+                    prev_composer_state = Some(state);
+                    let size = terminal.size()?;
+                    let inner_w = size.width.saturating_sub(2) as usize;
+                    let inner_h = size.height.saturating_sub(2) as usize;
+                    let lines = app.composer.lines();
+                    // Count visual rows.
+                    let vis_rows: usize = lines.iter().map(|line| {
+                        let full_w = 2 + unicode_width::UnicodeWidthStr::width(line.as_str());
+                        full_w.div_ceil(inner_w.max(1)).max(1)
+                    }).sum();
+                    let scroll = vis_rows.saturating_sub(inner_h);
+                    let t0: String = lines.get(0).unwrap_or(&String::new()).chars().take(30).collect();
+                    let _ = writeln!(
+                        composer_log,
+                        "frame={} inner={}x{} vis_rows={} scroll={} cursor={:?} lines={} [0]={:?}",
+                        frame_id, inner_w, inner_h, vis_rows, scroll,
+                        cursor, n_lines, t0,
+                    );
+                }
+            }
         }
 
         // Record the frame if it changed since the last one (dedup keeps the
@@ -307,6 +343,7 @@ pub async fn run_tui(
 
     let _ = frames.flush();
     let _ = perf_log.flush();
+    let _ = composer_log.flush();
     Ok(())
 }
 
