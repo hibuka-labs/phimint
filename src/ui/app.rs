@@ -127,6 +127,19 @@ pub struct Mention {
     pub selected: usize,
 }
 
+/// `/` skill picker state: shown when the user types `/` at the start of an
+/// empty composer. Filters the loaded skill names by prefix and lets the user
+/// select one with arrow keys + Enter.
+#[derive(Debug, Clone)]
+pub struct SlashPicker {
+    /// What the user typed after `/` (e.g. `rev` for `/review`).
+    pub prefix: String,
+    /// Filtered entries: (name, description).
+    pub entries: Vec<(String, String)>,
+    /// Highlighted index.
+    pub selected: usize,
+}
+
 /// A user action surfaced from key handling, consumed by the TUI loop.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Action {
@@ -178,6 +191,10 @@ pub struct App {
     context_menu: Option<ContextMenu>,
     /// `@` mention picker, open while the user is choosing a path.
     mention: Option<Mention>,
+    /// `/` skill picker, open while the user is choosing a skill.
+    slash: Option<SlashPicker>,
+    /// Loaded skill summaries (name, description) from `SkillResolver`, powering the `/` picker.
+    skill_summaries: Vec<(String, String)>,
     /// The workspace root — in-workspace paths render relative to it.
     pub workspace_root: PathBuf,
     /// The terminal color scheme (startup probe result, see main.rs). Banner
@@ -223,6 +240,8 @@ impl App {
             selection: None,
             context_menu: None,
             mention: None,
+            slash: None,
+            skill_summaries: Vec::new(),
             workspace_root: PathBuf::new(),
             scheme: ColorScheme::Dark,
             output_area: None,
@@ -956,12 +975,148 @@ impl App {
         }
     }
 
-    /// Paste text into the composer — or into the mention prefix when the picker
-    /// is open (newlines are dropped from a path prefix).
+    // ── / skill picker ──────────────────────────────────────────────────────
+
+    /// Inject the loaded skill summaries (called once at startup from `run_tui`).
+    pub fn set_skill_summaries(&mut self, summaries: Vec<(String, String)>) {
+        self.skill_summaries = summaries;
+    }
+
+    /// The active skill picker, if open.
+    pub fn slash(&self) -> Option<&SlashPicker> {
+        self.slash.as_ref()
+    }
+
+    /// Open the skill picker (triggered when `/` is typed at line start).
+    fn start_slash(&mut self) {
+        self.slash = Some(SlashPicker {
+            prefix: String::new(),
+            entries: self.skill_summaries.clone(),
+            selected: 0,
+        });
+    }
+
+    /// Refresh the filtered entries based on the current prefix.
+    fn refresh_slash(&mut self) {
+        let Some(s) = self.slash.as_mut() else { return };
+        if s.prefix.is_empty() {
+            s.entries = self.skill_summaries.clone();
+        } else {
+            let q = s.prefix.to_lowercase();
+            s.entries = self
+                .skill_summaries
+                .iter()
+                .filter(|(name, desc)| {
+                    name.to_lowercase().contains(&q) || desc.to_lowercase().contains(&q)
+                })
+                .cloned()
+                .collect();
+        }
+        s.selected = s.selected.min(s.entries.len().saturating_sub(1));
+    }
+
+    /// Push a character into the slash prefix.
+    fn slash_push_char(&mut self, c: char) {
+        if let Some(s) = self.slash.as_mut() {
+            s.prefix.push(c);
+        }
+        self.composer.insert_char(c);
+        self.refresh_slash();
+    }
+
+    /// Backspace in the slash picker: remove last char from prefix; close if
+    /// prefix becomes empty and the user backspaces again (removes the `/`).
+    fn slash_backspace(&mut self) {
+        let empty = self.slash.as_ref().map_or(true, |s| s.prefix.is_empty());
+        if empty {
+            // Prefix is already empty → user is deleting the `/` itself → close picker
+            self.slash = None;
+            self.composer.backspace();
+            return;
+        }
+        if let Some(s) = self.slash.as_mut() {
+            s.prefix.pop();
+        }
+        self.composer.backspace();
+        self.refresh_slash();
+    }
+
+    /// Move the slash picker highlight by `delta` (±1).
+    fn move_slash(&mut self, delta: i32) {
+        let Some(s) = self.slash.as_mut() else { return };
+        let n = s.entries.len();
+        if n == 0 {
+            return;
+        }
+        s.selected = (s.selected as i32 + delta).clamp(0, (n - 1) as i32) as usize;
+    }
+
+    /// Confirm selection: replace `/prefix` in the composer with `/selected-name `.
+    fn finish_slash(&mut self) {
+        let Some(s) = self.slash.take() else { return };
+        let prefix_len = s.prefix.chars().count();
+        let name = s
+            .entries
+            .get(s.selected)
+            .map(|(n, _)| n.clone())
+            .unwrap_or(s.prefix);
+        // 删掉已输入的 `/prefix`
+        let to_delete = 1 + prefix_len;
+        for _ in 0..to_delete {
+            self.composer.backspace();
+        }
+        // 插入 `/name `（带尾部空格，方便用户继续输入参数）
+        self.composer.insert_str(&format!("/{name} "));
+    }
+
+    /// Key handling while the skill picker is open.
+    fn handle_slash_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Option<Action> {
+        use KeyCode::*;
+        let _ = modifiers;
+        match code {
+            Esc => {
+                // 删掉 `/prefix` 并关闭
+                let to_delete = 1 + self.slash.as_ref().map_or(0, |s| s.prefix.chars().count());
+                self.slash = None;
+                for _ in 0..to_delete {
+                    self.composer.backspace();
+                }
+                None
+            }
+            Up => {
+                self.move_slash(-1);
+                None
+            }
+            Down => {
+                self.move_slash(1);
+                None
+            }
+            Backspace => {
+                self.slash_backspace();
+                None
+            }
+            Enter => {
+                self.finish_slash();
+                None
+            }
+            Char(c) => {
+                self.slash_push_char(c);
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Paste text into the composer — or into the mention/slash prefix when a
+    /// picker is open (newlines are dropped from a path prefix).
     pub fn paste(&mut self, text: &str) {
         if self.mention.is_some() {
             for c in text.chars() {
                 self.mention_push_char(c);
+            }
+        } else if self.slash.is_some() {
+            for c in text.chars() {
+                self.slash_push_char(c);
             }
         } else {
             self.composer.insert_str(text);
@@ -1054,6 +1209,11 @@ impl App {
             return self.handle_mention_key(code, modifiers);
         }
 
+        // While the / skill picker is open, every key drives the picker.
+        if self.slash.is_some() {
+            return self.handle_slash_key(code, modifiers);
+        }
+
         match code {
             Char('d') if ctrl => Some(Action::Quit),
             // Ctrl+Y copies the last reply (vim-yank convention); plain 'y'
@@ -1129,6 +1289,11 @@ impl App {
             }
             PageDown => {
                 self.scroll_down();
+                None
+            }
+            Char('/') if self.composer.is_empty() && !self.skill_summaries.is_empty() => {
+                self.composer.insert_char('/');
+                self.start_slash();
                 None
             }
             Char('@') => {
@@ -2340,5 +2505,89 @@ mod tests {
         app.paste("sub");
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(app.composer.text(), "sub");
+    }
+
+    // ── / skill picker tests ──
+
+    fn app_with_skills() -> App {
+        let mut app = App::new();
+        // 排序后: commit(0), requesting-code-review(1), review(2)
+        app.set_skill_summaries(vec![
+            ("commit".into(), "Generate a commit message".into()),
+            ("requesting-code-review".into(), "Request a code review".into()),
+            ("review".into(), "Pre-landing PR review".into()),
+        ]);
+        app
+    }
+
+    #[test]
+    fn slash_opens_picker_on_empty_composer() {
+        let mut app = app_with_skills();
+        app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+        assert!(app.slash().is_some(), "slash picker should open");
+        assert_eq!(app.composer.text(), "/");
+    }
+
+    #[test]
+    fn slash_does_not_open_when_composer_not_empty() {
+        let mut app = app_with_skills();
+        app.handle_key(KeyCode::Char('h'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+        assert!(app.slash().is_none(), "slash picker should not open mid-input");
+    }
+
+    #[test]
+    fn slash_filters_by_prefix() {
+        let mut app = app_with_skills();
+        app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('c'), KeyModifiers::NONE);
+
+        let s = app.slash().unwrap();
+        let names: Vec<&str> = s.entries.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"commit"));
+        assert!(names.contains(&"requesting-code-review"));
+        // "review" does not contain 'c' → filtered out
+        assert!(!names.contains(&"review"));
+    }
+
+    #[test]
+    fn slash_enter_confirms_selection() {
+        let mut app = app_with_skills();
+        app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+        // 默认选中第一个（排序后是 "commit"）
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.slash().is_none(), "picker should close after Enter");
+        assert_eq!(app.composer.text(), "/commit ", "should insert /name + space");
+    }
+
+    #[test]
+    fn slash_esc_cancels() {
+        let mut app = app_with_skills();
+        app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Char('r'), KeyModifiers::NONE);
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.slash().is_none(), "picker should close on Esc");
+        assert!(app.composer.is_empty(), "composer should be empty after cancel");
+    }
+
+    #[test]
+    fn slash_arrow_keys_navigate() {
+        let mut app = app_with_skills();
+        app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+
+        assert_eq!(app.slash().unwrap().selected, 0);
+
+        app.handle_key(KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(app.slash().unwrap().selected, 1);
+
+        app.handle_key(KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(app.slash().unwrap().selected, 2);
+
+        // 已在末尾，Down 不动
+        app.handle_key(KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(app.slash().unwrap().selected, 2);
+
+        app.handle_key(KeyCode::Up, KeyModifiers::NONE);
+        assert_eq!(app.slash().unwrap().selected, 1);
     }
 }

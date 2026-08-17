@@ -23,21 +23,19 @@
 
 **任务**：~~已通过修改 phi-agent 默认值完成。~~
 
-### 7b `/skill` 斜杠入口（必做，中成本）
+### 7b `/skill` 斜杠入口（已完成）
 
 **目标**：用户输入 `/skill-name args` 能手动触发 skill，把 `SKILL.md` body（resolve 掉 `$ARGUMENTS`/`$name` 参数）注入上下文。
 
 **做法**：
-- `Composer`（TUI + inline 共用）识别 `/` 前缀 → 查 `SkillRegistry`（`is_user_invocable`）。
-- 命中：调用 `resolve_body(params, raw_args)` 把 `SKILL.md` 内容参数化，作为一条 user 消息（或 system 注入）发进当前 turn。
+- `SkillResolver`（`src/skills.rs`）扫描 `.claude/skills` + `~/.claude/skills`，提供 `resolve()` + 模糊匹配。
+- agent_loop 在 `run_turn` 前把 `/skill-name args` 解析成 skill body 再提交。
+- TUI `/` picker（`SlashPicker`）弹出已加载 skill 的名字 + 描述，方向键选择、Enter 确认、Esc 取消。
 - 未命中：当普通文本提交（不打断现有 `/xxx` 文本的宽松性）。
 
-**依赖**：需要 phiforge 能访问 `SkillRegistry`/`PromptSkill` → 与 7a 的「配置口/暴露」联动（7a 方案 A 时框架顺带暴露查询口）。
+**模糊匹配优先级**：exact → suffix（`code-review` 命中 `requesting-code-review`）→ contains → word-overlap；同级取最短名。
 
-**任务**：
-1. 框架暴露「按名查 skill + user-invocable 判断」的查询口（若 7a 方案 A）。
-2. Composer 斜杠解析 + 分发。
-3. 验证：`/commit` 触发 → 上下文出现该 skill body。
+**验证**：`/commit` 触发 → 上下文出现该 skill body；`/不存在的` 当普通文本。
 
 ### 7c 执行语义（可选，重，框架层）
 
@@ -68,7 +66,7 @@
 ```
 
 - **7a 已完成**：框架默认值改为 `.claude/`，无需暴露配置口。
-- **7b 紧随**：斜杠入口是「手动触发」的 UX 底座。
+- **7b 已完成**：`SkillResolver` + 模糊匹配 + `/` picker（名字 + 描述）。
 - **7d 轻量**：内容，随时可插。
 - **7c 重**：框架层新功能，单独评估、后置。
 
@@ -80,7 +78,7 @@
 
 ## 依赖 / 风险
 
-- ~~phi-agent 未 re-export skill 类型~~ → 7a 已完成（改框架默认值），7b 仍需访问 `SkillRegistry`/`PromptSkill`。
+- ~~phi-agent 未 re-export skill 类型~~ → 7a 已完成（改框架默认值），7b 已接入 `agent-works::skill::{PromptSkill, Skill}`（经 `agent-works` 的 `skill` feature）。
 - `PromptSkill::from_markdown` 用 `Box::leak` 存 `&'static str`（一次性启动加载可接受，见其注释）——热重载需注意。
 - Claude Code skill 的 `name` 要求 kebab-case（字母数字+连字符），`PromptSkill` 已校验，兼容。
 - 7c 若做 fork，需复用现有多 agent（`spawn_agent`/`ChildPermissionMode`）路径，注意与「子 agent 只读」硬闸门的关系。

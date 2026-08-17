@@ -10,6 +10,7 @@ use phi_kernel_tools::local_shell::LocalShellTool;
 
 use crate::gate::{VerifyEnforcementConfig, VerifyEnforcementMiddleware};
 use crate::lsp::LspManager;
+use crate::skills::{SkillResolver, default_skill_dirs};
 use crate::tools::decompose::DecomposeTool;
 use crate::tools::diagnostics::DiagnosticsTool;
 use crate::tools::merge::MergeTool;
@@ -53,6 +54,9 @@ Be precise and minimal. Don't rewrite code that already works. When done, briefl
 /// `base_agent_builder` already registers the file tools (read/write/edit/list).
 /// We add the shell, verify, search, and repo-map tools ourselves — none of them
 /// are part of `base_agent_builder` (the phi CLI registers shell manually too).
+///
+/// Returns `(PhiAgent, SkillResolver)` — the resolver powers the `/skill` slash
+/// command in the TUI loop.
 pub fn build(
     llm_client: Arc<OpenAiClient>,
     approval: Arc<dyn ApprovalHandler>,
@@ -60,7 +64,7 @@ pub fn build(
     shell_timeout_ms: u64,
     workspace_root: PathBuf,
     writes_possible: bool,
-) -> Result<PhiAgent> {
+) -> Result<(PhiAgent, SkillResolver)> {
     // Coerce the concrete client to `Arc<dyn StreamClient>` once; the builder and
     // the `decompose` tool (which makes its own nested LLM call) each need a clone.
     let llm: Arc<dyn StreamClient> = llm_client.clone();
@@ -156,5 +160,16 @@ pub fn build(
     }));
 
     let agent = PhiAgent::build(builder, PhiAgentConfig::default())?;
-    Ok(agent)
+
+    // 构建 SkillResolver（扫描 `.claude/skills` 目录，供 /skill 斜杠命令使用）
+    let skill_resolver = SkillResolver::from_dirs(&default_skill_dirs());
+    if !skill_resolver.is_empty() {
+        tracing::info!(
+            count = skill_resolver.len(),
+            names = %skill_resolver.skill_names().join(", "),
+            "loaded skills for /skill command"
+        );
+    }
+
+    Ok((agent, skill_resolver))
 }

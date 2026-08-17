@@ -12,6 +12,7 @@ mod inline;
 mod lang;
 mod lsp;
 mod markdown;
+mod skills;
 mod tools;
 mod ui;
 
@@ -107,7 +108,7 @@ async fn main() -> Result<()> {
     init_logging(&session_ctx, &cli.log_level).await?;
 
     // `deny` 模式只读（写工具全被拒），强制 verify 闸门无意义，故关闭。
-    let agent = agent::build(
+    let (agent, skill_resolver) = agent::build(
         llm_client,
         approval,
         policy,
@@ -129,9 +130,9 @@ async fn main() -> Result<()> {
     let version = env!("CARGO_PKG_VERSION");
 
     if use_tui {
-        ui::run_tui(agent, session, session_ctx, workspace, approval_rx, scheme, show_banner, version).await
+        ui::run_tui(agent, skill_resolver, session, session_ctx, workspace, approval_rx, scheme, show_banner, version).await
     } else {
-        inline::run_inline(agent, session, session_ctx, workspace, approval_rx, scheme, show_banner, version).await
+        inline::run_inline(agent, skill_resolver, session, session_ctx, workspace, approval_rx, scheme, show_banner, version).await
     }
 }
 

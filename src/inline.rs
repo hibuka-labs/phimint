@@ -36,6 +36,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::approval::ApprovalItem;
 use crate::banner::ColorScheme;
 use crate::markdown::Markdown;
+use crate::skills::SkillResolver;
 use crate::ui::app::{Phase, TuiEvent, agent_prefix};
 use crate::ui::input::Composer;
 
@@ -79,6 +80,7 @@ impl<A: Write, B: Write> Write for Tee<A, B> {
 /// spawned task for the whole lifetime of the UI (same contract as `run_tui`).
 pub async fn run_inline(
     agent: PhiAgent,
+    skill_resolver: SkillResolver,
     session: SessionId,
     session_ctx: SessionContext,
     workspace: PathBuf,
@@ -97,6 +99,7 @@ pub async fn run_inline(
 
     let agent_task = tokio::spawn(agent_loop(
         agent.clone(),
+        skill_resolver,
         session,
         session_ctx,
         event_tx,
@@ -297,6 +300,7 @@ pub async fn run_inline(
 /// persist per-turn JSONL logs exactly like the TUI and REPL paths do.
 async fn agent_loop(
     agent: Arc<PhiAgent>,
+    skill_resolver: SkillResolver,
     session: SessionId,
     session_ctx: SessionContext,
     event_tx: mpsc::UnboundedSender<TuiEvent>,
@@ -311,15 +315,19 @@ async fn agent_loop(
                 turn_number += 1;
                 let mut turn_events: Vec<RuntimeEvent> = Vec::new();
 
+                // 7b: `/skill-name args` → 解析为 skill body 再提交给 agent
+                let resolved_input = skill_resolver.resolve(&input).unwrap_or(input);
+                let turn_input = resolved_input;
+
                 let result = agent
-                    .run_turn(session.clone(), &input, |ev| {
+                    .run_turn(session.clone(), &turn_input, |ev| {
                         let _ = event_tx.send(TuiEvent::Runtime(ev.clone()));
                         turn_events.push(ev);
                         Ok(())
                     })
                     .await;
 
-                if let Err(e) = save_turn_log(&session_ctx, turn_number, &turn_events, &input) {
+                if let Err(e) = save_turn_log(&session_ctx, turn_number, &turn_events, &turn_input) {
                     tracing::warn!(error = %e, "failed to save turn log");
                 }
 

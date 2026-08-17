@@ -61,6 +61,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if app.mention().is_some() {
         render_mention_popup(f, app, chunks[1]);
     }
+    if app.slash().is_some() {
+        render_slash_popup(f, app, chunks[1]);
+    }
 }
 
 fn render_output(f: &mut Frame, app: &App, area: Rect) {
@@ -324,6 +327,83 @@ fn render_mention_popup(f: &mut Frame, app: &App, composer: Rect) {
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .title("mention");
+    f.render_widget(Paragraph::new(lines).block(block), rect);
+}
+
+/// The `/` skill picker popup: anchored above the composer, listing matching
+/// skill names with the highlighted row reverse-video'd.
+fn render_slash_popup(f: &mut Frame, app: &App, composer: Rect) {
+    let Some(s) = app.slash() else {
+        return;
+    };
+
+    const WIDTH: u16 = 72;
+    const LIST_HEIGHT: usize = 12;
+
+    let total = s.entries.len();
+    let start = if total <= LIST_HEIGHT {
+        0
+    } else if s.selected < LIST_HEIGHT / 2 {
+        0
+    } else {
+        (s.selected - LIST_HEIGHT / 2).min(total - LIST_HEIGHT)
+    };
+    let end = (start + LIST_HEIGHT).min(total);
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        format!("/{}", s.prefix),
+        Style::default().fg(Color::Cyan),
+    )));
+    lines.push(Line::from(Span::styled(
+        "────────────────────────────────────────────────",
+        Style::default().fg(Color::DarkGray),
+    )));
+
+    if s.entries.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  no matching skills",
+            Style::default().fg(Color::DarkGray),
+        )));
+    } else {
+        for (i, (name, desc)) in s.entries[start..end].iter().enumerate() {
+            let idx = start + i;
+            let (name_style, desc_style) = if idx == s.selected {
+                (
+                    Style::default().bg(Color::DarkGray).fg(Color::White).add_modifier(Modifier::BOLD),
+                    Style::default().bg(Color::DarkGray).fg(Color::Gray),
+                )
+            } else {
+                (
+                    Style::default().fg(Color::White),
+                    Style::default().fg(Color::DarkGray),
+                )
+            };
+            // 截断描述，避免超出弹窗宽度
+            let max_desc = 40usize;
+            let short_desc = if desc.len() > max_desc {
+                format!("{}…", &desc[..max_desc])
+            } else {
+                desc.clone()
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!("  {name:<24}"), name_style),
+                Span::styled(short_desc, desc_style),
+            ]));
+        }
+    }
+
+    let width = WIDTH.min(f.area().width.saturating_sub(2));
+    let height = (lines.len() as u16 + 2).min(f.area().height.saturating_sub(2));
+    let x = composer.x.min(f.area().width.saturating_sub(width));
+    let y = composer.y.saturating_sub(height).max(1);
+    let rect = Rect::new(x, y, width, height);
+    f.render_widget(Clear, rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .title("skills");
     f.render_widget(Paragraph::new(lines).block(block), rect);
 }
 
@@ -668,6 +748,29 @@ mod tests {
         let text = snapshot_text(&mut app, 100, 40);
         assert!(text.contains("mention"), "popup title missing:\n{text}");
         assert!(text.contains("@m"), "prefix header missing:\n{text}");
+    }
+
+    #[test]
+    fn draw_and_snapshot_show_slash_popup() {
+        let mut app = App::new();
+        app.set_skill_summaries(vec![
+            ("review".into(), "Pre-landing PR review".into()),
+            ("commit".into(), "Generate a commit message".into()),
+            ("code-review".into(), "Review current changes".into()),
+        ]);
+
+        // Open the picker by typing `/` at empty composer.
+        app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+        // Type a partial prefix.
+        app.handle_key(KeyCode::Char('r'), KeyModifiers::NONE);
+
+        let text = snapshot_text(&mut app, 100, 40);
+        assert!(text.contains("skills"), "popup title missing:\n{text}");
+        assert!(text.contains("/r"), "prefix header missing:\n{text}");
+        // "review" contains "r" → should appear
+        assert!(text.contains("review"), "matching skill missing:\n{text}");
+        // description should render too
+        assert!(text.contains("Pre-landing"), "description missing:\n{text}");
     }
 
     #[test]

@@ -31,6 +31,7 @@ use tokio::sync::mpsc;
 
 use crate::approval::ApprovalItem;
 use crate::banner::ColorScheme;
+use crate::skills::SkillResolver;
 use app::{Action, App, TuiEvent};
 
 /// A command from the TUI loop to the agent task.
@@ -53,6 +54,7 @@ const CAPTURE_INTERVAL: Duration = Duration::from_millis(100);
 /// spawned task for the whole lifetime of the TUI.
 pub async fn run_tui(
     agent: PhiAgent,
+    skill_resolver: SkillResolver,
     session: SessionId,
     session_ctx: SessionContext,
     workspace: PathBuf,
@@ -72,8 +74,12 @@ pub async fn run_tui(
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<TuiEvent>();
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<Cmd>();
 
+    // 在 skill_resolver 移入 agent_loop 前提取 (name, description) 摘要列表
+    let skill_summaries = skill_resolver.skill_summaries();
+
     let agent_task = tokio::spawn(agent_loop(
         agent.clone(),
+        skill_resolver,
         session,
         session_ctx,
         event_tx,
@@ -101,6 +107,7 @@ pub async fn run_tui(
     let mut app = App::new();
     app.set_scheme(scheme);
     app.set_workspace_root(workspace.clone());
+    app.set_skill_summaries(skill_summaries);
     if show_banner {
         app.push_banner(crate::banner::build(
             &workspace,
@@ -259,6 +266,7 @@ fn copy_text(app: &mut App, clipboard: &mut Option<arboard::Clipboard>, text: St
 /// persist per-turn JSONL logs exactly like the REPL path does.
 async fn agent_loop(
     agent: Arc<PhiAgent>,
+    skill_resolver: SkillResolver,
     session: SessionId,
     session_ctx: SessionContext,
     event_tx: mpsc::UnboundedSender<TuiEvent>,
@@ -274,8 +282,12 @@ async fn agent_loop(
                 turn_number += 1;
                 let mut turn_events: Vec<RuntimeEvent> = Vec::new();
 
+                // 7b: `/skill-name args` → 解析为 skill body 再提交给 agent
+                let resolved_input = skill_resolver.resolve(&input).unwrap_or(input);
+                let turn_input = resolved_input;
+
                 let result = agent
-                    .run_turn(session.clone(), &input, |ev| {
+                    .run_turn(session.clone(), &turn_input, |ev| {
                         let _ = event_tx.send(TuiEvent::Runtime(ev.clone()));
                         turn_events.push(ev);
                         Ok(())
@@ -283,7 +295,7 @@ async fn agent_loop(
                     .await;
 
                 // Persist regardless of success (matches the REPL behavior).
-                if let Err(e) = save_turn_log(&session_ctx, turn_number, &turn_events, &input) {
+                if let Err(e) = save_turn_log(&session_ctx, turn_number, &turn_events, &turn_input) {
                     tracing::warn!(error = %e, "failed to save turn log");
                 }
 

@@ -413,7 +413,7 @@ Idle ──用户输入──▶ Running ──RunFinished──▶ Idle
 
 ### Phase 7 — Skills 生态接入（复用 Claude Code skills）📋
 - **7a 目录对齐**（必做先做，已完成）：框架默认扫 `.claude/skills` + `~/.claude/skills`，复用 Claude Code skill 生态，不建 `.phi/`。
-- **7b `/skill` 斜杠入口**（必做）：TUI/inline Composer 解析 `/skill-name args`，查 registry（`user-invocable`）+ `resolve_body` 参数化，注入上下文。
+- **7b `/skill` 斜杠入口**（已完成）：`SkillResolver`（exact → suffix → contains → word-overlap 模糊匹配）+ TUI `/` picker（名字 + 描述），解析 `/skill-name args` 注入上下文。
 - **7c 执行语义**（可选，重，框架层）：`allowed-tools`/`context: fork`/`paths` 从「死字段」变真语义（工具门控 / 子 agent 隔离 / 路径触发）。
 - **7d 自带 skills**（可选，内容）：`commit`/`code-review`/`explain` 三个开箱 skill。
 - **7e 上下文硬截断**（可选，顺手）：开 `ContextWindowManager`（`has_context_window:false→true`）作 SummarizingMiddleware 的确定性兜底。

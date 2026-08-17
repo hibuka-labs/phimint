@@ -21,6 +21,8 @@ phi-kernel-tools = { path = "../phi-kernel-tools", features = ["shell"] }
 # Runtime types not re-exported by phi-agent (ChatMessage, ResponseFormat,
 # StreamClient) — needed by the `decompose` tool's nested structured LLM call.
 agent-base = { version = "0.2.0", path = "../agent-base" }
+# Skill types (PromptSkill) for /skill slash command (Phase 7b).
+agent-works = { path = "../agent-works", default-features = false, features = ["skill", "prompt_skill"] }
 
 tokio = { version = "1", features = ["full"] }
 # CancellationToken for the interactive approval handler's `approve` signature.
@@ -69,3 +71,5 @@ lsp-types = "0.95"
 # Needed only to name `futures_core::Stream` in the `StreamClient` test stub
 # for the `decompose` tool (the trait's `stream` return type).
 futures-core = "0.3"
+# 临时目录测试（skills 测试需要创建临时 SKILL.md 文件结构）。
+tempfile = "3"
