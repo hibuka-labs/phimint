@@ -6,6 +6,7 @@
 
 mod agent;
 mod approval;
+mod banner;
 mod gate;
 mod inline;
 mod lang;
