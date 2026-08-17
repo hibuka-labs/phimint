@@ -122,7 +122,7 @@ pub async fn run_inline(
             renderer.line(&line);
         }
     } else {
-        renderer.line("phiforge — coding agent on phi-agent.");
+        renderer.line("PhiForge · Forged with intent. Shipped with care. · Built on phi-agent");
     }
     // Key hints now live inside the input box (see `render_input`), not here.
 
@@ -866,7 +866,7 @@ mod tests {
     #[test]
     fn demo_simulated_turn_writes_capture() {
         let mut r = Renderer::new(Vec::new());
-        r.line("phiforge — coding agent on phi-agent.");
+        r.line("PhiForge · Forged with intent. Shipped with care. · Built on phi-agent");
         r.line("Workspace: /tmp/ws");
 
         let mut composer = Composer::new();

@@ -117,12 +117,14 @@ async fn main() -> Result<()> {
     )?;
     let session = agent.create_session().await;
 
-    // Probe the terminal background *before* entering raw mode / alt-screen so
-    // the startup banner renders in the right palette. Best-effort: a 100ms
-    // timeout keeps startup fast on terminals that don't answer OSC 11.
-    let osc11 = banner::probe_osc11(std::time::Duration::from_millis(100));
+    // Detect terminal color scheme for the startup banner palette.
+    // `--color-scheme` flag takes priority; `auto` reads `$COLORFGBG` (set by
+    // iTerm2, kitty, etc.) where the background digit is `7` → light. The OSC
+    // 11 stdin probe is intentionally skipped: its termios manipulation
+    // interferes with crossterm's raw-mode setup on macOS. Use
+    // `--color-scheme light` or `dark` to override when COLORFGBG is absent.
     let color_fgbg = std::env::var("COLORFGBG").ok();
-    let scheme = banner::resolve_scheme(&cli.color_scheme, color_fgbg.as_deref(), osc11);
+    let scheme = banner::resolve_scheme(&cli.color_scheme, color_fgbg.as_deref(), None);
     let show_banner = cli.banner != "off";
     let version = env!("CARGO_PKG_VERSION");
 

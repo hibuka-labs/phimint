@@ -184,8 +184,7 @@ fn tagline_row(version: &str) -> BannerRow {
     BannerRow {
         spans: vec![
             ("PhiForge".to_string(), BannerStyle::Brand),
-            (" · product-first coding agent on phi-agent · 先验再交 ".to_string(), BannerStyle::Tagline),
-            (format!("· v{version}"), BannerStyle::Version),
+            (format!(" v{version} · Forged with intent. Shipped with care. · Built on phi-agent"), BannerStyle::Tagline),
         ],
     }
 }
@@ -339,8 +338,12 @@ fn probe_osc11_unix(timeout: Duration) -> Option<ColorScheme> {
         }
     }
 
-    // Restore original terminal settings before crossterm enters raw mode.
-    let _ = unsafe { libc::tcsetattr(fd, libc::TCSANOW, &orig) };
+    // Do NOT restore `orig` here: leaving our non-canonical (VMIN=0, ECHO off)
+    // settings in place lets crossterm's enable_raw_mode take over cleanly.
+    // Restoring canonical mode would trap a partial line in the line-discipline
+    // buffer, and the TUI would stall until the user pressed Enter to flush it.
+    unsafe { libc::tcflush(fd, libc::TCIFLUSH) };
+
     parse_osc11(&String::from_utf8_lossy(&resp))
 }
 
@@ -402,8 +405,8 @@ mod tests {
         assert_eq!(rows.len(), 9, "6 art + tagline + 2 info");
         let tagline = rows[6].text();
         assert!(tagline.contains("PhiForge"), "missing brand: {tagline}");
-        assert!(tagline.contains("先验再交"), "missing slogan: {tagline}");
-        assert!(tagline.contains("· v0.1.0"), "missing version: {tagline}");
+        assert!(tagline.contains("Forged with intent"), "missing slogan: {tagline}");
+        assert!(tagline.contains("v0.1.0"), "missing version: {tagline}");
         let ws = rows[7].text();
         let logs = rows[8].text();
         let want_ws = shorten_home(Path::new("/Users/eve/w"));

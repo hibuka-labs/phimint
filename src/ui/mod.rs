@@ -108,7 +108,7 @@ pub async fn run_tui(
             version,
         ));
     } else {
-        app.push_system("phiforge — coding agent on phi-agent.");
+        app.push_system("PhiForge · Forged with intent. Shipped with care. · Built on phi-agent");
     }
 
     // Clipboard for Ctrl+Y "copy last reply". Optional: on headless or
