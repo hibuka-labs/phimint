@@ -30,6 +30,7 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 use tokio::sync::mpsc;
 
 use crate::approval::ApprovalItem;
+use crate::banner::ColorScheme;
 use app::{Action, App, TuiEvent};
 
 /// A command from the TUI loop to the agent task.
@@ -56,10 +57,12 @@ pub async fn run_tui(
     session_ctx: SessionContext,
     workspace: PathBuf,
     approval_rx: Option<mpsc::UnboundedReceiver<ApprovalItem>>,
+    scheme: ColorScheme,
+    show_banner: bool,
+    version: &str,
 ) -> Result<()> {
     let agent = Arc::new(agent);
     let mut approval_rx = approval_rx;
-    let session_dir = session_ctx.session_dir.display().to_string();
     let log_path = session_ctx.log_path().display().to_string();
     let frames_path = session_ctx.session_dir.join("frames.txt");
 
@@ -96,11 +99,17 @@ pub async fn run_tui(
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = App::new();
+    app.set_scheme(scheme);
     app.set_workspace_root(workspace.clone());
-    app.push_system("phiforge — coding agent on phi-agent.");
-    app.push_system(&format!("Workspace: {}", workspace.display()));
-    app.push_system(&format!("Logs: {log_path}"));
-    app.push_system(&format!("Session: {session_dir}"));
+    if show_banner {
+        app.push_banner(crate::banner::build(
+            &workspace,
+            std::path::Path::new(&log_path),
+            version,
+        ));
+    } else {
+        app.push_system("phiforge — coding agent on phi-agent.");
+    }
 
     // Clipboard for Ctrl+Y "copy last reply". Optional: on headless or
     // Linux/Wayland setups `arboard` may fail to open a clipboard; copy then

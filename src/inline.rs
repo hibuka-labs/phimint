@@ -34,6 +34,7 @@ use tokio::sync::mpsc;
 use unicode_width::UnicodeWidthStr;
 
 use crate::approval::ApprovalItem;
+use crate::banner::ColorScheme;
 use crate::markdown::Markdown;
 use crate::ui::app::{Phase, TuiEvent, agent_prefix};
 use crate::ui::input::Composer;
@@ -82,10 +83,12 @@ pub async fn run_inline(
     session_ctx: SessionContext,
     workspace: PathBuf,
     approval_rx: Option<mpsc::UnboundedReceiver<ApprovalItem>>,
+    scheme: ColorScheme,
+    show_banner: bool,
+    version: &str,
 ) -> Result<()> {
     let agent = Arc::new(agent);
     let mut approval_rx = approval_rx;
-    let session_dir = session_ctx.session_dir.display().to_string();
     let log_path = session_ctx.log_path().display().to_string();
     let inline_raw = session_ctx.session_dir.join("inline.raw");
 
@@ -111,10 +114,16 @@ pub async fn run_inline(
     // session can be replayed offline with `cargo run --bin replay`.
     let mut capture = std::io::BufWriter::new(std::fs::File::create(&inline_raw)?);
     let mut renderer = Renderer::new(Tee::new(io::stdout(), &mut capture));
-    renderer.line("phiforge — coding agent on phi-agent.");
-    renderer.line(&format!("Workspace: {}", workspace.display()));
-    renderer.line(&format!("Logs: {log_path}"));
-    renderer.line(&format!("Session: {session_dir}"));
+    if show_banner {
+        for line in crate::banner::render_ansi(
+            &crate::banner::build(&workspace, std::path::Path::new(&log_path), version),
+            scheme,
+        ) {
+            renderer.line(&line);
+        }
+    } else {
+        renderer.line("phiforge — coding agent on phi-agent.");
+    }
     // Key hints now live inside the input box (see `render_input`), not here.
 
     let mut composer = Composer::new();

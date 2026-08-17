@@ -57,6 +57,15 @@ struct Cli {
     /// Log level for the session.log file (debug/info/warn/error)
     #[arg(long, default_value = "info")]
     log_level: String,
+
+    /// Color scheme for the startup banner: `auto` (default, detects terminal
+    /// background), `dark` or `light` (override).
+    #[arg(long, default_value = "auto")]
+    color_scheme: String,
+
+    /// Show the startup banner (default: `on`; set to `off` to suppress it).
+    #[arg(long, default_value = "on")]
+    banner: String,
 }
 
 #[tokio::main]
@@ -108,11 +117,19 @@ async fn main() -> Result<()> {
     )?;
     let session = agent.create_session().await;
 
-    // Ratatui TUI by default; `--inline` → the inline chat.
+    // Probe the terminal background *before* entering raw mode / alt-screen so
+    // the startup banner renders in the right palette. Best-effort: a 100ms
+    // timeout keeps startup fast on terminals that don't answer OSC 11.
+    let osc11 = banner::probe_osc11(std::time::Duration::from_millis(100));
+    let color_fgbg = std::env::var("COLORFGBG").ok();
+    let scheme = banner::resolve_scheme(&cli.color_scheme, color_fgbg.as_deref(), osc11);
+    let show_banner = cli.banner != "off";
+    let version = env!("CARGO_PKG_VERSION");
+
     if use_tui {
-        ui::run_tui(agent, session, session_ctx, workspace, approval_rx).await
+        ui::run_tui(agent, session, session_ctx, workspace, approval_rx, scheme, show_banner, version).await
     } else {
-        inline::run_inline(agent, session, session_ctx, workspace, approval_rx).await
+        inline::run_inline(agent, session, session_ctx, workspace, approval_rx, scheme, show_banner, version).await
     }
 }
 
