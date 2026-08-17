@@ -36,6 +36,9 @@ dotenvy = "0.15"
 # input for both the TUI and the inline chat.
 ratatui = "0.29"
 crossterm = "0.28"
+# Direct termios access for the OSC 11 background probe (Unix only).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 # Display width for wide CJK glyphs (TUI wrap + inline cursor column).
 unicode-width = "0.1"
 # Clipboard for the TUI's Ctrl+Y "copy last reply" (arboard is cross-platform).

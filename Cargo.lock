@@ -1674,6 +1674,7 @@ dependencies = [
  "crossterm",
  "dotenvy",
  "futures-core",
+ "libc",
  "log-core",
  "lsp-types",
  "phi-agent",

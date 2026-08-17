@@ -278,18 +278,66 @@ pub fn parse_osc11(reply: &str) -> Option<ColorScheme> {
 /// Query the terminal background with OSC 11 and wait up to `timeout` for a
 /// reply. Best-effort: returns `None` when the terminal doesn't answer, so
 /// callers fall back to dark. Must run before raw mode / alternate screen.
+///
+/// On Unix, uses termios `VMIN=0 / VTIME=1` (100ms per-byte deadline) to
+/// avoid spawning a reader thread that would eat subsequent crossterm input.
+/// On non-Unix platforms the probe is skipped (returns `None`).
 pub fn probe_osc11(timeout: Duration) -> Option<ColorScheme> {
-    use std::io::Write;
+    #[cfg(unix)]
+    {
+        probe_osc11_unix(timeout)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = timeout;
+        None
+    }
+}
+
+#[cfg(unix)]
+fn probe_osc11_unix(timeout: Duration) -> Option<ColorScheme> {
+    use std::io::{Read, Write};
+
+    // Save the original terminal attributes and switch to non-blocking
+    // byte-at-a-time mode (VMIN=0, VTIME=1 → 100ms read deadline per byte).
+    // This lets the probe collect the response without a background thread.
+    let fd = libc::STDIN_FILENO;
+    let mut orig: libc::termios = unsafe { std::mem::zeroed() };
+    if unsafe { libc::tcgetattr(fd, &mut orig) } != 0 {
+        return None;
+    }
+    let mut raw = orig;
+    raw.c_cc[libc::VMIN] = 0;
+    raw.c_cc[libc::VTIME] = 1; // 100ms per-read timeout
+    if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &raw) } != 0 {
+        return None;
+    }
+
+    // Query: "\x1b]11;?\x07" asks the terminal to reply with its BG color.
     let mut out = std::io::stdout();
     let _ = write!(out, "\x1b]11;?\x07");
     let _ = out.flush();
-    let (tx, rx) = std::sync::mpsc::channel::<String>();
-    std::thread::spawn(move || {
-        let mut buf = String::new();
-        let _ = std::io::stdin().read_line(&mut buf);
-        let _ = tx.send(buf);
-    });
-    rx.recv_timeout(timeout).ok().and_then(|line| parse_osc11(&line))
+
+    // Collect response bytes until the terminator (\x07 or ESC/ST) or deadline.
+    let deadline = std::time::Instant::now() + timeout;
+    let mut resp = Vec::with_capacity(64);
+    let mut stdin = std::io::stdin();
+    let mut buf = [0u8; 1];
+    while std::time::Instant::now() < deadline {
+        match stdin.read_exact(&mut buf) {
+            Ok(()) => {
+                resp.push(buf[0]);
+                if buf[0] == b'\x07' || buf[0] == 0x1b {
+                    break;
+                }
+            }
+            Err(_) => break, // read timeout expired (VTIME) or EOF
+        }
+    }
+
+    // Restore original terminal settings before crossterm enters raw mode.
+    let _ = unsafe { libc::tcsetattr(fd, libc::TCSANOW, &orig) };
+    parse_osc11(&String::from_utf8_lossy(&resp))
 }
 
 #[cfg(test)]
