@@ -306,7 +306,11 @@ fn probe_osc11_unix(timeout: Duration) -> Option<ColorScheme> {
     if unsafe { libc::tcgetattr(fd, &mut orig) } != 0 {
         return None;
     }
+    // Disable echo *before* sending the query so the terminal's reply never
+    // flashes on screen. VTIME=1 turns reads into a 100ms-per-byte poll so
+    // the probe returns promptly without a background thread.
     let mut raw = orig;
+    raw.c_lflag &= !libc::ECHO;
     raw.c_cc[libc::VMIN] = 0;
     raw.c_cc[libc::VTIME] = 1; // 100ms per-read timeout
     if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &raw) } != 0 {
