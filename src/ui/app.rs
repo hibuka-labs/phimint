@@ -318,16 +318,24 @@ impl App {
         self.wrap_width = width;
         // Re-wrap committed output lines at the new width.
         self.rewrap_output();
-        // Re-wrap the streaming tail at the new width.
-        if !self.pending_text.is_empty() || !self.pending_thought.is_empty() {
-            let source = if !self.pending_text.is_empty() {
-                self.pending_text.clone()
-            } else {
-                self.pending_thought.clone()
-            };
-            self.tail_wrap = WrapCache::new(width);
+        // Always rebuild the tail cache at the new width so future streaming
+        // text wraps correctly, even when there is no pending text right now.
+        let source = if !self.pending_text.is_empty() {
+            self.pending_text.clone()
+        } else if !self.pending_thought.is_empty() {
+            self.pending_thought.clone()
+        } else {
+            String::new()
+        };
+        self.tail_wrap = WrapCache::new(width);
+        if !source.is_empty() {
             self.tail_wrap.extend(&source);
         }
+    }
+
+    /// Current output wrap width (columns).
+    pub fn current_wrap_width(&self) -> usize {
+        self.wrap_width
     }
 
     /// Re-wrap all committed output lines that have an `original` source.
@@ -451,7 +459,8 @@ impl App {
                 // its invocation line (raw JSON args) and result line are noise —
                 // suppress them. Its status transition is still applied.
                 if tool_name != "update_plan" {
-                    let args = one_line(&args_json, 80);
+                    let max_cols = self.wrap_width.saturating_sub(20).max(40);
+                    let args = one_line(&args_json, max_cols);
                     let text = if args.is_empty() {
                         format!("⏺ {prefix}{tool_name}")
                     } else {
@@ -482,7 +491,8 @@ impl App {
                     let (text, kind) = if denied {
                         (format!("  {prefix}⛔ {tool_name} denied"), LineKind::Error)
                     } else {
-                        let s = one_line(&summary, 80);
+                        let max_cols = self.wrap_width.saturating_sub(20).max(40);
+                        let s = one_line(&summary, max_cols);
                         let text = if s.is_empty() {
                             format!("  {prefix}✓ {tool_name}")
                         } else {

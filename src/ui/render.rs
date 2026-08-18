@@ -22,17 +22,26 @@ use crate::ui::app::{
 const MAX_COMPOSER_ROWS: usize = 8;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
-    // Keep output wrap width in sync with the terminal's content area
-    // (minus 2 for the composer's border). This ensures output and input
-    // widths stay aligned across terminal resizes.
-    let content_width = f.area().width.saturating_sub(2) as usize;
+    // Output area has no border — use the full terminal width for wrapping.
+    let term_w = f.area().width;
+    let content_width = term_w as usize;
     app.set_wrap_width(content_width);
 
     // Composer height: visual rows (accounting for soft-wrap) + 2 for border.
-    let composer_inner_w = f.area().width;
+    // The composer's Block::borders(ALL) consumes 2 columns (left+right).
+    let composer_inner_w = term_w.saturating_sub(2);
     let composer_vis = app.composer.visual_height(composer_inner_w).min(MAX_COMPOSER_ROWS);
     let composer_height = composer_vis as u16 + 2;
     let has_sub_agents = !app.sub_agents.is_empty();
+
+    tracing::debug!(
+        term_w,
+        content_width,
+        composer_inner_w,
+        composer_vis,
+        composer_height,
+        "draw layout"
+    );
 
     let mut constraints = vec![
         Constraint::Min(3),                  // output (transcript)
@@ -78,6 +87,14 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 fn render_output(f: &mut Frame, app: &App, area: Rect) {
     let height = area.height as usize;
 
+    tracing::debug!(
+        out_area_w = area.width,
+        out_area_x = area.x,
+        out_area_y = area.y,
+        wrap_width = app.current_wrap_width(),
+        "render_output"
+    );
+
     // Committed lines + the live streaming tail (uncommitted text renders
     // progressively, then flushes into `output` on the next structural event).
     // The tail is wrapped incrementally as deltas arrive (see `WrapCache`), so
@@ -120,6 +137,13 @@ fn render_composer(f: &mut Frame, app: &App, area: Rect) {
     let inner_height = area.height.saturating_sub(2) as usize;
     let inner_width = area.width.saturating_sub(2) as usize; // border left+right
     let prefix_w = 2usize; // "> " or "  "
+
+    tracing::debug!(
+        comp_area_w = area.width,
+        inner_width,
+        inner_height,
+        "render_composer"
+    );
     let lines = app.composer.lines();
     let cursor = app.composer.cursor();
 
