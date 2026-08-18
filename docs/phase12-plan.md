@@ -22,21 +22,36 @@
 
 ## 分阶段
 
-### 12a Markdown 渲染（tui-markdown + syntect）
+### 12a Markdown 渲染（✅ 已完成 → pulldown-cmark 自定义渲染）
 
 **目标**：AI 输出中的 markdown 语法实时渲染为带样式的 ratatui Text。
 
-- **依赖**：`tui-markdown = "0.3.9"`（default features，含 syntect 代码高亮）
-  - 作者：joshka（ratatui 核心维护者）
-  - 解析器：pulldown-cmark 0.13（标准 CommonMark）
-  - API：`tui_markdown::from_str(md) -> ratatui::text::Text`
-- **接入点**：`src/ui/app.rs` 的 committed output lines 和 `src/ui/render.rs` 的 `render_output`
-- **流式策略**：
-  - 已完成的行（committed output）：每行独立调 `from_str` 渲染为 styled Text
-  - 正在流式的最后一行（tail）：保持原始文本，换行后再标记样式
-  - 这样避免流式 delta 到达时的样式闪烁
-- **wrap 处理**：tui-markdown 不负责 wrap，复用现有 `wrap()` 函数，先 wrap 再样式化（或先样式化再按 span 边界 wrap）
-- **验证**：AI 输出包含 `# 标题`、`**粗体**`、`` `代码` ``、` ``` 代码块 ``` `、`---`、`- 列表`、`| 表格 |` 时均正确渲染
+**实际方案**：放弃了 tui-markdown，改用 pulldown-cmark 自定义渲染（参考 codex 项目）
+
+- **依赖**：`pulldown-cmark = "0.13"`（CommonMark 解析器）
+- **实现**：`src/ui/render.rs` 中的 `MarkdownWriter` 状态机
+- **渲染特性**：
+  - 标题：无 `#` 前缀，不同级别不同样式（H1 青色+下划线，H2/H3 加粗）
+  - 表格：box-drawing 边框 `┌┬┐├┼┤└┴┘`，支持列对齐（Left/Center/Right），CJK 宽度计算
+  - 代码块：带语言标签，`│` 前缀，灰色文字
+  - 行内代码：青色字体（无 backticks），和 Claude Code 一致
+  - 粗体/斜体/删除线：标准 markdown 样式
+  - 列表：`•` 符号
+  - 引用：`│` 前缀
+  - 分割线：`─` 线条
+  - 链接：青色下划线
+  - 图片：`[Image: url]` 格式
+- **视觉映射**：`visual_to_output` + `visual_lines_text` 支持 markdown 展开后的选择/复制
+- **验证**：所有 markdown 元素均正确渲染，221 测试全部通过
+
+### 12e Markdown 渲染修复（✅ 已完成）
+
+**目标**：修复 markdown 渲染问题
+
+- ✅ 标题 `###` 前缀问题
+- ✅ 分割线 `---` 显示问题
+- ✅ 表格渲染（pulldown-cmark 0.13 header 事件顺序修复）
+- ✅ 行内代码样式优化
 
 ### 12b Thought 折叠
 
@@ -86,15 +101,13 @@
 
 - **不做 Mermaid/图片渲染**：TUI 环境无法展示，性价比低
 - **不做 tree-sitter 代码高亮**：syntect 足够，不重复引入
-- **不做表格列宽自适应**：tui-markdown 已用 Unicode box-drawing 处理，够用
 - **不做完整折叠/展开系统**：只做 thought 折叠，其他内容不折叠
 
 ## 依赖
 
 | 依赖 | 版本 | 用途 |
 |---|---|---|
-| tui-markdown | 0.3.9 | markdown → ratatui Text |
-| syntect | 5（tui-markdown 默认带） | 代码语法高亮 |
+| pulldown-cmark | 0.13 | CommonMark 解析器，自定义 markdown 渲染 |
 
 ## 风险
 
