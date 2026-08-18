@@ -719,6 +719,12 @@ fn latex_to_unicode(latex: &str) -> String {
     // Display commands: remove the command, keep the content
     s = s.replace("\\boxed{", "");
     s = s.replace("\\boxed(", "(");  // \boxed(...) → (...)
+    // Size/style commands: just remove
+    for cmd in &["\\large", "\\Large", "\\LARGE", "\\huge", "\\Huge",
+                  "\\small", "\\normalsize", "\\bfseries", "\\itshape",
+                  "\\textbf{", "\\textit{", "\\underline{"] {
+        s = s.replace(*cmd, "");
+    }
     // \sqrt{n} → √n
     while let Some(start) = s.find("\\sqrt{") {
         if let Some(end) = s[start + 6..].find('}') {
