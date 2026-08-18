@@ -1,11 +1,9 @@
 //! Startup brand banner: a figlet "phimint" wordmark + tagline + workspace/log
-//! metadata. Single source of truth for both the TUI (ratatui) and inline
-//! (`--inline`) renderers; row spans keep the text pure so copy/selection and
-//! the frame capture never see styling.
+//! metadata. Row spans keep the text pure so copy/selection and the frame
+//! capture never see styling.
 
 use std::path::Path;
 use std::path::PathBuf;
-use std::time::Duration;
 
 /// Which palette pair to use. `Dark` is the default (most terminals); `Light`
 /// swaps every hue for a deeper, higher-contrast variant.
@@ -29,8 +27,6 @@ pub enum BannerStyle {
     Brand,
     /// Tagline text after the brand name.
     Tagline,
-    /// "· v0.1.0" version suffix.
-    Version,
     /// "Workspace" / "Logs" labels.
     Label,
     /// Path values.
@@ -58,10 +54,6 @@ impl BannerStyle {
             BannerStyle::Tagline => match scheme {
                 ColorScheme::Dark => (0xd0, 0xd7, 0xde),
                 ColorScheme::Light => (0x57, 0x60, 0x6a),
-            },
-            BannerStyle::Version => match scheme {
-                ColorScheme::Dark => (0x7d, 0x85, 0x90),
-                ColorScheme::Light => (0x6e, 0x76, 0x81),
             },
             BannerStyle::Label => BannerStyle::Brand.rgb(scheme),
             BannerStyle::Value => BannerStyle::Tagline.rgb(scheme),
@@ -206,29 +198,10 @@ pub fn build(workspace: &Path, log_path: &Path, version: &str) -> Vec<BannerRow>
     rows
 }
 
-/// Render rows as 24-bit ANSI lines (inline mode). `Default` runs pass through
-/// plain so connector spaces stay uncolored.
-pub fn render_ansi(rows: &[BannerRow], scheme: ColorScheme) -> Vec<String> {
-    rows.iter()
-        .map(|row| {
-            let mut out = String::new();
-            for (text, style) in &row.spans {
-                if *style == BannerStyle::Default {
-                    out.push_str(text);
-                } else {
-                    let (r, g, b) = style.rgb(scheme);
-                    let bold = if style.is_bold() { "\x1b[1m" } else { "" };
-                    out.push_str(&format!("\x1b[38;2;{r};{g};{b}m{bold}{text}\x1b[0m"));
-                }
-            }
-            out
-        })
-        .collect()
-}
-
 /// Resolve `--color-scheme` ("auto"/"dark"/"light") plus detected signals to a
 /// concrete scheme. `color_fgbg` is `$COLORFGBG`: "fg;bg" with background `7`
-/// meaning the terminal is white. `osc11` is a `parse_osc11` result.
+/// meaning the terminal is white. `osc11` is an optional override from terminal
+/// probing (currently unused, always `None`).
 pub fn resolve_scheme(
     choice: &str,
     color_fgbg: Option<&str>,
@@ -249,102 +222,6 @@ pub fn resolve_scheme(
     }
 }
 
-/// Parse a terminal OSC 11 reply like `\x1b]11;rgb:1f1f/1f1f/1f1f\x07` into a
-/// scheme. `None` on garbage. Channels arrive as 4-digit ("1f1f") or 2-digit
-/// ("1f") hex; the low byte of each pair is the 8-bit channel value.
-pub fn parse_osc11(reply: &str) -> Option<ColorScheme> {
-    let pos = reply.find("11;")?;
-    let rest = reply[pos + 3..]
-        .trim()
-        .trim_end_matches('\x07')
-        .trim_end_matches('\x1b')
-        .trim_start_matches("rgb:")
-        .trim();
-    let mut parts = rest.split('/');
-    let hex = |s: &str| {
-        let s = s.trim();
-        let lo = s.get(s.len().saturating_sub(2)..).unwrap_or(s);
-        u8::from_str_radix(lo, 16).ok()
-    };
-    let (r, g, b) = (hex(parts.next()?)?, hex(parts.next()?)?, hex(parts.next()?)?);
-    // Naive perceived-brightness; ~0.6 separates dark from light terminals.
-    let lum = (0.299 * f32::from(r) + 0.587 * f32::from(g) + 0.114 * f32::from(b)) / 255.0;
-    Some(if lum > 0.6 { ColorScheme::Light } else { ColorScheme::Dark })
-}
-
-/// Query the terminal background with OSC 11 and wait up to `timeout` for a
-/// reply. Best-effort: returns `None` when the terminal doesn't answer, so
-/// callers fall back to dark. Must run before raw mode / alternate screen.
-///
-/// On Unix, uses termios `VMIN=0 / VTIME=1` (100ms per-byte deadline) to
-/// avoid spawning a reader thread that would eat subsequent crossterm input.
-/// On non-Unix platforms the probe is skipped (returns `None`).
-pub fn probe_osc11(timeout: Duration) -> Option<ColorScheme> {
-    #[cfg(unix)]
-    {
-        probe_osc11_unix(timeout)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = timeout;
-        None
-    }
-}
-
-#[cfg(unix)]
-fn probe_osc11_unix(timeout: Duration) -> Option<ColorScheme> {
-    use std::io::{Read, Write};
-
-    // Save the original terminal attributes and switch to non-blocking
-    // byte-at-a-time mode (VMIN=0, VTIME=1 → 100ms read deadline per byte).
-    // This lets the probe collect the response without a background thread.
-    let fd = libc::STDIN_FILENO;
-    let mut orig: libc::termios = unsafe { std::mem::zeroed() };
-    if unsafe { libc::tcgetattr(fd, &mut orig) } != 0 {
-        return None;
-    }
-    // Disable echo *before* sending the query so the terminal's reply never
-    // flashes on screen. VTIME=1 turns reads into a 100ms-per-byte poll so
-    // the probe returns promptly without a background thread.
-    let mut raw = orig;
-    raw.c_lflag &= !libc::ECHO;
-    raw.c_cc[libc::VMIN] = 0;
-    raw.c_cc[libc::VTIME] = 1; // 100ms per-read timeout
-    if unsafe { libc::tcsetattr(fd, libc::TCSANOW, &raw) } != 0 {
-        return None;
-    }
-
-    // Query: "\x1b]11;?\x07" asks the terminal to reply with its BG color.
-    let mut out = std::io::stdout();
-    let _ = write!(out, "\x1b]11;?\x07");
-    let _ = out.flush();
-
-    // Collect response bytes until the terminator (\x07 or ESC/ST) or deadline.
-    let deadline = std::time::Instant::now() + timeout;
-    let mut resp = Vec::with_capacity(64);
-    let mut stdin = std::io::stdin();
-    let mut buf = [0u8; 1];
-    while std::time::Instant::now() < deadline {
-        match stdin.read_exact(&mut buf) {
-            Ok(()) => {
-                resp.push(buf[0]);
-                if buf[0] == b'\x07' || buf[0] == 0x1b {
-                    break;
-                }
-            }
-            Err(_) => break, // read timeout expired (VTIME) or EOF
-        }
-    }
-
-    // Do NOT restore `orig` here: leaving our non-canonical (VMIN=0, ECHO off)
-    // settings in place lets crossterm's enable_raw_mode take over cleanly.
-    // Restoring canonical mode would trap a partial line in the line-discipline
-    // buffer, and the TUI would stall until the user pressed Enter to flush it.
-    unsafe { libc::tcflush(fd, libc::TCIFLUSH) };
-
-    parse_osc11(&String::from_utf8_lossy(&resp))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -352,7 +229,7 @@ mod tests {
     #[test]
     fn palette_light_is_distinct_from_dark() {
         for s in [BannerStyle::LogoA, BannerStyle::LogoB, BannerStyle::Brand,
-                  BannerStyle::Tagline, BannerStyle::Version, BannerStyle::Label,
+                  BannerStyle::Tagline, BannerStyle::Label,
                   BannerStyle::Value] {
             assert_ne!(s.rgb(ColorScheme::Dark), s.rgb(ColorScheme::Light), "{s:?}");
         }
@@ -415,21 +292,6 @@ mod tests {
     }
 
     #[test]
-    fn render_ansi_emits_color_codes_and_skips_default() {
-        let row = BannerRow {
-            spans: vec![
-                (" ".to_string(), BannerStyle::Default),
-                ("Phimint".to_string(), BannerStyle::Brand),
-            ],
-        };
-        let line = render_ansi(&[row], ColorScheme::Dark)[0].clone();
-        assert!(line.starts_with(" "), "default run must pass through: {line:?}");
-        assert!(line.contains("\x1b[38;2;255;176;102m"), "brand rgb missing: {line:?}");
-        assert!(line.contains("\x1b[1m"), "brand must be bold: {line:?}");
-        assert!(line.ends_with("\x1b[0m"), "must reset at end: {line:?}");
-    }
-
-    #[test]
     fn resolve_scheme_obeys_flag_then_env_then_osc() {
         assert_eq!(resolve_scheme("dark", Some("7;0"), Some(ColorScheme::Light)), ColorScheme::Dark);
         assert_eq!(resolve_scheme("light", None, None), ColorScheme::Light);
@@ -440,14 +302,6 @@ mod tests {
         assert_eq!(resolve_scheme("auto", None, Some(ColorScheme::Light)), ColorScheme::Light);
         assert_eq!(resolve_scheme("auto", None, None), ColorScheme::Dark);
         assert_eq!(resolve_scheme("auto", None, Some(ColorScheme::Dark)), ColorScheme::Dark);
-    }
-
-    #[test]
-    fn parse_osc11_reads_rgb_and_garbage() {
-        assert_eq!(parse_osc11("\x1b]11;rgb:1f1f/1f1f/1f1f\x07"), Some(ColorScheme::Dark));
-        assert_eq!(parse_osc11("\x1b]11;rgb:ffff/ffff/ffff\x07"), Some(ColorScheme::Light));
-        assert_eq!(parse_osc11(""), None);
-        assert_eq!(parse_osc11("junk"), None);
     }
 
     #[test]

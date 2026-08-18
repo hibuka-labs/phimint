@@ -1,17 +1,14 @@
 //! phimint — an AI coding agent built on phi-agent.
 //!
-//! The default UI is a ratatui TUI with a fixed input bar at the bottom (the
-//! cursor stays in the bar while output scrolls above it). The inline chat is
-//! opt-in via `--inline` for native-terminal-scrollback use.
+//! The UI is a ratatui TUI with a fixed input bar at the bottom (the cursor
+//! stays in the bar while output scrolls above it).
 
 mod agent;
 mod approval;
 mod banner;
 mod gate;
-mod inline;
 mod lang;
 mod lsp;
-mod markdown;
 mod skills;
 mod tools;
 mod ui;
@@ -51,10 +48,6 @@ struct Cli {
     #[arg(long)]
     session: Option<String>,
 
-    /// Run the inline chat instead of the ratatui TUI (TUI is the default).
-    #[arg(long)]
-    inline: bool,
-
     /// Log level for the session.log file (debug/info/warn/error)
     #[arg(long, default_value = "info")]
     log_level: String,
@@ -85,13 +78,10 @@ async fn main() -> Result<()> {
     let llm = resolve_llm_config(cli.model.as_deref(), cli.base_url.as_deref())?;
     let llm_client = Arc::new(OpenAiClient::new(llm.api_key, llm.model, Some(llm.base_url)));
 
-    // The ratatui TUI is the default; `--inline` opts into the inline chat.
-    let use_tui = !cli.inline;
-
     // Approval is two layers (see approval.rs): a policy (the gate) + a handler
-    // (the decision). In `ask` mode the handler enqueues requests for the inline
-    // (or TUI) approval prompt instead of reading stdin; the queue receiver is
-    // handed to whichever UI runs.
+    // (the decision). In `ask` mode the handler enqueues requests for the TUI
+    // approval prompt instead of reading stdin; the queue receiver is handed to
+    // the UI.
     let (approval, policy, approval_rx) = if cli.approval == "ask" {
         let (handler, policy, rx) = approval::build_queued_approval();
         (handler, policy, Some(rx))
@@ -129,11 +119,7 @@ async fn main() -> Result<()> {
     let show_banner = cli.banner != "off";
     let version = env!("CARGO_PKG_VERSION");
 
-    if use_tui {
-        ui::run_tui(agent, skill_resolver, session, session_ctx, workspace, approval_rx, scheme, show_banner, version).await
-    } else {
-        inline::run_inline(agent, skill_resolver, session, session_ctx, workspace, approval_rx, scheme, show_banner, version).await
-    }
+    ui::run_tui(agent, skill_resolver, session, session_ctx, workspace, approval_rx, scheme, show_banner, version).await
 }
 
 /// Base directory for all phimint session data (~/.phimint).

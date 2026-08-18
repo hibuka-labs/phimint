@@ -35,11 +35,6 @@ impl Composer {
         self.lines.len() == 1 && self.lines[0].is_empty()
     }
 
-    /// Number of lines currently in the buffer.
-    pub fn height(&self) -> usize {
-        self.lines.len()
-    }
-
     /// Visual row count after accounting for soft-wrap at `inner_width` columns.
     ///
     /// Each logical line is prefixed with `"> "` (first) or `"  "` (continuation),
@@ -203,7 +198,6 @@ mod tests {
     fn starts_empty_single_line() {
         let c = Composer::new();
         assert!(c.is_empty());
-        assert_eq!(c.height(), 1);
         assert_eq!(c.text(), "");
     }
 
@@ -215,7 +209,6 @@ mod tests {
         c.insert_char('\n'); // Shift+Enter
         c.insert_str("world");
         assert_eq!(c.text(), "hello\nworld");
-        assert_eq!(c.height(), 2);
         assert!(!c.is_empty());
     }
 
@@ -224,7 +217,6 @@ mod tests {
         let mut c = Composer::new();
         c.insert_str("line1\nline2\nline3");
         assert_eq!(c.text(), "line1\nline2\nline3");
-        assert_eq!(c.height(), 3);
     }
 
     #[test]
@@ -258,7 +250,6 @@ mod tests {
         c.move_left(); // -> (1,0)
         c.backspace(); // join -> "abcd"
         assert_eq!(c.text(), "abcd");
-        assert_eq!(c.height(), 1);
     }
 
     #[test]
@@ -301,6 +292,5 @@ mod tests {
         c.insert_str("abc\ndef");
         c.clear();
         assert!(c.is_empty());
-        assert_eq!(c.height(), 1);
     }
 }
