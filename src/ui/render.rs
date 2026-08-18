@@ -675,6 +675,92 @@ fn line_plain_text(line: &Line<'_>) -> String {
     s
 }
 
+/// Convert common LaTeX commands to Unicode symbols for terminal display.
+fn latex_to_unicode(latex: &str) -> String {
+    let mut s = latex.to_string();
+    // Common symbols (order matters: longer patterns first)
+    s = s.replace("\\rightarrow", "→");
+    s = s.replace("\\leftarrow", "←");
+    s = s.replace("\\Rightarrow", "⇒");
+    s = s.replace("\\Leftarrow", "⇐");
+    s = s.replace("\\times", "×");
+    s = s.replace("\\div", "÷");
+    s = s.replace("\\pm", "±");
+    s = s.replace("\\mp", "∓");
+    s = s.replace("\\leq", "≤");
+    s = s.replace("\\geq", "≥");
+    s = s.replace("\\neq", "≠");
+    s = s.replace("\\approx", "≈");
+    s = s.replace("\\equiv", "≡");
+    s = s.replace("\\cdot", "·");
+    s = s.replace("\\ldots", "…");
+    s = s.replace("\\cdots", "⋯");
+    s = s.replace("\\infty", "∞");
+    s = s.replace("\\partial", "∂");
+    s = s.replace("\\nabla", "∇");
+    s = s.replace("\\sum", "∑");
+    s = s.replace("\\prod", "∏");
+    s = s.replace("\\int", "∫");
+    s = s.replace("\\alpha", "α");
+    s = s.replace("\\beta", "β");
+    s = s.replace("\\gamma", "γ");
+    s = s.replace("\\delta", "δ");
+    s = s.replace("\\epsilon", "ε");
+    s = s.replace("\\theta", "θ");
+    s = s.replace("\\lambda", "λ");
+    s = s.replace("\\mu", "μ");
+    s = s.replace("\\pi", "π");
+    s = s.replace("\\sigma", "σ");
+    s = s.replace("\\phi", "φ");
+    s = s.replace("\\omega", "ω");
+    s = s.replace("\\Delta", "Δ");
+    s = s.replace("\\Sigma", "Σ");
+    s = s.replace("\\Omega", "Ω");
+    // \sqrt{n} → √n
+    while let Some(start) = s.find("\\sqrt{") {
+        if let Some(end) = s[start + 6..].find('}') {
+            let inner = &s[start + 6..start + 6 + end];
+            let replacement = format!("√{}", inner);
+            s = format!("{}{}{}", &s[..start], replacement, &s[start + 6 + end + 1..]);
+        } else {
+            break;
+        }
+    }
+    // Remove remaining braces used for grouping: {x} → x
+    // Only remove simple single-char braces to avoid breaking nested expressions
+    s = s.replace("\\mathbf{", "");
+    s = s.replace("\\mathrm{", "");
+    s = s.replace("\\text{", "");
+    // Clean up remaining single braces
+    let mut result = String::new();
+    let mut depth = 0i32;
+    for ch in s.chars() {
+        match ch {
+            '{' => {
+                if depth == 0 {
+                    depth += 1;
+                    continue; // skip opening brace
+                }
+                depth += 1;
+                result.push(ch);
+            }
+            '}' => {
+                depth -= 1;
+                if depth < 0 {
+                    depth = 0; // unmatched close brace
+                    continue;
+                }
+                if depth == 0 {
+                    continue; // skip closing brace
+                }
+                result.push(ch);
+            }
+            _ => result.push(ch),
+        }
+    }
+    result
+}
+
 /// Render markdown text using pulldown-cmark with custom styling.
 ///
 /// Unlike tui-markdown (which is a "source viewer" that keeps `#` markers),
@@ -751,6 +837,29 @@ impl MarkdownWriter {
             Event::End(tag) => self.end_tag(tag),
             Event::Text(text) => self.text(&text),
             Event::Code(code) => self.inline_code(&code),
+            // Math events: render LaTeX as Unicode symbols (cyan, like inline code)
+            Event::InlineMath(math) => {
+                let span = Span::styled(
+                    latex_to_unicode(&math),
+                    Style::default().fg(Color::Cyan),
+                );
+                if let Some(ref mut ts) = self.table_state {
+                    ts.current_cell.push(span);
+                } else {
+                    self.current_line.spans.push(span);
+                }
+            }
+            Event::DisplayMath(math) => {
+                // Display math: render on its own line(s)
+                self.flush_current_line();
+                let converted = latex_to_unicode(&math);
+                for line in converted.lines() {
+                    self.push_line(Line::from(Span::styled(
+                        line.to_string(),
+                        Style::default().fg(Color::Cyan),
+                    )));
+                }
+            }
             Event::SoftBreak | Event::HardBreak => {
                 self.flush_current_line();
             }
@@ -1540,5 +1649,38 @@ mod tests {
         // Header row should not be empty
         let header_text: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(header_text.contains("Header1"), "header should contain 'Header1', got: {header_text:?}");
+    }
+
+    #[test]
+    fn latex_to_unicode_conversion() {
+        assert_eq!(latex_to_unicode("\\sqrt{9}"), "√9");
+        assert_eq!(latex_to_unicode("\\sqrt{4}"), "√4");
+        assert_eq!(latex_to_unicode("2 \\times 3"), "2 × 3");
+        assert_eq!(latex_to_unicode("6 \\div 2"), "6 ÷ 2");
+        assert_eq!(latex_to_unicode("\\pi r^2"), "π r^2");
+        assert_eq!(latex_to_unicode("a \\neq b"), "a ≠ b");
+        assert_eq!(latex_to_unicode("\\alpha + \\beta"), "α + β");
+        assert_eq!(latex_to_unicode("\\sqrt{4} \\times 9"), "√4 × 9");
+        assert_eq!(latex_to_unicode("$(\\sqrt{4} \\times 9 - 10) \\times 3$"), "$(√4 × 9 - 10) × 3$");
+    }
+
+    #[test]
+    fn math_latex_rendering() {
+        // Inline math should render with Unicode symbols
+        let lines = render_markdown("计算步骤：$\\sqrt{4}=2$，$2\\times9=18$");
+        let text: String = lines[0].spans.iter().map(|s| s.content.as_ref()).collect();
+        // Should have Unicode symbols, not raw LaTeX
+        assert!(text.contains("√4=2"), "should have √ symbol: {text}");
+        assert!(text.contains("2×9=18"), "should have × symbol: {text}");
+        // Math spans should be cyan
+        let has_cyan = lines[0].spans.iter().any(|s| s.style.fg == Some(Color::Cyan));
+        assert!(has_cyan, "math should be cyan colored");
+
+        // Table with math cells
+        let table_md = "| 步骤 | 运算 | 结果 |\n|------|------|------|\n| ① | $\\sqrt{4}$ | $2$ |";
+        let lines = render_markdown(table_md);
+        let body_line = &lines[3]; // 0: top, 1: header, 2: separator, 3: body, 4: bottom
+        let body_text: String = body_line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(body_text.contains("√4"), "table should have √ symbol: {body_text}");
     }
 }
