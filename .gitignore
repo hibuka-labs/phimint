@@ -1,4 +1,5 @@
 /target
+/tmp
 .env
 
 # macOS
@@ -6,3 +7,4 @@
 
 # superpowers visual-companion session artifacts
 .superpowers/
+

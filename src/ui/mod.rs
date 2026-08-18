@@ -178,9 +178,9 @@ pub async fn run_tui(
         while crossterm::event::poll(Duration::ZERO)? {
             let event = crossterm::event::read()?;
             crossterm_count += 1;
-            dirty = true;
             match event {
                 Event::Key(key) if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) => {
+                    dirty = true;
                     has_key = true;
                     if let Some(action) = app.handle_key(key.code, key.modifiers) {
                         match action {
@@ -219,17 +219,18 @@ pub async fn run_tui(
                 Event::Mouse(MouseEvent {
                     kind: MouseEventKind::ScrollUp,
                     ..
-                }) => { has_scroll = true; if !app.scroll_up() { dirty = false; } }
+                }) => { has_scroll = true; if app.scroll_up() { dirty = true; } }
                 Event::Mouse(MouseEvent {
                     kind: MouseEventKind::ScrollDown,
                     ..
-                }) => { has_scroll = true; if !app.scroll_down() { dirty = false; } }
+                }) => { has_scroll = true; if app.scroll_down() { dirty = true; } }
                 Event::Mouse(MouseEvent {
                     kind,
                     column,
                     row,
                     ..
                 }) => {
+                    dirty = true;
                     has_mouse = true;
                     // The copy-menu hit-test needs the terminal size to locate
                     // the popup exactly where it was drawn.
@@ -243,7 +244,8 @@ pub async fn run_tui(
                         }
                     }
                 }
-                Event::Paste(text) => app.paste(&text),
+                Event::Paste(text) => { dirty = true; app.paste(&text); }
+                Event::Resize(_, _) => { dirty = true; }
                 _ => {}
             }
         }

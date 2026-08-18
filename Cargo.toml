@@ -32,8 +32,11 @@ clap = { version = "4", features = ["derive", "env"] }
 dotenvy = "0.15"
 
 # UI: ratatui for the TUI, crossterm as its backend + raw-mode key/paste input.
-ratatui = "0.29"
+ratatui = "0.30"
 crossterm = "0.28"
+# Markdown rendering for AI output (tui-markdown uses ratatui-core 0.1, which
+# ratatui 0.30 re-exports, so types are compatible).
+tui-markdown = { version = "0.3.9", default-features = true }
 # Display width for wide CJK glyphs (TUI wrap).
 unicode-width = "0.1"
 # Clipboard for the TUI's Ctrl+Y "copy last reply" (arboard is cross-platform).

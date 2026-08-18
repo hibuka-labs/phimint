@@ -84,53 +84,95 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
 }
 
-fn render_output(f: &mut Frame, app: &App, area: Rect) {
+fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
     let height = area.height as usize;
 
-    tracing::debug!(
-        out_area_w = area.width,
-        out_area_x = area.x,
-        out_area_y = area.y,
-        wrap_width = app.current_wrap_width(),
-        "render_output"
-    );
+    // Committed lines: always present in `app.output`.
+    let committed = app.output.len();
 
-    // Committed lines + the live streaming tail (uncommitted text renders
-    // progressively, then flushes into `output` on the next structural event).
-    // The tail is wrapped incrementally as deltas arrive (see `WrapCache`), so
-    // this frame only styles the visible window — no re-wrap of the full tail.
-    let (tail_lines, tail_kind) = match app.streaming_tail_lines() {
-        Some((lines, kind)) => (lines, kind),
-        None => (&[][..], LineKind::Normal),
+    // Streaming tail: for Normal (AI prose), render the full pending_text
+    // through markdown so the user sees styled output during streaming.
+    // For other kinds (Thought), fall back to pre-wrapped tail_lines.
+    let tail_raw = app.streaming_tail_raw();
+    // For non-Normal streaming tail, fall back to pre-wrapped tail_lines.
+    let tail_lines_fallback = match app.streaming_tail_lines() {
+        Some((lines, _)) => lines,
+        None => &[][..],
     };
 
-    let committed = app.output.len();
-    let window = window_range(committed + tail_lines.len(), app, height);
+    // Pre-render committed lines and streaming tail into a flat vec.
+    let mut lines: Vec<Line> = Vec::with_capacity(committed + 32);
+    // Build mapping from visual line index → originating output index.
+    // Used by `line_index_at` so mouse selection works on markdown-expanded
+    // content.  Tail lines (no output index) map to `usize::MAX`.
+    let mut visual_to_output: Vec<usize> = Vec::with_capacity(committed + 32);
+    // Plain text for each visual line (parallel to visual_to_output).
+    // Used by `selection_text` so copy returns visually-selected lines.
+    let mut visual_lines_text: Vec<String> = Vec::with_capacity(committed + 32);
 
-    let mut lines: Vec<Line> = Vec::with_capacity(window.len());
-    for i in window {
-        let mut base = if i < committed {
-            style_for(app.output[i].kind)
+    // --- committed output ---
+    let mut vis_idx: usize = 0; // running visual line counter
+    for i in 0..committed {
+        let line = &app.output[i];
+        let kind = line.kind;
+        let spans = line.spans.as_deref().unwrap_or(&[]);
+
+        if kind == LineKind::Normal && spans.is_empty() {
+            let md_lines = render_markdown(&line.text);
+            for mut md_line in md_lines {
+                if app.is_selected(vis_idx) {
+                    apply_bg(&mut md_line, Color::DarkGray);
+                }
+                visual_lines_text.push(line_plain_text(&md_line));
+                visual_to_output.push(i);
+                lines.push(md_line);
+                vis_idx += 1;
+            }
         } else {
-            style_for(tail_kind)
-        };
-        // Highlight lines inside the active mouse selection — the background
-        // overlays every segment below, including banner span colors.
-        if i < committed && app.is_selected(i) {
-            base = base.bg(Color::DarkGray);
+            let base = style_for(kind);
+            let mut styled = span_line(&line.text, spans, base, app.scheme());
+            if app.is_selected(vis_idx) {
+                apply_bg(&mut styled, Color::DarkGray);
+            }
+            visual_lines_text.push(line_plain_text(&styled));
+            visual_to_output.push(i);
+            lines.push(styled);
+            vis_idx += 1;
         }
-        let (text, spans): (&str, &[SpanSpec]) = if i < committed {
-            let line = &app.output[i];
-            (line.text.as_str(), line.spans.as_deref().unwrap_or(&[]))
-        } else {
-            (tail_lines[i - committed].as_str(), &[])
-        };
-        lines.push(span_line(text, spans, base, app.scheme()));
     }
+
+    // --- streaming tail ---
+    if let Some((raw, kind)) = tail_raw {
+        if kind == LineKind::Normal {
+            let md_lines = render_markdown(raw);
+            for md_line in md_lines {
+                visual_lines_text.push(line_plain_text(&md_line));
+                visual_to_output.push(usize::MAX); // sentinel: no output index
+                lines.push(md_line);
+            }
+        } else {
+            // Thought / other kinds: use pre-wrapped lines.
+            for text in tail_lines_fallback.iter() {
+                let base = style_for(kind);
+                let styled = span_line(text, &[], base, app.scheme());
+                visual_lines_text.push(text.clone());
+                visual_to_output.push(usize::MAX);
+                lines.push(styled);
+            }
+        }
+    }
+
+    // Visible window respecting scroll_offset and follow_bottom.
+    let total = lines.len();
+    app.rendered_total = total;
+    app.visual_to_output = visual_to_output;
+    app.visual_lines_text = visual_lines_text;
+    let window = window_range(total, app, height);
+    let visible: Vec<Line> = lines[window].to_vec();
 
     // No border/title — the transcript flows freely (Claude Code style); the
     // composer's own box is the visual boundary between output and input.
-    f.render_widget(Paragraph::new(lines), area);
+    f.render_widget(Paragraph::new(visible), area);
 }
 
 fn render_composer(f: &mut Frame, app: &App, area: Rect) {
@@ -571,6 +613,48 @@ fn span_line(text: &str, spans: &[SpanSpec], base: Style, scheme: ColorScheme) -
         out.push(Span::styled(text[cur..].to_string(), base));
     }
     Line::from(out)
+}
+
+/// Convert an borrowed `Line<'_>` (from tui-markdown) into an owned `Line<'static>`,
+/// merging the line-level style into each span so ratatui renders it.
+fn line_to_static(line: Line<'_>) -> Line<'static> {
+    let line_style = line.style;
+    let spans: Vec<Span<'static>> = line
+        .spans
+        .into_iter()
+        .map(|s| {
+            let merged = s.style.patch(line_style);
+            Span::styled(s.content.into_owned(), merged)
+        })
+        .collect();
+    Line::from(spans)
+}
+
+/// Apply a background color to every span and the line-level style.
+fn apply_bg(line: &mut Line<'_>, bg: Color) {
+    line.style = line.style.bg(bg);
+    for span in &mut line.spans {
+        span.style = span.style.bg(bg);
+    }
+}
+
+/// Extract plain text from a ratatui `Line` (concatenate all span contents).
+fn line_plain_text(line: &Line<'_>) -> String {
+    let mut s = String::new();
+    for span in &line.spans {
+        s.push_str(&span.content);
+    }
+    s
+}
+
+/// Render markdown text through tui-markdown.
+fn render_markdown(text: &str) -> Vec<Line<'static>> {
+    let md_text = tui_markdown::from_str(text);
+    let mut out = Vec::with_capacity(md_text.lines.len());
+    for md_line in md_text.lines {
+        out.push(line_to_static(md_line));
+    }
+    out
 }
 
 /// Serialize a rendered buffer to a plain-text grid (one row per line).

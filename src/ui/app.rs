@@ -26,7 +26,7 @@ use crate::ui::mention::{self, Entry};
 const DEFAULT_WRAP_WIDTH: usize = 100;
 
 /// Lines a PageUp/PageDown scrolls the output by.
-const SCROLL_STEP: usize = 10;
+const SCROLL_STEP: usize = 1;
 
 /// The phase of a running turn, driven by the event stream (§9.6 state machine).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -188,6 +188,9 @@ pub struct App {
     pub scroll_offset: usize,
     /// Whether the output view is pinned to the newest lines.
     pub follow_bottom: bool,
+    /// Last known rendered line count (updated by render_output).
+    /// Used to clamp scroll_offset so it never exceeds the useful range.
+    pub rendered_total: usize,
     /// Pending approval requests (front = the popup currently shown).
     pub approval_queue: VecDeque<ApprovalItem>,
     /// Live sub-agent states, keyed by `agent_id` (`root/<task_name>`).
@@ -214,6 +217,15 @@ pub struct App {
     /// Output pane rect `(x, y, w, h)` in cells, refreshed each draw so mouse
     /// events can be hit-tested against the transcript.
     pub(crate) output_area: Option<(u16, u16, u16, u16)>,
+    /// Mapping from visual line index (after markdown expansion) to the
+    /// originating `output` line index.  Built by `render_output` each frame;
+    /// used by `line_index_at` so mouse selection works correctly on
+    /// markdown-expanded content.
+    pub(crate) visual_to_output: Vec<usize>,
+    /// Plain text for each visual line (parallel to `visual_to_output`).
+    /// Built by `render_output`; used by `selection_text` so copy returns
+    /// the visually-selected lines rather than the full raw `output` block.
+    pub(crate) visual_lines_text: Vec<String>,
     pending_text: String,
     pending_thought: String,
     /// The agent whose text/thought is currently accumulating in the pending
@@ -249,6 +261,7 @@ impl App {
             running: false,
             scroll_offset: 0,
             follow_bottom: true,
+            rendered_total: 0,
             approval_queue: VecDeque::new(),
             sub_agents: BTreeMap::new(),
             selection: None,
@@ -260,6 +273,8 @@ impl App {
             workspace_root: PathBuf::new(),
             scheme: ColorScheme::Dark,
             output_area: None,
+            visual_to_output: Vec::new(),
+            visual_lines_text: Vec::new(),
             pending_text: String::new(),
             pending_thought: String::new(),
             pending_agent: None,
@@ -334,6 +349,7 @@ impl App {
     }
 
     /// Current output wrap width (columns).
+    #[allow(dead_code)]
     pub fn current_wrap_width(&self) -> usize {
         self.wrap_width
     }
@@ -347,6 +363,12 @@ impl App {
             if let Some(ref original) = line.original {
                 if original.is_empty() || line.spans.is_some() {
                     // Banner lines or empty originals: keep as-is.
+                    new.push(line);
+                    continue;
+                }
+                // Normal AI prose: keep as a single line; the renderer handles
+                // markdown parsing and wrapping at display time.
+                if line.kind == LineKind::Normal {
                     new.push(line);
                     continue;
                 }
@@ -601,6 +623,12 @@ impl App {
                         self.status = AgentStatus::Idle;
                         self.running = false;
                         self.sub_agents.clear();
+                        tracing::info!(
+                            follow_bottom = self.follow_bottom,
+                            scroll_offset = self.scroll_offset,
+                            output_len = self.output.len(),
+                            "run_finished: view state"
+                        );
                     }
                 }
             }
@@ -622,6 +650,12 @@ impl App {
                         self.status = AgentStatus::Idle;
                         self.running = false;
                         self.sub_agents.clear();
+                        tracing::info!(
+                            follow_bottom = self.follow_bottom,
+                            scroll_offset = self.scroll_offset,
+                            output_len = self.output.len(),
+                            "cancel: view state"
+                        );
                     }
                 }
             }
@@ -695,8 +729,20 @@ impl App {
     }
 
     fn flush_pending(&mut self) {
+        let had_text = !self.pending_text.is_empty();
+        let had_thought = !self.pending_thought.is_empty();
         self.flush_thought();
         self.flush_text();
+        if had_text || had_thought {
+            tracing::info!(
+                follow_bottom = self.follow_bottom,
+                scroll_offset = self.scroll_offset,
+                output_len = self.output.len(),
+                had_text,
+                had_thought,
+                "flush_pending: view state"
+            );
+        }
     }
 
     fn flush_thought(&mut self) {
@@ -737,19 +783,20 @@ impl App {
             .take()
             .map(|p| format!("[{p}] "))
             .unwrap_or_default();
-        let prefix = prefix.as_str();
-        for (i, line) in self.tail_wrap.lines().iter().enumerate() {
-            let text = if i == 0 && !prefix.is_empty() {
-                format!("{prefix}{line}")
-            } else {
-                line.clone()
-            };
-            self.output.push(OutputLine { spans: None,
-                original: if i == 0 { Some(original.clone()) } else { None },
-                text,
-                kind: LineKind::Normal,
-            });
-        }
+        // Store the full raw text in ONE OutputLine. The renderer will parse
+        // it through tui-markdown and wrap at display time, so markdown syntax
+        // that spans multiple visual lines (headings, bold, tables) is preserved.
+        let text = if prefix.is_empty() {
+            original.clone()
+        } else {
+            format!("{prefix}{original}")
+        };
+        self.output.push(OutputLine {
+            spans: None,
+            original: Some(original),
+            text,
+            kind: LineKind::Normal,
+        });
         self.tail_wrap.reset();
     }
 
@@ -760,6 +807,18 @@ impl App {
             Some((self.tail_wrap.lines(), LineKind::Normal))
         } else if !self.pending_thought.is_empty() {
             Some((self.tail_wrap.lines(), LineKind::Thought))
+        } else {
+            None
+        }
+    }
+
+    /// Raw pending text for markdown rendering (streaming tail).
+    /// Returns `(text, kind)` or `None` when there is nothing pending.
+    pub fn streaming_tail_raw(&self) -> Option<(&str, LineKind)> {
+        if !self.pending_text.is_empty() {
+            Some((&self.pending_text, LineKind::Normal))
+        } else if !self.pending_thought.is_empty() {
+            Some((&self.pending_thought, LineKind::Thought))
         } else {
             None
         }
@@ -844,9 +903,9 @@ impl App {
         match kind {
             Down(MouseButton::Left) => {
                 self.context_menu = None;
-                self.selection = self
-                    .line_index_at(x, y)
-                    .map(|idx| Selection { anchor: idx, head: idx });
+                let idx = self.line_index_at(x, y);
+                tracing::debug!(x, y, selected_idx = ?idx, "mouse left down");
+                self.selection = idx.map(|idx| Selection { anchor: idx, head: idx });
                 None
             }
             Drag(MouseButton::Left) => {
@@ -877,41 +936,86 @@ impl App {
         }
         let row = (y - ay) as usize;
         let committed = self.output.len();
-        let tail = self.streaming_tail_lines().map(|(l, _)| l.len()).unwrap_or(0);
-        let window = window_range(committed + tail, self, ah as usize);
-        let idx = window.start + row;
-        if idx < window.end && idx < committed {
-            Some(idx)
-        } else {
-            None
+
+        // Use visual_to_output mapping when available (after render), otherwise
+        // fall back to direct output indices (for tests or before first render).
+        if self.visual_to_output.is_empty() {
+            // Fallback: no markdown expansion, output lines map 1:1 to visual lines.
+            let tail = self.streaming_tail_lines().map(|(l, _)| l.len()).unwrap_or(0);
+            let window = window_range(committed + tail, self, ah as usize);
+            let idx = window.start + row;
+            tracing::debug!(
+                x, y, row, committed, tail,
+                window_start = window.start, window_end = window.end, idx,
+                "line_index_at (fallback, no mapping)"
+            );
+            if idx < window.end && idx < committed {
+                return Some(idx);
+            }
+            return None;
         }
+
+        let total = self.rendered_total;
+        let window = window_range(total, self, ah as usize);
+        let visual_idx = window.start + row;
+        let out_idx = self.visual_to_output.get(visual_idx).copied();
+        tracing::debug!(
+            x, y, row, total, committed,
+            window_start = window.start, window_end = window.end,
+            visual_idx, out_idx,
+            mapping_len = self.visual_to_output.len(),
+            "line_index_at"
+        );
+        if visual_idx < window.end && visual_idx < self.visual_to_output.len() {
+            let mapped = self.visual_to_output[visual_idx];
+            if mapped < committed {
+                return Some(visual_idx); // return visual index, not output index
+            }
+        }
+        None
     }
 
     /// The active selection as a normalized, `output`-len-clamped inclusive
-    /// range, or `None` when empty/stale.
+    /// range, or `None` when empty/stale.  Indices are into the visual line
+    /// array (post-markdown-expansion), not the raw `output`.
     fn selection_range(&self) -> Option<(usize, usize)> {
         let sel = self.selection?;
         let (lo, hi) = sel.bounds();
-        if self.output.is_empty() || lo >= self.output.len() {
+        let total = if self.visual_to_output.is_empty() {
+            self.output.len()
+        } else {
+            self.rendered_total
+        };
+        if total == 0 || lo >= total {
             return None;
         }
-        Some((lo, hi.min(self.output.len() - 1)))
+        Some((lo, hi.min(total - 1)))
     }
 
-    /// True when output line `i` falls inside the active selection.
+    /// True when visual line `i` falls inside the active selection.
     pub fn is_selected(&self, i: usize) -> bool {
         self.selection_range()
             .map_or(false, |(lo, hi)| lo <= i && i <= hi)
     }
 
     /// The selected lines joined as plain text (what-you-see-is-what-you-copy).
+    /// Uses `visual_lines_text` so the copy matches exactly what the user
+    /// selected visually, not the full raw `output` block.
     pub fn selection_text(&self) -> String {
         let Some((lo, hi)) = self.selection_range() else {
             return String::new();
         };
-        self.output[lo..=hi]
+        if self.visual_lines_text.is_empty() {
+            // Fallback for tests / before first render.
+            return self.output[lo..=hi.min(self.output.len().saturating_sub(1))]
+                .iter()
+                .map(|l| l.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+        }
+        self.visual_lines_text[lo..=hi.min(self.visual_lines_text.len().saturating_sub(1))]
             .iter()
-            .map(|l| l.text.as_str())
+            .map(|s| s.as_str())
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -1437,21 +1541,30 @@ impl App {
         self.follow_bottom = false;
         let old = self.scroll_offset;
         self.scroll_offset += SCROLL_STEP;
-        // Clamp to the maximum useful offset so scrolling past the top of
-        // content is a no-op instead of accumulating thousands of phantom lines.
+        // Clamp to the maximum useful offset using the last known rendered
+        // line count and output area height. This prevents scroll_offset from
+        // growing past the top of content.
         if let Some((_x, _y, _w, h)) = self.output_area {
-            let total = self.output.len();
-            let max_offset = total.saturating_sub(h as usize);
+            let max_offset = self.rendered_total.saturating_sub(h as usize);
             if self.scroll_offset > max_offset {
                 self.scroll_offset = max_offset;
             }
         }
+        tracing::debug!(
+            old_offset = old,
+            new_offset = self.scroll_offset,
+            rendered_total = self.rendered_total,
+            output_area_h = self.output_area.map(|a| a.3),
+            "scroll_up"
+        );
         self.scroll_offset != old
     }
 
     /// Scroll down by `SCROLL_STEP` lines. Returns `true` if the viewport moved.
     pub(crate) fn scroll_down(&mut self) -> bool {
+        let old = self.scroll_offset;
         if self.follow_bottom {
+            tracing::debug!("scroll_down: already at bottom");
             return false;
         }
         if self.scroll_offset <= SCROLL_STEP {
@@ -1460,6 +1573,12 @@ impl App {
         } else {
             self.scroll_offset -= SCROLL_STEP;
         }
+        tracing::debug!(
+            old_offset = old,
+            new_offset = self.scroll_offset,
+            follow_bottom = self.follow_bottom,
+            "scroll_down"
+        );
         true
     }
 
@@ -1565,12 +1684,27 @@ impl WrapCache {
 /// rows, honoring `follow_bottom` and `scroll_offset`.
 pub(crate) fn window_range(total: usize, app: &App, height: usize) -> Range<usize> {
     if total <= height {
+        tracing::debug!(total, height, "window_range: content fits, 0..total");
         return 0..total;
     }
     if app.follow_bottom {
-        return total - height..total;
+        let start = total - height;
+        tracing::debug!(total, height, start, "window_range: follow_bottom");
+        return start..total;
     }
-    let start = total.saturating_sub(height).saturating_sub(app.scroll_offset);
+    let max_offset = total - height;
+    let offset = app.scroll_offset.min(max_offset);
+    let start = max_offset - offset;
+    tracing::debug!(
+        total,
+        height,
+        raw_scroll_offset = app.scroll_offset,
+        max_offset,
+        clamped_offset = offset,
+        start,
+        end = (start + height).min(total),
+        "window_range"
+    );
     start..(start + height).min(total)
 }
 
@@ -1827,9 +1961,10 @@ mod tests {
             .iter()
             .filter(|l| l.kind == LineKind::Normal)
             .collect();
-        assert_eq!(normals.len(), 2);
-        assert_eq!(normals[0].text, "a");
-        assert_eq!(normals[1].text, "b");
+        // The full raw text is stored as ONE OutputLine; the renderer handles
+        // markdown parsing and wrapping at display time.
+        assert_eq!(normals.len(), 1);
+        assert_eq!(normals[0].text, "a\nb");
     }
 
     #[test]

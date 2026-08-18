@@ -35,7 +35,7 @@ read_file takes `offset` and `limit` (lines) — read files longer than ~300 lin
 
 How to work:
 1. For complex tasks (3+ steps), call `update_plan` first to show the user a plan (objective + steps + statuses), then update it as each step's status changes. Skip for simple/one-shot requests.
-2. Understand the request: call repo_map for the layout and search_content to locate symbols, then read the relevant files.
+2. Understand the request: call repo_map for the layout and search_content to locate symbols, then read the relevant files. After repo_map, only read files directly relevant to the task — do not read every source file.
 3. Edit with edit_file (or write_file for new files). For edit_file, `old_text` must match the file exactly and appear exactly once.
 4. Verify your work: call `verify` (or `execute_command` with the workspace's build/test command). `verify` returns compact `file:line:col  code  message` errors.
 5. When a command fails, read the error, fix the code, and re-run until it passes.
