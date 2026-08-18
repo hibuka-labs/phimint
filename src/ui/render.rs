@@ -716,6 +716,9 @@ fn latex_to_unicode(latex: &str) -> String {
     s = s.replace("\\Delta", "Δ");
     s = s.replace("\\Sigma", "Σ");
     s = s.replace("\\Omega", "Ω");
+    // Display commands: remove the command, keep the content
+    s = s.replace("\\boxed{", "");
+    s = s.replace("\\boxed(", "(");  // \boxed(...) → (...)
     // \sqrt{n} → √n
     while let Some(start) = s.find("\\sqrt{") {
         if let Some(end) = s[start + 6..].find('}') {
