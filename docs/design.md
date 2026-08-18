@@ -436,6 +436,11 @@ Idle ──用户输入──▶ Running ──RunFinished──▶ Idle
 - 配套「读写都放开」：`read_file`/`write_file`/`edit_file`/`repo_map`/`search_content`/`list_files` 全部允许工作区外（无沙箱、不加 flag，安全靠审批层）。
 - 详见 `docs/phase10-plan.md`。
 
+### Phase 11 — AI 能力压测（多模型对比）📋
+- 用 6 个结构化测试用例（语言约束 / 数学推理 / 逻辑推理 / 前端综合×3）压测底层 LLM 能力。
+- 对比 `mimo-v2.5-pro` 与 `deepseek-v4-flash` 两个模型，逐项评分（满分 42），输出对比表格 + 失败分析。
+- 详见 `docs/phase11-plan.md`。
+
 ---
 
 ## 13. 决策记录
@@ -613,3 +618,9 @@ Idle ──用户输入──▶ Running ──RunFinished──▶ Idle
 - **真机 smoke**（PTY + 临时 crate）：改坏 `src/main.rs`（`let x: u32 = "..."`）→ agent 调 `diagnostics` → 秒级返回 `2 error(s):\n  src/main.rs:2:22  E0308  mismatched types …`。`tool_count` 10→11。
 
 **已知边界**：① rust-analyzer 对同一处类型错误可能发多条 error 级诊断（如「expected u32, found &str」+「mismatched types」），`diagnostics` 忠实上报、不 dedup（`verify`/`cargo check` 只报 1 条）；② 只 Rust（rust-analyzer）；③ hint/info 级诊断被 `format_diagnostics` 舍弃（对「编不过」无意义）；④ 依赖 rust-analyzer 在 PATH，缺失时工具优雅报错并建议 `verify`。
+
+### Phase 11 — AI 能力压测（待执行）
+
+- 6 个测试用例：T1 汉字数字句（5分）/ T2 24点（3分）/ T3 密码锁（2分）/ T4 AISniper OS（11分）/ T5 赛博朋克跑酷（10分）/ T6 Trello 看板（11分），满分 42。
+- 对比模型：`mimo-v2.5-pro` vs `deepseek-v4-flash`。
+- 详见 `docs/phase11-plan.md`。
