@@ -82,6 +82,7 @@ fn grammar_for(path: &str) -> Option<tree_sitter::Language> {
         "js" | "jsx" | "mjs" | "cjs" => tree_sitter_javascript::LANGUAGE.into(),
         "c" | "h" => tree_sitter_c::LANGUAGE.into(),
         "cpp" | "cc" | "cxx" | "hpp" | "hh" | "hxx" => tree_sitter_cpp::LANGUAGE.into(),
+        "py" => tree_sitter_python::LANGUAGE.into(),
         _ => return None,
     })
 }
@@ -758,5 +759,20 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn build_repo_map_extracts_python_symbols() {
+        let map = map_of_temp_files(
+            "python",
+            &[(
+                "test.py",
+                "class MyClass:\n    def __init__(self, name):\n        self.name = name\n    \n    def greet(self):\n        return f\"Hello, {self.name}!\"\n\ndef helper_function():\n    return 42\n\nCONSTANT = \"test\"\n",
+            )],
+        );
+        println!("Python repo_map output:\n{map}");
+        assert!(map.contains("test.py"), "{map}");
+        assert!(map.contains("class MyClass"), "{map}");
+        assert!(map.contains("fn helper_function"), "{map}");
     }
 }

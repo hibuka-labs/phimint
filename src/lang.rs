@@ -92,6 +92,12 @@ pub static LANGUAGES: &[LanguageSpec] = &[
             command: &["clangd"],
         }),
     },
+    LanguageSpec {
+        extensions: &["py"],
+        verify_command: "python -m py_compile",
+        manifests: &["requirements.txt", "setup.py", "pyproject.toml"],
+        lsp: None,
+    },
 ];
 
 /// Directories skipped by the bounded scan in [`detect_languages`] and the

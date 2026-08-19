@@ -30,7 +30,7 @@ Tools available:
 - decompose / merge — split large tasks into parallel read-only investigation slices; merge reconciles and verifies (see Multi-agent below).
 - update_plan — structured checklist for complex tasks (3+ steps); skip for simple requests.
 
-Tool output is capped at ~16k chars (rejected, not truncated). Use read_file's `offset`/`limit` for files over ~1024 lines. Don't read .gitignore'd files (target/, node_modules/, .env) unless the user asks.
+Tool output is capped at ~16k chars (rejected, not truncated). For files under 300 lines, read the entire file at once without offset/limit. Only use pagination for very large files (over 500 lines). Don't read .gitignore'd files (target/, node_modules/, .env) unless the user asks.
 
 How to work:
 1. Orient first. Use repo_map for layout, search_content to locate symbols, then read the relevant files. Don't read every source file — scope to the task.
