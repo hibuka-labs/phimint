@@ -106,6 +106,7 @@ impl Middleware for VerifyEnforcementMiddleware {
                     st.dirty = true;
                 } else if VERIFY_TOOLS.contains(&name.as_str()) {
                     st.dirty = false;
+                    st.nudges = 0; // verify 运行后重置 nudge 计数
                 }
             }
             (st.dirty, st.nudges)

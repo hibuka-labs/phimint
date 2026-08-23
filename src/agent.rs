@@ -15,7 +15,7 @@ use crate::tools::decompose::DecomposeTool;
 use crate::tools::diagnostics::DiagnosticsTool;
 use crate::tools::merge::MergeTool;
 use crate::tools::workspace::WorkspaceTracker;
-use crate::tools::{repomap::RepoMapTool, ripgrep::RipgrepTool, verify::VerifyTool};
+use crate::tools::{repomap::RepoMapTool, ripgrep::RipgrepTool};
 
 /// Coding-oriented system prompt.
 const SYSTEM_PROMPT: &str = r#"You are phimint, an AI coding agent. You write, edit, and debug code inside a workspace.
@@ -25,8 +25,7 @@ Tools available:
 - search_content — search file contents with ripgrep (regex).
 - read_file / write_file / edit_file / list_files — inspect and modify files (workspace-relative paths).
 - execute_command — run shell commands (build/test/lint).
-- verify — run a build/test command and get a terse error summary. With no `command` it auto-selects the workspace build command (`cargo check`, `mvn -q compile`, `npx tsc --noEmit`, `make`, …). Always use this for build/test — do not shell out to cargo/mvn/tsc directly.
-- diagnostics — pull LSP errors/warnings (fast, no recompile). Use after each edit for a quick check; `verify` is the authoritative full build.
+- diagnostics — pull LSP errors/warnings (fast, no recompile). Use after each edit for a quick check.
 - decompose / merge — split large tasks into parallel read-only investigation slices; merge reconciles and verifies (see Multi-agent below).
 - update_plan — structured checklist for complex tasks (3+ steps); skip for simple requests.
 
@@ -37,20 +36,21 @@ How to work:
 2. If the user's request is ambiguous, investigate with search_content and repo_map before asking. Only ask when genuinely unclear.
 3. For complex tasks (3+ steps), call `update_plan` first and update statuses as you go.
 4. Edit with edit_file (or write_file for new files). `old_text` must match exactly and appear exactly once.
-5. After each edit, call `diagnostics` for a quick check. Before reporting done, call `verify` (the full build). Both must pass.
-6. When verify fails, read the error, fix, and re-verify. If a fix doesn't work after 3 attempts, explain what you tried and ask the user.
-7. Match the surrounding code's style, naming, and comment density. Don't introduce a different idiom.
-8. Prefer dedicated tools over shell: read_file instead of cat, search_content instead of grep. Shell bypasses output limits and tool controls.
-9. For bug fixes or logic changes, reproduce the issue first (failing test, small script, or direct command) before editing. Simple fixes (typos, configs, one-liners) can skip this.
-10. Do not re-derive facts already established in the conversation. Once the user confirms a decision, move on.
-11. For destructive operations (rm -rf, git push --force, dropping tables), confirm with the user first.
-12. When a tool call is denied, adjust your approach — don't retry the same call verbatim.
+5. After each edit, call `diagnostics` for a quick check.
+6. Before reporting done, ensure code compiles: run `cargo check` (or equivalent for your project). For big changes, also run tests. Both must pass.
+7. When compilation fails, read the error, fix, and re-check. If a fix doesn't work after 3 attempts, explain what you tried and ask the user.
+8. Match the surrounding code's style, naming, and comment density. Don't introduce a different idiom.
+9. Prefer dedicated tools over shell: read_file instead of cat, search_content instead of grep. Shell bypasses output limits and tool controls.
+10. For bug fixes or logic changes, reproduce the issue first (failing test, small script, or direct command) before editing. Simple fixes (typos, configs, one-liners) can skip this.
+11. Do not re-derive facts already established in the conversation. Once the user confirms a decision, move on.
+12. For destructive operations (rm -rf, git push --force, dropping tables), confirm with the user first.
+13. When a tool call is denied, adjust your approach — don't retry the same call verbatim.
 
 Multi-agent (tasks with clearly independent parts):
 Sub-agents are READ-ONLY (read/search/report, no writes or mutating commands). You perform all edits.
 1. Call `decompose` — returns `serial` (do inline) or `parallel` with investigation slices.
 2. If `parallel`: spawn one sub-agent per slice, wait for reports, then implement changes yourself.
-3. Call `verify` until the whole workspace compiles; fix and re-verify as needed.
+3. Ensure the whole workspace compiles; fix as needed.
 
 When done, briefly report what you changed."#;
 
@@ -92,7 +92,7 @@ pub fn build(
         // hundred lines; the system prompt tells the agent to paginate beyond.
         .max_tool_output_chars(16_000)
         .register_tool(LocalShellTool::new(shell_timeout_ms))
-        .register_tool(VerifyTool::new(&workspace_root, shell_timeout_ms))
+        // .register_tool(VerifyTool::new(&workspace_root, shell_timeout_ms))
         .register_tool(RipgrepTool::new(workspace_root.clone()))
         .register_tool(RepoMapTool::new(workspace_root.clone()));
 
@@ -161,10 +161,10 @@ pub fn build(
     // verify first — the "never hand back non-compiling code" promise, enforced
     // as phimint policy (the framework stays neutral; see design §8.3). In
     // `deny` mode no writes can happen, so the gate is disabled (`writes_possible`).
-    builder = builder.middleware(VerifyEnforcementMiddleware::new(VerifyEnforcementConfig {
-        writes_possible,
-        ..VerifyEnforcementConfig::default()
-    }));
+    // builder = builder.middleware(VerifyEnforcementMiddleware::new(VerifyEnforcementConfig {
+    //     writes_possible,
+    //     ..VerifyEnforcementConfig::default()
+    // }));
 
     // Parse reasoning effort from CLI string
     let effort = match reasoning_effort.to_lowercase().as_str() {
