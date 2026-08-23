@@ -16,9 +16,10 @@ mod ui;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use agent_base::llm::{LlmClientBuilder, LlmProvider};
 use anyhow::{Context, Result};
 use clap::Parser;
-use phi_agent::{OpenAiClient, SessionContext, resolve_llm_config, resolve_session};
+use phi_agent::{SessionContext, resolve_llm_config, resolve_session};
 
 #[derive(Parser)]
 #[command(name = "phimint", version, about = "AI coding agent built on phi-agent")]
@@ -86,7 +87,11 @@ async fn main() -> Result<()> {
     std::env::set_current_dir(&workspace)?;
 
     let llm = resolve_llm_config(cli.model.as_deref(), cli.base_url.as_deref())?;
-    let llm_client = Arc::new(OpenAiClient::new(llm.api_key, llm.model, Some(llm.base_url)));
+    let provider_str = std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "openai".to_string());
+    let provider = LlmProvider::from_str(&provider_str);
+    let llm_client = LlmClientBuilder::new(provider, llm.api_key, llm.model)
+        .base_url(llm.base_url)
+        .build_stream_client();
 
     // Approval is two layers (see approval.rs): a policy (the gate) + a handler
     // (the decision). In `ask` mode the handler enqueues requests for the TUI

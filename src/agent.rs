@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use agent_base::{ReasoningEffort, StreamClient};
-use phi_agent::{ApprovalHandler, ChildPermissionMode, MultiAgentConfig, OpenAiClient, PhiAgent, PhiAgentConfig, ToolPolicy, base_agent_builder_with_excludes};
+use phi_agent::{ApprovalHandler, ChildPermissionMode, MultiAgentConfig, PhiAgent, PhiAgentConfig, ToolPolicy, base_agent_builder_with_excludes};
 use phi_kernel_tools::local_shell::LocalShellTool;
 
 use crate::gate::{VerifyEnforcementConfig, VerifyEnforcementMiddleware};
@@ -63,7 +63,7 @@ When done, briefly report what you changed."#;
 /// Returns `(PhiAgent, SkillResolver)` — the resolver powers the `/skill` slash
 /// command in the TUI loop.
 pub fn build(
-    llm_client: Arc<OpenAiClient>,
+    llm_client: Arc<dyn StreamClient>,
     approval: Arc<dyn ApprovalHandler>,
     policy: Option<Arc<dyn ToolPolicy>>,
     shell_timeout_ms: u64,
@@ -72,10 +72,7 @@ pub fn build(
     thinking_budget: u64,
     reasoning_effort: &str,
 ) -> Result<(PhiAgent, SkillResolver)> {
-    // Coerce the concrete client to `Arc<dyn StreamClient>` once; the builder and
-    // the `decompose` tool (which makes its own nested LLM call) each need a clone.
-    let llm: Arc<dyn StreamClient> = llm_client.clone();
-
+    let llm_for_decompose = llm_client.clone();
     let mut builder = base_agent_builder_with_excludes(
         llm_client,
         // Coding-specific noise the framework (domain-agnostic) must not know
@@ -100,7 +97,7 @@ pub fn build(
     // `WorkspaceTracker` so the latter can diff against the former's snapshot.
     let tracker = Arc::new(WorkspaceTracker::new());
     builder = builder
-        .register_tool(DecomposeTool::new(llm, tracker.clone(), workspace_root.clone()))
+        .register_tool(DecomposeTool::new(llm_for_decompose, tracker.clone(), workspace_root.clone()))
         .register_tool(MergeTool::new(tracker, workspace_root.clone(), shell_timeout_ms));
 
     // LSP diagnostics (multi-server). `LspManager` lazily starts one server per
