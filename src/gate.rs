@@ -14,7 +14,7 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use phi_agent::{AgentResult, Middleware, PostLlmCtx, UserMessageCtx};
+use phi_agent::{AgentError, AgentResult, Middleware, PostLlmCtx, UserMessageCtx};
 use serde_json::Value;
 
 /// 会「弄脏」工作区的写工具。
@@ -39,12 +39,10 @@ fn is_code_edit(args: &str) -> bool {
 
 /// 闸门配置。
 pub struct VerifyEnforcementConfig {
-    /// 最多连续 nudge 几次；之后降级为「⚠️ Unverified」警示而非继续拦截。
+    /// 最多连续 nudge 几次；之后直接失败，结束本轮。
     pub max_nudges: usize,
     /// 注入给 agent 的提醒（User 角色，逼它先跑 verify）。
     pub nudge_message: String,
-    /// 降级时追加到最终回复（用户可见）的警示。
-    pub degrade_warning: String,
     /// 本轮是否可能发生写入。`deny` 模式写工具一律被拒，dirty 永不成立，
     /// 闸门整体关闭，避免误伤只读 agent。
     pub writes_possible: bool,
@@ -54,12 +52,9 @@ impl Default for VerifyEnforcementConfig {
     fn default() -> Self {
         Self {
             max_nudges: 3,
-            nudge_message: "CRITICAL: You edited files this turn but did not run `verify`. Run \
-                 `verify` now and act on its result before reporting done — never finish on \
-                 unverified edits."
-                .to_string(),
-            degrade_warning: "\n\n⚠️ Unverified: files were edited this turn but `verify` was \
-                 never run — the result may not compile."
+            nudge_message: "STOP. You edited code/config files but did not run `verify`. \
+                 You MUST call `verify` NOW before saying done. \
+                 Do not write any more text — just call verify."
                 .to_string(),
             writes_possible: true,
         }
@@ -121,15 +116,16 @@ impl Middleware for VerifyEnforcementMiddleware {
             return Ok(());
         }
 
-        // 3) 超过上限 → 降级：放行，追加警示（逃生口，绝不卡死）。
+        // 3) 超过上限 → 直接失败，结束本轮。
         if nudges >= self.config.max_nudges {
-            ctx.full_text.push_str(&self.config.degrade_warning);
             tracing::warn!(
                 session_id = ctx.session_id.id,
                 max_nudges = self.config.max_nudges,
-                "verify gate: max nudges reached, degrading to warning"
+                "verify gate: max nudges reached, failing turn"
             );
-            return Ok(());
+            return Err(AgentError::Internal(
+                "verify gate: refused to run verify after multiple attempts".to_string(),
+            ));
         }
 
         // 4) 否决这次回复，注入提醒，逼循环再走一轮。
@@ -153,7 +149,7 @@ impl Middleware for VerifyEnforcementMiddleware {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use phi_agent::SessionId;
+    use phi_agent::{FinishReason, SessionId};
 
     /// 造一条 `(id, name, args)` 工具调用（args 默认 `{}`）。
     fn call(name: &str) -> (String, String, String) {
@@ -188,6 +184,7 @@ mod tests {
             turn_tool_calls: 0,
             skip_push: false,
             follow_up_message: None,
+            finish_reason: FinishReason::Stop,
         }
     }
 
@@ -197,7 +194,6 @@ mod tests {
         assert_eq!(cfg.max_nudges, 3);
         assert!(cfg.writes_possible);
         assert!(cfg.nudge_message.contains("verify"));
-        assert!(cfg.degrade_warning.contains("Unverified"));
     }
 
     #[tokio::test]
@@ -383,7 +379,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn degrades_to_warning_after_max_nudges() {
+    async fn fails_after_max_nudges() {
         let config = VerifyEnforcementConfig {
             max_nudges: 1,
             ..VerifyEnforcementConfig::default()
@@ -398,12 +394,11 @@ mod tests {
         mw.on_post_llm(&mut first).await.unwrap();
         assert!(first.skip_push);
 
-        // 第二次：降级——放行并追加警示，不再拦。
+        // 第二次：直接失败。
         let mut second = ctx(false, "done", vec![]);
-        mw.on_post_llm(&mut second).await.unwrap();
-        assert!(!second.skip_push);
-        assert!(second.follow_up_message.is_none());
-        assert!(second.full_text.contains("Unverified"));
+        let result = mw.on_post_llm(&mut second).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("refused to run verify"));
     }
 
     #[tokio::test]

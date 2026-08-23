@@ -69,6 +69,8 @@ pub fn build(
     shell_timeout_ms: u64,
     workspace_root: PathBuf,
     writes_possible: bool,
+    thinking_budget: u64,
+    reasoning_effort: &str,
 ) -> Result<(PhiAgent, SkillResolver)> {
     // Coerce the concrete client to `Arc<dyn StreamClient>` once; the builder and
     // the `decompose` tool (which makes its own nested LLM call) each need a clone.
@@ -164,7 +166,25 @@ pub fn build(
         ..VerifyEnforcementConfig::default()
     }));
 
-    let agent = PhiAgent::build(builder, PhiAgentConfig::default())?;
+    // Parse reasoning effort from CLI string
+    let effort = match reasoning_effort.to_lowercase().as_str() {
+        "none" => ReasoningEffort::None,
+        "low" => ReasoningEffort::Low,
+        "medium" => ReasoningEffort::Medium,
+        "high" => ReasoningEffort::High,
+        "xhigh" => ReasoningEffort::XHigh,
+        _ => {
+            tracing::warn!(effort = reasoning_effort, "unknown reasoning effort, using Medium");
+            ReasoningEffort::Medium
+        }
+    };
+
+    let agent = PhiAgent::build(builder, PhiAgentConfig {
+        enable_thinking: true,
+        thinking_budget: Some(thinking_budget),
+        thinking_effort: effort,
+        ..PhiAgentConfig::default()
+    })?;
 
     // 构建 SkillResolver（扫描 `.claude/skills` 目录，供 /skill 斜杠命令使用）
     let skill_resolver = SkillResolver::from_dirs(&default_skill_dirs());

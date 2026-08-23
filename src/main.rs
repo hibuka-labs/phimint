@@ -60,6 +60,16 @@ struct Cli {
     /// Show the startup banner (default: `on`; set to `off` to suppress it).
     #[arg(long, default_value = "on")]
     banner: String,
+
+    /// Thinking/reasoning budget in tokens (default: 8192).
+    /// Controls how many tokens the model can use for internal reasoning.
+    #[arg(long, default_value_t = 8192)]
+    thinking_budget: u64,
+
+    /// Reasoning effort level: none/low/medium/high/xhigh (default: medium).
+    /// Controls the depth of model's reasoning. Higher = more thorough but slower.
+    #[arg(long, default_value = "medium")]
+    reasoning_effort: String,
 }
 
 #[tokio::main]
@@ -105,6 +115,8 @@ async fn main() -> Result<()> {
         cli.shell_timeout_ms,
         workspace.clone(),
         cli.approval != "deny",
+        cli.thinking_budget,
+        &cli.reasoning_effort,
     )?;
     let session = agent.create_session().await;
 
