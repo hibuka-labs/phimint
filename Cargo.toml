@@ -17,7 +17,7 @@ phi-agent = { path = "../phi-agent", features = ["shell", "multi-agent"] }
 phi-kernel-tools = { path = "../phi-kernel-tools", features = ["shell"] }
 # Runtime types not re-exported by phi-agent (ChatMessage, ResponseFormat,
 # StreamClient) — needed by the `decompose` tool's nested structured LLM call.
-agent-base = { version = "0.2.0", path = "../agent-base" }
+agent-base = { path = "../agent-base" }
 # Skill types (PromptSkill) for /skill slash command (Phase 7b).
 agent-works = { path = "../agent-works", default-features = false, features = ["skill", "prompt_skill"] }
 
@@ -69,3 +69,9 @@ lsp-types = "0.95"
 futures-core = "0.3"
 # 临时目录测试（skills 测试需要创建临时 SKILL.md 文件结构）。
 tempfile = "3"
+
+# Force all transitive agent-base deps (e.g. agent-works from crates.io)
+# to resolve to the local source so types stay compatible.
+[patch.crates-io]
+agent-base = { path = "../agent-base" }
+agent-works = { path = "../agent-works" }

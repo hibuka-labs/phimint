@@ -382,22 +382,25 @@ async fn agent_loop(
             Cmd::Quit => break,
             Cmd::Run(input) => {
                 turn_number += 1;
-                let mut turn_events: Vec<RuntimeEvent> = Vec::new();
+                let turn_events: std::sync::Arc<std::sync::Mutex<Vec<RuntimeEvent>>> = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
 
                 // 7b: `/skill-name args` → 解析为 skill body 再提交给 agent
                 let resolved_input = skill_resolver.resolve(&input).unwrap_or(input);
                 let turn_input = resolved_input;
 
+                let turn_events_clone = turn_events.clone();
+                let mut event_tx_clone = event_tx.clone();
                 let result = agent
-                    .run_turn(session.clone(), &turn_input, |ev| {
-                        let _ = event_tx.send(TuiEvent::Runtime(ev.clone()));
-                        turn_events.push(ev);
+                    .run_turn(session.clone(), &turn_input, move |ev| {
+                        let _ = event_tx_clone.send(TuiEvent::Runtime(ev.clone()));
+                        turn_events_clone.lock().unwrap().push(ev);
                         Ok(())
                     })
                     .await;
 
                 // Persist regardless of success (matches the REPL behavior).
-                if let Err(e) = save_turn_log(&session_ctx, turn_number, &turn_events, &turn_input) {
+                let turn_events_vec = turn_events.lock().unwrap().clone();
+                if let Err(e) = save_turn_log(&session_ctx, turn_number, &turn_events_vec, &turn_input) {
                     tracing::warn!(error = %e, "failed to save turn log");
                 }
 
