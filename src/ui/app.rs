@@ -438,9 +438,11 @@ impl App {
                 self.sub_agents.clear();
             }
             TuiEvent::TurnDone => {
-                // `RunFinished` (root) already handles the normal path; this is
-                // the backstop for turns that end without one.
                 self.flush_pending();
+                self.output.push(OutputLine { spans: None, original: None,
+                    text: "✅ done".to_string(),
+                    kind: LineKind::Done,
+                });
                 self.status = AgentStatus::Idle;
                 self.running = false;
                 self.sub_agents.clear();
@@ -616,10 +618,9 @@ impl App {
                         });
                     }
                     _ => {
-                        self.output.push(OutputLine { spans: None, original: None,
-                            text: "✅ done".to_string(),
-                            kind: LineKind::Done,
-                        });
+                        // Root agent: just flush and set idle.  The actual
+                        // outcome message ("✅ done" or "❌ error") is rendered
+                        // by TurnDone / TurnError after run_turn returns.
                         self.status = AgentStatus::Idle;
                         self.running = false;
                         self.sub_agents.clear();

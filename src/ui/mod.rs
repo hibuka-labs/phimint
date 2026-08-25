@@ -25,7 +25,7 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use phi_agent::{PhiAgent, RuntimeEvent, SessionContext, SessionId, save_turn_log};
+use phi_agent::{PhiAgent, RunOutcome, RuntimeEvent, SessionContext, SessionId, save_turn_log};
 use ratatui::{Terminal, backend::CrosstermBackend};
 use tokio::sync::mpsc;
 
@@ -405,6 +405,14 @@ async fn agent_loop(
                 }
 
                 match result {
+                    Ok(RunOutcome::Failed { error }) => {
+                        let _ = event_tx.send(TuiEvent::TurnError(error));
+                    }
+                    Ok(RunOutcome::MaxTurnsExceeded { turns }) => {
+                        let _ = event_tx.send(TuiEvent::TurnError(format!(
+                            "max turns ({turns}) exceeded"
+                        )));
+                    }
                     Ok(_) => {
                         let _ = event_tx.send(TuiEvent::TurnDone);
                     }
