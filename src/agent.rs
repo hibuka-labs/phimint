@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
-use agent_base::{ReasoningEffort, StreamClient};
+use agent_base::ReasoningEffort;
 use phi_agent::{ApprovalHandler, ChildPermissionMode, MultiAgentConfig, PhiAgent, PhiAgentConfig, ToolPolicy, base_agent_builder_with_excludes};
 use phi_kernel_tools::local_shell::LocalShellTool;
 
@@ -92,7 +92,7 @@ When done, briefly report what you changed."#;
 /// Returns `(PhiAgent, SkillResolver)` — the resolver powers the `/skill` slash
 /// command in the TUI loop.
 pub fn build(
-    llm_client: Arc<dyn StreamClient>,
+    llm_client: Arc<dyn agent_base::llm_trait::LlmProvider>,
     approval: Arc<dyn ApprovalHandler>,
     policy: Option<Arc<dyn ToolPolicy>>,
     shell_timeout_ms: u64,

@@ -15,7 +15,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use agent_base::{ChatMessage, ResponseFormat, StreamClient};
+use agent_base::ChatMessage;
+use agent_base::llm_trait::LlmProvider;
+use agent_base::llm_trait::request::{ChatRequest, ResponseFormat};
 use async_trait::async_trait;
 use phi_agent::{AgentResult, Content, Tool, ToolContext, ToolMetadata};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -69,13 +71,13 @@ Return ONLY a JSON object, no prose, no markdown:
 {"strategy": "serial" | "parallel", "slices": [{"name": "...", "files": ["..."], "context": "...", "task": "..."}]}"#;
 
 pub struct DecomposeTool {
-    llm: Arc<dyn StreamClient>,
+    llm: Arc<dyn LlmProvider>,
     tracker: Arc<WorkspaceTracker>,
     root: PathBuf,
 }
 
 impl DecomposeTool {
-    pub fn new(llm: Arc<dyn StreamClient>, tracker: Arc<WorkspaceTracker>, root: PathBuf) -> Self {
+    pub fn new(llm: Arc<dyn LlmProvider>, tracker: Arc<WorkspaceTracker>, root: PathBuf) -> Self {
         Self { llm, tracker, root }
     }
 }
@@ -203,10 +205,13 @@ impl Tool for DecomposeTool {
 
         let raw = match self
             .llm
-            .chat(&messages, &[], None, Some(&ResponseFormat::JsonObject))
+            .chat(
+                ChatRequest::new(messages)
+                    .with_response_format(ResponseFormat::JsonObject),
+            )
             .await
         {
-            Ok(text) => text,
+            Ok(resp) => resp.content,
             Err(e) => {
                 return Ok(vec![Content::text(format!(
                     "[Error]: decompose LLM call failed: {e}"
@@ -322,25 +327,39 @@ mod tests {
         assert!(schema["required"].as_array().unwrap().contains(&"task".into()));
     }
 
-    /// Minimal StreamClient stub — the nested LLM call is never exercised in
+    /// Minimal LlmProvider stub — the nested LLM call is never exercised in
     /// these unit tests (only the parser + formatting + schema are).
     struct DummyClient;
 
     #[async_trait::async_trait]
-    impl StreamClient for DummyClient {
+    impl LlmProvider for DummyClient {
         async fn stream(
             &self,
-            _messages: &[ChatMessage],
-            _tools: &[Value],
-            _reasoning: Option<&agent_base::ReasoningConfig>,
-            _response_format: Option<&ResponseFormat>,
-        ) -> AgentResult<std::pin::Pin<Box<dyn futures_core::Stream<Item = AgentResult<agent_base::StreamChunk>> + Send>>>
+            _request: ChatRequest,
+        ) -> Result<agent_base::llm_trait::response::ChatStream, agent_base::llm_trait::error::LlmError>
         {
             unimplemented!()
         }
 
-        fn capabilities(&self) -> agent_base::LlmCapabilities {
-            agent_base::LlmCapabilities::default()
+        async fn chat(
+            &self,
+            _request: ChatRequest,
+        ) -> Result<agent_base::llm_trait::response::ChatResponse, agent_base::llm_trait::error::LlmError>
+        {
+            unimplemented!()
+        }
+
+        fn capabilities(&self) -> agent_base::llm_trait::capabilities::Capabilities {
+            agent_base::llm_trait::capabilities::Capabilities::default()
+        }
+
+        fn info(&self) -> agent_base::llm_trait::capabilities::ProviderInfo {
+            agent_base::llm_trait::capabilities::ProviderInfo {
+                name: "dummy".to_string(),
+                model: "dummy".to_string(),
+                backend: agent_base::llm_trait::backend::LlmBackend::Custom("dummy".to_string()),
+                version: None,
+            }
         }
     }
 }

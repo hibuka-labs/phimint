@@ -16,10 +16,9 @@ mod ui;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use agent_base::llm::{LlmClientBuilder, LlmProvider};
 use anyhow::{Context, Result};
 use clap::Parser;
-use phi_agent::{SessionContext, resolve_llm_config, resolve_session};
+use phi_agent::{SessionContext, resolve_session};
 
 #[derive(Parser)]
 #[command(name = "phimint", version, about = "AI coding agent built on phi-agent")]
@@ -28,13 +27,9 @@ struct Cli {
     #[arg(short, long, default_value = ".")]
     workspace: PathBuf,
 
-    /// Model name (overrides LLM_MODEL / OPENAI_MODEL env)
+    /// Model name (overrides LLM_MODEL env; genai auto-detects provider)
     #[arg(long)]
     model: Option<String>,
-
-    /// API base URL (overrides env)
-    #[arg(long)]
-    base_url: Option<String>,
 
     /// Approval mode: `auto` (default), `ask` (prompt on writes/risky shell), or `deny` (reject all writes)
     #[arg(long, default_value = "auto")]
@@ -86,12 +81,29 @@ async fn main() -> Result<()> {
         .with_context(|| format!("workspace not found: {}", cli.workspace.display()))?;
     std::env::set_current_dir(&workspace)?;
 
-    let llm = resolve_llm_config(cli.model.as_deref(), cli.base_url.as_deref())?;
-    let provider_str = std::env::var("LLM_PROVIDER").unwrap_or_else(|_| "openai".to_string());
-    let provider = LlmProvider::from_str(&provider_str);
-    let llm_client = LlmClientBuilder::new(provider, llm.api_key, llm.model)
-        .base_url(llm.base_url)
-        .build_stream_client();
+    // LLM client — genai auto-detects provider from model name
+    // (e.g. "gpt-5.4-mini" → OpenAI, "deepseek-chat" → DeepSeek, "aliyun::qwen-plus" → Aliyun)
+    // Set provider-specific API key in env: OPENAI_API_KEY, DEEPSEEK_API_KEY, ALIYUN_API_KEY, etc.
+    let model = cli.model
+        .or_else(|| std::env::var("LLM_MODEL").ok())
+        .unwrap_or_else(|| "gpt-5.4-mini".to_string());
+    // Build LLM provider from env vars + CLI model override.
+    // LlmAdapter is gone; use llm_unified::create_provider() with LlmConfig.
+    // Resolve API key from LLM_API_KEY or OPENAI_API_KEY.
+    let api_key = std::env::var("LLM_API_KEY")
+        .or_else(|_| std::env::var("OPENAI_API_KEY"))
+        .context("Set LLM_API_KEY (or OPENAI_API_KEY) in .env or environment")?;
+    let llm_config = agent_base::llm_trait::config::LlmConfig {
+        backend: std::env::var("LLM_BACKEND").unwrap_or_else(|_| "openai".to_string()),
+        protocol: std::env::var("LLM_PROTOCOL").ok(),
+        api_key,
+        model,
+        base_url: std::env::var("LLM_BASE_URL").ok(),
+        options: std::collections::HashMap::new(),
+    };
+    let llm_client: Arc<dyn agent_base::llm_trait::LlmProvider> =
+        phi_agent::llm_unified::create_provider(&llm_config)
+            .context("Failed to create LLM provider")?;
 
     // Approval is two layers (see approval.rs): a policy (the gate) + a handler
     // (the decision). In `ask` mode the handler enqueues requests for the TUI
