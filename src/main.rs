@@ -93,16 +93,19 @@ async fn main() -> Result<()> {
     let api_key = std::env::var("LLM_API_KEY")
         .or_else(|_| std::env::var("OPENAI_API_KEY"))
         .context("Set LLM_API_KEY (or OPENAI_API_KEY) in .env or environment")?;
+    let base_url = std::env::var("LLM_BASE_URL")
+        .context("Set LLM_BASE_URL in .env or environment")?;
     let llm_config = agent_base::llm_trait::config::LlmConfig {
-        backend: std::env::var("LLM_BACKEND").unwrap_or_else(|_| "openai".to_string()),
-        protocol: std::env::var("LLM_PROTOCOL").ok(),
+        protocol: std::env::var("LLM_PROTOCOL")
+            .ok()
+            .and_then(|s| s.parse::<agent_base::llm_trait::Protocol>().ok()),
         api_key,
         model,
-        base_url: std::env::var("LLM_BASE_URL").ok(),
+        base_url,
         options: std::collections::HashMap::new(),
     };
     let llm_client: Arc<dyn agent_base::llm_trait::LlmProvider> =
-        phi_agent::llm_unified::create_provider(&llm_config)
+        llm_unified::create_provider(&llm_config)
             .context("Failed to create LLM provider")?;
 
     // Approval is two layers (see approval.rs): a policy (the gate) + a handler
