@@ -357,7 +357,6 @@ mod tests {
             agent_base::llm_trait::capabilities::ProviderInfo {
                 name: "dummy".to_string(),
                 model: "dummy".to_string(),
-                backend: agent_base::llm_trait::backend::LlmBackend::Custom("dummy".to_string()),
                 version: None,
             }
         }
