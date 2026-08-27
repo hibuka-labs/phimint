@@ -5,10 +5,10 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use agent_base::ReasoningEffort;
+use agent_works::guard::{DefaultGuard, DefaultGuardConfig, ReasoningOnlyAction};
 use phi_agent::{ApprovalHandler, ChildPermissionMode, MultiAgentConfig, PhiAgent, PhiAgentConfig, ToolPolicy, base_agent_builder_with_excludes};
 use phi_kernel_tools::local_shell::LocalShellTool;
 
-use crate::gate::{VerifyEnforcementConfig, VerifyEnforcementMiddleware};
 use crate::lsp::LspManager;
 use crate::skills::{SkillResolver, default_skill_dirs};
 use crate::tools::decompose::DecomposeTool;
@@ -180,6 +180,23 @@ pub fn build(
     if let Some(p) = policy {
         builder = builder.tool_policy(p);
     }
+
+    // Custom guard: inject "stop thinking, act now" nudge for reasoning-only responses
+    // Use DisableThinking strategy to handle reasoning-only loops
+    let guard_config = DefaultGuardConfig {
+        reasoning_only_nudge: "STOP THINKING. You have been reasoning too long without taking action. \
+            IMMEDIATELY call a tool or provide your final answer. Do NOT produce more reasoning. \
+            Just DO something NOW."
+            .to_string(),
+        reasoning_only_max_strikes: 2, // Fail faster after 2 reasoning-only turns
+        reasoning_only_action: ReasoningOnlyAction::DisableThinking, // Disable thinking instead of failing
+        disable_thinking_nudge: "Thinking has been disabled due to excessive reasoning. \
+            You MUST now either call a tool or write your final answer. \
+            Do NOT attempt to reason further. Just DO something NOW."
+            .to_string(),
+        ..DefaultGuardConfig::default()
+    };
+    builder = builder.guard(DefaultGuard::new(guard_config));
 
     // Phase 6a: forced-verify gate. When the agent edits files and then tries to
     // report "done" without running `verify` (or `merge`, which runs cargo check
