@@ -10,8 +10,12 @@ pub mod frame_log;
 pub mod input;
 pub mod markdown;
 pub mod mention;
+pub mod picker;
 pub mod render;
+pub mod selection;
 pub mod stream;
+pub mod transcript;
+pub mod viewport;
 pub mod wrap;
 
 use std::io;
@@ -281,9 +285,9 @@ pub async fn run_tui(
             capture_ms: capture_elapsed.as_millis(),
             loop_ms: loop_elapsed.as_millis(),
             dirty,
-            scroll_offset: app.scroll_offset,
-            follow_bottom: app.follow_bottom,
-            output_lines: app.output.len(),
+            scroll_offset: app.viewport.scroll_offset,
+            follow_bottom: app.viewport.follow_bottom,
+            output_lines: app.transcript.len(),
             crossterm_events: crossterm_count,
             slept,
             event_types: &event_types,

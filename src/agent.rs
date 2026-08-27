@@ -194,6 +194,11 @@ pub fn build(
             You MUST now either call a tool or write your final answer. \
             Do NOT attempt to reason further. Just DO something NOW."
             .to_string(),
+        max_turns_nudge_threshold: 3, // Nudge when 3 turns remaining
+        max_turns_nudge: "You are approaching the maximum number of turns. \
+            Please wrap up your current work and provide a final answer. \
+            Summarize what you've accomplished and any remaining tasks."
+            .to_string(),
         ..DefaultGuardConfig::default()
     };
     builder = builder.guard(DefaultGuard::new(guard_config));

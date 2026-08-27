@@ -15,7 +15,6 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::banner::{BannerStyle, ColorScheme, SpanSpec};
 use crate::ui::app::{
     AgentStatus, App, CONTEXT_MENU_H, CONTEXT_MENU_W, LineKind, SubAgentStatus, context_menu_pos,
-    window_range,
 };
 use crate::ui::markdown::{line_plain_text, render_markdown};
 use crate::ui::wrap::wrap;
@@ -89,8 +88,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
     let height = area.height as usize;
 
-    // Committed lines: always present in `app.output`.
-    let committed = app.output.len();
+    // Committed lines: always present in `app.transcript.output`.
+    let committed = app.transcript.len();
 
     // Streaming tail: for Normal (AI prose), render the full pending_text
     // through markdown so the user sees styled output during streaming.
@@ -115,7 +114,7 @@ fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
     // --- committed output ---
     let mut vis_idx: usize = 0; // running visual line counter
     for i in 0..committed {
-        let line = &app.output[i];
+        let line = &app.transcript.output[i];
         let kind = line.kind;
         let spans = line.spans.as_deref().unwrap_or(&[]);
 
@@ -166,10 +165,10 @@ fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
 
     // Visible window respecting scroll_offset and follow_bottom.
     let total = lines.len();
-    app.rendered_total = total;
     app.visual_to_output = visual_to_output;
     app.visual_lines_text = visual_lines_text;
-    let window = window_range(total, app, height);
+    app.viewport.set_visible(total, height);
+    let window = app.viewport.window_range(total, height);
     let visible: Vec<Line> = lines[window].to_vec();
 
     // No border/title — the transcript flows freely (Claude Code style); the
@@ -403,26 +402,26 @@ fn render_mention_popup(f: &mut Frame, app: &App, composer: Rect) {
     const LIST_HEIGHT: usize = 9;
 
     // Scroll the entry window so the highlighted row stays on screen.
-    let total = m.entries.len();
+    let total = m.picker.entries.len();
     let start = if total <= LIST_HEIGHT {
         0
-    } else if m.selected < LIST_HEIGHT / 2 {
+    } else if m.picker.selected < LIST_HEIGHT / 2 {
         0
     } else {
-        (m.selected - LIST_HEIGHT / 2).min(total - LIST_HEIGHT)
+        (m.picker.selected - LIST_HEIGHT / 2).min(total - LIST_HEIGHT)
     };
     let end = (start + LIST_HEIGHT).min(total);
 
     let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(Span::styled(
-        format!("@{}", m.prefix),
+        format!("@{}", m.picker.prefix),
         Style::default().fg(Color::Cyan),
     )));
     lines.push(Line::from(Span::styled(
         "──────────────────────────",
         Style::default().fg(Color::DarkGray),
     )));
-    for (i, e) in m.entries[start..end].iter().enumerate() {
+    for (i, e) in m.picker.entries[start..end].iter().enumerate() {
         let idx = start + i;
         let marker = if e.synthetic {
             "» "
@@ -431,7 +430,7 @@ fn render_mention_popup(f: &mut Frame, app: &App, composer: Rect) {
         } else {
             "📄 "
         };
-        let style = if idx == m.selected {
+        let style = if idx == m.picker.selected {
             Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD)
         } else {
             Style::default()
@@ -466,19 +465,19 @@ fn render_slash_popup(f: &mut Frame, app: &App, composer: Rect) {
     const WIDTH: u16 = 72;
     const LIST_HEIGHT: usize = 12;
 
-    let total = s.entries.len();
+    let total = s.picker.entries.len();
     let start = if total <= LIST_HEIGHT {
         0
-    } else if s.selected < LIST_HEIGHT / 2 {
+    } else if s.picker.selected < LIST_HEIGHT / 2 {
         0
     } else {
-        (s.selected - LIST_HEIGHT / 2).min(total - LIST_HEIGHT)
+        (s.picker.selected - LIST_HEIGHT / 2).min(total - LIST_HEIGHT)
     };
     let end = (start + LIST_HEIGHT).min(total);
 
     let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(Span::styled(
-        format!("/{}", s.prefix),
+        format!("/{}", s.picker.prefix),
         Style::default().fg(Color::Cyan),
     )));
     lines.push(Line::from(Span::styled(
@@ -486,15 +485,15 @@ fn render_slash_popup(f: &mut Frame, app: &App, composer: Rect) {
         Style::default().fg(Color::DarkGray),
     )));
 
-    if s.entries.is_empty() {
+    if s.picker.entries.is_empty() {
         lines.push(Line::from(Span::styled(
             "  no matching skills",
             Style::default().fg(Color::DarkGray),
         )));
     } else {
-        for (i, (name, desc)) in s.entries[start..end].iter().enumerate() {
+        for (i, (name, desc)) in s.picker.entries[start..end].iter().enumerate() {
             let idx = start + i;
-            let (name_style, desc_style) = if idx == s.selected {
+            let (name_style, desc_style) = if idx == s.picker.selected {
                 (
                     Style::default().bg(Color::DarkGray).fg(Color::White).add_modifier(Modifier::BOLD),
                     Style::default().bg(Color::DarkGray).fg(Color::Gray),
@@ -691,16 +690,16 @@ mod tests {
         let mut app = App::new();
         app.push_system("phimint — welcome");
         for i in 0..60 {
-            app.output.push(OutputLine { spans: None, original: None,
+            app.transcript.push(OutputLine { spans: None, original: None,
                 text: format!("streamed line {i}"),
                 kind: LineKind::Normal,
             });
         }
-        app.output.push(OutputLine { spans: None, original: None,
+        app.transcript.push(OutputLine { spans: None, original: None,
             text: "⏺ [sub/1] read_file {\"path\":\"src/lib.rs\"}".into(),
             kind: LineKind::Tool,
         });
-        app.output.push(OutputLine { spans: None, original: None,
+        app.transcript.push(OutputLine { spans: None, original: None,
             text: "  ⛔ execute_command denied".into(),
             kind: LineKind::Error,
         });
@@ -734,13 +733,13 @@ mod tests {
         // Scrolled up (not following bottom).
         let mut app = App::new();
         for i in 0..100 {
-            app.output.push(OutputLine { spans: None, original: None,
+            app.transcript.push(OutputLine { spans: None, original: None,
                 text: format!("long line {i}"),
                 kind: LineKind::Normal,
             });
         }
-        app.follow_bottom = false;
-        app.scroll_offset = 50;
+        app.viewport.follow_bottom = false;
+        app.viewport.scroll_offset = 50;
         terminal.draw(|f| draw(f, &mut app)).unwrap();
     }
 
@@ -801,15 +800,15 @@ mod tests {
     fn window_range_shifts_by_scroll_offset() {
         let mut app = App::new();
         for i in 0..100 {
-            app.output.push(OutputLine { spans: None, original: None, text: format!("line {i}"), kind: LineKind::Normal });
+            app.transcript.push(OutputLine { spans: None, original: None, text: format!("line {i}"), kind: LineKind::Normal });
         }
-        assert_eq!(window_range(100, &app, 30), 70..100);
-        app.follow_bottom = false;
-        app.scroll_offset = 10;
-        assert_eq!(window_range(100, &app, 30), 60..90);
+        assert_eq!(app.viewport.window_range(100, 30), 70..100);
+        app.viewport.follow_bottom = false;
+        app.viewport.scroll_offset = 10;
+        assert_eq!(app.viewport.window_range(100, 30), 60..90);
         // Past the top clamps to the first `height` lines.
-        app.scroll_offset = 1000;
-        assert_eq!(window_range(100, &app, 30), 0..30);
+        app.viewport.scroll_offset = 1000;
+        assert_eq!(app.viewport.window_range(100, 30), 0..30);
     }
 
     #[test]
@@ -863,7 +862,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let mut app = App::new();
         for i in 0..20 {
-            app.output.push(OutputLine { spans: None, original: None,
+            app.transcript.push(OutputLine { spans: None, original: None,
                 text: format!("line {i}"),
                 kind: LineKind::Normal,
             });

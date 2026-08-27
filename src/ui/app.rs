@@ -7,7 +7,6 @@
 //! nothing in the framework needed to change for the TUI to exist.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::ops::Range;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -19,12 +18,19 @@ use crate::approval::ApprovalItem;
 use crate::banner::{BannerRow, ColorScheme, SpanSpec};
 use crate::ui::input::Composer;
 use crate::ui::mention::{self, Entry};
+use crate::ui::picker::{Picker, PickerKey, picker_key};
+use crate::ui::selection::{MenuClick, SelectionState};
 use crate::ui::stream::StreamState;
+use crate::ui::transcript::{Transcript, DEFAULT_WRAP_WIDTH};
+use crate::ui::viewport::Viewport;
 use crate::ui::wrap::{one_line, wrap};
 
-/// Default columns the output buffer wraps at. Overridden at runtime to match
-/// the terminal width (see [`App::set_wrap_width`]).
-const DEFAULT_WRAP_WIDTH: usize = 100;
+// Selection / ContextMenu / context_menu_pos / CONTEXT_MENU_* moved to
+// selection.rs; re-exported here for the renderer and tests.
+#[allow(unused_imports)] // re-exported for external consumers (tests use it via super::*)
+pub use crate::ui::selection::{
+    ContextMenu, Selection, CONTEXT_MENU_H, CONTEXT_MENU_W, context_menu_pos,
+};
 
 /// Lines a PageUp/PageDown scrolls the output by.
 const SCROLL_STEP: usize = 1;
@@ -84,56 +90,17 @@ pub struct OutputLine {
     pub original: Option<String>,
 }
 
-/// A line-range selection into `output` (inclusive). `anchor` is the drag
-/// start and `head` the current line; they may be in either order, so
-/// [`Selection::bounds`] normalizes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Selection {
-    pub anchor: usize,
-    pub head: usize,
-}
-
-impl Selection {
-    /// Normalized inclusive `(lo, hi)` bounds, `lo <= hi`.
-    fn bounds(self) -> (usize, usize) {
-        (self.anchor.min(self.head), self.anchor.max(self.head))
-    }
-}
-
-/// Right-click copy menu: anchor cell (top-left) and highlighted item index
-/// (0 = copy, 1 = cancel).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ContextMenu {
-    pub x: u16,
-    pub y: u16,
-    pub selected: usize,
-}
-
-/// Context-menu popup geometry, shared between rendering and mouse hit-testing
-/// so a click lands exactly on the drawn popup.
-pub const CONTEXT_MENU_W: u16 = 12;
-pub const CONTEXT_MENU_H: u16 = 4; // border + two items
-
-/// Clamp the menu's top-left so the fixed-size popup stays fully on screen.
-pub fn context_menu_pos(x: u16, y: u16, area_w: u16, area_h: u16) -> (u16, u16) {
-    (
-        x.min(area_w.saturating_sub(CONTEXT_MENU_W)),
-        y.min(area_h.saturating_sub(CONTEXT_MENU_H)),
-    )
-}
-
 /// `@` mention picker state: the typed prefix (also echoed into the composer),
 /// the directory it resolves to, the listed entries (synthetic `.` first), and
 /// the highlighted index.
 #[derive(Debug, Clone)]
 pub struct Mention {
-    /// What the user typed after `@` (e.g. `src/`, `../../demo/codex/`).
-    pub prefix: String,
+    /// Shared picker state: typed prefix (after `@`), listed entries
+    /// (`entries[0]` is always the synthetic "use what I typed"), and the
+    /// highlighted index.
+    pub picker: Picker<Entry>,
     /// Directory the prefix resolves to (what `entries` lists).
     pub dir: PathBuf,
-    /// Listed entries; `entries[0]` is always the synthetic "use what I typed".
-    pub entries: Vec<Entry>,
-    pub selected: usize,
 }
 
 /// `/` skill picker state: shown when the user types `/` at the start of an
@@ -141,12 +108,9 @@ pub struct Mention {
 /// select one with arrow keys + Enter.
 #[derive(Debug, Clone)]
 pub struct SlashPicker {
-    /// What the user typed after `/` (e.g. `rev` for `/review`).
-    pub prefix: String,
-    /// Filtered entries: (name, description).
-    pub entries: Vec<(String, String)>,
-    /// Highlighted index.
-    pub selected: usize,
+    /// Shared picker state: typed prefix (after `/`), filtered entries
+    /// (name, description), and the highlighted index.
+    pub picker: Picker<(String, String)>,
 }
 
 /// A user action surfaced from key handling, consumed by the TUI loop.
@@ -175,32 +139,20 @@ pub enum TuiEvent {
 
 #[derive(Debug)]
 pub struct App {
-    pub output: Vec<OutputLine>,
-    /// Start of the current plan block in `output`. `update_plan`'s contract is
-    /// "full plan replaces previous", so a later update splices this range out
-    /// and re-inserts at the same position instead of appending a duplicate.
-    /// Cleared at each turn start.
-    plan_range: Option<Range<usize>>,
+    /// Committed transcript: output lines, the plan block, and wrap width.
+    pub transcript: Transcript,
     pub composer: Composer,
     pub status: AgentStatus,
     /// True while a turn is running (gates submitting another task).
     pub running: bool,
-    /// Lines scrolled up from the bottom (`0` while following the bottom).
-    pub scroll_offset: usize,
-    /// Whether the output view is pinned to the newest lines.
-    pub follow_bottom: bool,
-    /// Last known rendered line count (updated by render_output).
-    /// Used to clamp scroll_offset so it never exceeds the useful range.
-    pub rendered_total: usize,
+    /// Scrollable output viewport (offset + follow-bottom + rendered size).
+    pub viewport: Viewport,
     /// Pending approval requests (front = the popup currently shown).
     pub approval_queue: VecDeque<ApprovalItem>,
     /// Live sub-agent states, keyed by `agent_id` (`root/<task_name>`).
     pub sub_agents: BTreeMap<String, SubAgentStatus>,
-    /// Active transcript selection (line indices into `output`), built by mouse
-    /// drag. Stored as `anchor`/`head` so drag-up is supported.
-    selection: Option<Selection>,
-    /// Right-click copy menu, shown while a selection is active.
-    context_menu: Option<ContextMenu>,
+    /// Mouse selection + right-click copy menu.
+    pub selection_state: SelectionState,
     /// Timestamp of the last "press Ctrl+C again to exit" hint. If set and
     /// within `QUIT_HINT_TIMEOUT`, a second Ctrl+C actually quits.
     quit_hint_at: Option<Instant>,
@@ -234,9 +186,6 @@ pub struct App {
     live_progress: Option<String>,
     /// Transient status-bar notice (e.g. "📋 copied …"), cleared on the next key.
     notice: Option<String>,
-    /// Dynamic wrap width for output lines, updated each frame to match the
-    /// terminal width (minus border). Keeps output and composer widths aligned.
-    wrap_width: usize,
 }
 
 impl Default for App {
@@ -248,18 +197,14 @@ impl Default for App {
 impl App {
     pub fn new() -> Self {
         Self {
-            output: Vec::new(),
-            plan_range: None,
+            transcript: Transcript::new(),
             composer: Composer::new(),
             status: AgentStatus::Idle,
             running: false,
-            scroll_offset: 0,
-            follow_bottom: true,
-            rendered_total: 0,
+            viewport: Viewport::new(),
             approval_queue: VecDeque::new(),
             sub_agents: BTreeMap::new(),
-            selection: None,
-            context_menu: None,
+            selection_state: SelectionState::new(),
             quit_hint_at: None,
             mention: None,
             slash: None,
@@ -272,19 +217,12 @@ impl App {
             stream: StreamState::new(DEFAULT_WRAP_WIDTH),
             live_progress: None,
             notice: None,
-            wrap_width: DEFAULT_WRAP_WIDTH,
         }
     }
 
     /// Append a system/banner line (welcome, workspace, log path).
     pub fn push_system(&mut self, text: &str) {
-        for (i, line) in wrap(text, self.wrap_width).into_iter().enumerate() {
-            self.output.push(OutputLine { spans: None,
-                original: if i == 0 { Some(text.to_string()) } else { None },
-                text: line,
-                kind: LineKind::System,
-            });
-        }
+        self.transcript.push_system(text);
     }
 
     /// Append startup-banner rows verbatim: one output line per row, **no**
@@ -292,15 +230,7 @@ impl App {
     /// terminals). Styled runs become `spans`, resolved against `scheme` at
     /// render time; the plain `text` keeps copy/selection style-blind.
     pub fn push_banner(&mut self, rows: Vec<BannerRow>) {
-        for row in rows {
-            let (text, spans) = row.to_runs();
-            self.output.push(OutputLine {
-                text,
-                kind: LineKind::System,
-                spans: Some(spans),
-                original: None,
-            });
-        }
+        self.transcript.push_banner(rows);
     }
 
     /// The terminal color scheme banner spans resolve against at render time.
@@ -318,12 +248,10 @@ impl App {
     /// aligned. When the width changes, committed output lines are re-wrapped.
     pub fn set_wrap_width(&mut self, width: usize) {
         let width = width.max(1);
-        if width == self.wrap_width {
+        if width == self.transcript.wrap_width() {
             return;
         }
-        self.wrap_width = width;
-        // Re-wrap committed output lines at the new width.
-        self.rewrap_output();
+        self.transcript.set_wrap_width(width);
         // Always rebuild the tail cache at the new width so future streaming
         // text wraps correctly, even when there is no pending text right now.
         self.stream.rewrap(width);
@@ -332,50 +260,7 @@ impl App {
     /// Current output wrap width (columns).
     #[allow(dead_code)]
     pub fn current_wrap_width(&self) -> usize {
-        self.wrap_width
-    }
-
-    /// Re-wrap all committed output lines that have an `original` source.
-    /// Called when the terminal width changes so output lines follow the new
-    /// width instead of staying at the old wrap width.
-    fn rewrap_output(&mut self) {
-        let mut new: Vec<OutputLine> = Vec::with_capacity(self.output.len());
-        for line in self.output.drain(..) {
-            if let Some(ref original) = line.original {
-                if original.is_empty() || line.spans.is_some() {
-                    // Banner lines or empty originals: keep as-is.
-                    new.push(line);
-                    continue;
-                }
-                // Normal AI prose: keep as a single line; the renderer handles
-                // markdown parsing and wrapping at display time.
-                if line.kind == LineKind::Normal {
-                    new.push(line);
-                    continue;
-                }
-                let kind = line.kind;
-                for (j, wrapped) in wrap(original, self.wrap_width).into_iter().enumerate() {
-                    let display = if kind == LineKind::User {
-                        if j == 0 {
-                            format!("❯ {wrapped}")
-                        } else {
-                            format!("  {wrapped}")
-                        }
-                    } else {
-                        wrapped
-                    };
-                    new.push(OutputLine {
-                        text: display,
-                        kind,
-                        spans: None,
-                        original: if j == 0 { Some(original.clone()) } else { None },
-                    });
-                }
-            } else {
-                new.push(line);
-            }
-        }
-        self.output = new;
+        self.transcript.wrap_width()
     }
 
     /// Echo the user's submitted message into the transcript, so the frame log
@@ -383,20 +268,7 @@ impl App {
     /// turn log already stores `user_input`, but the rendered transcript didn't
     /// show it). `❯` on the first line, indented continuations after.
     pub fn push_user(&mut self, text: &str) {
-        let mut first = true;
-        for (i, line) in wrap(text, self.wrap_width).into_iter().enumerate() {
-            let display = if first {
-                first = false;
-                format!("❯ {line}")
-            } else {
-                format!("  {line}")
-            };
-            self.output.push(OutputLine { spans: None,
-                original: if i == 0 { Some(text.to_string()) } else { None },
-                text: display,
-                kind: LineKind::User,
-            });
-        }
+        self.transcript.push_user(text);
     }
 
     // ── Event handling ────────────────────────────────────────────────────
@@ -407,8 +279,8 @@ impl App {
             TuiEvent::TurnError(msg) => {
                 self.flush_pending();
                 let err_text = format!("❌ {msg}");
-                for (i, line) in wrap(&err_text, self.wrap_width).into_iter().enumerate() {
-                    self.output.push(OutputLine { spans: None,
+                for (i, line) in wrap(&err_text, self.transcript.wrap_width()).into_iter().enumerate() {
+                    self.transcript.push(OutputLine { spans: None,
                         original: if i == 0 { Some(err_text.clone()) } else { None },
                         text: line,
                         kind: LineKind::Error,
@@ -420,7 +292,7 @@ impl App {
             }
             TuiEvent::TurnDone => {
                 self.flush_pending();
-                self.output.push(OutputLine { spans: None, original: None,
+                self.transcript.push(OutputLine { spans: None, original: None,
                     text: "✅ done".to_string(),
                     kind: LineKind::Done,
                 });
@@ -436,7 +308,7 @@ impl App {
             RuntimeEvent::TextDelta { text, agent_id, .. } => {
                 self.track_agent(agent_id.as_deref());
                 let flushed = self.stream.push_text(&text, agent_id.as_deref());
-                self.output.extend(flushed);
+                self.transcript.extend(flushed);
                 self.status = AgentStatus::Running {
                     phase: Phase::Streaming,
                 };
@@ -444,7 +316,7 @@ impl App {
             RuntimeEvent::ThoughtDelta { text, agent_id, .. } => {
                 self.track_agent(agent_id.as_deref());
                 let flushed = self.stream.push_thought(&text, agent_id.as_deref());
-                self.output.extend(flushed);
+                self.transcript.extend(flushed);
                 self.status = AgentStatus::Running {
                     phase: Phase::Thinking,
                 };
@@ -466,14 +338,14 @@ impl App {
                 // its invocation line (raw JSON args) and result line are noise —
                 // suppress them. Its status transition is still applied.
                 if tool_name != "update_plan" {
-                    let max_cols = self.wrap_width.saturating_sub(20).max(40);
+                    let max_cols = self.transcript.wrap_width().saturating_sub(20).max(40);
                     let args = one_line(&args_json, max_cols);
                     let text = if args.is_empty() {
                         format!("⏺ {prefix}{tool_name}")
                     } else {
                         format!("⏺ {prefix}{tool_name} {args}")
                     };
-                    self.output.push(OutputLine { spans: None, original: None,
+                    self.transcript.push(OutputLine { spans: None, original: None,
                         text,
                         kind: LineKind::Tool,
                     });
@@ -498,7 +370,7 @@ impl App {
                     let (text, kind) = if denied {
                         (format!("  {prefix}⛔ {tool_name} denied"), LineKind::Error)
                     } else {
-                        let max_cols = self.wrap_width.saturating_sub(20).max(40);
+                        let max_cols = self.transcript.wrap_width().saturating_sub(20).max(40);
                         let s = one_line(&summary, max_cols);
                         let text = if s.is_empty() {
                             format!("  {prefix}✓ {tool_name}")
@@ -507,7 +379,7 @@ impl App {
                         };
                         (text, LineKind::ToolResult)
                     };
-                    self.output.push(OutputLine { spans: None, original: None, text, kind });
+                    self.transcript.push(OutputLine { spans: None, original: None, text, kind });
                 }
                 self.live_progress = None;
                 self.status = AgentStatus::Running {
@@ -527,7 +399,7 @@ impl App {
                 // tool (fits one line); objective/explanation wrap with a hanging
                 // indent.
                 let mut block: Vec<OutputLine> = Vec::new();
-                for (i, line) in wrap(&objective, self.wrap_width).into_iter().enumerate() {
+                for (i, line) in wrap(&objective, self.transcript.wrap_width()).into_iter().enumerate() {
                     let text = if i == 0 {
                         format!("📋 {line}")
                     } else {
@@ -549,7 +421,7 @@ impl App {
                 if let Some(exp) = &explanation {
                     let exp = exp.trim();
                     if !exp.is_empty() {
-                        for (i, line) in wrap(exp, self.wrap_width).into_iter().enumerate() {
+                        for (i, line) in wrap(exp, self.transcript.wrap_width()).into_iter().enumerate() {
                             let text = if i == 0 {
                                 format!("   ↳ {line}")
                             } else {
@@ -562,24 +434,17 @@ impl App {
 
                 // Replace the previous block in place so it stays anchored where
                 // it first appeared (the tool always sends the full plan).
-                let new_len = block.len();
-                let start = self.plan_range.as_ref().map_or(self.output.len(), |r| r.start);
-                if let Some(range) = self.plan_range.take() {
-                    self.output.splice(range, block);
-                } else {
-                    self.output.extend(block);
-                }
-                self.plan_range = Some(start..start + new_len);
+                self.transcript.replace_plan(block);
             }
             RuntimeEvent::AwaitingApproval { request, .. } => {
                 // Log line for history; the interactive popup (5b) is driven by
                 // the approval queue, which the QueuedApprovalHandler feeds.
                 self.flush_pending();
-                self.output.push(OutputLine { spans: None, original: None,
+                self.transcript.push(OutputLine { spans: None, original: None,
                     text: format!("⚠️  approval: {}", request.title),
                     kind: LineKind::Approval,
                 });
-                self.output.push(OutputLine { spans: None, original: None,
+                self.transcript.push(OutputLine { spans: None, original: None,
                     text: format!("     {}", request.message),
                     kind: LineKind::Approval,
                 });
@@ -595,7 +460,7 @@ impl App {
                 match agent_id.as_deref() {
                     Some(p) if !p.is_empty() => {
                         self.sub_agents.insert(p.to_string(), SubAgentStatus::Done);
-                        self.output.push(OutputLine { spans: None, original: None,
+                        self.transcript.push(OutputLine { spans: None, original: None,
                             text: format!("✓ [{p}] done"),
                             kind: LineKind::Done,
                         });
@@ -608,9 +473,9 @@ impl App {
                         self.running = false;
                         self.sub_agents.clear();
                         tracing::info!(
-                            follow_bottom = self.follow_bottom,
-                            scroll_offset = self.scroll_offset,
-                            output_len = self.output.len(),
+                            follow_bottom = self.viewport.follow_bottom,
+                            scroll_offset = self.viewport.scroll_offset,
+                            output_len = self.transcript.len(),
                             "run_finished: view state"
                         );
                     }
@@ -621,13 +486,13 @@ impl App {
                 match agent_id.as_deref() {
                     Some(p) if !p.is_empty() => {
                         self.sub_agents.insert(p.to_string(), SubAgentStatus::Done);
-                        self.output.push(OutputLine { spans: None, original: None,
+                        self.transcript.push(OutputLine { spans: None, original: None,
                             text: format!("✓ [{p}] done"),
                             kind: LineKind::Done,
                         });
                     }
                     _ => {
-                        self.output.push(OutputLine { spans: None, original: None,
+                        self.transcript.push(OutputLine { spans: None, original: None,
                             text: "⏹ cancelled".to_string(),
                             kind: LineKind::Cancelled,
                         });
@@ -635,9 +500,9 @@ impl App {
                         self.running = false;
                         self.sub_agents.clear();
                         tracing::info!(
-                            follow_bottom = self.follow_bottom,
-                            scroll_offset = self.scroll_offset,
-                            output_len = self.output.len(),
+                            follow_bottom = self.viewport.follow_bottom,
+                            scroll_offset = self.viewport.scroll_offset,
+                            output_len = self.transcript.len(),
                             "cancel: view state"
                         );
                     }
@@ -670,7 +535,7 @@ impl App {
             // it before the `started` marker to keep transcript order correct.
             self.flush_pending();
             self.sub_agents.insert(p.to_string(), SubAgentStatus::Running);
-            self.output.push(OutputLine { spans: None, original: None,
+            self.transcript.push(OutputLine { spans: None, original: None,
                 text: format!("⏺ [{p}] started"),
                 kind: LineKind::Tool,
             });
@@ -683,12 +548,12 @@ impl App {
         let had_text = self.stream.has_pending_text();
         let had_thought = self.stream.has_pending_thought();
         let flushed = self.stream.flush();
-        self.output.extend(flushed);
+        self.transcript.extend(flushed);
         if had_text || had_thought {
             tracing::info!(
-                follow_bottom = self.follow_bottom,
-                scroll_offset = self.scroll_offset,
-                output_len = self.output.len(),
+                follow_bottom = self.viewport.follow_bottom,
+                scroll_offset = self.viewport.scroll_offset,
+                output_len = self.transcript.len(),
                 had_text,
                 had_thought,
                 "flush_pending: view state"
@@ -714,7 +579,7 @@ impl App {
     /// the prose the user most often wants to grab (e.g. a URL the AI printed).
     pub fn last_reply_text(&self) -> String {
         let mut lines: Vec<String> = Vec::new();
-        for line in self.output.iter().rev() {
+        for line in self.transcript.output.iter().rev() {
             match line.kind {
                 LineKind::User => break,
                 LineKind::Normal => lines.push(line.text.clone()),
@@ -769,42 +634,28 @@ impl App {
 
         // Menu is open: a click (either button) inside the drawn popup activates
         // the item under the cursor instead of falling through to selection.
-        if let Some(menu) = self.context_menu {
-            let (mx, my) = context_menu_pos(menu.x, menu.y, area_w, area_h);
-            if x >= mx && x < mx + CONTEXT_MENU_W && y >= my && y < my + CONTEXT_MENU_H
-                && matches!(kind, Down(MouseButton::Left) | Down(MouseButton::Right))
-            {
-                let clicked_copy = y.saturating_sub(my + 1) == 0;
-                self.context_menu = None;
-                return if clicked_copy {
-                    Some(Action::CopySelection)
-                } else {
-                    None
-                };
-            }
+        if let Some(click) = self.selection_state.menu_click(kind, x, y, area_w, area_h) {
+            return match click {
+                MenuClick::Copy => Some(Action::CopySelection),
+                MenuClick::Dismiss => None,
+            };
         }
 
         match kind {
             Down(MouseButton::Left) => {
-                self.context_menu = None;
                 let idx = self.line_index_at(x, y);
                 tracing::debug!(x, y, selected_idx = ?idx, "mouse left down");
-                self.selection = idx.map(|idx| Selection { anchor: idx, head: idx });
+                self.selection_state.anchor(idx);
                 None
             }
             Drag(MouseButton::Left) => {
-                if let Some(idx) = self.line_index_at(x, y) {
-                    if let Some(sel) = self.selection.as_mut() {
-                        sel.head = idx;
-                    }
-                }
+                let idx = self.line_index_at(x, y);
+                self.selection_state.extend(idx);
                 None
             }
             Up(MouseButton::Left) => None,
             Down(MouseButton::Right) => {
-                if self.selection.is_some() {
-                    self.context_menu = Some(ContextMenu { x, y, selected: 0 });
-                }
+                self.selection_state.open_menu(x, y);
                 None
             }
             _ => None,
@@ -819,14 +670,14 @@ impl App {
             return None;
         }
         let row = (y - ay) as usize;
-        let committed = self.output.len();
+        let committed = self.transcript.len();
 
         // Use visual_to_output mapping when available (after render), otherwise
         // fall back to direct output indices (for tests or before first render).
         if self.visual_to_output.is_empty() {
             // Fallback: no markdown expansion, output lines map 1:1 to visual lines.
             let tail = self.streaming_tail_lines().map(|(l, _)| l.len()).unwrap_or(0);
-            let window = window_range(committed + tail, self, ah as usize);
+            let window = self.viewport.window_range(committed + tail, ah as usize);
             let idx = window.start + row;
             tracing::debug!(
                 x, y, row, committed, tail,
@@ -839,8 +690,8 @@ impl App {
             return None;
         }
 
-        let total = self.rendered_total;
-        let window = window_range(total, self, ah as usize);
+        let total = self.viewport.rendered_total;
+        let window = self.viewport.window_range(total, ah as usize);
         let visual_idx = window.start + row;
         let out_idx = self.visual_to_output.get(visual_idx).copied();
         tracing::debug!(
@@ -859,59 +710,32 @@ impl App {
         None
     }
 
-    /// The active selection as a normalized, `output`-len-clamped inclusive
-    /// range, or `None` when empty/stale.  Indices are into the visual line
-    /// array (post-markdown-expansion), not the raw `output`.
-    fn selection_range(&self) -> Option<(usize, usize)> {
-        let sel = self.selection?;
-        let (lo, hi) = sel.bounds();
-        let total = if self.visual_to_output.is_empty() {
-            self.output.len()
-        } else {
-            self.rendered_total
-        };
-        if total == 0 || lo >= total {
-            return None;
-        }
-        Some((lo, hi.min(total - 1)))
-    }
-
     /// True when visual line `i` falls inside the active selection.
     pub fn is_selected(&self, i: usize) -> bool {
-        self.selection_range()
-            .map_or(false, |(lo, hi)| lo <= i && i <= hi)
+        let total = if self.visual_to_output.is_empty() {
+            self.transcript.len()
+        } else {
+            self.viewport.rendered_total
+        };
+        self.selection_state.is_selected(i, total)
     }
 
     /// The selected lines joined as plain text (what-you-see-is-what-you-copy).
     /// Uses `visual_lines_text` so the copy matches exactly what the user
     /// selected visually, not the full raw `output` block.
     pub fn selection_text(&self) -> String {
-        let Some((lo, hi)) = self.selection_range() else {
-            return String::new();
-        };
-        if self.visual_lines_text.is_empty() {
-            // Fallback for tests / before first render.
-            return self.output[lo..=hi.min(self.output.len().saturating_sub(1))]
-                .iter()
-                .map(|l| l.text.as_str())
-                .collect::<Vec<_>>()
-                .join("\n");
-        }
-        self.visual_lines_text[lo..=hi.min(self.visual_lines_text.len().saturating_sub(1))]
-            .iter()
-            .map(|s| s.as_str())
-            .collect::<Vec<_>>()
-            .join("\n")
+        self.selection_state
+            .text(&self.transcript.output, &self.visual_lines_text)
     }
 
     /// Clear the active transcript selection.
     pub fn clear_selection(&mut self) {
-        self.selection = None;
+        self.selection_state.clear();
     }
 
     /// The right-click menu, if open.
     pub fn context_menu(&self) -> Option<&ContextMenu> {
-        self.context_menu.as_ref()
+        self.selection_state.context_menu()
     }
 
     // ── @ mention picker ─────────────────────────────────────────────────
@@ -931,10 +755,8 @@ impl App {
     /// `@` into the composer.
     fn start_mention(&mut self) {
         self.mention = Some(Mention {
-            prefix: String::new(),
+            picker: Picker::new(),
             dir: self.workspace_root.clone(),
-            entries: Vec::new(),
-            selected: 0,
         });
         self.refresh_mention();
     }
@@ -945,7 +767,7 @@ impl App {
         let Some(m) = self.mention.as_mut() else {
             return;
         };
-        let (dir, name) = mention::split_prefix(&self.workspace_root, &m.prefix);
+        let (dir, name) = mention::split_prefix(&self.workspace_root, &m.picker.prefix);
         let mut entries = mention::list_entries(&dir, &name);
 
         // Synthetic row: the resolved form of whatever was typed, so Enter with
@@ -962,8 +784,8 @@ impl App {
         );
 
         m.dir = dir;
-        m.entries = entries;
-        m.selected = m.selected.min(m.entries.len().saturating_sub(1));
+        m.picker.entries = entries;
+        m.picker.clamp_selection();
     }
 
     /// Append a char to the typed prefix, echoing it into the composer so the
@@ -974,8 +796,7 @@ impl App {
         }
         self.composer.insert_char(c);
         if let Some(m) = self.mention.as_mut() {
-            m.prefix.push(c);
-            m.selected = 0;
+            m.picker.push_char(c);
         }
         self.refresh_mention();
     }
@@ -983,29 +804,23 @@ impl App {
     /// Remove the last prefix char (and the matching composer char), or cancel
     /// the picker entirely when the prefix is already empty.
     fn mention_backspace(&mut self) {
-        let empty = self.mention.as_ref().map_or(true, |m| m.prefix.is_empty());
+        let empty = self.mention.as_ref().map_or(true, |m| m.picker.is_prefix_empty());
         if empty {
             self.mention = None;
             self.composer.backspace(); // remove the `@`
         } else {
             self.composer.backspace();
             if let Some(m) = self.mention.as_mut() {
-                m.prefix.pop();
-                m.selected = 0;
+                m.picker.pop_char();
             }
             self.refresh_mention();
         }
     }
 
     fn move_mention(&mut self, delta: i32) {
-        let Some(m) = self.mention.as_mut() else {
-            return;
-        };
-        let n = m.entries.len() as i32;
-        if n == 0 {
-            return;
+        if let Some(m) = self.mention.as_mut() {
+            m.picker.move_selection(delta);
         }
-        m.selected = (m.selected as i32 + delta).clamp(0, n - 1) as usize;
     }
 
     /// Replace `@<prefix>` in the composer with the selected path (or the typed
@@ -1014,13 +829,14 @@ impl App {
         let Some(m) = self.mention.take() else {
             return;
         };
-        let to_delete = 1 + m.prefix.chars().count();
+        let to_delete = 1 + m.picker.prefix.chars().count();
         for _ in 0..to_delete {
             self.composer.backspace();
         }
         let text = m
+            .picker
             .entries
-            .get(m.selected)
+            .get(m.picker.selected)
             .map(|e| mention::rel_or_abs(&self.workspace_root, &e.path))
             .unwrap_or_else(|| mention::rel_or_abs(&self.workspace_root, &m.dir));
         self.composer.insert_str(&text);
@@ -1028,38 +844,34 @@ impl App {
 
     /// Key handling while the mention picker is open (swallows everything).
     fn handle_mention_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Option<Action> {
-        use KeyCode::*;
         let _ = modifiers;
-        match code {
-            Esc => {
-                let to_delete = 1 + self.mention.as_ref().map_or(0, |m| m.prefix.chars().count());
+        match picker_key(code) {
+            Some(PickerKey::Cancel) => {
+                let to_delete =
+                    1 + self.mention.as_ref().map_or(0, |m| m.picker.prefix.chars().count());
                 self.mention = None;
                 for _ in 0..to_delete {
                     self.composer.backspace();
                 }
                 None
             }
-            Up => {
-                self.move_mention(-1);
+            Some(PickerKey::Move(delta)) => {
+                self.move_mention(delta);
                 None
             }
-            Down => {
-                self.move_mention(1);
-                None
-            }
-            Backspace => {
+            Some(PickerKey::Backspace) => {
                 self.mention_backspace();
                 None
             }
-            Enter => {
+            Some(PickerKey::Confirm) => {
                 self.finish_mention();
                 None
             }
-            Char(c) => {
+            Some(PickerKey::Char(c)) => {
                 self.mention_push_char(c);
                 None
             }
-            _ => None,
+            None => None,
         }
     }
 
@@ -1078,20 +890,22 @@ impl App {
     /// Open the skill picker (triggered when `/` is typed at line start).
     fn start_slash(&mut self) {
         self.slash = Some(SlashPicker {
-            prefix: String::new(),
-            entries: self.skill_summaries.clone(),
-            selected: 0,
+            picker: Picker {
+                prefix: String::new(),
+                entries: self.skill_summaries.clone(),
+                selected: 0,
+            },
         });
     }
 
     /// Refresh the filtered entries based on the current prefix.
     fn refresh_slash(&mut self) {
         let Some(s) = self.slash.as_mut() else { return };
-        if s.prefix.is_empty() {
-            s.entries = self.skill_summaries.clone();
+        if s.picker.prefix.is_empty() {
+            s.picker.entries = self.skill_summaries.clone();
         } else {
-            let q = s.prefix.to_lowercase();
-            s.entries = self
+            let q = s.picker.prefix.to_lowercase();
+            s.picker.entries = self
                 .skill_summaries
                 .iter()
                 .filter(|(name, desc)| {
@@ -1100,13 +914,13 @@ impl App {
                 .cloned()
                 .collect();
         }
-        s.selected = s.selected.min(s.entries.len().saturating_sub(1));
+        s.picker.clamp_selection();
     }
 
     /// Push a character into the slash prefix.
     fn slash_push_char(&mut self, c: char) {
         if let Some(s) = self.slash.as_mut() {
-            s.prefix.push(c);
+            s.picker.push_char(c);
         }
         self.composer.insert_char(c);
         self.refresh_slash();
@@ -1115,7 +929,7 @@ impl App {
     /// Backspace in the slash picker: remove last char from prefix; close if
     /// prefix becomes empty and the user backspaces again (removes the `/`).
     fn slash_backspace(&mut self) {
-        let empty = self.slash.as_ref().map_or(true, |s| s.prefix.is_empty());
+        let empty = self.slash.as_ref().map_or(true, |s| s.picker.is_prefix_empty());
         if empty {
             // Prefix is already empty → user is deleting the `/` itself → close picker
             self.slash = None;
@@ -1123,7 +937,7 @@ impl App {
             return;
         }
         if let Some(s) = self.slash.as_mut() {
-            s.prefix.pop();
+            s.picker.pop_char();
         }
         self.composer.backspace();
         self.refresh_slash();
@@ -1131,23 +945,21 @@ impl App {
 
     /// Move the slash picker highlight by `delta` (±1).
     fn move_slash(&mut self, delta: i32) {
-        let Some(s) = self.slash.as_mut() else { return };
-        let n = s.entries.len();
-        if n == 0 {
-            return;
+        if let Some(s) = self.slash.as_mut() {
+            s.picker.move_selection(delta);
         }
-        s.selected = (s.selected as i32 + delta).clamp(0, (n - 1) as i32) as usize;
     }
 
     /// Confirm selection: replace `/prefix` in the composer with `/selected-name `.
     fn finish_slash(&mut self) {
         let Some(s) = self.slash.take() else { return };
-        let prefix_len = s.prefix.chars().count();
+        let prefix_len = s.picker.prefix.chars().count();
         let name = s
+            .picker
             .entries
-            .get(s.selected)
+            .get(s.picker.selected)
             .map(|(n, _)| n.clone())
-            .unwrap_or(s.prefix);
+            .unwrap_or(s.picker.prefix);
         // 删掉已输入的 `/prefix`
         let to_delete = 1 + prefix_len;
         for _ in 0..to_delete {
@@ -1159,39 +971,35 @@ impl App {
 
     /// Key handling while the skill picker is open.
     fn handle_slash_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Option<Action> {
-        use KeyCode::*;
         let _ = modifiers;
-        match code {
-            Esc => {
+        match picker_key(code) {
+            Some(PickerKey::Cancel) => {
                 // 删掉 `/prefix` 并关闭
-                let to_delete = 1 + self.slash.as_ref().map_or(0, |s| s.prefix.chars().count());
+                let to_delete =
+                    1 + self.slash.as_ref().map_or(0, |s| s.picker.prefix.chars().count());
                 self.slash = None;
                 for _ in 0..to_delete {
                     self.composer.backspace();
                 }
                 None
             }
-            Up => {
-                self.move_slash(-1);
+            Some(PickerKey::Move(delta)) => {
+                self.move_slash(delta);
                 None
             }
-            Down => {
-                self.move_slash(1);
-                None
-            }
-            Backspace => {
+            Some(PickerKey::Backspace) => {
                 self.slash_backspace();
                 None
             }
-            Enter => {
+            Some(PickerKey::Confirm) => {
                 self.finish_slash();
                 None
             }
-            Char(c) => {
+            Some(PickerKey::Char(c)) => {
                 self.slash_push_char(c);
                 None
             }
-            _ => None,
+            None => None,
         }
     }
 
@@ -1231,8 +1039,8 @@ impl App {
         // nothing when there's no selection — it never cancels/quits (that's
         // Ctrl+C's job).
         if super_key && code == Char('c') {
-            if self.selection.is_some() {
-                self.context_menu = None;
+            if self.selection_state.selection.is_some() {
+                self.selection_state.context_menu = None;
                 return Some(Action::CopySelection);
             }
             return None;
@@ -1243,9 +1051,9 @@ impl App {
         //   2. If the agent is running (or approval pending), cancel it.
         //   3. Otherwise, show a hint; a second Ctrl+C within timeout quits.
         if ctrl && code == Char('c') {
-            if self.selection.is_some() {
+            if self.selection_state.selection.is_some() {
                 tracing::info!("ctrl+c: has selection → copy");
-                self.context_menu = None;
+                self.selection_state.context_menu = None;
                 self.quit_hint_at = None;
                 return Some(Action::CopySelection);
             }
@@ -1273,23 +1081,19 @@ impl App {
 
         // Right-click copy menu: Up/Down move the highlight, Enter copies (or
         // cancels), Esc closes; everything else is swallowed.
-        if self.context_menu.is_some() {
-            let selected = self.context_menu.as_ref().map_or(0, |m| m.selected);
+        if self.selection_state.menu_is_open() {
+            let selected = self.selection_state.menu_selected();
             return match code {
                 Up => {
-                    if let Some(m) = self.context_menu.as_mut() {
-                        m.selected = m.selected.saturating_sub(1);
-                    }
+                    self.selection_state.menu_move(-1);
                     None
                 }
                 Down => {
-                    if let Some(m) = self.context_menu.as_mut() {
-                        m.selected = (m.selected + 1).min(1);
-                    }
+                    self.selection_state.menu_move(1);
                     None
                 }
                 Enter => {
-                    self.context_menu = None;
+                    self.selection_state.context_menu = None;
                     if selected == 0 {
                         Some(Action::CopySelection)
                     } else {
@@ -1297,7 +1101,7 @@ impl App {
                     }
                 }
                 Esc => {
-                    self.context_menu = None;
+                    self.selection_state.context_menu = None;
                     None
                 }
                 _ => None,
@@ -1333,8 +1137,8 @@ impl App {
             Esc => {
                 // No menu is open here (handled above); clear a selection if
                 // present, else clear the composer.
-                if self.selection.is_some() {
-                    self.selection = None;
+                if self.selection_state.selection.is_some() {
+                    self.selection_state.selection = None;
                 } else {
                     self.composer.clear();
                 }
@@ -1350,10 +1154,10 @@ impl App {
                     // Echo the user's message into the transcript before the
                     // agent's reply, so the record keeps the human turn too.
                     self.push_user(&text);
-                    self.plan_range = None;
+                    self.transcript.clear_plan();
                     self.running = true;
-                    self.follow_bottom = true;
-                    self.scroll_offset = 0;
+                    self.viewport.follow_bottom = true;
+                    self.viewport.scroll_offset = 0;
                     self.status = AgentStatus::Running {
                         phase: Phase::Thinking,
                     };
@@ -1422,48 +1226,12 @@ impl App {
 
     /// Scroll up by `SCROLL_STEP` lines. Returns `true` if the viewport moved.
     pub(crate) fn scroll_up(&mut self) -> bool {
-        self.follow_bottom = false;
-        let old = self.scroll_offset;
-        self.scroll_offset += SCROLL_STEP;
-        // Clamp to the maximum useful offset using the last known rendered
-        // line count and output area height. This prevents scroll_offset from
-        // growing past the top of content.
-        if let Some((_x, _y, _w, h)) = self.output_area {
-            let max_offset = self.rendered_total.saturating_sub(h as usize);
-            if self.scroll_offset > max_offset {
-                self.scroll_offset = max_offset;
-            }
-        }
-        tracing::debug!(
-            old_offset = old,
-            new_offset = self.scroll_offset,
-            rendered_total = self.rendered_total,
-            output_area_h = self.output_area.map(|a| a.3),
-            "scroll_up"
-        );
-        self.scroll_offset != old
+        self.viewport.scroll_up(SCROLL_STEP)
     }
 
     /// Scroll down by `SCROLL_STEP` lines. Returns `true` if the viewport moved.
     pub(crate) fn scroll_down(&mut self) -> bool {
-        let old = self.scroll_offset;
-        if self.follow_bottom {
-            tracing::debug!("scroll_down: already at bottom");
-            return false;
-        }
-        if self.scroll_offset <= SCROLL_STEP {
-            self.scroll_offset = 0;
-            self.follow_bottom = true;
-        } else {
-            self.scroll_offset -= SCROLL_STEP;
-        }
-        tracing::debug!(
-            old_offset = old,
-            new_offset = self.scroll_offset,
-            follow_bottom = self.follow_bottom,
-            "scroll_down"
-        );
-        true
+        self.viewport.scroll_down(SCROLL_STEP)
     }
 
     /// The status-bar text for the current state (§9.6).
@@ -1506,34 +1274,6 @@ impl App {
     }
 }
 
-
-/// The `[start, end)` range of `total` lines to show in a window of `height`
-/// rows, honoring `follow_bottom` and `scroll_offset`.
-pub(crate) fn window_range(total: usize, app: &App, height: usize) -> Range<usize> {
-    if total <= height {
-        tracing::debug!(total, height, "window_range: content fits, 0..total");
-        return 0..total;
-    }
-    if app.follow_bottom {
-        let start = total - height;
-        tracing::debug!(total, height, start, "window_range: follow_bottom");
-        return start..total;
-    }
-    let max_offset = total - height;
-    let offset = app.scroll_offset.min(max_offset);
-    let start = max_offset - offset;
-    tracing::debug!(
-        total,
-        height,
-        raw_scroll_offset = app.scroll_offset,
-        max_offset,
-        clamped_offset = offset,
-        start,
-        end = (start + height).min(total),
-        "window_range"
-    );
-    start..(start + height).min(total)
-}
 
 /// `"[path] "` for a sub-agent, `""` for the root agent — labels a sub-agent's
 /// lines so they read `[root/searcher] …` in the transcript.
@@ -1695,7 +1435,7 @@ mod tests {
         app.handle_event(TuiEvent::Runtime(tool_finished("execute_command", true)));
 
         // Invocation + result lines land inline in `output`, in event order.
-        let texts: Vec<&str> = app.output.iter().map(|l| l.text.as_str()).collect();
+        let texts: Vec<&str> = app.transcript.output.iter().map(|l| l.text.as_str()).collect();
         assert_eq!(
             texts,
             vec![
@@ -1704,9 +1444,9 @@ mod tests {
                 "  ⛔ execute_command denied",
             ]
         );
-        assert_eq!(app.output[0].kind, LineKind::Tool);
-        assert_eq!(app.output[1].kind, LineKind::ToolResult);
-        assert_eq!(app.output[2].kind, LineKind::Error);
+        assert_eq!(app.transcript.output[0].kind, LineKind::Tool);
+        assert_eq!(app.transcript.output[1].kind, LineKind::ToolResult);
+        assert_eq!(app.transcript.output[2].kind, LineKind::Error);
     }
 
     #[test]
@@ -1730,7 +1470,7 @@ mod tests {
         app.handle_event(TuiEvent::Runtime(text("world")));
         app.handle_event(TuiEvent::Runtime(tool_started("verify"))); // flush
         let normals: Vec<_> = app
-            .output
+            .transcript.output
             .iter()
             .filter(|l| l.kind == LineKind::Normal)
             .collect();
@@ -1744,7 +1484,7 @@ mod tests {
         app.handle_event(TuiEvent::Runtime(text("a\nb")));
         app.handle_event(TuiEvent::Runtime(tool_started("verify")));
         let normals: Vec<_> = app
-            .output
+            .transcript.output
             .iter()
             .filter(|l| l.kind == LineKind::Normal)
             .collect();
@@ -1760,10 +1500,10 @@ mod tests {
         app.handle_event(TuiEvent::Runtime(thought("thinking")));
         app.handle_event(TuiEvent::Runtime(text("answer")));
         app.handle_event(TuiEvent::Runtime(run_finished(None)));
-        assert_eq!(app.output[0].kind, LineKind::Thought);
-        assert_eq!(app.output[0].text, "thinking");
-        assert_eq!(app.output[1].kind, LineKind::Normal);
-        assert_eq!(app.output[1].text, "answer");
+        assert_eq!(app.transcript.output[0].kind, LineKind::Thought);
+        assert_eq!(app.transcript.output[0].text, "thinking");
+        assert_eq!(app.transcript.output[1].kind, LineKind::Normal);
+        assert_eq!(app.transcript.output[1].text, "answer");
     }
 
     #[test]
@@ -1789,7 +1529,7 @@ mod tests {
         let action = submit(&mut app, "hello world");
         assert_eq!(action, Action::Submit("hello world".to_string()));
         let users: Vec<&str> = app
-            .output
+            .transcript.output
             .iter()
             .filter(|l| l.kind == LineKind::User)
             .map(|l| l.text.as_str())
@@ -1860,8 +1600,8 @@ mod tests {
         app.handle_event(TuiEvent::TurnError("boom".to_string()));
         assert!(!app.running);
         assert_eq!(app.status, AgentStatus::Idle);
-        assert_eq!(app.output.last().unwrap().kind, LineKind::Error);
-        assert!(app.output.last().unwrap().text.contains("boom"));
+        assert_eq!(app.transcript.output.last().unwrap().kind, LineKind::Error);
+        assert!(app.transcript.output.last().unwrap().text.contains("boom"));
     }
 
 
@@ -1892,8 +1632,8 @@ mod tests {
         // tool call, also appends an inline invocation line).
         app.handle_event(TuiEvent::Runtime(tool_started("verify")));
         assert_eq!(app.streaming_tail_lines(), None);
-        assert_eq!(app.output[0].text, "hello");
-        assert_eq!(app.output[1].kind, LineKind::Tool);
+        assert_eq!(app.transcript.output[0].text, "hello");
+        assert_eq!(app.transcript.output[1].kind, LineKind::Tool);
     }
 
     #[test]
@@ -1913,28 +1653,28 @@ mod tests {
     fn scroll_up_steps_from_bottom_not_noop() {
         let mut app = App::new();
         for i in 0..100 {
-            app.output.push(OutputLine { spans: None, original: None, text: format!("line {i}"), kind: LineKind::Normal });
+            app.transcript.push(OutputLine { spans: None, original: None, text: format!("line {i}"), kind: LineKind::Normal });
         }
         app.scroll_up();
-        assert!(!app.follow_bottom);
-        assert_eq!(app.scroll_offset, SCROLL_STEP);
+        assert!(!app.viewport.follow_bottom);
+        assert_eq!(app.viewport.scroll_offset, SCROLL_STEP);
     }
 
     #[test]
     fn scroll_down_reenters_follow_bottom() {
         let mut app = App::new();
         for i in 0..100 {
-            app.output.push(OutputLine { spans: None, original: None, text: format!("line {i}"), kind: LineKind::Normal });
+            app.transcript.push(OutputLine { spans: None, original: None, text: format!("line {i}"), kind: LineKind::Normal });
         }
         app.scroll_up();
         app.scroll_up();
-        assert_eq!(app.scroll_offset, 2 * SCROLL_STEP);
+        assert_eq!(app.viewport.scroll_offset, 2 * SCROLL_STEP);
         app.scroll_down();
-        assert_eq!(app.scroll_offset, SCROLL_STEP);
-        app.scroll_offset = SCROLL_STEP;
+        assert_eq!(app.viewport.scroll_offset, SCROLL_STEP);
+        app.viewport.scroll_offset = SCROLL_STEP;
         app.scroll_down();
-        assert!(app.follow_bottom);
-        assert_eq!(app.scroll_offset, 0);
+        assert!(app.viewport.follow_bottom);
+        assert_eq!(app.viewport.scroll_offset, 0);
     }
 
     fn pending_approval(app: &mut App) {
@@ -2031,7 +1771,7 @@ mod tests {
         assert_eq!(app.sub_agents.get("root/a"), Some(&SubAgentStatus::Running));
         app.handle_event(TuiEvent::Runtime(run_finished(Some("root/a"))));
         assert_eq!(app.sub_agents.get("root/a"), Some(&SubAgentStatus::Done));
-        let texts: Vec<&str> = app.output.iter().map(|l| l.text.as_str()).collect();
+        let texts: Vec<&str> = app.transcript.output.iter().map(|l| l.text.as_str()).collect();
         assert_eq!(
             texts,
             vec![
@@ -2047,7 +1787,7 @@ mod tests {
         let mut app = App::new();
         app.handle_event(TuiEvent::Runtime(child_tool_started("root/a", "read_file")));
         app.handle_event(TuiEvent::Runtime(child_tool_finished("root/a", "read_file")));
-        let texts: Vec<&str> = app.output.iter().map(|l| l.text.as_str()).collect();
+        let texts: Vec<&str> = app.transcript.output.iter().map(|l| l.text.as_str()).collect();
         assert_eq!(
             texts,
             vec![
@@ -2154,7 +1894,7 @@ mod tests {
                 ("待办", PlanStepStatus::Pending),
             ],
         )));
-        let lines: Vec<&str> = app.output.iter().map(|l| l.text.as_str()).collect();
+        let lines: Vec<&str> = app.transcript.output.iter().map(|l| l.text.as_str()).collect();
         assert!(lines.iter().any(|l| l.contains("📋 目标")), "got: {lines:?}");
         assert!(lines.iter().any(|l| l.contains("✅ 已完成")), "got: {lines:?}");
         assert!(lines.iter().any(|l| l.contains("🔄 进行中")), "got: {lines:?}");
@@ -2175,7 +1915,7 @@ mod tests {
                 ("步骤2", PlanStepStatus::Completed),
             ],
         )));
-        let texts: Vec<&str> = app.output.iter().map(|l| l.text.as_str()).collect();
+        let texts: Vec<&str> = app.transcript.output.iter().map(|l| l.text.as_str()).collect();
         assert_eq!(
             texts.iter().filter(|t| t.contains("📋 目标")).count(),
             1,
@@ -2193,7 +1933,7 @@ mod tests {
             Some("检测到已有配置，直接复用"),
             vec![("步骤", PlanStepStatus::Pending)],
         )));
-        assert!(app.output.iter().any(|l| l.text.contains("↳ 检测到已有配置")));
+        assert!(app.transcript.output.iter().any(|l| l.text.contains("↳ 检测到已有配置")));
     }
 
     #[test]
@@ -2201,7 +1941,7 @@ mod tests {
         let mut app = App::new();
         app.handle_event(TuiEvent::Runtime(tool_started("update_plan")));
         app.handle_event(TuiEvent::Runtime(tool_finished("update_plan", false)));
-        assert!(!app.output.iter().any(|l| l.text.contains("update_plan")));
+        assert!(!app.transcript.output.iter().any(|l| l.text.contains("update_plan")));
     }
 
     #[test]
@@ -2218,7 +1958,7 @@ mod tests {
             "目标B",
             vec![("步骤B", PlanStepStatus::Pending)],
         )));
-        let texts: Vec<&str> = app.output.iter().map(|l| l.text.as_str()).collect();
+        let texts: Vec<&str> = app.transcript.output.iter().map(|l| l.text.as_str()).collect();
         assert!(texts.iter().any(|t| t.contains("📋 目标A")), "target A kept: {texts:?}");
         assert!(texts.iter().any(|t| t.contains("📋 目标B")), "target B appended: {texts:?}");
         assert_eq!(texts.iter().filter(|t| t.contains("📋")).count(), 2);
@@ -2228,12 +1968,12 @@ mod tests {
     fn mouse_drag_selects_line_range() {
         let mut app = App::new();
         for i in 0..10 {
-            app.output.push(OutputLine { spans: None, original: None, text: format!("line {i}"), kind: LineKind::Normal });
+            app.transcript.push(OutputLine { spans: None, original: None, text: format!("line {i}"), kind: LineKind::Normal });
         }
         app.output_area = Some((0, 0, 100, 10));
         app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 2, 100, 10);
         app.handle_mouse(MouseEventKind::Drag(MouseButton::Left), 0, 5, 100, 10);
-        assert_eq!(app.selection, Some(Selection { anchor: 2, head: 5 }));
+        assert_eq!(app.selection_state.selection, Some(Selection { anchor: 2, head: 5 }));
         assert_eq!(app.selection_text(), "line 2\nline 3\nline 4\nline 5");
     }
 
@@ -2241,7 +1981,7 @@ mod tests {
     fn mouse_drag_up_normalizes_selection() {
         let mut app = App::new();
         for i in 0..10 {
-            app.output.push(OutputLine { spans: None, original: None, text: format!("line {i}"), kind: LineKind::Normal });
+            app.transcript.push(OutputLine { spans: None, original: None, text: format!("line {i}"), kind: LineKind::Normal });
         }
         app.output_area = Some((0, 0, 100, 10));
         app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 5, 100, 10);
@@ -2253,19 +1993,19 @@ mod tests {
     #[test]
     fn click_outside_output_clears_selection() {
         let mut app = App::new();
-        app.output.push(OutputLine { spans: None, original: None, text: "x".into(), kind: LineKind::Normal });
+        app.transcript.push(OutputLine { spans: None, original: None, text: "x".into(), kind: LineKind::Normal });
         app.output_area = Some((0, 0, 10, 5));
         app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 0, 10, 5);
-        assert!(app.selection.is_some());
+        assert!(app.selection_state.selection.is_some());
         app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 50, 10, 5); // below pane
-        assert!(app.selection.is_none());
+        assert!(app.selection_state.selection.is_none());
     }
 
     #[test]
     fn selection_text_clamps_stale_indices() {
         let mut app = App::new();
-        app.output.push(OutputLine { spans: None, original: None, text: "a".into(), kind: LineKind::Normal });
-        app.selection = Some(Selection { anchor: 0, head: 5 });
+        app.transcript.push(OutputLine { spans: None, original: None, text: "a".into(), kind: LineKind::Normal });
+        app.selection_state.selection = Some(Selection { anchor: 0, head: 5 });
         assert_eq!(app.selection_text(), "a");
     }
 
@@ -2273,13 +2013,13 @@ mod tests {
     fn ctrl_c_copies_selection_then_double_press_quits() {
         let mut app = App::new();
         // With selection → copy (caller clears selection after copy).
-        app.selection = Some(Selection { anchor: 0, head: 5 });
+        app.selection_state.selection = Some(Selection { anchor: 0, head: 5 });
         assert_eq!(
             app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL),
             Some(Action::CopySelection)
         );
         // Caller clears selection after copy. First Ctrl+C → show hint.
-        app.selection = None;
+        app.selection_state.selection = None;
         assert_eq!(
             app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL),
             None
@@ -2309,60 +2049,60 @@ mod tests {
     #[test]
     fn right_click_opens_menu_and_enter_copies() {
         let mut app = App::new();
-        app.output.push(OutputLine { spans: None, original: None, text: "x".into(), kind: LineKind::Normal });
+        app.transcript.push(OutputLine { spans: None, original: None, text: "x".into(), kind: LineKind::Normal });
         app.output_area = Some((0, 0, 10, 10));
         app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 0, 20, 20);
         app.handle_mouse(MouseEventKind::Down(MouseButton::Right), 3, 4, 20, 20);
-        assert_eq!(app.context_menu, Some(ContextMenu { x: 3, y: 4, selected: 0 }));
+        assert_eq!(app.selection_state.context_menu, Some(ContextMenu { x: 3, y: 4, selected: 0 }));
         assert_eq!(
             app.handle_key(KeyCode::Enter, KeyModifiers::NONE),
             Some(Action::CopySelection)
         );
-        assert_eq!(app.context_menu, None);
+        assert_eq!(app.selection_state.context_menu, None);
     }
 
     #[test]
     fn context_menu_arrows_move_highlight_and_esc_closes() {
         let mut app = App::new();
-        app.output.push(OutputLine { spans: None, original: None, text: "x".into(), kind: LineKind::Normal });
+        app.transcript.push(OutputLine { spans: None, original: None, text: "x".into(), kind: LineKind::Normal });
         app.output_area = Some((0, 0, 10, 10));
         app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 0, 20, 20);
         app.handle_mouse(MouseEventKind::Down(MouseButton::Right), 0, 0, 20, 20);
         assert_eq!(app.handle_key(KeyCode::Down, KeyModifiers::NONE), None);
-        assert_eq!(app.context_menu.as_ref().unwrap().selected, 1);
+        assert_eq!(app.selection_state.context_menu.as_ref().unwrap().selected, 1);
         // Enter on the "cancel" item closes without copying.
         assert_eq!(app.handle_key(KeyCode::Enter, KeyModifiers::NONE), None);
-        assert!(app.context_menu.is_none());
+        assert!(app.selection_state.context_menu.is_none());
     }
 
     #[test]
     fn clicking_menu_copy_item_copies_and_closes() {
         let mut app = App::new();
-        app.output.push(OutputLine { spans: None, original: None, text: "x".into(), kind: LineKind::Normal });
+        app.transcript.push(OutputLine { spans: None, original: None, text: "x".into(), kind: LineKind::Normal });
         app.output_area = Some((0, 0, 10, 10));
-        app.selection = Some(Selection { anchor: 0, head: 0 });
+        app.selection_state.selection = Some(Selection { anchor: 0, head: 0 });
         // Open the menu at (0,0): 12×4 box, items at rows y+1 ("拷贝") and y+2
         // ("取消").
         assert_eq!(
             app.handle_mouse(MouseEventKind::Down(MouseButton::Right), 0, 0, 20, 20),
             None
         );
-        assert!(app.context_menu.is_some());
+        assert!(app.selection_state.context_menu.is_some());
         // Left-click the "拷贝" row → copy, menu closes, selection preserved.
         assert_eq!(
             app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 1, 1, 20, 20),
             Some(Action::CopySelection)
         );
-        assert!(app.context_menu.is_none());
-        assert!(app.selection.is_some());
+        assert!(app.selection_state.context_menu.is_none());
+        assert!(app.selection_state.selection.is_some());
     }
 
     #[test]
     fn clicking_menu_cancel_item_closes_without_copy() {
         let mut app = App::new();
-        app.output.push(OutputLine { spans: None, original: None, text: "x".into(), kind: LineKind::Normal });
+        app.transcript.push(OutputLine { spans: None, original: None, text: "x".into(), kind: LineKind::Normal });
         app.output_area = Some((0, 0, 10, 10));
-        app.selection = Some(Selection { anchor: 0, head: 0 });
+        app.selection_state.selection = Some(Selection { anchor: 0, head: 0 });
         app.handle_mouse(MouseEventKind::Down(MouseButton::Right), 0, 0, 20, 20);
         // "取消" is the second item, row y+2. It closes the menu but keeps the
         // selection.
@@ -2370,34 +2110,34 @@ mod tests {
             app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 1, 2, 20, 20),
             None
         );
-        assert!(app.context_menu.is_none());
-        assert!(app.selection.is_some());
+        assert!(app.selection_state.context_menu.is_none());
+        assert!(app.selection_state.selection.is_some());
     }
 
     #[test]
     fn clicking_outside_menu_closes_it_and_restarts_selection() {
         let mut app = App::new();
-        app.output.push(OutputLine { spans: None, original: None, text: "x".into(), kind: LineKind::Normal });
+        app.transcript.push(OutputLine { spans: None, original: None, text: "x".into(), kind: LineKind::Normal });
         app.output_area = Some((0, 0, 10, 10));
-        app.selection = Some(Selection { anchor: 0, head: 0 });
+        app.selection_state.selection = Some(Selection { anchor: 0, head: 0 });
         app.handle_mouse(MouseEventKind::Down(MouseButton::Right), 0, 0, 20, 20);
-        assert!(app.context_menu.is_some());
+        assert!(app.selection_state.context_menu.is_some());
         // A click far outside the popup closes the menu (and starts a new
         // selection) exactly as before.
         assert_eq!(
             app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 15, 15, 20, 20),
             None
         );
-        assert!(app.context_menu.is_none());
+        assert!(app.selection_state.context_menu.is_none());
     }
 
     #[test]
     fn esc_clears_selection_before_composer() {
         let mut app = App::new();
-        app.selection = Some(Selection { anchor: 0, head: 2 });
+        app.selection_state.selection = Some(Selection { anchor: 0, head: 2 });
         app.composer.insert_str("keep");
         assert_eq!(app.handle_key(KeyCode::Esc, KeyModifiers::NONE), None);
-        assert!(app.selection.is_none());
+        assert!(app.selection_state.selection.is_none());
         assert_eq!(app.composer.text(), "keep");
     }
 
@@ -2407,7 +2147,7 @@ mod tests {
         // No selection → Cmd+C does nothing (it must never quit).
         assert_eq!(app.handle_key(KeyCode::Char('c'), KeyModifiers::SUPER), None);
         // With a selection → copy.
-        app.selection = Some(Selection { anchor: 0, head: 0 });
+        app.selection_state.selection = Some(Selection { anchor: 0, head: 0 });
         assert_eq!(
             app.handle_key(KeyCode::Char('c'), KeyModifiers::SUPER),
             Some(Action::CopySelection)
@@ -2433,9 +2173,9 @@ mod tests {
 
         assert_eq!(app.handle_key(KeyCode::Char('@'), KeyModifiers::NONE), None);
         let m = app.mention().expect("mention open");
-        assert_eq!(m.prefix, "");
-        assert!(m.entries[0].synthetic, "synthetic row is first");
-        assert!(m.entries.iter().any(|e| e.name == "a.txt"));
+        assert_eq!(m.picker.prefix, "");
+        assert!(m.picker.entries[0].synthetic, "synthetic row is first");
+        assert!(m.picker.entries.iter().any(|e| e.name == "a.txt"));
         assert_eq!(app.composer.text(), "@");
     }
 
@@ -2578,7 +2318,7 @@ mod tests {
         app.handle_key(KeyCode::Char('c'), KeyModifiers::NONE);
 
         let s = app.slash().unwrap();
-        let names: Vec<&str> = s.entries.iter().map(|(n, _)| n.as_str()).collect();
+        let names: Vec<&str> = s.picker.entries.iter().map(|(n, _)| n.as_str()).collect();
         assert!(names.contains(&"commit"));
         assert!(names.contains(&"requesting-code-review"));
         // "review" does not contain 'c' → filtered out
@@ -2610,19 +2350,19 @@ mod tests {
         let mut app = app_with_skills();
         app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
 
-        assert_eq!(app.slash().unwrap().selected, 0);
+        assert_eq!(app.slash().unwrap().picker.selected, 0);
 
         app.handle_key(KeyCode::Down, KeyModifiers::NONE);
-        assert_eq!(app.slash().unwrap().selected, 1);
+        assert_eq!(app.slash().unwrap().picker.selected, 1);
 
         app.handle_key(KeyCode::Down, KeyModifiers::NONE);
-        assert_eq!(app.slash().unwrap().selected, 2);
+        assert_eq!(app.slash().unwrap().picker.selected, 2);
 
         // 已在末尾，Down 不动
         app.handle_key(KeyCode::Down, KeyModifiers::NONE);
-        assert_eq!(app.slash().unwrap().selected, 2);
+        assert_eq!(app.slash().unwrap().picker.selected, 2);
 
         app.handle_key(KeyCode::Up, KeyModifiers::NONE);
-        assert_eq!(app.slash().unwrap().selected, 1);
+        assert_eq!(app.slash().unwrap().picker.selected, 1);
     }
 }
