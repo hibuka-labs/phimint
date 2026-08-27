@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use agent_base::ReasoningEffort;
+use agent_base::engine::max_turns_nudge::{MaxTurnsNudgeConfig, MaxTurnsNudgeMiddleware};
 use agent_works::guard::{DefaultGuard, DefaultGuardConfig, ReasoningOnlyAction};
 use phi_agent::{ApprovalHandler, ChildPermissionMode, MultiAgentConfig, PhiAgent, PhiAgentConfig, ToolPolicy, base_agent_builder_with_excludes};
 use phi_kernel_tools::local_shell::LocalShellTool;
@@ -120,7 +121,9 @@ pub fn build(
         .register_tool(LocalShellTool::new(shell_timeout_ms))
         // .register_tool(VerifyTool::new(&workspace_root, shell_timeout_ms))
         .register_tool(RipgrepTool::new(workspace_root.clone()))
-        .register_tool(RepoMapTool::new(workspace_root.clone()));
+        .register_tool(RepoMapTool::new(workspace_root.clone()))
+        // TESTING: low max_turns to verify nudge feature
+        .execution_max_turns(256);
 
     // Phase 4 multi-agent orchestration: `decompose` and `merge` share a
     // `WorkspaceTracker` so the latter can diff against the former's snapshot.
@@ -194,14 +197,19 @@ pub fn build(
             You MUST now either call a tool or write your final answer. \
             Do NOT attempt to reason further. Just DO something NOW."
             .to_string(),
-        max_turns_nudge_threshold: 3, // Nudge when 3 turns remaining
-        max_turns_nudge: "You are approaching the maximum number of turns. \
-            Please wrap up your current work and provide a final answer. \
-            Summarize what you've accomplished and any remaining tasks."
-            .to_string(),
         ..DefaultGuardConfig::default()
     };
     builder = builder.guard(DefaultGuard::new(guard_config));
+
+    // Max turns nudge: soft intervention before hitting the hard limit.
+    // Injects a nudge message when approaching max_turns so the LLM can wrap up gracefully.
+    builder = builder.middleware(MaxTurnsNudgeMiddleware::new(MaxTurnsNudgeConfig {
+        threshold: 3, // Nudge on last 3 turns
+        message: "You are approaching the maximum number of turns. \
+            Please wrap up your current work and provide a final answer. \
+            Summarize what you've accomplished and any remaining tasks."
+            .to_string(),
+    }));
 
     // Phase 6a: forced-verify gate. When the agent edits files and then tries to
     // report "done" without running `verify` (or `merge`, which runs cargo check
