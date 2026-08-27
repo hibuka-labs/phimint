@@ -15,9 +15,10 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::banner::{BannerStyle, ColorScheme, SpanSpec};
 use crate::ui::app::{
     AgentStatus, App, CONTEXT_MENU_H, CONTEXT_MENU_W, LineKind, SubAgentStatus, context_menu_pos,
-    window_range, wrap,
+    window_range,
 };
 use crate::ui::markdown::{line_plain_text, render_markdown};
+use crate::ui::wrap::wrap;
 
 /// Max composer rows shown (its box grows with the buffer up to this).
 const MAX_COMPOSER_ROWS: usize = 8;

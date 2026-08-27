@@ -14,12 +14,13 @@ use std::time::Instant;
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use agent_base::{PlanStepStatus, UserEvent};
 use phi_agent::{ApprovalDecision, ApprovalRequest, RuntimeEvent};
-use unicode_width::UnicodeWidthChar;
 
 use crate::approval::ApprovalItem;
 use crate::banner::{BannerRow, ColorScheme, SpanSpec};
 use crate::ui::input::Composer;
 use crate::ui::mention::{self, Entry};
+use crate::ui::stream::StreamState;
+use crate::ui::wrap::{one_line, wrap};
 
 /// Default columns the output buffer wraps at. Overridden at runtime to match
 /// the terminal width (see [`App::set_wrap_width`]).
@@ -226,20 +227,13 @@ pub struct App {
     /// Built by `render_output`; used by `selection_text` so copy returns
     /// the visually-selected lines rather than the full raw `output` block.
     pub(crate) visual_lines_text: Vec<String>,
-    pending_text: String,
-    pending_thought: String,
-    /// The agent whose text/thought is currently accumulating in the pending
-    /// buffer, so a sub-agent's stream can be `[path]`-prefixed on flush.
-    pending_agent: Option<String>,
+    /// Live streaming tail state (pending text/thought + incremental wrap cache).
+    stream: StreamState,
     /// Latest live tool-progress line (e.g. streaming `execute_command` output),
     /// shown in the status bar and cleared when the tool call finishes.
     live_progress: Option<String>,
     /// Transient status-bar notice (e.g. "📋 copied …"), cleared on the next key.
     notice: Option<String>,
-    /// Incrementally-wrapped form of the live streaming tail, kept in sync with
-    /// `pending_text`/`pending_thought` so rendering a long stream is O(new
-    /// delta) per frame instead of re-wrapping the whole buffer.
-    tail_wrap: WrapCache,
     /// Dynamic wrap width for output lines, updated each frame to match the
     /// terminal width (minus border). Keeps output and composer widths aligned.
     wrap_width: usize,
@@ -275,12 +269,9 @@ impl App {
             output_area: None,
             visual_to_output: Vec::new(),
             visual_lines_text: Vec::new(),
-            pending_text: String::new(),
-            pending_thought: String::new(),
-            pending_agent: None,
+            stream: StreamState::new(DEFAULT_WRAP_WIDTH),
             live_progress: None,
             notice: None,
-            tail_wrap: WrapCache::new(DEFAULT_WRAP_WIDTH),
             wrap_width: DEFAULT_WRAP_WIDTH,
         }
     }
@@ -335,17 +326,7 @@ impl App {
         self.rewrap_output();
         // Always rebuild the tail cache at the new width so future streaming
         // text wraps correctly, even when there is no pending text right now.
-        let source = if !self.pending_text.is_empty() {
-            self.pending_text.clone()
-        } else if !self.pending_thought.is_empty() {
-            self.pending_thought.clone()
-        } else {
-            String::new()
-        };
-        self.tail_wrap = WrapCache::new(width);
-        if !source.is_empty() {
-            self.tail_wrap.extend(&source);
-        }
+        self.stream.rewrap(width);
     }
 
     /// Current output wrap width (columns).
@@ -454,14 +435,16 @@ impl App {
         match ev {
             RuntimeEvent::TextDelta { text, agent_id, .. } => {
                 self.track_agent(agent_id.as_deref());
-                self.push_text(&text, agent_id.as_deref());
+                let flushed = self.stream.push_text(&text, agent_id.as_deref());
+                self.output.extend(flushed);
                 self.status = AgentStatus::Running {
                     phase: Phase::Streaming,
                 };
             }
             RuntimeEvent::ThoughtDelta { text, agent_id, .. } => {
                 self.track_agent(agent_id.as_deref());
-                self.push_thought(&text, agent_id.as_deref());
+                let flushed = self.stream.push_thought(&text, agent_id.as_deref());
+                self.output.extend(flushed);
                 self.status = AgentStatus::Running {
                     phase: Phase::Thinking,
                 };
@@ -694,46 +677,13 @@ impl App {
         }
     }
 
-    // Streaming text is fragmented (one delta per token); accumulate into a
-    // pending buffer and split into lines only when a structural event or a
-    // style switch forces a flush. This keeps ~1000 deltas/turn from producing
-    // ~1000 output rows.
-
-    fn push_text(&mut self, text: &str, agent: Option<&str>) {
-        if !self.pending_thought.is_empty() {
-            self.flush_thought();
-        }
-        let agent = agent.map(str::to_string);
-        if !self.pending_text.is_empty() && self.pending_agent != agent {
-            self.flush_text();
-        }
-        if self.pending_text.is_empty() {
-            self.pending_agent = agent;
-        }
-        self.pending_text.push_str(text);
-        self.tail_wrap.extend(text);
-    }
-
-    fn push_thought(&mut self, text: &str, agent: Option<&str>) {
-        if !self.pending_text.is_empty() {
-            self.flush_text();
-        }
-        let agent = agent.map(str::to_string);
-        if !self.pending_thought.is_empty() && self.pending_agent != agent {
-            self.flush_thought();
-        }
-        if self.pending_thought.is_empty() {
-            self.pending_agent = agent;
-        }
-        self.pending_thought.push_str(text);
-        self.tail_wrap.extend(text);
-    }
-
+    /// Commit any pending streaming text/thought into the transcript (thought
+    /// first, then prose). Called on structural events and turn end.
     fn flush_pending(&mut self) {
-        let had_text = !self.pending_text.is_empty();
-        let had_thought = !self.pending_thought.is_empty();
-        self.flush_thought();
-        self.flush_text();
+        let had_text = self.stream.has_pending_text();
+        let had_thought = self.stream.has_pending_thought();
+        let flushed = self.stream.flush();
+        self.output.extend(flushed);
         if had_text || had_thought {
             tracing::info!(
                 follow_bottom = self.follow_bottom,
@@ -746,83 +696,16 @@ impl App {
         }
     }
 
-    fn flush_thought(&mut self) {
-        if self.pending_thought.is_empty() {
-            return;
-        }
-        let original = self.pending_thought.clone();
-        self.pending_thought.clear();
-        let prefix = self
-            .pending_agent
-            .take()
-            .map(|p| format!("[{p}] "))
-            .unwrap_or_default();
-        let prefix = prefix.as_str();
-        for (i, line) in self.tail_wrap.lines().iter().enumerate() {
-            let text = if i == 0 && !prefix.is_empty() {
-                format!("{prefix}{line}")
-            } else {
-                line.clone()
-            };
-            self.output.push(OutputLine { spans: None,
-                original: if i == 0 { Some(original.clone()) } else { None },
-                text,
-                kind: LineKind::Thought,
-            });
-        }
-        self.tail_wrap.reset();
-    }
-
-    fn flush_text(&mut self) {
-        if self.pending_text.is_empty() {
-            return;
-        }
-        let original = self.pending_text.clone();
-        self.pending_text.clear();
-        let prefix = self
-            .pending_agent
-            .take()
-            .map(|p| format!("[{p}] "))
-            .unwrap_or_default();
-        // Store the full raw text in ONE OutputLine. The renderer will parse
-        // it through tui-markdown and wrap at display time, so markdown syntax
-        // that spans multiple visual lines (headings, bold, tables) is preserved.
-        let text = if prefix.is_empty() {
-            original.clone()
-        } else {
-            format!("{prefix}{original}")
-        };
-        self.output.push(OutputLine {
-            spans: None,
-            original: Some(original),
-            text,
-            kind: LineKind::Normal,
-        });
-        self.tail_wrap.reset();
-    }
-
-    /// The live streaming tail as incrementally-wrapped lines (see [`WrapCache`]).
+    /// The live streaming tail as incrementally-wrapped lines.
     /// Returns `None` when there is no uncommitted text/thought.
     pub fn streaming_tail_lines(&self) -> Option<(&[String], LineKind)> {
-        if !self.pending_text.is_empty() {
-            Some((self.tail_wrap.lines(), LineKind::Normal))
-        } else if !self.pending_thought.is_empty() {
-            Some((self.tail_wrap.lines(), LineKind::Thought))
-        } else {
-            None
-        }
+        self.stream.tail_lines()
     }
 
     /// Raw pending text for markdown rendering (streaming tail).
     /// Returns `(text, kind)` or `None` when there is nothing pending.
     pub fn streaming_tail_raw(&self) -> Option<(&str, LineKind)> {
-        if !self.pending_text.is_empty() {
-            Some((&self.pending_text, LineKind::Normal))
-        } else if !self.pending_thought.is_empty() {
-            Some((&self.pending_thought, LineKind::Thought))
-        } else {
-            None
-        }
+        self.stream.tail_raw()
     }
 
     /// The assistant's last reply as plain text: every committed `Normal` line
@@ -843,8 +726,8 @@ impl App {
         // Include the uncommitted streaming tail, prefixed like `flush_text` would.
         if let Some((tail, LineKind::Normal)) = self.streaming_tail_lines() {
             let prefix = self
-                .pending_agent
-                .as_ref()
+                .stream
+                .pending_agent()
                 .map(|p| format!("[{p}] "))
                 .unwrap_or_default();
             for (i, line) in tail.iter().enumerate() {
@@ -1623,63 +1506,6 @@ impl App {
     }
 }
 
-/// Incremental hard-wrap accumulator for the streaming tail.
-///
-/// The output pane renders the live (uncommitted) streaming text every frame.
-/// Re-wrapping the whole tail each frame is O(total) per frame — a perf cliff on
-/// long answers (30KB+ of streamed text in debug builds) that manifests as a
-/// frozen scroll. This accumulates the wrapped form as deltas arrive, so
-/// rendering is O(new bytes) per frame instead of O(total). Its output is
-/// byte-for-byte identical to [`wrap`].
-#[derive(Debug)]
-struct WrapCache {
-    width: usize,
-    /// Wrapped lines; the last element is always the current (partial) line.
-    lines: Vec<String>,
-    /// Display columns currently used by the last line.
-    col: usize,
-}
-
-impl WrapCache {
-    fn new(width: usize) -> Self {
-        Self {
-            width: width.max(1),
-            lines: vec![String::new()],
-            col: 0,
-        }
-    }
-
-    fn reset(&mut self) {
-        self.lines.clear();
-        self.lines.push(String::new());
-        self.col = 0;
-    }
-
-    fn extend(&mut self, text: &str) {
-        for c in text.chars() {
-            if c == '\n' {
-                self.lines.push(String::new());
-                self.col = 0;
-                continue;
-            }
-            let cw = c.width().unwrap_or(0);
-            // Break before a char that would overflow the line, unless the line
-            // is still empty (a single over-wide char still gets its own line) —
-            // mirrors `wrap`.
-            let last_empty = self.lines.last().map_or(true, |l| l.is_empty());
-            if self.col + cw > self.width && !last_empty {
-                self.lines.push(String::new());
-                self.col = 0;
-            }
-            self.lines.last_mut().expect("non-empty").push(c);
-            self.col += cw;
-        }
-    }
-
-    fn lines(&self) -> &[String] {
-        &self.lines
-    }
-}
 
 /// The `[start, end)` range of `total` lines to show in a window of `height`
 /// rows, honoring `follow_bottom` and `scroll_offset`.
@@ -1707,46 +1533,6 @@ pub(crate) fn window_range(total: usize, app: &App, height: usize) -> Range<usiz
         "window_range"
     );
     start..(start + height).min(total)
-}
-
-/// Hard-wrap text to `width` display columns: split on existing newlines, then
-/// break over-long runs at char boundaries. Each char's width is its terminal
-/// column count (ASCII = 1, wide CJK = 2, combining marks = 0), so a line of
-/// Chinese wraps at the same visual width as a line of English.
-pub fn wrap(text: &str, width: usize) -> Vec<String> {
-    let width = width.max(1);
-    let mut out = Vec::new();
-    for raw in text.split('\n') {
-        if raw.is_empty() {
-            out.push(String::new());
-            continue;
-        }
-        let mut line = String::new();
-        let mut col = 0usize;
-        for c in raw.chars() {
-            let cw = c.width().unwrap_or(0);
-            // Break before a char that would overflow the line, unless the line
-            // is still empty (a single over-wide char still gets its own line).
-            if col + cw > width && !line.is_empty() {
-                out.push(std::mem::take(&mut line));
-                col = 0;
-            }
-            line.push(c);
-            col += cw;
-        }
-        out.push(line);
-    }
-    out
-}
-
-/// Collapse whitespace and truncate to a single line of at most `max` chars.
-fn one_line(s: &str, max: usize) -> String {
-    let flat = s.split_whitespace().collect::<Vec<_>>().join(" ");
-    if flat.chars().count() <= max {
-        flat
-    } else {
-        flat.chars().take(max).collect::<String>() + "…"
-    }
 }
 
 /// `"[path] "` for a sub-agent, `""` for the root agent — labels a sub-agent's
@@ -2078,60 +1864,6 @@ mod tests {
         assert!(app.output.last().unwrap().text.contains("boom"));
     }
 
-    #[test]
-    fn wrap_preserves_blank_lines_and_hard_wraps() {
-        let lines = wrap("abc\ndefghij", 3);
-        assert_eq!(lines, vec!["abc", "def", "ghi", "j"]);
-        let empty = wrap("", 3);
-        assert_eq!(empty, vec![""]);
-    }
-
-    #[test]
-    fn wrap_multi_line() {
-        let lines = wrap("one\ntwo", 100);
-        assert_eq!(lines, vec!["one", "two"]);
-    }
-
-    #[test]
-    fn wrap_counts_wide_cjk_as_two_columns() {
-        // "你好世界" is 4 wide glyphs = 8 columns; at width 4 it splits in half.
-        assert_eq!(wrap("你好世界", 4), vec!["你好", "世界"]);
-        // A wide glyph straddling the boundary is pushed to the next line.
-        assert_eq!(wrap("a你b", 3), vec!["a你", "b"]);
-        // ASCII is unchanged: width-1 glyphs wrap exactly as before.
-        assert_eq!(wrap("abcdefgh", 3), vec!["abc", "def", "gh"]);
-    }
-
-    #[test]
-    fn wrap_cache_matches_wrap_whole_and_incremental() {
-        let cases = [
-            "abc\ndefghij",
-            "one\ntwo",
-            "你好世界",
-            "a你b",
-            "abcdefgh",
-            "a\n\nb",
-            "trailing newline\n",
-            "",
-            "exactlywidth",
-        ];
-        for &s in &cases {
-            for width in [1usize, 2, 3, 4, 100] {
-                let expected = wrap(s, width);
-                // Whole-string extend.
-                let mut whole = WrapCache::new(width);
-                whole.extend(s);
-                assert_eq!(whole.lines(), expected.as_slice(), "whole-extend {s:?} @{width}");
-                // Char-by-char extend (true incrementality).
-                let mut incr = WrapCache::new(width);
-                for c in s.chars() {
-                    let mut buf = [0u8; 4];
-                    incr.extend(c.encode_utf8(&mut buf));
-                }
-                assert_eq!(incr.lines(), expected.as_slice(), "char-extend {s:?} @{width}");
-            }
-        }
-    }
 
     #[test]
     fn streaming_tail_lines_wraps_long_text() {

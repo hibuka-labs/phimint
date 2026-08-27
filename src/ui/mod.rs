@@ -10,6 +10,8 @@ pub mod input;
 pub mod markdown;
 pub mod mention;
 pub mod render;
+pub mod stream;
+pub mod wrap;
 
 use std::io::{self, Write as _};
 use std::path::PathBuf;
