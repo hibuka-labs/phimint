@@ -334,9 +334,25 @@ async fn agent_loop(
     // Resume turn numbering from any turns already logged for this session.
     let mut turn_number = session_ctx.last_turn_number();
 
+    // Initialize phi-telemetry for per-turn token usage tracking.
+    let mut telemetry = phi_telemetry::init_telemetry(
+        agent.runtime(),
+        session_ctx.session_id.clone(),
+        "phimint".to_string(),
+        agent.config.model.clone(),
+    );
+
     while let Some(cmd) = cmd_rx.recv().await {
         match cmd {
-            Cmd::Quit => break,
+            Cmd::Quit => {
+                // Finalize telemetry and persist session metrics.
+                telemetry.shutdown().await;
+                let metrics = telemetry.session.read().await;
+                let mut metrics = metrics.clone();
+                metrics.finalize(phi_telemetry::SessionOutcome::Completed);
+                let _ = phi_telemetry::save_metrics(&metrics, &session_ctx.session_dir);
+                break;
+            }
             Cmd::Run(input) => {
                 turn_number += 1;
                 let turn_events: std::sync::Arc<std::sync::Mutex<Vec<RuntimeEvent>>> = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -359,6 +375,12 @@ async fn agent_loop(
                 let turn_events_vec = turn_events.lock().unwrap().clone();
                 if let Err(e) = save_turn_log(&session_ctx, turn_number, &turn_events_vec, &turn_input) {
                     tracing::warn!(error = %e, "failed to save turn log");
+                }
+
+                // Save token usage metrics incrementally.
+                {
+                    let metrics = telemetry.session.read().await;
+                    let _ = phi_telemetry::save_metrics(&metrics, &session_ctx.session_dir);
                 }
 
                 match result {

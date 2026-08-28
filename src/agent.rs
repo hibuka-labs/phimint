@@ -101,6 +101,7 @@ pub fn build(
     writes_possible: bool,
     thinking_budget: u64,
     reasoning_effort: &str,
+    model: String,
 ) -> Result<(PhiAgent, SkillResolver)> {
     let llm_for_decompose = llm_client.clone();
     let mut builder = base_agent_builder_with_excludes(
@@ -239,6 +240,7 @@ pub fn build(
         enable_thinking: true,
         thinking_budget: Some(thinking_budget),
         thinking_effort: effort,
+        model,
         ..PhiAgentConfig::default()
     })?;
 

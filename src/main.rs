@@ -103,7 +103,11 @@ async fn main() -> Result<()> {
         api_key,
         model,
         base_url,
-        options: std::collections::HashMap::new(),
+        options: {
+            let mut opts = std::collections::HashMap::new();
+            opts.insert("max_tokens".to_string(), serde_json::json!("24576"));  // 24K output
+            opts
+        },
     };
     let llm_client: Arc<dyn agent_base::llm_trait::LlmProvider> =
         llm_unified::create_provider(&llm_config)
@@ -138,6 +142,7 @@ async fn main() -> Result<()> {
         cli.approval != "deny",
         cli.thinking_budget,
         &cli.reasoning_effort,
+        llm_config.model.clone(),
     )?;
     let session = agent.create_session().await;
 
