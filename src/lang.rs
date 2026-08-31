@@ -5,12 +5,11 @@
 //! fallback):
 //!
 //! - The **fallback** layer is language-agnostic — file listing, ripgrep, running
-//!   any verify command, and showing a raw stderr tail — so *any* language is
+//!   any build command, and showing a raw stderr tail — so *any* language is
 //!   covered at zero cost (the path Codex proves works).
 //! - The **registry** layer adds per-language data on demand: extension →
-//!   language mapping, a default verify command, and manifest file names (what
-//!   the verify gate needs). The error parser is derived from the command string
-//!   in `verify.rs`; tree-sitter grammar and LSP specs join in later phases.
+//!   language mapping and manifest file names (what the verify gate needs).
+//!   Tree-sitter grammar and LSP specs join in later phases.
 //!
 //! Everything here is pure data plus a cheap bounded directory scan — no I/O
 //! beyond [`detect_languages`].
@@ -19,8 +18,8 @@ use std::collections::HashSet;
 use std::path::Path;
 
 /// Optional LSP diagnostics server for a language. `None` means no LSP support —
-/// the `diagnostics` tool then degrades to `verify`. (Java's `jdtls` needs a
-/// project import step, so it's left out for now.)
+/// the `diagnostics` tool degrades gracefully. (Java's `jdtls` needs a project
+/// import step, so it's left out for now.)
 #[derive(Debug, Clone)]
 pub struct LspSpec {
     /// Server argv (binary + args), e.g. `["rust-analyzer"]` or
@@ -33,8 +32,6 @@ pub struct LspSpec {
 pub struct LanguageSpec {
     /// File extensions (no leading dot) mapped to this language.
     pub extensions: &'static [&'static str],
-    /// Default `verify` command when the agent passes none.
-    pub verify_command: &'static str,
     /// Manifest/lock file *names* that count as code (editing them dirties the gate).
     pub manifests: &'static [&'static str],
     /// LSP diagnostics server, if any (used by the `diagnostics` tool).
@@ -42,12 +39,10 @@ pub struct LanguageSpec {
 }
 
 /// The registry, in detection-priority order ([`detect_languages`] returns
-/// matches in this order; the first is the dominant language for the default
-/// verify command).
+/// matches in this order; the first is the dominant language).
 pub static LANGUAGES: &[LanguageSpec] = &[
     LanguageSpec {
         extensions: &["rs"],
-        verify_command: "cargo check",
         manifests: &["Cargo.toml", "Cargo.lock"],
         lsp: Some(LspSpec {
             command: &["rust-analyzer"],
@@ -55,14 +50,12 @@ pub static LANGUAGES: &[LanguageSpec] = &[
     },
     LanguageSpec {
         extensions: &["java"],
-        verify_command: "mvn -q compile",
         manifests: &["pom.xml", "build.gradle", "build.gradle.kts"],
-        // jdtls needs a project import step; deferred (degrade to `verify`).
+        // jdtls needs a project import step; deferred.
         lsp: None,
     },
     LanguageSpec {
         extensions: &["ts", "tsx"],
-        verify_command: "npx tsc --noEmit",
         manifests: &["tsconfig.json"],
         lsp: Some(LspSpec {
             command: &["typescript-language-server", "--stdio"],
@@ -70,7 +63,6 @@ pub static LANGUAGES: &[LanguageSpec] = &[
     },
     LanguageSpec {
         extensions: &["js", "jsx", "mjs", "cjs"],
-        verify_command: "npm run build",
         manifests: &["package.json"],
         lsp: Some(LspSpec {
             command: &["typescript-language-server", "--stdio"],
@@ -78,7 +70,6 @@ pub static LANGUAGES: &[LanguageSpec] = &[
     },
     LanguageSpec {
         extensions: &["c", "h"],
-        verify_command: "make",
         manifests: &["Makefile"],
         lsp: Some(LspSpec {
             command: &["clangd"],
@@ -86,7 +77,6 @@ pub static LANGUAGES: &[LanguageSpec] = &[
     },
     LanguageSpec {
         extensions: &["cpp", "cc", "cxx", "hpp", "hh", "hxx"],
-        verify_command: "make",
         manifests: &["CMakeLists.txt"],
         lsp: Some(LspSpec {
             command: &["clangd"],
@@ -94,7 +84,6 @@ pub static LANGUAGES: &[LanguageSpec] = &[
     },
     LanguageSpec {
         extensions: &["py"],
-        verify_command: "python -m py_compile",
         manifests: &["requirements.txt", "setup.py", "pyproject.toml"],
         lsp: None,
     },
@@ -160,16 +149,6 @@ pub fn detect_languages(root: &Path) -> Vec<&'static LanguageSpec> {
         .collect()
 }
 
-/// Default `verify` command: the dominant detected language's command, or
-/// `cargo check` when nothing is recognized.
-pub fn default_verify_command(root: &Path) -> &'static str {
-    detect_languages(root)
-        .into_iter()
-        .next()
-        .map(|l| l.verify_command)
-        .unwrap_or("cargo check")
-}
-
 /// Bounded recursive scan collecting file extensions into `exts`.
 fn collect_extensions(dir: &Path, exts: &mut HashSet<String>, count: &mut usize) {
     if *count >= MAX_SCAN_FILES {
@@ -206,12 +185,12 @@ mod tests {
 
     #[test]
     fn language_for_path_matches_extensions() {
-        assert_eq!(language_for_path("src/lib.rs").unwrap().verify_command, "cargo check");
-        assert_eq!(language_for_path("Foo.java").unwrap().verify_command, "mvn -q compile");
-        assert_eq!(language_for_path("a.ts").unwrap().verify_command, "npx tsc --noEmit");
-        assert_eq!(language_for_path("b.tsx").unwrap().verify_command, "npx tsc --noEmit");
-        assert_eq!(language_for_path("c.js").unwrap().verify_command, "npm run build");
-        assert_eq!(language_for_path("d.mjs").unwrap().verify_command, "npm run build");
+        assert!(language_for_path("src/lib.rs").is_some());
+        assert!(language_for_path("Foo.java").is_some());
+        assert!(language_for_path("a.ts").is_some());
+        assert!(language_for_path("b.tsx").is_some());
+        assert!(language_for_path("c.js").is_some());
+        assert!(language_for_path("d.mjs").is_some());
         assert!(language_for_path("e.cpp").unwrap().extensions.contains(&"cpp"));
         assert!(language_for_path("f.hpp").unwrap().extensions.contains(&"hpp"));
         assert!(language_for_path("g.h").unwrap().extensions.contains(&"h"));
@@ -256,15 +235,6 @@ mod tests {
         assert!(langs[0].extensions.contains(&"java"));
 
         let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn default_verify_command_falls_back_to_cargo() {
-        let empty = std::env::temp_dir().join("phimint_lang_empty_test");
-        let _ = std::fs::remove_dir_all(&empty);
-        std::fs::create_dir_all(&empty).unwrap();
-        assert_eq!(default_verify_command(&empty), "cargo check");
-        let _ = std::fs::remove_dir_all(&empty);
     }
 
     #[test]

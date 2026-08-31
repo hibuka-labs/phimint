@@ -1,17 +1,15 @@
-//! phimint application tools: content search, repository map, and verify.
+//! phimint application tools: content search, repository map, and merge.
 //!
 //! `search_content` and `repo_map` are "pull-based" context providers (design
 //! §3): rather than pushing the whole repository into the LLM, the agent asks
-//! for a structural map or locates symbols by content on demand. `verify` is
-//! the verification-loop tool (design §6): run a build/test command and get a
-//! terse error summary back.
+//! for a structural map or locates symbols by content on demand. `merge`
+//! reconciles parallel sub-agent work and verifies the result (design §7).
 
 pub mod decompose;
 pub mod diagnostics;
 pub mod merge;
 pub mod repomap;
 pub mod ripgrep;
-pub mod verify;
 pub mod workspace;
 
 use std::path::Path;

@@ -87,7 +87,7 @@ When done, briefly report what you changed."#;
 /// Build a phimint agent bound to `workspace_root`.
 ///
 /// `base_agent_builder` already registers the file tools (read/write/edit/list).
-/// We add the shell, verify, search, and repo-map tools ourselves — none of them
+/// We add the shell, search, and repo-map tools ourselves — none of them
 /// are part of `base_agent_builder` (the phi CLI registers shell manually too).
 ///
 /// Returns `(PhiAgent, SkillResolver)` — the resolver powers the `/skill` slash
@@ -136,7 +136,7 @@ pub fn build(
     // LSP diagnostics (multi-server). `LspManager` lazily starts one server per
     // language (rust-analyzer / typescript-language-server / clangd) and shares
     // them with the `diagnostics` pull tool, which reads each `publishDiagnostics`
-    // cache. A server that can't be started degrades gracefully to `verify`.
+    // cache. A server that can't be started degrades gracefully to shell commands.
     builder = builder.register_tool(DiagnosticsTool::new(
         Arc::new(LspManager::new(workspace_root.clone())),
         workspace_root.clone(),
