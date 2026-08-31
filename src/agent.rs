@@ -202,13 +202,12 @@ pub fn build(
     };
     builder = builder.guard(DefaultGuard::new(guard_config));
 
-    // Max turns nudge: soft intervention before hitting the hard limit.
-    // Injects a nudge message when approaching max_turns so the LLM can wrap up gracefully.
+    // Max turns nudge: firm message on the last 3 turns before the hard limit.
     builder = builder.middleware(MaxTurnsNudgeMiddleware::new(MaxTurnsNudgeConfig {
-        threshold: 3, // Nudge on last 3 turns
-        message: "You are approaching the maximum number of turns. \
-            Please wrap up your current work and provide a final answer. \
-            Summarize what you've accomplished and any remaining tasks."
+        threshold: 3,
+        message: "You have nearly exhausted your turn budget. \
+            Stop all tool calls immediately and provide your final answer now. \
+            Summarize what was accomplished and any remaining tasks."
             .to_string(),
     }));
 

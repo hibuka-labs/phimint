@@ -138,7 +138,7 @@ pub fn format_plan(decomp: &Decomposition) -> String {
                 out.push_str(&format!("    files: {}\n", slice.files.join(", ")));
                 out.push_str(&format!("    task: {}\n", slice.task.trim()));
             }
-            out.push_str("\nSpawn one READ-ONLY sub-agent per slice (spawn_agent task_name=<name>, message = \"Context: <context>\\nInvestigate and report: <task>\"), wait for each, then implement all the changes yourself with edit_file/write_file and call `verify`.");
+            out.push_str("\nSpawn one READ-ONLY sub-agent per slice (spawn_agent name=<name>, preset=\"researcher\", task = \"Context: <context>\\nInvestigate and report: <task>\"), wait for each, then implement all the changes yourself with edit_file/write_file and call `verify`.");
             out
         }
     }
