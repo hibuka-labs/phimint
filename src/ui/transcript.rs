@@ -75,6 +75,7 @@ impl Transcript {
         for (i, line) in wrap(text, self.wrap_width).into_iter().enumerate() {
             self.output.push(OutputLine { spans: None,
                 original: if i == 0 { Some(text.to_string()) } else { None },
+                detail: None,
                 text: line,
                 kind: LineKind::System,
             });
@@ -93,6 +94,7 @@ impl Transcript {
                 kind: LineKind::System,
                 spans: Some(spans),
                 original: None,
+            detail: None,
             });
         }
     }
@@ -112,6 +114,7 @@ impl Transcript {
             };
             self.output.push(OutputLine { spans: None,
                 original: if i == 0 { Some(text.to_string()) } else { None },
+                detail: None,
                 text: display,
                 kind: LineKind::User,
             });
@@ -175,6 +178,7 @@ impl Transcript {
                         kind,
                         spans: None,
                         original: if j == 0 { Some(original.clone()) } else { None },
+                        detail: None,
                     });
                 }
             } else {
@@ -204,6 +208,7 @@ mod tests {
         OutputLine {
             spans: None,
             original: None,
+            detail: None,
             text: text.to_string(),
             kind: LineKind::Plan,
         }
@@ -274,6 +279,7 @@ mod tests {
         t.push(OutputLine {
             spans: None,
             original: Some("prose with markdown **bold**".to_string()),
+            detail: None,
             text: "prose with markdown **bold**".to_string(),
             kind: LineKind::Normal,
         });

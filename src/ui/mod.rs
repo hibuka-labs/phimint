@@ -7,6 +7,7 @@
 
 pub mod app;
 pub mod completer;
+pub mod diff;
 pub mod frame_log;
 pub mod handlers;
 pub mod input;

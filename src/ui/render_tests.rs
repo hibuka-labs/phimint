@@ -12,15 +12,18 @@ fn populated_app() -> App {
     app.push_system("phimint — welcome");
     for i in 0..60 {
         app.transcript.push(OutputLine { spans: None, original: None,
+                detail: None,
             text: format!("streamed line {i}"),
             kind: LineKind::Normal,
         });
     }
     app.transcript.push(OutputLine { spans: None, original: None,
+                detail: None,
         text: "⏺ [sub/1] read_file {\"path\":\"src/lib.rs\"}".into(),
         kind: LineKind::Tool,
     });
     app.transcript.push(OutputLine { spans: None, original: None,
+                detail: None,
         text: "  ⛔ execute_command denied".into(),
         kind: LineKind::Error,
     });
@@ -55,6 +58,7 @@ fn draw_empty_and_scrolled_states() {
     let mut app = App::new();
     for i in 0..100 {
         app.transcript.push(OutputLine { spans: None, original: None,
+                detail: None,
             text: format!("long line {i}"),
             kind: LineKind::Normal,
         });
@@ -121,7 +125,7 @@ fn snapshot_text_captures_layout_and_popup() {
 fn window_range_shifts_by_scroll_offset() {
     let mut app = App::new();
     for i in 0..100 {
-        app.transcript.push(OutputLine { spans: None, original: None, text: format!("line {i}"), kind: LineKind::Normal });
+        app.transcript.push(OutputLine { spans: None, original: None, text: format!("line {i}"), kind: LineKind::Normal, detail: None });
     }
     assert_eq!(app.viewport.window_range(100, 30), 70..100);
     app.viewport.follow_bottom = false;
@@ -184,6 +188,7 @@ fn draw_with_selection_and_context_menu_does_not_panic() {
     let mut app = App::new();
     for i in 0..20 {
         app.transcript.push(OutputLine { spans: None, original: None,
+                detail: None,
             text: format!("line {i}"),
             kind: LineKind::Normal,
         });
@@ -269,4 +274,29 @@ fn banner_spans_render_palette_on_top_of_system_style() {
     let brand = cell(0, 6).style();
     assert_eq!(brand.fg, Some(Color::Rgb(0xff, 0xb0, 0x66)));
     assert!(brand.add_modifier.contains(Modifier::BOLD));
+}
+
+#[test]
+fn snapshot_shows_diff_block() {
+    let mut app = App::new();
+    let args = serde_json::json!({
+        "path": "src/main.rs",
+        "edits": [
+            { "old_text": "fn main() {\n    println!(\"hello\");\n}", "new_text": "fn main() {\n    println!(\"world\");\n}" }
+        ]
+    });
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallStarted {
+        session_id: SessionId::new(1),
+        tool_name: "edit_file".to_string(),
+        args_json: args.to_string(),
+        agent_id: None,
+        trace_id: None,
+    }));
+
+    let text = snapshot_text(&mut app, 100, 40);
+    assert!(text.contains("┌─ src/main.rs"), "diff header missing:\n{text}");
+    assert!(text.contains("@@"), "hunk header missing:\n{text}");
+    assert!(text.contains("println"), "diff content missing:\n{text}");
+    // Verify line numbers are present (hunk header has "1,3")
+    assert!(text.contains("-1,3"), "line numbers missing:\n{text}");
 }

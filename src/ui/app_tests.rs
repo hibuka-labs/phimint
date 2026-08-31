@@ -1,7 +1,8 @@
 //! Tests for App state machine and event handling.
 
 use super::*;
-use agent_base::{PlanItem, PlanStepStatus};
+use agent_base::{PlanItem, PlanStepStatus, UserEvent};
+use crossterm::event::{MouseButton, MouseEventKind};
 use phi_agent::SessionId;
 
 fn text(s: &str) -> RuntimeEvent {
@@ -40,6 +41,7 @@ fn tool_finished(name: &str, denied: bool) -> RuntimeEvent {
         agent_id: None,
         trace_id: None,
         denied,
+        details: None,
     }
 }
 
@@ -78,6 +80,7 @@ fn child_tool_finished(agent: &str, name: &str) -> RuntimeEvent {
         agent_id: Some(agent.to_string()),
         trace_id: None,
         denied: false,
+        details: None,
     }
 }
 
@@ -367,7 +370,7 @@ fn streaming_tail_flips_to_text_after_thought() {
 fn scroll_up_steps_from_bottom_not_noop() {
     let mut app = App::new();
     for i in 0..100 {
-        app.transcript.push(OutputLine { spans: None, original: None, text: format!("line {i}"), kind: LineKind::Normal });
+        app.transcript.push(OutputLine { spans: None, original: None, text: format!("line {i}"), kind: LineKind::Normal, detail: None });
     }
     app.scroll_up();
     assert!(!app.viewport.follow_bottom);
@@ -378,7 +381,7 @@ fn scroll_up_steps_from_bottom_not_noop() {
 fn scroll_down_reenters_follow_bottom() {
     let mut app = App::new();
     for i in 0..100 {
-        app.transcript.push(OutputLine { spans: None, original: None, text: format!("line {i}"), kind: LineKind::Normal });
+        app.transcript.push(OutputLine { spans: None, original: None, text: format!("line {i}"), kind: LineKind::Normal, detail: None });
     }
     app.scroll_up();
     app.scroll_up();
@@ -682,7 +685,7 @@ fn plan_resets_across_turns() {
 fn mouse_drag_selects_line_range() {
     let mut app = App::new();
     for i in 0..10 {
-        app.transcript.push(OutputLine { spans: None, original: None, text: format!("line {i}"), kind: LineKind::Normal });
+        app.transcript.push(OutputLine { spans: None, original: None, text: format!("line {i}"), kind: LineKind::Normal, detail: None });
     }
     app.output_area = Some((0, 0, 100, 10));
     app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 2, 100, 10);
@@ -695,7 +698,7 @@ fn mouse_drag_selects_line_range() {
 fn mouse_drag_up_normalizes_selection() {
     let mut app = App::new();
     for i in 0..10 {
-        app.transcript.push(OutputLine { spans: None, original: None, text: format!("line {i}"), kind: LineKind::Normal });
+        app.transcript.push(OutputLine { spans: None, original: None, text: format!("line {i}"), kind: LineKind::Normal, detail: None });
     }
     app.output_area = Some((0, 0, 100, 10));
     app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 5, 100, 10);
@@ -707,7 +710,7 @@ fn mouse_drag_up_normalizes_selection() {
 #[test]
 fn click_outside_output_clears_selection() {
     let mut app = App::new();
-    app.transcript.push(OutputLine { spans: None, original: None, text: "x".into(), kind: LineKind::Normal });
+    app.transcript.push(OutputLine { spans: None, original: None, text: "x".into(), kind: LineKind::Normal, detail: None });
     app.output_area = Some((0, 0, 10, 5));
     app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 0, 10, 5);
     assert!(app.selection_state.selection.is_some());
@@ -718,7 +721,7 @@ fn click_outside_output_clears_selection() {
 #[test]
 fn selection_text_clamps_stale_indices() {
     let mut app = App::new();
-    app.transcript.push(OutputLine { spans: None, original: None, text: "a".into(), kind: LineKind::Normal });
+    app.transcript.push(OutputLine { spans: None, original: None, text: "a".into(), kind: LineKind::Normal, detail: None });
     app.selection_state.selection = Some(Selection { anchor: 0, head: 5 });
     assert_eq!(app.selection_text(), "a");
 }
@@ -763,7 +766,7 @@ fn ctrl_c_copies_selection_then_double_press_quits() {
 #[test]
 fn right_click_opens_menu_and_enter_copies() {
     let mut app = App::new();
-    app.transcript.push(OutputLine { spans: None, original: None, text: "x".into(), kind: LineKind::Normal });
+    app.transcript.push(OutputLine { spans: None, original: None, text: "x".into(), kind: LineKind::Normal, detail: None });
     app.output_area = Some((0, 0, 10, 10));
     app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 0, 20, 20);
     app.handle_mouse(MouseEventKind::Down(MouseButton::Right), 3, 4, 20, 20);
@@ -778,7 +781,7 @@ fn right_click_opens_menu_and_enter_copies() {
 #[test]
 fn context_menu_arrows_move_highlight_and_esc_closes() {
     let mut app = App::new();
-    app.transcript.push(OutputLine { spans: None, original: None, text: "x".into(), kind: LineKind::Normal });
+    app.transcript.push(OutputLine { spans: None, original: None, text: "x".into(), kind: LineKind::Normal, detail: None });
     app.output_area = Some((0, 0, 10, 10));
     app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 0, 20, 20);
     app.handle_mouse(MouseEventKind::Down(MouseButton::Right), 0, 0, 20, 20);
@@ -792,7 +795,7 @@ fn context_menu_arrows_move_highlight_and_esc_closes() {
 #[test]
 fn clicking_menu_copy_item_copies_and_closes() {
     let mut app = App::new();
-    app.transcript.push(OutputLine { spans: None, original: None, text: "x".into(), kind: LineKind::Normal });
+    app.transcript.push(OutputLine { spans: None, original: None, text: "x".into(), kind: LineKind::Normal, detail: None });
     app.output_area = Some((0, 0, 10, 10));
     app.selection_state.selection = Some(Selection { anchor: 0, head: 0 });
     // Open the menu at (0,0): 12×4 box, items at rows y+1 ("拷贝") and y+2
@@ -814,7 +817,7 @@ fn clicking_menu_copy_item_copies_and_closes() {
 #[test]
 fn clicking_menu_cancel_item_closes_without_copy() {
     let mut app = App::new();
-    app.transcript.push(OutputLine { spans: None, original: None, text: "x".into(), kind: LineKind::Normal });
+    app.transcript.push(OutputLine { spans: None, original: None, text: "x".into(), kind: LineKind::Normal, detail: None });
     app.output_area = Some((0, 0, 10, 10));
     app.selection_state.selection = Some(Selection { anchor: 0, head: 0 });
     app.handle_mouse(MouseEventKind::Down(MouseButton::Right), 0, 0, 20, 20);
@@ -831,7 +834,7 @@ fn clicking_menu_cancel_item_closes_without_copy() {
 #[test]
 fn clicking_outside_menu_closes_it_and_restarts_selection() {
     let mut app = App::new();
-    app.transcript.push(OutputLine { spans: None, original: None, text: "x".into(), kind: LineKind::Normal });
+    app.transcript.push(OutputLine { spans: None, original: None, text: "x".into(), kind: LineKind::Normal, detail: None });
     app.output_area = Some((0, 0, 10, 10));
     app.selection_state.selection = Some(Selection { anchor: 0, head: 0 });
     app.handle_mouse(MouseEventKind::Down(MouseButton::Right), 0, 0, 20, 20);
@@ -1078,4 +1081,96 @@ fn slash_arrow_keys_navigate() {
 
     app.handle_key(KeyCode::Up, KeyModifiers::NONE);
     assert_eq!(app.slash().unwrap().selected_index(), 1);
+}
+
+// ── Diff feature tests ──
+
+#[test]
+fn edit_file_produces_diff_detail() {
+    let mut app = App::new();
+    let args = serde_json::json!({
+        "path": "src/main.rs",
+        "edits": [
+            { "old_text": "fn main() {\n    println!(\"hello\");\n}", "new_text": "fn main() {\n    println!(\"world\");\n}" }
+        ]
+    });
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallStarted {
+        session_id: SessionId::new(1),
+        tool_name: "edit_file".to_string(),
+        args_json: args.to_string(),
+        agent_id: None,
+        trace_id: None,
+    }));
+
+    // The tool line should have a Diff detail attached
+    let tool_line = app.transcript.output.last().expect("tool line present");
+    assert_eq!(tool_line.kind, LineKind::Tool);
+    match &tool_line.detail {
+        Some(ToolDetail::Diff { path, hunks }) => {
+            assert_eq!(path, "src/main.rs");
+            assert!(!hunks.is_empty(), "should have diff hunks");
+            // Should have a Del line and an Add line
+            let all_lines: Vec<_> = hunks.iter().flat_map(|h| h.lines.iter()).collect();
+            assert!(all_lines.iter().any(|l| l.kind == DiffLineKind::Del));
+            assert!(all_lines.iter().any(|l| l.kind == DiffLineKind::Add));
+        }
+        other => panic!("expected ToolDetail::Diff, got {other:?}"),
+    }
+}
+
+#[test]
+fn write_file_produces_all_add_diff() {
+    let mut app = App::new();
+    let args = serde_json::json!({
+        "path": "src/new.rs",
+        "content": "fn hello() {\n    println!(\"hi\");\n}\n"
+    });
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallStarted {
+        session_id: SessionId::new(1),
+        tool_name: "write_file".to_string(),
+        args_json: args.to_string(),
+        agent_id: None,
+        trace_id: None,
+    }));
+
+    let tool_line = app.transcript.output.last().expect("tool line present");
+    match &tool_line.detail {
+        Some(ToolDetail::Diff { path, hunks }) => {
+            assert_eq!(path, "src/new.rs");
+            let all_lines: Vec<_> = hunks.iter().flat_map(|h| h.lines.iter()).collect();
+            assert!(all_lines.iter().all(|l| l.kind == DiffLineKind::Add),
+                "write_file should produce all-Add lines");
+        }
+        other => panic!("expected ToolDetail::Diff, got {other:?}"),
+    }
+}
+
+#[test]
+fn non_file_tool_has_no_detail() {
+    let mut app = App::new();
+    app.handle_event(TuiEvent::Runtime(tool_started("read_file")));
+    let tool_line = app.transcript.output.last().expect("tool line present");
+    assert!(tool_line.detail.is_none(), "non-file tools should have no detail");
+}
+
+#[test]
+fn edit_file_diff_lines_appear_in_transcript() {
+    let mut app = App::new();
+    let args = serde_json::json!({
+        "path": "src/lib.rs",
+        "edits": [
+            { "old_text": "old_fn()", "new_text": "new_fn()" }
+        ]
+    });
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallStarted {
+        session_id: SessionId::new(1),
+        tool_name: "edit_file".to_string(),
+        args_json: args.to_string(),
+        agent_id: None,
+        trace_id: None,
+    }));
+
+    // The tool line itself should be present
+    let texts: Vec<&str> = app.transcript.output.iter().map(|l| l.text.as_str()).collect();
+    assert!(texts[0].contains("edit_file"));
 }

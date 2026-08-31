@@ -5,5 +5,6 @@
 //! - `keyboard`: handles keyboard input events
 //! - `mouse`: handles mouse events (future)
 
-pub mod runtime;
 pub mod keyboard;
+pub mod mouse;
+pub mod runtime;

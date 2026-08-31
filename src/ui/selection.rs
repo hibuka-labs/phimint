@@ -209,6 +209,7 @@ mod tests {
             .map(|i| OutputLine {
                 spans: None,
                 original: None,
+                detail: None,
                 text: format!("line {i}"),
                 kind: LineKind::Normal,
             })

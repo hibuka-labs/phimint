@@ -153,6 +153,7 @@ impl StreamState {
             out.push(OutputLine {
                 spans: None,
                 original: if i == 0 { Some(original.clone()) } else { None },
+                detail: None,
                 text,
                 kind: LineKind::Thought,
             });
@@ -184,6 +185,7 @@ impl StreamState {
         vec![OutputLine {
             spans: None,
             original: Some(original),
+            detail: None,
             text,
             kind: LineKind::Normal,
         }]

@@ -118,6 +118,106 @@ fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
         let kind = line.kind;
         let spans = line.spans.as_deref().unwrap_or(&[]);
 
+        // Diff detail: render the invocation line, then expand the diff block.
+        if let Some(ref detail) = line.detail {
+            match detail {
+                crate::ui::app::ToolDetail::Diff { path, hunks } => {
+                    // Invocation line (same as non-diff tool lines)
+                    let base = style_for(kind);
+                    let mut styled = span_line(&line.text, spans, base, app.scheme());
+                    if app.is_selected(vis_idx) {
+                        apply_bg(&mut styled, Color::DarkGray);
+                    }
+                    visual_lines_text.push(line_plain_text(&styled));
+                    visual_to_output.push(i);
+                    lines.push(styled);
+                    vis_idx += 1;
+
+                    // Diff header: "┌─ path"
+                    let header_text = format!("┌─ {path}");
+                    let mut header_line = Line::from(Span::styled(
+                        header_text.clone(),
+                        Style::default().fg(Color::DarkGray),
+                    ));
+                    if app.is_selected(vis_idx) {
+                        apply_bg(&mut header_line, Color::DarkGray);
+                    }
+                    visual_lines_text.push(header_text);
+                    visual_to_output.push(i);
+                    lines.push(header_line);
+                    vis_idx += 1;
+
+                    // Hunk lines
+                    let wrap_w = app.transcript.wrap_width().saturating_sub(8).max(20);
+                    // Compute max line number width for alignment
+                    let max_line = hunks.iter()
+                        .flat_map(|h| h.lines.iter())
+                        .flat_map(|l| [l.old_line, l.new_line])
+                        .flatten()
+                        .max()
+                        .unwrap_or(1);
+                    let num_w = format!("{max_line}").len();
+
+                    for hunk in hunks {
+                        // Hunk header: "@@ -a,b +c,d @@"
+                        let hunk_text = format!("│ {:>num_w$} {}", "", hunk.header);
+                        let mut hunk_line = Line::from(Span::styled(
+                            hunk_text.clone(),
+                            Style::default().fg(Color::Cyan),
+                        ));
+                        if app.is_selected(vis_idx) {
+                            apply_bg(&mut hunk_line, Color::DarkGray);
+                        }
+                        visual_lines_text.push(hunk_text);
+                        visual_to_output.push(i);
+                        lines.push(hunk_line);
+                        vis_idx += 1;
+
+                        for dl in &hunk.lines {
+                            let (sign, color) = match dl.kind {
+                                crate::ui::app::DiffLineKind::Add => ("+", Color::Green),
+                                crate::ui::app::DiffLineKind::Del => ("-", Color::Red),
+                                crate::ui::app::DiffLineKind::Context => (" ", Color::DarkGray),
+                            };
+                            // Line number: prefer old_line for context/del, new_line for add
+                            let line_num = match dl.kind {
+                                crate::ui::app::DiffLineKind::Add => dl.new_line,
+                                crate::ui::app::DiffLineKind::Del => dl.old_line,
+                                crate::ui::app::DiffLineKind::Context => dl.old_line,
+                            };
+                            let num_str = match line_num {
+                                Some(n) => format!("{n:>num_w$}"),
+                                None => " ".repeat(num_w),
+                            };
+                            // Wrap long lines, indent continuations
+                            let full = format!("│ {num_str} {sign} {}", dl.text);
+                            let cont_prefix = format!("│ {} {sign} ", " ".repeat(num_w));
+                            let wrapped = wrap(&full, wrap_w + 8);
+                            for (wi, wline) in wrapped.iter().enumerate() {
+                                let display = if wi == 0 {
+                                    wline.clone()
+                                } else {
+                                    format!("{cont_prefix}{wline}")
+                                };
+                                let mut styled = Line::from(Span::styled(
+                                    display.clone(),
+                                    Style::default().fg(color),
+                                ));
+                                if app.is_selected(vis_idx) {
+                                    apply_bg(&mut styled, Color::DarkGray);
+                                }
+                                visual_lines_text.push(display);
+                                visual_to_output.push(i);
+                                lines.push(styled);
+                                vis_idx += 1;
+                            }
+                        }
+                    }
+                    continue; // skip the normal rendering path below
+                }
+            }
+        }
+
         if kind == LineKind::Normal && spans.is_empty() {
             let md_lines = render_markdown(&line.text);
             for mut md_line in md_lines {
