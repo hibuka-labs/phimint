@@ -15,6 +15,7 @@ phimint 在终端里做一款「产品优先」的编码工具：改完先验、
 - **多 agent 大任务分解**：`decompose`（判串行/并行）→ 只读子 agent 扇出调查 → `merge`（冲突检测 + 合并验证）。
 - **三态审批**：`auto`（全自动）/ `ask`（写操作逐条弹窗）/ `deny`（只读）。
 - **多语言**：注册制 `LanguageAdapter`，Rust / Java / TypeScript / JavaScript / C / C++ 开箱即用，加一门语言只需补配置。
+- **优雅架构**：高内聚低耦合的 UI 模块设计，统一泛型补全器、事件处理分离、模块化测试文件，易于扩展和维护。
 
 ## 快速开始
 
@@ -128,9 +129,31 @@ phimint/
 │   ├── lang.rs        # 语言注册表（多语言边界）
 │   ├── lsp.rs         # 手写 LSP 客户端（diagnostics）
 │   ├── inline.rs      # 行内聊天（--inline）
-│   ├── ui/            # ratatui TUI（app 状态机 / render 画帧 / input 多行输入）
-│   ├── tools/         # 应用工具：repomap / ripgrep / verify / decompose / merge /
-│   │                  #           diagnostics / workspace
+│   ├── ui/            # ratatui TUI 模块
+│   │   ├── app.rs           # App 核心状态机（事件驱动）
+│   │   ├── app_tests.rs     # App 单元测试（独立文件）
+│   │   ├── render.rs        # ratatui 帧渲染
+│   │   ├── render_tests.rs  # 渲染单元测试（独立文件）
+│   │   ├── completer.rs     # 统一补全系统（InlineCompleter<T> 泛型）
+│   │   ├── handlers/        # 事件处理模块（高内聚低耦合）
+│   │   │   ├── mod.rs       # handlers 模块声明
+│   │   │   ├── runtime.rs   # 运行时事件处理（RuntimeEvent）
+│   │   │   └── keyboard.rs  # 键盘事件处理（KeyCode/Mouse）
+│   │   ├── markdown.rs      # Markdown 渲染（tui-markdown）
+│   │   ├── input.rs         # 多行输入组件（Composer）
+│   │   ├── stream.rs        # 流式状态（未提交的文本/思考）
+│   │   ├── transcript.rs    # 输出缓冲（已提交的行）
+│   │   ├── viewport.rs      # 滚动视口（offset + follow-bottom）
+│   │   ├── selection.rs     # 鼠标选择 + 右键菜单状态
+│   │   ├── wrap.rs          # 文本换行逻辑
+│   │   ├── frame_log.rs     # 帧翻书日志
+│   │   ├── picker.rs        # 通用 picker 抽象（提及/技能选择器）
+│   │   ├── mention.rs       # @ 文件路径补全（Phase 10）
+│   │   └── mod.rs           # ui 模块声明
+│   ├── tools/         # 应用工具
+│   │   ├── decompose.rs     # 大任务分解（串行/并行策略）
+│   │   ├── diagnostics.rs   # LSP 诊断工具
+│   │   └── workspace.rs     # 工作区操作
 │   └── bin/replay.rs  # 离线回放 inline.raw
 ├── docs/              # 设计文档与分阶段计划/记录
 └── Cargo.toml
@@ -140,9 +163,20 @@ phimint/
 
 ```bash
 cargo build            # 编译
-cargo test             # 单测（单元测试集中在各模块内）
+cargo test             # 运行所有测试（单元测试在 *_tests.rs 独立文件中）
 cargo clippy           # lint
 ```
+
+### 测试组织
+
+项目采用 **模块分离测试** 模式（Rust 社区最佳实践）：
+
+- **业务代码**：`app.rs`、`render.rs` 等只包含业务逻辑
+- **测试代码**：`app_tests.rs`、`render_tests.rs` 等独立测试文件
+- **访问权限**：测试仍能访问 `pub(crate)` 字段和方法（测试在 crate 内部）
+- **编译隔离**：`#[cfg(test)]` 确保测试代码不会进入生产构建
+
+这种结构让源文件更聚焦、测试更易维护，同时保持 Rust 的类型安全和访问控制。
 
 依赖的 sibling crates 用 `path` 引用（`Cargo.toml`），任一 crate 里 `cargo test` 直接吃本地源码；发布时用 `version` 字段走 crates.io。
 

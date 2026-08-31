@@ -17,8 +17,7 @@ use phi_agent::{ApprovalDecision, ApprovalRequest, RuntimeEvent};
 use crate::approval::ApprovalItem;
 use crate::banner::{BannerRow, ColorScheme, SpanSpec};
 use crate::ui::input::Composer;
-use crate::ui::mention::{self, Entry};
-use crate::ui::picker::{Picker, PickerKey, picker_key};
+use crate::ui::completer::{MentionCompleter, SlashCompleter, CompleterAction};
 use crate::ui::selection::{MenuClick, SelectionState};
 use crate::ui::stream::StreamState;
 use crate::ui::transcript::{Transcript, DEFAULT_WRAP_WIDTH};
@@ -90,29 +89,6 @@ pub struct OutputLine {
     pub original: Option<String>,
 }
 
-/// `@` mention picker state: the typed prefix (also echoed into the composer),
-/// the directory it resolves to, the listed entries (synthetic `.` first), and
-/// the highlighted index.
-#[derive(Debug, Clone)]
-pub struct Mention {
-    /// Shared picker state: typed prefix (after `@`), listed entries
-    /// (`entries[0]` is always the synthetic "use what I typed"), and the
-    /// highlighted index.
-    pub picker: Picker<Entry>,
-    /// Directory the prefix resolves to (what `entries` lists).
-    pub dir: PathBuf,
-}
-
-/// `/` skill picker state: shown when the user types `/` at the start of an
-/// empty composer. Filters the loaded skill names by prefix and lets the user
-/// select one with arrow keys + Enter.
-#[derive(Debug, Clone)]
-pub struct SlashPicker {
-    /// Shared picker state: typed prefix (after `/`), filtered entries
-    /// (name, description), and the highlighted index.
-    pub picker: Picker<(String, String)>,
-}
-
 /// A user action surfaced from key handling, consumed by the TUI loop.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Action {
@@ -155,13 +131,13 @@ pub struct App {
     pub selection_state: SelectionState,
     /// Timestamp of the last "press Ctrl+C again to exit" hint. If set and
     /// within `QUIT_HINT_TIMEOUT`, a second Ctrl+C actually quits.
-    quit_hint_at: Option<Instant>,
+    pub(crate) quit_hint_at: Option<Instant>,
     /// `@` mention picker, open while the user is choosing a path.
-    mention: Option<Mention>,
+    pub(crate) mention: Option<MentionCompleter>,
     /// `/` skill picker, open while the user is choosing a skill.
-    slash: Option<SlashPicker>,
+    pub(crate) slash: Option<SlashCompleter>,
     /// Loaded skill summaries (name, description) from `SkillResolver`, powering the `/` picker.
-    skill_summaries: Vec<(String, String)>,
+    pub(crate) skill_summaries: Vec<(String, String)>,
     /// The workspace root — in-workspace paths render relative to it.
     pub workspace_root: PathBuf,
     /// The terminal color scheme (startup probe result, see main.rs). Banner
@@ -180,12 +156,12 @@ pub struct App {
     /// the visually-selected lines rather than the full raw `output` block.
     pub(crate) visual_lines_text: Vec<String>,
     /// Live streaming tail state (pending text/thought + incremental wrap cache).
-    stream: StreamState,
+    pub(crate) stream: StreamState,
     /// Latest live tool-progress line (e.g. streaming `execute_command` output),
     /// shown in the status bar and cleared when the tool call finishes.
-    live_progress: Option<String>,
+    pub(crate) live_progress: Option<String>,
     /// Transient status-bar notice (e.g. "📋 copied …"), cleared on the next key.
-    notice: Option<String>,
+    pub(crate) notice: Option<String>,
 }
 
 impl Default for App {
@@ -303,230 +279,11 @@ impl App {
         }
     }
 
-    fn handle_runtime(&mut self, ev: RuntimeEvent) {
-        match ev {
-            RuntimeEvent::TextDelta { text, agent_id, .. } => {
-                self.track_agent(agent_id.as_deref());
-                let flushed = self.stream.push_text(&text, agent_id.as_deref());
-                self.transcript.extend(flushed);
-                self.status = AgentStatus::Running {
-                    phase: Phase::Streaming,
-                };
-            }
-            RuntimeEvent::ThoughtDelta { text, agent_id, .. } => {
-                self.track_agent(agent_id.as_deref());
-                let flushed = self.stream.push_thought(&text, agent_id.as_deref());
-                self.transcript.extend(flushed);
-                self.status = AgentStatus::Running {
-                    phase: Phase::Thinking,
-                };
-            }
-            RuntimeEvent::ToolCallStarted {
-                tool_name,
-                args_json,
-                agent_id,
-                ..
-            } => {
-                self.flush_pending();
-                // Fresh tool call → drop any progress from the previous one.
-                self.live_progress = None;
-                // Tools render inline in the transcript (Claude Code style): an
-                // invocation line now, a result line on `ToolCallFinished`.
-                self.track_agent(agent_id.as_deref());
-                let prefix = agent_prefix(agent_id.as_deref());
-                // `update_plan` renders as a plan block (see `PlanUpdated`), so both
-                // its invocation line (raw JSON args) and result line are noise —
-                // suppress them. Its status transition is still applied.
-                if tool_name != "update_plan" {
-                    let max_cols = self.transcript.wrap_width().saturating_sub(20).max(40);
-                    let args = one_line(&args_json, max_cols);
-                    let text = if args.is_empty() {
-                        format!("⏺ {prefix}{tool_name}")
-                    } else {
-                        format!("⏺ {prefix}{tool_name} {args}")
-                    };
-                    self.transcript.push(OutputLine { spans: None, original: None,
-                        text,
-                        kind: LineKind::Tool,
-                    });
-                }
-                self.status = AgentStatus::Running {
-                    phase: Phase::ToolCall { tool: tool_name },
-                };
-            }
-            RuntimeEvent::ToolCallFinished {
-                tool_name,
-                summary,
-                denied,
-                agent_id,
-                ..
-            } => {
-                self.track_agent(agent_id.as_deref());
-                let prefix = agent_prefix(agent_id.as_deref());
-                // `update_plan` renders as a plan block (see `PlanUpdated`), so its
-                // tool-result line is redundant — suppress it. Everything else
-                // still finalizes the tool-progress state.
-                if tool_name != "update_plan" {
-                    let (text, kind) = if denied {
-                        (format!("  {prefix}⛔ {tool_name} denied"), LineKind::Error)
-                    } else {
-                        let max_cols = self.transcript.wrap_width().saturating_sub(20).max(40);
-                        let s = one_line(&summary, max_cols);
-                        let text = if s.is_empty() {
-                            format!("  {prefix}✓ {tool_name}")
-                        } else {
-                            format!("  {prefix}✓ {tool_name} {s}")
-                        };
-                        (text, LineKind::ToolResult)
-                    };
-                    self.transcript.push(OutputLine { spans: None, original: None, text, kind });
-                }
-                self.live_progress = None;
-                self.status = AgentStatus::Running {
-                    phase: Phase::Thinking,
-                };
-            }
-            RuntimeEvent::PlanUpdated {
-                objective,
-                explanation,
-                plan,
-                ..
-            } => {
-                self.flush_pending();
-
-                // Build the new plan block: objective + status-marked steps + an
-                // optional explanation. Steps are normalized to ≤60 chars by the
-                // tool (fits one line); objective/explanation wrap with a hanging
-                // indent.
-                let mut block: Vec<OutputLine> = Vec::new();
-                for (i, line) in wrap(&objective, self.transcript.wrap_width()).into_iter().enumerate() {
-                    let text = if i == 0 {
-                        format!("📋 {line}")
-                    } else {
-                        format!("   {line}")
-                    };
-                    block.push(OutputLine { spans: None, original: None, text, kind: LineKind::Plan });
-                }
-                for item in &plan {
-                    let marker = match item.status {
-                        PlanStepStatus::Completed => "✅",
-                        PlanStepStatus::InProgress => "🔄",
-                        PlanStepStatus::Pending => "○",
-                    };
-                    block.push(OutputLine { spans: None, original: None,
-                        text: format!("   {marker} {}", item.step),
-                        kind: LineKind::Plan,
-                    });
-                }
-                if let Some(exp) = &explanation {
-                    let exp = exp.trim();
-                    if !exp.is_empty() {
-                        for (i, line) in wrap(exp, self.transcript.wrap_width()).into_iter().enumerate() {
-                            let text = if i == 0 {
-                                format!("   ↳ {line}")
-                            } else {
-                                format!("     {line}")
-                            };
-                            block.push(OutputLine { spans: None, original: None, text, kind: LineKind::Plan });
-                        }
-                    }
-                }
-
-                // Replace the previous block in place so it stays anchored where
-                // it first appeared (the tool always sends the full plan).
-                self.transcript.replace_plan(block);
-            }
-            RuntimeEvent::AwaitingApproval { request, .. } => {
-                // Log line for history; the interactive popup (5b) is driven by
-                // the approval queue, which the QueuedApprovalHandler feeds.
-                self.flush_pending();
-                self.transcript.push(OutputLine { spans: None, original: None,
-                    text: format!("⚠️  approval: {}", request.title),
-                    kind: LineKind::Approval,
-                });
-                self.transcript.push(OutputLine { spans: None, original: None,
-                    text: format!("     {}", request.message),
-                    kind: LineKind::Approval,
-                });
-                self.status = AgentStatus::Running {
-                    phase: Phase::AwaitingApproval,
-                };
-            }
-            RuntimeEvent::RunFinished { agent_id, .. } => {
-                self.flush_pending();
-                // Only the root agent's finish ends the turn; sub-agents report
-                // their own `RunFinished` with a non-empty `agent_id` (marking
-                // that sub-agent done in the transcript + status strip).
-                match agent_id.as_deref() {
-                    Some(p) if !p.is_empty() => {
-                        self.sub_agents.insert(p.to_string(), SubAgentStatus::Done);
-                        self.transcript.push(OutputLine { spans: None, original: None,
-                            text: format!("✓ [{p}] done"),
-                            kind: LineKind::Done,
-                        });
-                    }
-                    _ => {
-                        // Root agent: just flush and set idle.  The actual
-                        // outcome message ("✅ done" or "❌ error") is rendered
-                        // by TurnDone / TurnError after run_turn returns.
-                        self.status = AgentStatus::Idle;
-                        self.running = false;
-                        self.sub_agents.clear();
-                        tracing::info!(
-                            follow_bottom = self.viewport.follow_bottom,
-                            scroll_offset = self.viewport.scroll_offset,
-                            output_len = self.transcript.len(),
-                            "run_finished: view state"
-                        );
-                    }
-                }
-            }
-            RuntimeEvent::RunCancelled { agent_id, .. } => {
-                self.flush_pending();
-                match agent_id.as_deref() {
-                    Some(p) if !p.is_empty() => {
-                        self.sub_agents.insert(p.to_string(), SubAgentStatus::Done);
-                        self.transcript.push(OutputLine { spans: None, original: None,
-                            text: format!("✓ [{p}] done"),
-                            kind: LineKind::Done,
-                        });
-                    }
-                    _ => {
-                        self.transcript.push(OutputLine { spans: None, original: None,
-                            text: "⏹ cancelled".to_string(),
-                            kind: LineKind::Cancelled,
-                        });
-                        self.status = AgentStatus::Idle;
-                        self.running = false;
-                        self.sub_agents.clear();
-                        tracing::info!(
-                            follow_bottom = self.viewport.follow_bottom,
-                            scroll_offset = self.viewport.scroll_offset,
-                            output_len = self.transcript.len(),
-                            "cancel: view state"
-                        );
-                    }
-                }
-            }
-            RuntimeEvent::UserEvent { event, .. } => match event {
-                // Live tool progress (e.g. streaming `execute_command` output):
-                // surface the latest line in the status bar. Full output is
-                // still delivered as the tool's final summary, so this is
-                // feedback only — no transcript pollution.
-                UserEvent::Progress { text } => {
-                    self.live_progress = Some(text);
-                }
-                _ => {}
-            },
-            _ => {}
-        }
-    }
-
     /// Record a sub-agent's first appearance — emitting a `⏺ [p] started` marker
     /// and registering it in `sub_agents` — so the transcript and status strip
     /// show its lifecycle. No-op for the root agent (`agent_id == None`) and for
     /// sub-agents already seen this turn.
-    fn track_agent(&mut self, agent_id: Option<&str>) {
+    pub(crate) fn track_agent(&mut self, agent_id: Option<&str>) {
         let Some(p) = agent_id.filter(|p| !p.is_empty()) else {
             return;
         };
@@ -544,7 +301,7 @@ impl App {
 
     /// Commit any pending streaming text/thought into the transcript (thought
     /// first, then prose). Called on structural events and turn end.
-    fn flush_pending(&mut self) {
+    pub(crate) fn flush_pending(&mut self) {
         let had_text = self.stream.has_pending_text();
         let had_thought = self.stream.has_pending_thought();
         let flushed = self.stream.flush();
@@ -747,45 +504,14 @@ impl App {
     }
 
     /// The active mention picker, if open.
-    pub fn mention(&self) -> Option<&Mention> {
+    pub fn mention(&self) -> Option<&MentionCompleter> {
         self.mention.as_ref()
     }
 
     /// Open the picker with an empty prefix. The caller has already inserted
     /// `@` into the composer.
-    fn start_mention(&mut self) {
-        self.mention = Some(Mention {
-            picker: Picker::new(),
-            dir: self.workspace_root.clone(),
-        });
-        self.refresh_mention();
-    }
-
-    /// Re-list entries from the current prefix, prepending the synthetic
-    /// "use what I typed" row (always first; `selected` clamped into range).
-    fn refresh_mention(&mut self) {
-        let Some(m) = self.mention.as_mut() else {
-            return;
-        };
-        let (dir, name) = mention::split_prefix(&self.workspace_root, &m.picker.prefix);
-        let mut entries = mention::list_entries(&dir, &name);
-
-        // Synthetic row: the resolved form of whatever was typed, so Enter with
-        // nothing highlighted inserts the typed path (`../../demo/codex/`).
-        let full = if name.is_empty() { dir.clone() } else { dir.join(&name) };
-        entries.insert(
-            0,
-            Entry {
-                name: mention::rel_or_abs(&self.workspace_root, &full),
-                path: full,
-                is_dir: false,
-                synthetic: true,
-            },
-        );
-
-        m.dir = dir;
-        m.picker.entries = entries;
-        m.picker.clamp_selection();
+    pub(crate) fn start_mention(&mut self) {
+        self.mention = Some(MentionCompleter::new(self.workspace_root.clone()));
     }
 
     /// Append a char to the typed prefix, echoing it into the composer so the
@@ -796,30 +522,28 @@ impl App {
         }
         self.composer.insert_char(c);
         if let Some(m) = self.mention.as_mut() {
-            m.picker.push_char(c);
+            let _ = m.handle_key(KeyCode::Char(c));
         }
-        self.refresh_mention();
     }
 
     /// Remove the last prefix char (and the matching composer char), or cancel
     /// the picker entirely when the prefix is already empty.
     fn mention_backspace(&mut self) {
-        let empty = self.mention.as_ref().map_or(true, |m| m.picker.is_prefix_empty());
+        let empty = self.mention.as_ref().map_or(true, |m| m.is_empty());
         if empty {
             self.mention = None;
             self.composer.backspace(); // remove the `@`
         } else {
             self.composer.backspace();
             if let Some(m) = self.mention.as_mut() {
-                m.picker.pop_char();
+                let _ = m.handle_key(KeyCode::Backspace);
             }
-            self.refresh_mention();
         }
     }
 
     fn move_mention(&mut self, delta: i32) {
         if let Some(m) = self.mention.as_mut() {
-            m.picker.move_selection(delta);
+            let _ = m.handle_key(if delta > 0 { KeyCode::Down } else { KeyCode::Up });
         }
     }
 
@@ -829,49 +553,52 @@ impl App {
         let Some(m) = self.mention.take() else {
             return;
         };
-        let to_delete = 1 + m.picker.prefix.chars().count();
+        let to_delete = 1 + m.prefix().chars().count();
         for _ in 0..to_delete {
             self.composer.backspace();
         }
-        let text = m
-            .picker
-            .entries
-            .get(m.picker.selected)
-            .map(|e| mention::rel_or_abs(&self.workspace_root, &e.path))
-            .unwrap_or_else(|| mention::rel_or_abs(&self.workspace_root, &m.dir));
+        let text = m.finish_text();
         self.composer.insert_str(&text);
     }
 
     /// Key handling while the mention picker is open (swallows everything).
-    fn handle_mention_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Option<Action> {
+    pub(crate) fn handle_mention_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Option<Action> {
         let _ = modifiers;
-        match picker_key(code) {
-            Some(PickerKey::Cancel) => {
-                let to_delete =
-                    1 + self.mention.as_ref().map_or(0, |m| m.picker.prefix.chars().count());
+        let Some(m) = self.mention.as_mut() else {
+            return None;
+        };
+
+        match m.handle_key(code) {
+            CompleterAction::Cancelled => {
+                let to_delete = 1 + m.prefix().chars().count();
                 self.mention = None;
                 for _ in 0..to_delete {
                     self.composer.backspace();
                 }
                 None
             }
-            Some(PickerKey::Move(delta)) => {
-                self.move_mention(delta);
+            CompleterAction::Selected(_) => {
+                // 先获取需要删除的字符数和插入的文本
+                let to_delete = 1 + m.prefix().chars().count();
+                let text = m.finish_text();
+                // 然后 take mention
+                self.mention = None;
+                // 删除 `@prefix`
+                for _ in 0..to_delete {
+                    self.composer.backspace();
+                }
+                // 插入选中的路径
+                self.composer.insert_str(&text);
                 None
             }
-            Some(PickerKey::Backspace) => {
-                self.mention_backspace();
+            CompleterAction::Continue => {
+                // 如果是字符输入，需要同步到 composer
+                if let KeyCode::Char(c) = code {
+                    self.composer.insert_char(c);
+                }
                 None
             }
-            Some(PickerKey::Confirm) => {
-                self.finish_mention();
-                None
-            }
-            Some(PickerKey::Char(c)) => {
-                self.mention_push_char(c);
-                None
-            }
-            None => None,
+            CompleterAction::Unhandled(_) => None,
         }
     }
 
@@ -883,53 +610,27 @@ impl App {
     }
 
     /// The active skill picker, if open.
-    pub fn slash(&self) -> Option<&SlashPicker> {
+    pub fn slash(&self) -> Option<&SlashCompleter> {
         self.slash.as_ref()
     }
 
     /// Open the skill picker (triggered when `/` is typed at line start).
-    fn start_slash(&mut self) {
-        self.slash = Some(SlashPicker {
-            picker: Picker {
-                prefix: String::new(),
-                entries: self.skill_summaries.clone(),
-                selected: 0,
-            },
-        });
-    }
-
-    /// Refresh the filtered entries based on the current prefix.
-    fn refresh_slash(&mut self) {
-        let Some(s) = self.slash.as_mut() else { return };
-        if s.picker.prefix.is_empty() {
-            s.picker.entries = self.skill_summaries.clone();
-        } else {
-            let q = s.picker.prefix.to_lowercase();
-            s.picker.entries = self
-                .skill_summaries
-                .iter()
-                .filter(|(name, desc)| {
-                    name.to_lowercase().contains(&q) || desc.to_lowercase().contains(&q)
-                })
-                .cloned()
-                .collect();
-        }
-        s.picker.clamp_selection();
+    pub(crate) fn start_slash(&mut self) {
+        self.slash = Some(SlashCompleter::new(self.skill_summaries.clone()));
     }
 
     /// Push a character into the slash prefix.
     fn slash_push_char(&mut self, c: char) {
         if let Some(s) = self.slash.as_mut() {
-            s.picker.push_char(c);
+            let _ = s.handle_key(KeyCode::Char(c));
         }
         self.composer.insert_char(c);
-        self.refresh_slash();
     }
 
     /// Backspace in the slash picker: remove last char from prefix; close if
     /// prefix becomes empty and the user backspaces again (removes the `/`).
     fn slash_backspace(&mut self) {
-        let empty = self.slash.as_ref().map_or(true, |s| s.picker.is_prefix_empty());
+        let empty = self.slash.as_ref().map_or(true, |s| s.is_empty());
         if empty {
             // Prefix is already empty → user is deleting the `/` itself → close picker
             self.slash = None;
@@ -937,29 +638,25 @@ impl App {
             return;
         }
         if let Some(s) = self.slash.as_mut() {
-            s.picker.pop_char();
+            let _ = s.handle_key(KeyCode::Backspace);
         }
         self.composer.backspace();
-        self.refresh_slash();
     }
 
     /// Move the slash picker highlight by `delta` (±1).
     fn move_slash(&mut self, delta: i32) {
         if let Some(s) = self.slash.as_mut() {
-            s.picker.move_selection(delta);
+            let _ = s.handle_key(if delta > 0 { KeyCode::Down } else { KeyCode::Up });
         }
     }
 
     /// Confirm selection: replace `/prefix` in the composer with `/selected-name `.
     fn finish_slash(&mut self) {
         let Some(s) = self.slash.take() else { return };
-        let prefix_len = s.picker.prefix.chars().count();
-        let name = s
-            .picker
-            .entries
-            .get(s.picker.selected)
+        let prefix_len = s.prefix().chars().count();
+        let name = s.selected_item()
             .map(|(n, _)| n.clone())
-            .unwrap_or(s.picker.prefix);
+            .unwrap_or_else(|| s.prefix().to_string());
         // 删掉已输入的 `/prefix`
         let to_delete = 1 + prefix_len;
         for _ in 0..to_delete {
@@ -970,36 +667,32 @@ impl App {
     }
 
     /// Key handling while the skill picker is open.
-    fn handle_slash_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Option<Action> {
+    pub(crate) fn handle_slash_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Option<Action> {
         let _ = modifiers;
-        match picker_key(code) {
-            Some(PickerKey::Cancel) => {
-                // 删掉 `/prefix` 并关闭
-                let to_delete =
-                    1 + self.slash.as_ref().map_or(0, |s| s.picker.prefix.chars().count());
+        let Some(s) = self.slash.as_mut() else {
+            return None;
+        };
+
+        match s.handle_key(code) {
+            CompleterAction::Cancelled => {
+                let to_delete = 1 + s.prefix().chars().count();
                 self.slash = None;
                 for _ in 0..to_delete {
                     self.composer.backspace();
                 }
                 None
             }
-            Some(PickerKey::Move(delta)) => {
-                self.move_slash(delta);
+            CompleterAction::Selected((name, _)) => {
+                let to_delete = 1 + s.prefix().chars().count();
+                self.slash = None;
+                for _ in 0..to_delete {
+                    self.composer.backspace();
+                }
+                self.composer.insert_str(&format!("/{name} "));
                 None
             }
-            Some(PickerKey::Backspace) => {
-                self.slash_backspace();
-                None
-            }
-            Some(PickerKey::Confirm) => {
-                self.finish_slash();
-                None
-            }
-            Some(PickerKey::Char(c)) => {
-                self.slash_push_char(c);
-                None
-            }
-            None => None,
+            CompleterAction::Continue => None,
+            CompleterAction::Unhandled(_) => None,
         }
     }
 
@@ -1016,211 +709,6 @@ impl App {
             }
         } else {
             self.composer.insert_str(text);
-        }
-    }
-
-    // ── Key handling ──────────────────────────────────────────────────────
-
-    pub fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Option<Action> {
-        use KeyCode::*;
-
-        let ctrl = modifiers.contains(KeyModifiers::CONTROL);
-        let shift = modifiers.contains(KeyModifiers::SHIFT);
-        let super_key = modifiers.contains(KeyModifiers::SUPER);
-
-        // Any key dismisses a transient notice (copy feedback) before handling.
-        // Non-Ctrl+C keys also reset the quit-hint double-press window.
-        self.notice = None;
-        if !(ctrl && code == Char('c')) {
-            self.quit_hint_at = None;
-        }
-
-        // Cmd+C (Super) is the macOS copy shortcut: copy the selection, and do
-        // nothing when there's no selection — it never cancels/quits (that's
-        // Ctrl+C's job).
-        if super_key && code == Char('c') {
-            if self.selection_state.selection.is_some() {
-                self.selection_state.context_menu = None;
-                return Some(Action::CopySelection);
-            }
-            return None;
-        }
-
-        // Ctrl+C: copy selection → cancel running → double-press to quit.
-        //   1. If there's an active selection, copy it (caller clears selection).
-        //   2. If the agent is running (or approval pending), cancel it.
-        //   3. Otherwise, show a hint; a second Ctrl+C within timeout quits.
-        if ctrl && code == Char('c') {
-            if self.selection_state.selection.is_some() {
-                tracing::info!("ctrl+c: has selection → copy");
-                self.selection_state.context_menu = None;
-                self.quit_hint_at = None;
-                return Some(Action::CopySelection);
-            }
-            if self.running || !self.approval_queue.is_empty() {
-                tracing::info!("ctrl+c: running/approval → cancel");
-                self.quit_hint_at = None;
-                return Some(Action::Cancel);
-            }
-            // Double-press to quit: first press shows hint, second press
-            // within timeout actually quits.
-            const QUIT_HINT_TIMEOUT: std::time::Duration =
-                std::time::Duration::from_secs(2);
-            if let Some(at) = self.quit_hint_at {
-                if at.elapsed() < QUIT_HINT_TIMEOUT {
-                    tracing::info!("ctrl+c: hint active → quit");
-                    self.quit_hint_at = None;
-                    return Some(Action::Quit);
-                }
-            }
-            tracing::info!("ctrl+c: idle → show quit hint");
-            self.quit_hint_at = Some(Instant::now());
-            self.set_notice("Press Ctrl+C again to exit");
-            return None;
-        }
-
-        // Right-click copy menu: Up/Down move the highlight, Enter copies (or
-        // cancels), Esc closes; everything else is swallowed.
-        if self.selection_state.menu_is_open() {
-            let selected = self.selection_state.menu_selected();
-            return match code {
-                Up => {
-                    self.selection_state.menu_move(-1);
-                    None
-                }
-                Down => {
-                    self.selection_state.menu_move(1);
-                    None
-                }
-                Enter => {
-                    self.selection_state.context_menu = None;
-                    if selected == 0 {
-                        Some(Action::CopySelection)
-                    } else {
-                        None
-                    }
-                }
-                Esc => {
-                    self.selection_state.context_menu = None;
-                    None
-                }
-                _ => None,
-            };
-        }
-
-        // While an approval popup is showing, route y/a/n and swallow the rest.
-        if !self.approval_queue.is_empty() {
-            return match code {
-                Char('y') => Some(Action::Approve(ApprovalDecision::AllowOnce)),
-                Char('a') => Some(Action::Approve(ApprovalDecision::AllowAlways)),
-                Char('n') => Some(Action::Approve(ApprovalDecision::Deny)),
-                _ => None,
-            };
-        }
-
-        // While the @ mention picker is open, every key drives the picker — the
-        // composer only receives the final path on Enter/Esc.
-        if self.mention.is_some() {
-            return self.handle_mention_key(code, modifiers);
-        }
-
-        // While the / skill picker is open, every key drives the picker.
-        if self.slash.is_some() {
-            return self.handle_slash_key(code, modifiers);
-        }
-
-        match code {
-            Char('d') if ctrl => Some(Action::Quit),
-            // Ctrl+Y copies the last reply (vim-yank convention); plain 'y'
-            // still falls through to `Char(c)` and types a literal 'y'.
-            Char('y') if ctrl => Some(Action::CopyLastReply),
-            Esc => {
-                // No menu is open here (handled above); clear a selection if
-                // present, else clear the composer.
-                if self.selection_state.selection.is_some() {
-                    self.selection_state.selection = None;
-                } else {
-                    self.composer.clear();
-                }
-                None
-            }
-            Enter => {
-                if shift {
-                    self.composer.insert_char('\n');
-                    None
-                } else if !self.running && !self.composer.is_empty() {
-                    let text = self.composer.text();
-                    self.composer.clear();
-                    // Echo the user's message into the transcript before the
-                    // agent's reply, so the record keeps the human turn too.
-                    self.push_user(&text);
-                    self.transcript.clear_plan();
-                    self.running = true;
-                    self.viewport.follow_bottom = true;
-                    self.viewport.scroll_offset = 0;
-                    self.status = AgentStatus::Running {
-                        phase: Phase::Thinking,
-                    };
-                    Some(Action::Submit(text))
-                } else {
-                    None
-                }
-            }
-            Backspace => {
-                self.composer.backspace();
-                None
-            }
-            Delete => {
-                self.composer.delete_forward();
-                None
-            }
-            Left => {
-                self.composer.move_left();
-                None
-            }
-            Right => {
-                self.composer.move_right();
-                None
-            }
-            Up => {
-                self.composer.move_up();
-                None
-            }
-            Down => {
-                self.composer.move_down();
-                None
-            }
-            Home => {
-                self.composer.move_home();
-                None
-            }
-            End => {
-                self.composer.move_end();
-                None
-            }
-            PageUp => {
-                self.scroll_up();
-                None
-            }
-            PageDown => {
-                self.scroll_down();
-                None
-            }
-            Char('/') if self.composer.is_empty() && !self.skill_summaries.is_empty() => {
-                self.composer.insert_char('/');
-                self.start_slash();
-                None
-            }
-            Char('@') => {
-                self.composer.insert_char('@');
-                self.start_mention();
-                None
-            }
-            Char(c) => {
-                self.composer.insert_char(c);
-                None
-            }
-            _ => None,
         }
     }
 
@@ -1285,1084 +773,5 @@ pub fn agent_prefix(agent_id: Option<&str>) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use agent_base::{PlanItem, PlanStepStatus};
-    use phi_agent::SessionId;
-
-    fn text(s: &str) -> RuntimeEvent {
-        RuntimeEvent::TextDelta {
-            session_id: SessionId::new(1),
-            text: s.to_string(),
-            agent_id: None,
-            trace_id: None,
-        }
-    }
-
-    fn thought(s: &str) -> RuntimeEvent {
-        RuntimeEvent::ThoughtDelta {
-            session_id: SessionId::new(1),
-            text: s.to_string(),
-            agent_id: None,
-            trace_id: None,
-        }
-    }
-
-    fn tool_started(name: &str) -> RuntimeEvent {
-        RuntimeEvent::ToolCallStarted {
-            session_id: SessionId::new(1),
-            tool_name: name.to_string(),
-            args_json: "{}".to_string(),
-            agent_id: None,
-            trace_id: None,
-        }
-    }
-
-    fn tool_finished(name: &str, denied: bool) -> RuntimeEvent {
-        RuntimeEvent::ToolCallFinished {
-            session_id: SessionId::new(1),
-            tool_name: name.to_string(),
-            summary: "done".to_string(),
-            agent_id: None,
-            trace_id: None,
-            denied,
-        }
-    }
-
-    fn run_finished(agent_id: Option<&str>) -> RuntimeEvent {
-        RuntimeEvent::RunFinished {
-            session_id: SessionId::new(1),
-            agent_id: agent_id.map(String::from),
-            trace_id: None,
-        }
-    }
-
-    fn child_text(agent: &str, s: &str) -> RuntimeEvent {
-        RuntimeEvent::TextDelta {
-            session_id: SessionId::new(1),
-            text: s.to_string(),
-            agent_id: Some(agent.to_string()),
-            trace_id: None,
-        }
-    }
-
-    fn child_tool_started(agent: &str, name: &str) -> RuntimeEvent {
-        RuntimeEvent::ToolCallStarted {
-            session_id: SessionId::new(1),
-            tool_name: name.to_string(),
-            args_json: "{}".to_string(),
-            agent_id: Some(agent.to_string()),
-            trace_id: None,
-        }
-    }
-
-    fn child_tool_finished(agent: &str, name: &str) -> RuntimeEvent {
-        RuntimeEvent::ToolCallFinished {
-            session_id: SessionId::new(1),
-            tool_name: name.to_string(),
-            summary: "done".to_string(),
-            agent_id: Some(agent.to_string()),
-            trace_id: None,
-            denied: false,
-        }
-    }
-
-    fn plan(objective: &str, steps: Vec<(&str, PlanStepStatus)>) -> RuntimeEvent {
-        plan_ex(objective, None, steps)
-    }
-
-    fn plan_ex(
-        objective: &str,
-        explanation: Option<&str>,
-        steps: Vec<(&str, PlanStepStatus)>,
-    ) -> RuntimeEvent {
-        RuntimeEvent::PlanUpdated {
-            session_id: SessionId::new(1),
-            objective: objective.to_string(),
-            explanation: explanation.map(String::from),
-            plan: steps
-                .into_iter()
-                .map(|(step, status)| PlanItem {
-                    step: step.to_string(),
-                    status,
-                })
-                .collect(),
-            agent_id: None,
-            trace_id: None,
-        }
-    }
-
-    fn submit(app: &mut App, input: &str) -> Action {
-        app.composer.clear();
-        app.composer.insert_str(input);
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap()
-    }
-
-    #[test]
-    fn status_tracks_state_machine() {
-        let mut app = App::new();
-        assert_eq!(app.status, AgentStatus::Idle);
-
-        app.handle_event(TuiEvent::Runtime(thought("hmm")));
-        assert_eq!(app.status, AgentStatus::Running { phase: Phase::Thinking });
-
-        app.handle_event(TuiEvent::Runtime(text("answer")));
-        assert_eq!(app.status, AgentStatus::Running { phase: Phase::Streaming });
-
-        app.handle_event(TuiEvent::Runtime(tool_started("read_file")));
-        assert_eq!(
-            app.status,
-            AgentStatus::Running {
-                phase: Phase::ToolCall {
-                    tool: "read_file".into()
-                }
-            }
-        );
-
-        app.handle_event(TuiEvent::Runtime(tool_finished("read_file", false)));
-        assert_eq!(app.status, AgentStatus::Running { phase: Phase::Thinking });
-
-        app.handle_event(TuiEvent::Runtime(run_finished(None)));
-        assert_eq!(app.status, AgentStatus::Idle);
-        assert!(!app.running);
-    }
-
-    #[test]
-    fn tool_calls_render_inline_in_output() {
-        let mut app = App::new();
-        app.handle_event(TuiEvent::Runtime(tool_started("read_file")));
-        app.handle_event(TuiEvent::Runtime(tool_finished("read_file", false)));
-        app.handle_event(TuiEvent::Runtime(tool_finished("execute_command", true)));
-
-        // Invocation + result lines land inline in `output`, in event order.
-        let texts: Vec<&str> = app.transcript.output.iter().map(|l| l.text.as_str()).collect();
-        assert_eq!(
-            texts,
-            vec![
-                "⏺ read_file {}",
-                "  ✓ read_file done",
-                "  ⛔ execute_command denied",
-            ]
-        );
-        assert_eq!(app.transcript.output[0].kind, LineKind::Tool);
-        assert_eq!(app.transcript.output[1].kind, LineKind::ToolResult);
-        assert_eq!(app.transcript.output[2].kind, LineKind::Error);
-    }
-
-    #[test]
-    fn run_finished_from_sub_agent_does_not_end_turn() {
-        let mut app = App::new();
-        app.running = true;
-        app.handle_event(TuiEvent::Runtime(run_finished(Some("sub/1"))));
-        // Sub-agent finish must not flip the top-level status to Idle.
-        assert!(app.running);
-        app.handle_event(TuiEvent::Runtime(run_finished(None)));
-        assert!(!app.running);
-        assert_eq!(app.status, AgentStatus::Idle);
-    }
-
-    #[test]
-    fn text_deltas_coalesce_into_fewer_lines() {
-        let mut app = App::new();
-        // Three fragments with no newline → one output line, not three.
-        app.handle_event(TuiEvent::Runtime(text("hel")));
-        app.handle_event(TuiEvent::Runtime(text("lo ")));
-        app.handle_event(TuiEvent::Runtime(text("world")));
-        app.handle_event(TuiEvent::Runtime(tool_started("verify"))); // flush
-        let normals: Vec<_> = app
-            .transcript.output
-            .iter()
-            .filter(|l| l.kind == LineKind::Normal)
-            .collect();
-        assert_eq!(normals.len(), 1);
-        assert_eq!(normals[0].text, "hello world");
-    }
-
-    #[test]
-    fn text_with_newline_splits_lines() {
-        let mut app = App::new();
-        app.handle_event(TuiEvent::Runtime(text("a\nb")));
-        app.handle_event(TuiEvent::Runtime(tool_started("verify")));
-        let normals: Vec<_> = app
-            .transcript.output
-            .iter()
-            .filter(|l| l.kind == LineKind::Normal)
-            .collect();
-        // The full raw text is stored as ONE OutputLine; the renderer handles
-        // markdown parsing and wrapping at display time.
-        assert_eq!(normals.len(), 1);
-        assert_eq!(normals[0].text, "a\nb");
-    }
-
-    #[test]
-    fn thought_renders_before_text() {
-        let mut app = App::new();
-        app.handle_event(TuiEvent::Runtime(thought("thinking")));
-        app.handle_event(TuiEvent::Runtime(text("answer")));
-        app.handle_event(TuiEvent::Runtime(run_finished(None)));
-        assert_eq!(app.transcript.output[0].kind, LineKind::Thought);
-        assert_eq!(app.transcript.output[0].text, "thinking");
-        assert_eq!(app.transcript.output[1].kind, LineKind::Normal);
-        assert_eq!(app.transcript.output[1].text, "answer");
-    }
-
-    #[test]
-    fn submit_requires_nonempty_and_not_running() {
-        let mut app = App::new();
-        // Empty composer → no submit.
-        app.composer.clear();
-        assert_eq!(app.handle_key(KeyCode::Enter, KeyModifiers::NONE), None);
-
-        // Non-empty → Submit + running.
-        let action = submit(&mut app, "do a thing");
-        assert_eq!(action, Action::Submit("do a thing".to_string()));
-        assert!(app.running);
-
-        // Already running → Enter ignored.
-        app.composer.insert_str("second");
-        assert_eq!(app.handle_key(KeyCode::Enter, KeyModifiers::NONE), None);
-    }
-
-    #[test]
-    fn submit_echoes_user_message() {
-        let mut app = App::new();
-        let action = submit(&mut app, "hello world");
-        assert_eq!(action, Action::Submit("hello world".to_string()));
-        let users: Vec<&str> = app
-            .transcript.output
-            .iter()
-            .filter(|l| l.kind == LineKind::User)
-            .map(|l| l.text.as_str())
-            .collect();
-        assert_eq!(users, vec!["❯ hello world"]);
-    }
-
-    #[test]
-    fn progress_updates_and_clears_live_progress() {
-        let mut app = App::new();
-        app.handle_event(TuiEvent::Runtime(tool_started("execute_command")));
-        assert_eq!(app.status_line(), "🔧 execute_command (Ctrl+C cancel)");
-
-        let prog = RuntimeEvent::UserEvent {
-            session_id: SessionId::new(1),
-            event: UserEvent::Progress {
-                text: "Compiling phimint v0.1.0".to_string(),
-            },
-            agent_id: None,
-            trace_id: None,
-        };
-        app.handle_event(TuiEvent::Runtime(prog));
-        assert_eq!(
-            app.status_line(),
-            "🔧 execute_command: Compiling phimint v0.1.0"
-        );
-
-        // A new tool call drops the previous tool's live progress.
-        app.handle_event(TuiEvent::Runtime(tool_started("read_file")));
-        assert_eq!(app.status_line(), "🔧 read_file (Ctrl+C cancel)");
-    }
-
-    #[test]
-    fn shift_enter_inserts_newline_not_submit() {
-        let mut app = App::new();
-        app.composer.insert_str("a");
-        let r = app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT);
-        assert_eq!(r, None);
-        assert_eq!(app.composer.text(), "a\n");
-    }
-
-    #[test]
-    fn ctrl_c_cancels_when_running() {
-        let mut app = App::new();
-        app.running = false;
-        // First Ctrl+C when idle → show hint (not quit yet).
-        assert_eq!(
-            app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL),
-            None
-        );
-        // Second Ctrl+C within timeout → quit.
-        assert_eq!(
-            app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL),
-            Some(Action::Quit)
-        );
-        // While running → cancel immediately (no hint).
-        app.running = true;
-        assert_eq!(
-            app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL),
-            Some(Action::Cancel)
-        );
-    }
-
-    #[test]
-    fn turn_error_appends_red_line_and_resets() {
-        let mut app = App::new();
-        app.running = true;
-        app.handle_event(TuiEvent::TurnError("boom".to_string()));
-        assert!(!app.running);
-        assert_eq!(app.status, AgentStatus::Idle);
-        assert_eq!(app.transcript.output.last().unwrap().kind, LineKind::Error);
-        assert!(app.transcript.output.last().unwrap().text.contains("boom"));
-    }
-
-
-    #[test]
-    fn streaming_tail_lines_wraps_long_text() {
-        let mut app = App::new();
-        // 250 chars at DEFAULT_WRAP_WIDTH=100 → three wrapped lines.
-        let long = "a".repeat(250);
-        app.handle_event(TuiEvent::Runtime(text(&long)));
-        let (lines, kind) = app.streaming_tail_lines().expect("tail present");
-        assert_eq!(
-            lines,
-            ["a".repeat(100), "a".repeat(100), "a".repeat(50)].as_slice()
-        );
-        assert_eq!(kind, LineKind::Normal);
-    }
-
-    #[test]
-    fn streaming_tail_exposes_uncommitted_text() {
-        let mut app = App::new();
-        assert_eq!(app.streaming_tail_lines(), None);
-        app.handle_event(TuiEvent::Runtime(text("hel")));
-        app.handle_event(TuiEvent::Runtime(text("lo")));
-        let (lines, kind) = app.streaming_tail_lines().expect("tail present");
-        assert_eq!(lines, ["hello".to_string()].as_slice());
-        assert_eq!(kind, LineKind::Normal);
-        // A structural event flushes the tail into committed output (and, for a
-        // tool call, also appends an inline invocation line).
-        app.handle_event(TuiEvent::Runtime(tool_started("verify")));
-        assert_eq!(app.streaming_tail_lines(), None);
-        assert_eq!(app.transcript.output[0].text, "hello");
-        assert_eq!(app.transcript.output[1].kind, LineKind::Tool);
-    }
-
-    #[test]
-    fn streaming_tail_flips_to_text_after_thought() {
-        let mut app = App::new();
-        app.handle_event(TuiEvent::Runtime(thought("hmm")));
-        let (lines, kind) = app.streaming_tail_lines().expect("thought tail present");
-        assert_eq!(lines, ["hmm".to_string()].as_slice());
-        assert_eq!(kind, LineKind::Thought);
-        app.handle_event(TuiEvent::Runtime(text("answer")));
-        let (lines, kind) = app.streaming_tail_lines().expect("text tail present");
-        assert_eq!(lines, ["answer".to_string()].as_slice());
-        assert_eq!(kind, LineKind::Normal);
-    }
-
-    #[test]
-    fn scroll_up_steps_from_bottom_not_noop() {
-        let mut app = App::new();
-        for i in 0..100 {
-            app.transcript.push(OutputLine { spans: None, original: None, text: format!("line {i}"), kind: LineKind::Normal });
-        }
-        app.scroll_up();
-        assert!(!app.viewport.follow_bottom);
-        assert_eq!(app.viewport.scroll_offset, SCROLL_STEP);
-    }
-
-    #[test]
-    fn scroll_down_reenters_follow_bottom() {
-        let mut app = App::new();
-        for i in 0..100 {
-            app.transcript.push(OutputLine { spans: None, original: None, text: format!("line {i}"), kind: LineKind::Normal });
-        }
-        app.scroll_up();
-        app.scroll_up();
-        assert_eq!(app.viewport.scroll_offset, 2 * SCROLL_STEP);
-        app.scroll_down();
-        assert_eq!(app.viewport.scroll_offset, SCROLL_STEP);
-        app.viewport.scroll_offset = SCROLL_STEP;
-        app.scroll_down();
-        assert!(app.viewport.follow_bottom);
-        assert_eq!(app.viewport.scroll_offset, 0);
-    }
-
-    fn pending_approval(app: &mut App) {
-        let (tx, _rx) = tokio::sync::oneshot::channel();
-        app.approval_queue.push_back(ApprovalItem {
-            request: ApprovalRequest {
-                title: "write_file".to_string(),
-                message: "Write file: src/lib.rs".to_string(),
-                action_key: None,
-                risk_level: phi_agent::RiskLevel::Sensitive,
-                raw: None,
-            },
-            decision_tx: tx,
-        });
-    }
-
-    #[test]
-    fn approval_popup_routes_yan_and_swallows_others() {
-        let mut app = App::new();
-        pending_approval(&mut app);
-        assert_eq!(app.current_approval().map(|r| r.title.as_str()), Some("write_file"));
-        assert!(app.has_pending_approval());
-
-        // y/a/n route to the matching decision.
-        assert_eq!(
-            app.handle_key(KeyCode::Char('y'), KeyModifiers::NONE),
-            Some(Action::Approve(ApprovalDecision::AllowOnce))
-        );
-        assert_eq!(
-            app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE),
-            Some(Action::Approve(ApprovalDecision::AllowAlways))
-        );
-        assert_eq!(
-            app.handle_key(KeyCode::Char('n'), KeyModifiers::NONE),
-            Some(Action::Approve(ApprovalDecision::Deny))
-        );
-
-        // Other keys (including Enter/submit) are swallowed while a popup is up.
-        assert_eq!(app.handle_key(KeyCode::Char('x'), KeyModifiers::NONE), None);
-        assert_eq!(app.handle_key(KeyCode::Enter, KeyModifiers::NONE), None);
-
-        // Ctrl+C cancels even when a popup is up (and no turn is running).
-        assert_eq!(
-            app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL),
-            Some(Action::Cancel)
-        );
-    }
-
-    #[test]
-    fn approve_front_pops_and_sends() {
-        let mut app = App::new();
-        let (tx, mut rx) = tokio::sync::oneshot::channel();
-        app.approval_queue.push_back(ApprovalItem {
-            request: ApprovalRequest {
-                title: "t".to_string(),
-                message: "m".to_string(),
-                action_key: None,
-                risk_level: phi_agent::RiskLevel::Safe,
-                raw: None,
-            },
-            decision_tx: tx,
-        });
-
-        app.approve_front(ApprovalDecision::Deny);
-        assert!(!app.has_pending_approval());
-        assert_eq!(rx.try_recv().unwrap(), ApprovalDecision::Deny);
-    }
-
-    #[test]
-    fn awaiting_approval_sets_status() {
-        let mut app = App::new();
-        app.handle_event(TuiEvent::Runtime(RuntimeEvent::AwaitingApproval {
-            session_id: SessionId::new(1),
-            request: ApprovalRequest {
-                title: "write_file".to_string(),
-                message: "Write file: src/lib.rs".to_string(),
-                action_key: None,
-                risk_level: phi_agent::RiskLevel::Sensitive,
-                raw: None,
-            },
-            agent_id: None,
-            trace_id: None,
-        }));
-        assert_eq!(
-            app.status,
-            AgentStatus::Running { phase: Phase::AwaitingApproval }
-        );
-    }
-
-    #[test]
-    fn sub_agent_text_is_labeled_and_lifecycle_tracked() {
-        let mut app = App::new();
-        app.handle_event(TuiEvent::Runtime(child_text("root/a", "found a thing")));
-        assert_eq!(app.sub_agents.get("root/a"), Some(&SubAgentStatus::Running));
-        app.handle_event(TuiEvent::Runtime(run_finished(Some("root/a"))));
-        assert_eq!(app.sub_agents.get("root/a"), Some(&SubAgentStatus::Done));
-        let texts: Vec<&str> = app.transcript.output.iter().map(|l| l.text.as_str()).collect();
-        assert_eq!(
-            texts,
-            vec![
-                "⏺ [root/a] started",
-                "[root/a] found a thing",
-                "✓ [root/a] done",
-            ]
-        );
-    }
-
-    #[test]
-    fn sub_agent_tool_calls_are_labeled() {
-        let mut app = App::new();
-        app.handle_event(TuiEvent::Runtime(child_tool_started("root/a", "read_file")));
-        app.handle_event(TuiEvent::Runtime(child_tool_finished("root/a", "read_file")));
-        let texts: Vec<&str> = app.transcript.output.iter().map(|l| l.text.as_str()).collect();
-        assert_eq!(
-            texts,
-            vec![
-                "⏺ [root/a] started",
-                "⏺ [root/a] read_file {}",
-                "  [root/a] ✓ read_file done",
-            ]
-        );
-    }
-
-    #[test]
-    fn sub_agents_cleared_on_root_finish() {
-        let mut app = App::new();
-        app.handle_event(TuiEvent::Runtime(child_text("root/a", "hi")));
-        app.handle_event(TuiEvent::Runtime(run_finished(Some("root/a"))));
-        assert!(!app.sub_agents.is_empty());
-        app.handle_event(TuiEvent::Runtime(run_finished(None)));
-        assert!(app.sub_agents.is_empty());
-    }
-
-    #[test]
-    fn sub_agent_run_finished_does_not_end_turn() {
-        let mut app = App::new();
-        app.running = true;
-        app.handle_event(TuiEvent::Runtime(child_text("root/a", "hi")));
-        app.handle_event(TuiEvent::Runtime(run_finished(Some("root/a"))));
-        assert!(app.running);
-        assert!(matches!(app.status, AgentStatus::Running { .. }));
-        assert_eq!(app.sub_agents.get("root/a"), Some(&SubAgentStatus::Done));
-    }
-
-    #[test]
-    fn agent_prefix_labels_sub_agents_only() {
-        assert_eq!(agent_prefix(None), "");
-        assert_eq!(agent_prefix(Some("")), "");
-        assert_eq!(agent_prefix(Some("root/a")), "[root/a] ");
-    }
-
-    #[test]
-    fn last_reply_text_captures_reply_after_last_user() {
-        let mut app = App::new();
-        app.push_user("give me a url");
-        app.handle_event(TuiEvent::Runtime(text("here: https://example.com/x")));
-        app.handle_event(TuiEvent::Runtime(run_finished(None)));
-        assert_eq!(app.last_reply_text(), "here: https://example.com/x");
-    }
-
-    #[test]
-    fn last_reply_text_skips_tools_and_stops_at_previous_user() {
-        let mut app = App::new();
-        app.push_user("turn one");
-        app.handle_event(TuiEvent::Runtime(text("old answer")));
-        app.handle_event(TuiEvent::Runtime(run_finished(None)));
-
-        app.push_user("turn two");
-        app.handle_event(TuiEvent::Runtime(text("part one")));
-        app.handle_event(TuiEvent::Runtime(tool_started("verify")));
-        app.handle_event(TuiEvent::Runtime(tool_finished("verify", false)));
-        app.handle_event(TuiEvent::Runtime(text("part two")));
-        app.handle_event(TuiEvent::Runtime(run_finished(None)));
-
-        // Only turn two's prose; tool lines, results and the `✅ done` marker
-        // are excluded, and the scan stops at the previous user turn.
-        assert_eq!(app.last_reply_text(), "part one\npart two");
-    }
-
-    #[test]
-    fn last_reply_text_empty_without_reply() {
-        let app = App::new();
-        assert_eq!(app.last_reply_text(), "");
-    }
-
-    #[test]
-    fn ctrl_y_emits_copy_last_reply_and_plain_y_types() {
-        let mut app = App::new();
-        assert_eq!(
-            app.handle_key(KeyCode::Char('y'), KeyModifiers::CONTROL),
-            Some(Action::CopyLastReply)
-        );
-        // Plain 'y' (no Ctrl) still inserts a literal 'y'.
-        assert_eq!(app.handle_key(KeyCode::Char('y'), KeyModifiers::NONE), None);
-        assert_eq!(app.composer.text(), "y");
-    }
-
-    #[test]
-    fn notice_shows_in_status_line_and_clears_on_key() {
-        let mut app = App::new();
-        assert!(app.status_line().starts_with("⏸ Idle"));
-        app.set_notice("📋 copied 5 chars");
-        assert_eq!(app.status_line(), "📋 copied 5 chars");
-        // Any keypress clears the notice before being handled.
-        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
-        assert!(app.status_line().starts_with("⏸ Idle"));
-    }
-
-    #[test]
-    fn plan_renders_status_markers() {
-        let mut app = App::new();
-        app.handle_event(TuiEvent::Runtime(plan(
-            "目标",
-            vec![
-                ("已完成", PlanStepStatus::Completed),
-                ("进行中", PlanStepStatus::InProgress),
-                ("待办", PlanStepStatus::Pending),
-            ],
-        )));
-        let lines: Vec<&str> = app.transcript.output.iter().map(|l| l.text.as_str()).collect();
-        assert!(lines.iter().any(|l| l.contains("📋 目标")), "got: {lines:?}");
-        assert!(lines.iter().any(|l| l.contains("✅ 已完成")), "got: {lines:?}");
-        assert!(lines.iter().any(|l| l.contains("🔄 进行中")), "got: {lines:?}");
-        assert!(lines.iter().any(|l| l.contains("○ 待办")), "got: {lines:?}");
-    }
-
-    #[test]
-    fn plan_replaces_in_place_instead_of_appending() {
-        let mut app = App::new();
-        app.handle_event(TuiEvent::Runtime(plan(
-            "目标",
-            vec![("步骤1", PlanStepStatus::Completed)],
-        )));
-        app.handle_event(TuiEvent::Runtime(plan(
-            "目标",
-            vec![
-                ("步骤1", PlanStepStatus::Completed),
-                ("步骤2", PlanStepStatus::Completed),
-            ],
-        )));
-        let texts: Vec<&str> = app.transcript.output.iter().map(|l| l.text.as_str()).collect();
-        assert_eq!(
-            texts.iter().filter(|t| t.contains("📋 目标")).count(),
-            1,
-            "plan replaced, not duplicated: {texts:?}"
-        );
-        assert_eq!(texts.iter().filter(|t| t.contains("✅ 步骤1")).count(), 1);
-        assert_eq!(texts.iter().filter(|t| t.contains("✅ 步骤2")).count(), 1);
-    }
-
-    #[test]
-    fn plan_renders_explanation() {
-        let mut app = App::new();
-        app.handle_event(TuiEvent::Runtime(plan_ex(
-            "目标",
-            Some("检测到已有配置，直接复用"),
-            vec![("步骤", PlanStepStatus::Pending)],
-        )));
-        assert!(app.transcript.output.iter().any(|l| l.text.contains("↳ 检测到已有配置")));
-    }
-
-    #[test]
-    fn update_plan_tool_result_line_is_suppressed() {
-        let mut app = App::new();
-        app.handle_event(TuiEvent::Runtime(tool_started("update_plan")));
-        app.handle_event(TuiEvent::Runtime(tool_finished("update_plan", false)));
-        assert!(!app.transcript.output.iter().any(|l| l.text.contains("update_plan")));
-    }
-
-    #[test]
-    fn plan_resets_across_turns() {
-        let mut app = App::new();
-        app.handle_event(TuiEvent::Runtime(plan(
-            "目标A",
-            vec![("步骤", PlanStepStatus::Pending)],
-        )));
-        // Starting a new turn (submit) clears the tracked plan range, so the next
-        // plan appends instead of replacing the previous turn's plan.
-        assert_eq!(submit(&mut app, "next"), Action::Submit("next".to_string()));
-        app.handle_event(TuiEvent::Runtime(plan(
-            "目标B",
-            vec![("步骤B", PlanStepStatus::Pending)],
-        )));
-        let texts: Vec<&str> = app.transcript.output.iter().map(|l| l.text.as_str()).collect();
-        assert!(texts.iter().any(|t| t.contains("📋 目标A")), "target A kept: {texts:?}");
-        assert!(texts.iter().any(|t| t.contains("📋 目标B")), "target B appended: {texts:?}");
-        assert_eq!(texts.iter().filter(|t| t.contains("📋")).count(), 2);
-    }
-
-    #[test]
-    fn mouse_drag_selects_line_range() {
-        let mut app = App::new();
-        for i in 0..10 {
-            app.transcript.push(OutputLine { spans: None, original: None, text: format!("line {i}"), kind: LineKind::Normal });
-        }
-        app.output_area = Some((0, 0, 100, 10));
-        app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 2, 100, 10);
-        app.handle_mouse(MouseEventKind::Drag(MouseButton::Left), 0, 5, 100, 10);
-        assert_eq!(app.selection_state.selection, Some(Selection { anchor: 2, head: 5 }));
-        assert_eq!(app.selection_text(), "line 2\nline 3\nline 4\nline 5");
-    }
-
-    #[test]
-    fn mouse_drag_up_normalizes_selection() {
-        let mut app = App::new();
-        for i in 0..10 {
-            app.transcript.push(OutputLine { spans: None, original: None, text: format!("line {i}"), kind: LineKind::Normal });
-        }
-        app.output_area = Some((0, 0, 100, 10));
-        app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 5, 100, 10);
-        app.handle_mouse(MouseEventKind::Drag(MouseButton::Left), 0, 2, 100, 10);
-        assert!(app.is_selected(3));
-        assert_eq!(app.selection_text(), "line 2\nline 3\nline 4\nline 5");
-    }
-
-    #[test]
-    fn click_outside_output_clears_selection() {
-        let mut app = App::new();
-        app.transcript.push(OutputLine { spans: None, original: None, text: "x".into(), kind: LineKind::Normal });
-        app.output_area = Some((0, 0, 10, 5));
-        app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 0, 10, 5);
-        assert!(app.selection_state.selection.is_some());
-        app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 50, 10, 5); // below pane
-        assert!(app.selection_state.selection.is_none());
-    }
-
-    #[test]
-    fn selection_text_clamps_stale_indices() {
-        let mut app = App::new();
-        app.transcript.push(OutputLine { spans: None, original: None, text: "a".into(), kind: LineKind::Normal });
-        app.selection_state.selection = Some(Selection { anchor: 0, head: 5 });
-        assert_eq!(app.selection_text(), "a");
-    }
-
-    #[test]
-    fn ctrl_c_copies_selection_then_double_press_quits() {
-        let mut app = App::new();
-        // With selection → copy (caller clears selection after copy).
-        app.selection_state.selection = Some(Selection { anchor: 0, head: 5 });
-        assert_eq!(
-            app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL),
-            Some(Action::CopySelection)
-        );
-        // Caller clears selection after copy. First Ctrl+C → show hint.
-        app.selection_state.selection = None;
-        assert_eq!(
-            app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL),
-            None
-        );
-        assert!(app.notice.as_deref().unwrap_or("").contains("Ctrl+C"));
-        // Second Ctrl+C within timeout → quit.
-        assert_eq!(
-            app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL),
-            Some(Action::Quit)
-        );
-        // After timeout, hint resets: first press → hint again.
-        app.quit_hint_at =
-            Some(Instant::now() - std::time::Duration::from_secs(5));
-        assert_eq!(
-            app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL),
-            None
-        );
-        // While running → cancel (no hint).
-        app.running = true;
-        app.quit_hint_at = None;
-        assert_eq!(
-            app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL),
-            Some(Action::Cancel)
-        );
-    }
-
-    #[test]
-    fn right_click_opens_menu_and_enter_copies() {
-        let mut app = App::new();
-        app.transcript.push(OutputLine { spans: None, original: None, text: "x".into(), kind: LineKind::Normal });
-        app.output_area = Some((0, 0, 10, 10));
-        app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 0, 20, 20);
-        app.handle_mouse(MouseEventKind::Down(MouseButton::Right), 3, 4, 20, 20);
-        assert_eq!(app.selection_state.context_menu, Some(ContextMenu { x: 3, y: 4, selected: 0 }));
-        assert_eq!(
-            app.handle_key(KeyCode::Enter, KeyModifiers::NONE),
-            Some(Action::CopySelection)
-        );
-        assert_eq!(app.selection_state.context_menu, None);
-    }
-
-    #[test]
-    fn context_menu_arrows_move_highlight_and_esc_closes() {
-        let mut app = App::new();
-        app.transcript.push(OutputLine { spans: None, original: None, text: "x".into(), kind: LineKind::Normal });
-        app.output_area = Some((0, 0, 10, 10));
-        app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 0, 20, 20);
-        app.handle_mouse(MouseEventKind::Down(MouseButton::Right), 0, 0, 20, 20);
-        assert_eq!(app.handle_key(KeyCode::Down, KeyModifiers::NONE), None);
-        assert_eq!(app.selection_state.context_menu.as_ref().unwrap().selected, 1);
-        // Enter on the "cancel" item closes without copying.
-        assert_eq!(app.handle_key(KeyCode::Enter, KeyModifiers::NONE), None);
-        assert!(app.selection_state.context_menu.is_none());
-    }
-
-    #[test]
-    fn clicking_menu_copy_item_copies_and_closes() {
-        let mut app = App::new();
-        app.transcript.push(OutputLine { spans: None, original: None, text: "x".into(), kind: LineKind::Normal });
-        app.output_area = Some((0, 0, 10, 10));
-        app.selection_state.selection = Some(Selection { anchor: 0, head: 0 });
-        // Open the menu at (0,0): 12×4 box, items at rows y+1 ("拷贝") and y+2
-        // ("取消").
-        assert_eq!(
-            app.handle_mouse(MouseEventKind::Down(MouseButton::Right), 0, 0, 20, 20),
-            None
-        );
-        assert!(app.selection_state.context_menu.is_some());
-        // Left-click the "拷贝" row → copy, menu closes, selection preserved.
-        assert_eq!(
-            app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 1, 1, 20, 20),
-            Some(Action::CopySelection)
-        );
-        assert!(app.selection_state.context_menu.is_none());
-        assert!(app.selection_state.selection.is_some());
-    }
-
-    #[test]
-    fn clicking_menu_cancel_item_closes_without_copy() {
-        let mut app = App::new();
-        app.transcript.push(OutputLine { spans: None, original: None, text: "x".into(), kind: LineKind::Normal });
-        app.output_area = Some((0, 0, 10, 10));
-        app.selection_state.selection = Some(Selection { anchor: 0, head: 0 });
-        app.handle_mouse(MouseEventKind::Down(MouseButton::Right), 0, 0, 20, 20);
-        // "取消" is the second item, row y+2. It closes the menu but keeps the
-        // selection.
-        assert_eq!(
-            app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 1, 2, 20, 20),
-            None
-        );
-        assert!(app.selection_state.context_menu.is_none());
-        assert!(app.selection_state.selection.is_some());
-    }
-
-    #[test]
-    fn clicking_outside_menu_closes_it_and_restarts_selection() {
-        let mut app = App::new();
-        app.transcript.push(OutputLine { spans: None, original: None, text: "x".into(), kind: LineKind::Normal });
-        app.output_area = Some((0, 0, 10, 10));
-        app.selection_state.selection = Some(Selection { anchor: 0, head: 0 });
-        app.handle_mouse(MouseEventKind::Down(MouseButton::Right), 0, 0, 20, 20);
-        assert!(app.selection_state.context_menu.is_some());
-        // A click far outside the popup closes the menu (and starts a new
-        // selection) exactly as before.
-        assert_eq!(
-            app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 15, 15, 20, 20),
-            None
-        );
-        assert!(app.selection_state.context_menu.is_none());
-    }
-
-    #[test]
-    fn esc_clears_selection_before_composer() {
-        let mut app = App::new();
-        app.selection_state.selection = Some(Selection { anchor: 0, head: 2 });
-        app.composer.insert_str("keep");
-        assert_eq!(app.handle_key(KeyCode::Esc, KeyModifiers::NONE), None);
-        assert!(app.selection_state.selection.is_none());
-        assert_eq!(app.composer.text(), "keep");
-    }
-
-    #[test]
-    fn cmd_c_copies_selection_but_never_quits() {
-        let mut app = App::new();
-        // No selection → Cmd+C does nothing (it must never quit).
-        assert_eq!(app.handle_key(KeyCode::Char('c'), KeyModifiers::SUPER), None);
-        // With a selection → copy.
-        app.selection_state.selection = Some(Selection { anchor: 0, head: 0 });
-        assert_eq!(
-            app.handle_key(KeyCode::Char('c'), KeyModifiers::SUPER),
-            Some(Action::CopySelection)
-        );
-    }
-
-    fn mention_scratch(tag: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "phimint-app-mention-{tag}-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&path);
-        std::fs::create_dir_all(&path).unwrap();
-        path
-    }
-
-    #[test]
-    fn at_opens_mention_picker_listing_root() {
-        let mut app = App::new();
-        let root = mention_scratch("open");
-        std::fs::write(root.join("a.txt"), "x").unwrap();
-        app.set_workspace_root(root.clone());
-
-        assert_eq!(app.handle_key(KeyCode::Char('@'), KeyModifiers::NONE), None);
-        let m = app.mention().expect("mention open");
-        assert_eq!(m.picker.prefix, "");
-        assert!(m.picker.entries[0].synthetic, "synthetic row is first");
-        assert!(m.picker.entries.iter().any(|e| e.name == "a.txt"));
-        assert_eq!(app.composer.text(), "@");
-    }
-
-    #[test]
-    fn enter_on_empty_prefix_inserts_dot_and_closes() {
-        let mut app = App::new();
-        let root = mention_scratch("enter-empty");
-        app.set_workspace_root(root.clone());
-
-        app.handle_key(KeyCode::Char('@'), KeyModifiers::NONE);
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
-        assert!(app.mention().is_none());
-        assert_eq!(app.composer.text(), ".");
-    }
-
-    #[test]
-    fn dotdot_prefix_inserts_absolute_parent_path() {
-        let mut app = App::new();
-        let root = mention_scratch("dotdot-app");
-        app.set_workspace_root(root.clone());
-
-        app.handle_key(KeyCode::Char('@'), KeyModifiers::NONE);
-        for c in "../".chars() {
-            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
-        }
-        assert!(app.mention().is_some(), "picker stays open while typing");
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
-        let text = app.composer.text();
-        assert!(!text.contains('@'), "composer holds the path, got {text:?}");
-        assert!(text.starts_with('/'), "outside path is absolute, got {text:?}");
-    }
-
-    #[test]
-    fn typing_name_then_arrow_selects_file() {
-        let mut app = App::new();
-        let root = mention_scratch("select");
-        std::fs::write(root.join("main.rs"), "x").unwrap();
-        std::fs::write(root.join("other.rs"), "x").unwrap();
-        app.set_workspace_root(root.clone());
-
-        app.handle_key(KeyCode::Char('@'), KeyModifiers::NONE);
-        for c in "main".chars() {
-            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
-        }
-        // Arrow down off the synthetic row onto the single real match, accept it.
-        app.handle_key(KeyCode::Down, KeyModifiers::NONE);
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
-        assert_eq!(app.composer.text(), "main.rs");
-    }
-
-    #[test]
-    fn esc_cancels_mention_removing_at_and_prefix() {
-        let mut app = App::new();
-        let root = mention_scratch("esc");
-        app.set_workspace_root(root.clone());
-
-        app.handle_key(KeyCode::Char('@'), KeyModifiers::NONE);
-        for c in "src".chars() {
-            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
-        }
-        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
-        assert!(app.mention().is_none());
-        assert_eq!(app.composer.text(), "");
-    }
-
-    #[test]
-    fn backspace_with_empty_prefix_cancels_mention() {
-        let mut app = App::new();
-        let root = mention_scratch("bsp");
-        app.set_workspace_root(root.clone());
-
-        app.handle_key(KeyCode::Char('@'), KeyModifiers::NONE);
-        app.handle_key(KeyCode::Backspace, KeyModifiers::NONE);
-        assert!(app.mention().is_none());
-        assert_eq!(app.composer.text(), "");
-    }
-
-    #[test]
-    fn mention_inserts_after_existing_text() {
-        let mut app = App::new();
-        let root = mention_scratch("mid");
-        std::fs::create_dir_all(root.join("sub")).unwrap();
-        app.set_workspace_root(root.clone());
-
-        app.composer.insert_str("read ");
-        app.handle_key(KeyCode::Char('@'), KeyModifiers::NONE);
-        for c in "sub".chars() {
-            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
-        }
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
-        assert_eq!(app.composer.text(), "read sub");
-    }
-
-    #[test]
-    fn paste_routes_to_mention_prefix_when_open() {
-        let mut app = App::new();
-        let root = mention_scratch("paste");
-        std::fs::create_dir_all(root.join("sub")).unwrap();
-        app.set_workspace_root(root.clone());
-
-        app.handle_key(KeyCode::Char('@'), KeyModifiers::NONE);
-        app.paste("sub");
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
-        assert_eq!(app.composer.text(), "sub");
-    }
-
-    // ── / skill picker tests ──
-
-    fn app_with_skills() -> App {
-        let mut app = App::new();
-        // 排序后: commit(0), requesting-code-review(1), review(2)
-        app.set_skill_summaries(vec![
-            ("commit".into(), "Generate a commit message".into()),
-            ("requesting-code-review".into(), "Request a code review".into()),
-            ("review".into(), "Pre-landing PR review".into()),
-        ]);
-        app
-    }
-
-    #[test]
-    fn slash_opens_picker_on_empty_composer() {
-        let mut app = app_with_skills();
-        app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
-        assert!(app.slash().is_some(), "slash picker should open");
-        assert_eq!(app.composer.text(), "/");
-    }
-
-    #[test]
-    fn slash_does_not_open_when_composer_not_empty() {
-        let mut app = app_with_skills();
-        app.handle_key(KeyCode::Char('h'), KeyModifiers::NONE);
-        app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
-        assert!(app.slash().is_none(), "slash picker should not open mid-input");
-    }
-
-    #[test]
-    fn slash_filters_by_prefix() {
-        let mut app = app_with_skills();
-        app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
-        app.handle_key(KeyCode::Char('c'), KeyModifiers::NONE);
-
-        let s = app.slash().unwrap();
-        let names: Vec<&str> = s.picker.entries.iter().map(|(n, _)| n.as_str()).collect();
-        assert!(names.contains(&"commit"));
-        assert!(names.contains(&"requesting-code-review"));
-        // "review" does not contain 'c' → filtered out
-        assert!(!names.contains(&"review"));
-    }
-
-    #[test]
-    fn slash_enter_confirms_selection() {
-        let mut app = app_with_skills();
-        app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
-        // 默认选中第一个（排序后是 "commit"）
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
-        assert!(app.slash().is_none(), "picker should close after Enter");
-        assert_eq!(app.composer.text(), "/commit ", "should insert /name + space");
-    }
-
-    #[test]
-    fn slash_esc_cancels() {
-        let mut app = app_with_skills();
-        app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
-        app.handle_key(KeyCode::Char('r'), KeyModifiers::NONE);
-        app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
-        assert!(app.slash().is_none(), "picker should close on Esc");
-        assert!(app.composer.is_empty(), "composer should be empty after cancel");
-    }
-
-    #[test]
-    fn slash_arrow_keys_navigate() {
-        let mut app = app_with_skills();
-        app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
-
-        assert_eq!(app.slash().unwrap().picker.selected, 0);
-
-        app.handle_key(KeyCode::Down, KeyModifiers::NONE);
-        assert_eq!(app.slash().unwrap().picker.selected, 1);
-
-        app.handle_key(KeyCode::Down, KeyModifiers::NONE);
-        assert_eq!(app.slash().unwrap().picker.selected, 2);
-
-        // 已在末尾，Down 不动
-        app.handle_key(KeyCode::Down, KeyModifiers::NONE);
-        assert_eq!(app.slash().unwrap().picker.selected, 2);
-
-        app.handle_key(KeyCode::Up, KeyModifiers::NONE);
-        assert_eq!(app.slash().unwrap().picker.selected, 1);
-    }
-}
+#[path = "app_tests.rs"]
+mod app_tests;

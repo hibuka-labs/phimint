@@ -6,7 +6,9 @@
 //! Input and events meet only through the channel — no shared mutable state.
 
 pub mod app;
+pub mod completer;
 pub mod frame_log;
+pub mod handlers;
 pub mod input;
 pub mod markdown;
 pub mod mention;
