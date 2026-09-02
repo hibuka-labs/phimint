@@ -485,18 +485,26 @@ fn awaiting_approval_sets_status() {
 fn sub_agent_text_is_labeled_and_lifecycle_tracked() {
     let mut app = App::new();
     app.handle_event(TuiEvent::Runtime(child_text("root/a", "found a thing")));
-    assert_eq!(app.sub_agents.get("root/a"), Some(&SubAgentStatus::Running));
+    // Flush to commit text
+    app.flush_pending();
+    assert_eq!(app.sub_agents.get("root/a").map(|s| &s.status), Some(&SubAgentStatus::Running));
     app.handle_event(TuiEvent::Runtime(run_finished(Some("root/a"))));
-    assert_eq!(app.sub_agents.get("root/a"), Some(&SubAgentStatus::Done));
+    assert_eq!(app.sub_agents.get("root/a").map(|s| &s.status), Some(&SubAgentStatus::Done));
+    // Main transcript should only have the "started" marker
     let texts: Vec<&str> = app.transcript.output.iter().map(|l| l.text.as_str()).collect();
     assert_eq!(
         texts,
         vec![
             "⏺ [root/a] started",
-            "[root/a] found a thing",
-            "✓ [root/a] done",
         ]
     );
+    // Check sub-agent transcript
+    let sub_texts: Vec<&str> = app.sub_agent_transcripts.get("root/a")
+        .map(|t| t.iter().map(|l| l.text.as_str()).collect())
+        .unwrap_or_default();
+    // Sub-agent transcript should have the text and done marker
+    assert!(sub_texts.iter().any(|t| t.contains("found a thing")));
+    assert!(sub_texts.iter().any(|t| t.contains("✓ [root/a] done")));
 }
 
 #[test]
@@ -509,6 +517,15 @@ fn sub_agent_tool_calls_are_labeled() {
         texts,
         vec![
             "⏺ [root/a] started",
+        ]
+    );
+    // Check sub-agent transcript
+    let sub_texts: Vec<&str> = app.sub_agent_transcripts.get("root/a")
+        .map(|t| t.iter().map(|l| l.text.as_str()).collect())
+        .unwrap_or_default();
+    assert_eq!(
+        sub_texts,
+        vec![
             "⏺ [root/a] read_file {}",
             "  [root/a] ✓ read_file done",
         ]
@@ -533,7 +550,7 @@ fn sub_agent_run_finished_does_not_end_turn() {
     app.handle_event(TuiEvent::Runtime(run_finished(Some("root/a"))));
     assert!(app.running);
     assert!(matches!(app.status, AgentStatus::Running { .. }));
-    assert_eq!(app.sub_agents.get("root/a"), Some(&SubAgentStatus::Done));
+    assert_eq!(app.sub_agents.get("root/a").map(|s| &s.status), Some(&SubAgentStatus::Done));
 }
 
 #[test]

@@ -2,7 +2,7 @@
 //!
 //! 产品招牌「永远不把编不过的代码交给你」的强制半截。agent 在本轮（一条
 //! 用户消息内）动过代码文件（`write_file` / `edit_file`）却还没跑过 `verify`
-//! 或 `merge` 时，把它试图「报 done」的纯文本回复压掉（`skip_push`），注入
+//! 时，把它试图「报 done」的纯文本回复压掉（`skip_push`），注入
 //! 一句提醒逼它先验证。连续 nudge `max_nudges` 次仍不验就降级：不再拦截，
 //! 只在最终回复里追加一行「⚠️ Unverified」警示，绝不把 agent 卡死（死锁
 //! 逃生口，呼应「绝对化可能引发的 bug」）。
@@ -20,8 +20,8 @@ use serde_json::Value;
 /// 会「弄脏」工作区的写工具。
 const DIRTY_TOOLS: [&str; 2] = ["write_file", "edit_file"];
 
-/// 会「验证」工作区、清空 dirty 的工具（`merge` 内部跑 `cargo check`）。
-const VERIFY_TOOLS: [&str; 2] = ["verify", "merge"];
+/// 会「验证」工作区、清空 dirty 的工具。
+const VERIFY_TOOLS: [&str; 1] = ["verify"];
 
 /// 一次写工具调用是否落在「影响 `cargo check` 结果」的文件上。
 ///
@@ -312,22 +312,6 @@ mod tests {
         mw.on_post_llm(&mut done).await.unwrap();
         assert!(!done.skip_push);
         assert!(done.follow_up_message.is_none());
-    }
-
-    #[tokio::test]
-    async fn merge_clears_dirty() {
-        let mw = VerifyEnforcementMiddleware::new(VerifyEnforcementConfig::default());
-
-        let mut edit = ctx(true, "", vec![call("write_file")]);
-        mw.on_post_llm(&mut edit).await.unwrap();
-
-        // merge 内部跑 cargo check，等同验证。
-        let mut mg = ctx(true, "", vec![call("merge")]);
-        mw.on_post_llm(&mut mg).await.unwrap();
-
-        let mut done = ctx(false, "merged, done.", vec![]);
-        mw.on_post_llm(&mut done).await.unwrap();
-        assert!(!done.skip_push);
     }
 
     #[tokio::test]

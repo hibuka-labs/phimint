@@ -1,7 +1,7 @@
 //! Tests for ratatui frame rendering.
 
 use super::*;
-use crate::ui::app::{AgentStatus, App, LineKind, OutputLine, Phase, SubAgentStatus, TuiEvent};
+use crate::ui::app::{AgentStatus, App, LineKind, OutputLine, Phase, SubAgentState, SubAgentStatus, TuiEvent};
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use phi_agent::{RuntimeEvent, SessionId};
 use ratatui::backend::TestBackend;
@@ -167,11 +167,29 @@ fn buffer_to_text_skips_wide_char_continuation() {
 #[test]
 fn snapshot_shows_sub_agent_strip() {
     let mut app = App::new();
-    app.sub_agents.insert("root/a".to_string(), SubAgentStatus::Running);
-    app.sub_agents.insert("root/b".to_string(), SubAgentStatus::Done);
+    app.sub_agents.insert("root/a".to_string(), SubAgentState {
+        name: "a".to_string(),
+        status: SubAgentStatus::Running,
+        files: Vec::new(),
+        task: String::new(),
+        context: String::new(),
+        started_at: std::time::Instant::now(),
+        completed_at: None,
+        events: Vec::new(),
+    });
+    app.sub_agents.insert("root/b".to_string(), SubAgentState {
+        name: "b".to_string(),
+        status: SubAgentStatus::Done,
+        files: Vec::new(),
+        task: String::new(),
+        context: String::new(),
+        started_at: std::time::Instant::now(),
+        completed_at: Some(std::time::Instant::now()),
+        events: Vec::new(),
+    });
     let text = snapshot_text(&mut app, 80, 24);
-    assert!(text.contains("● [root/a]"), "running marker missing:\n{text}");
-    assert!(text.contains("✓ [root/b]"), "done marker missing:\n{text}");
+    assert!(text.contains("● a"), "running marker missing:\n{text}");
+    assert!(text.contains("✓ b"), "done marker missing:\n{text}");
 }
 
 #[test]

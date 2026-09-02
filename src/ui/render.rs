@@ -14,7 +14,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::banner::{BannerStyle, ColorScheme, SpanSpec};
 use crate::ui::app::{
-    AgentStatus, App, CONTEXT_MENU_H, CONTEXT_MENU_W, LineKind, SubAgentStatus, context_menu_pos,
+    AgentStatus, App, CONTEXT_MENU_H, CONTEXT_MENU_W, FocusTarget, LineKind, SubAgentStatus, context_menu_pos,
 };
 use crate::ui::markdown::{line_plain_text, render_markdown};
 use crate::ui::wrap::wrap;
@@ -33,7 +33,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let composer_inner_w = term_w.saturating_sub(2);
     let composer_vis = app.composer.visual_height(composer_inner_w).min(MAX_COMPOSER_ROWS);
     let composer_height = composer_vis as u16 + 2;
-    let has_sub_agents = !app.sub_agents.is_empty();
+    let has_task_panel = app.should_show_task_panel();
 
     tracing::debug!(
         term_w,
@@ -41,16 +41,18 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         composer_inner_w,
         composer_vis,
         composer_height,
+        has_task_panel,
         "draw layout"
     );
 
     let mut constraints = vec![
         Constraint::Min(3),                  // output (transcript)
-        Constraint::Length(composer_height), // composer
     ];
-    if has_sub_agents {
-        constraints.push(Constraint::Length(1)); // sub-agent strip
+    if has_task_panel {
+        let task_count = app.sub_agents.len();
+        constraints.push(Constraint::Length(task_count as u16 + 2)); // task panel
     }
+    constraints.push(Constraint::Length(composer_height)); // composer
     constraints.push(Constraint::Length(1)); // status bar
 
     let chunks = Layout::default()
@@ -62,14 +64,15 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let out = chunks[0];
     app.output_area = Some((out.x, out.y, out.width, out.height));
 
-    render_output(f, app, chunks[0]);
-    render_composer(f, app, chunks[1]);
-    if has_sub_agents {
-        render_sub_agents(f, app, chunks[2]);
-        render_status(f, app, chunks[3]);
-    } else {
-        render_status(f, app, chunks[2]);
+    let mut idx = 0;
+    render_output(f, app, chunks[idx]);
+    idx += 1;
+    if has_task_panel {
+        render_task_panel(f, app, chunks[idx]);
+        idx += 1;
     }
+    render_composer(f, app, chunks[idx]);
+    render_status(f, app, chunks[idx + 1]);
 
     if app.has_pending_approval() {
         render_approval_popup(f, app);
@@ -78,27 +81,54 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         render_context_menu(f, app);
     }
     if app.mention().is_some() {
-        render_mention_popup(f, app, chunks[1]);
+        render_mention_popup(f, app, chunks[idx]);
     }
     if app.slash().is_some() {
-        render_slash_popup(f, app, chunks[1]);
+        render_slash_popup(f, app, chunks[idx]);
     }
 }
 
 fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
     let height = area.height as usize;
 
-    // Committed lines: always present in `app.transcript.output`.
-    let committed = app.transcript.len();
+    // Choose which transcript to display based on focus
+    let (transcript, is_sub_agent) = match &app.task_panel.focus {
+        FocusTarget::TaskList(index) => {
+            // Get the selected agent_id
+            let agent_id = app.sub_agents.keys().nth(*index);
+            if let Some(id) = agent_id {
+                if let Some(sub_transcript) = app.sub_agent_transcripts.get(id) {
+                    (sub_transcript.as_slice(), true)
+                } else {
+                    (app.transcript.output.as_slice(), false)
+                }
+            } else {
+                (app.transcript.output.as_slice(), false)
+            }
+        }
+        FocusTarget::Input => {
+            (app.transcript.output.as_slice(), false)
+        }
+    };
+
+    let committed = transcript.len();
 
     // Streaming tail: for Normal (AI prose), render the full pending_text
     // through markdown so the user sees styled output during streaming.
     // For other kinds (Thought), fall back to pre-wrapped tail_lines.
-    let tail_raw = app.streaming_tail_raw();
+    let tail_raw = if !is_sub_agent {
+        app.streaming_tail_raw()
+    } else {
+        None
+    };
     // For non-Normal streaming tail, fall back to pre-wrapped tail_lines.
-    let tail_lines_fallback = match app.streaming_tail_lines() {
-        Some((lines, _)) => lines,
-        None => &[][..],
+    let tail_lines_fallback = if !is_sub_agent {
+        match app.streaming_tail_lines() {
+            Some((lines, _)) => lines,
+            None => &[][..],
+        }
+    } else {
+        &[][..]
     };
 
     // Pre-render committed lines and streaming tail into a flat vec.
@@ -114,7 +144,7 @@ fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
     // --- committed output ---
     let mut vis_idx: usize = 0; // running visual line counter
     for i in 0..committed {
-        let line = &app.transcript.output[i];
+        let line = &transcript[i];
         let kind = line.kind;
         let spans = line.spans.as_deref().unwrap_or(&[]);
 
@@ -395,13 +425,13 @@ fn render_sub_agents(f: &mut Frame, app: &App, area: Rect) {
         .sub_agents
         .iter()
         .enumerate()
-        .flat_map(|(i, (path, status))| {
-            let (marker, color) = match status {
+        .flat_map(|(i, (_path, state))| {
+            let (marker, color) = match state.status {
                 SubAgentStatus::Running => ("●", Color::Cyan),
                 SubAgentStatus::Done => ("✓", Color::Green),
             };
             let mut items = vec![Span::styled(
-                format!("{marker} [{path}]"),
+                format!("{marker} [{}]", state.name),
                 Style::default().fg(color),
             )];
             if i + 1 < app.sub_agents.len() {
@@ -411,6 +441,83 @@ fn render_sub_agents(f: &mut Frame, app: &App, area: Rect) {
         })
         .collect();
     f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// Format files list for display (max 2 files, truncate with ...).
+fn format_files(files: &[String], max_width: usize) -> String {
+    if files.is_empty() {
+        return String::new();
+    }
+    let mut result = String::new();
+    let mut count = 0;
+    for file in files {
+        if count >= 2 {
+            result.push_str("...");
+            break;
+        }
+        if !result.is_empty() {
+            result.push_str(", ");
+        }
+        // Show just the filename, not the full path
+        let name = file.split('/').last().unwrap_or(file);
+        result.push_str(name);
+        count += 1;
+    }
+    // Truncate if too long
+    if result.len() > max_width {
+        format!("{}...", &result[..max_width.saturating_sub(3)])
+    } else {
+        result
+    }
+}
+
+/// Format elapsed time as seconds.
+fn format_time(elapsed: std::time::Duration) -> String {
+    let secs = elapsed.as_secs();
+    if secs < 60 {
+        format!("{secs}s")
+    } else {
+        format!("{}m{}s", secs / 60, secs % 60)
+    }
+}
+
+/// Render the task panel showing sub-agents and their status.
+fn render_task_panel(f: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .title(format!("Tasks ({})", app.sub_agents.len()));
+
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, (agent_id, state)) in app.sub_agents.iter().enumerate() {
+        let is_selected = matches!(&app.task_panel.focus, FocusTarget::TaskList(idx) if *idx == i);
+        let marker = if is_selected { ">" } else { " " };
+        let (status_icon, status_color) = match state.status {
+            SubAgentStatus::Running => ("●", Color::Cyan),
+            SubAgentStatus::Done => ("✓", Color::Green),
+        };
+        let files = format_files(&state.files, 20);
+        let time = format_time(state.started_at.elapsed());
+        let bg_color = if is_selected {
+            Color::DarkGray
+        } else {
+            Color::Reset
+        };
+
+        let spans = vec![
+            Span::styled(format!("{marker} "), Style::default().bg(bg_color)),
+            Span::styled(format!("{status_icon} "), Style::default().fg(status_color).bg(bg_color)),
+            Span::styled(format!("{:<12}", state.name), Style::default().bg(bg_color)),
+            Span::styled(format!("{:<20}", files), Style::default().fg(Color::DarkGray).bg(bg_color)),
+            Span::styled(format!("│ {:>5}", time), Style::default().fg(Color::DarkGray).bg(bg_color)),
+        ];
+        lines.push(Line::from(spans));
+    }
+
+    f.render_widget(Paragraph::new(lines), inner);
 }
 
 /// A centered modal popup showing the current approval request + y/a/n hint.

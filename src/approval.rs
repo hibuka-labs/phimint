@@ -153,11 +153,10 @@ fn command_action_key(command: &str) -> String {
 impl ToolPolicy for ApprovalPolicy {
     async fn evaluate_approval(&self, tool_name: &str, args: &Value) -> Option<ApprovalRequest> {
         match tool_name {
-            // Read-only context tools + verify/orchestration — always auto-approved.
-            // `decompose`/`merge` only read the workspace / run `cargo check`; the
-            // actual writes happen via write_file/edit_file, which are gated above.
-            "read_file" | "list_files" | "search_content" | "repo_map" | "verify" | "decompose"
-            | "merge" => None,
+            // Read-only context tools + verify — always auto-approved.
+            // `verify` only runs `cargo check`; the actual writes happen via
+            // write_file/edit_file, which are gated above.
+            "read_file" | "list_files" | "search_content" | "repo_map" | "verify" => None,
 
             // File mutations — prompt (Sensitive). `action_key` is scoped to the
             // path so `AllowAlways` grants a narrow standing approval (this file

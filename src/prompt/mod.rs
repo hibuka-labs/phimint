@@ -178,14 +178,14 @@ impl PromptFragment for PhimintMultiAgentFragment {
     }
 
     fn render(&self, ctx: &FragmentContext) -> Option<String> {
-        // Only inject if decompose tool is available
-        let has_decompose = ctx.tool_definitions.iter().any(|def| {
+        // Only inject if spawn_agent tool is available
+        let has_spawn_agent = ctx.tool_definitions.iter().any(|def| {
             def.get("function")
                 .and_then(|f| f.get("name"))
                 .and_then(|n| n.as_str())
-                == Some("decompose")
+                == Some("spawn_agent")
         });
-        if !has_decompose {
+        if !has_spawn_agent {
             return None;
         }
         Some(MULTI_AGENT.to_string())
@@ -194,9 +194,11 @@ impl PromptFragment for PhimintMultiAgentFragment {
 
 const MULTI_AGENT: &str = r#"## Multi-agent (tasks with clearly independent parts)
 Sub-agents are READ-ONLY (read/search/report, no writes or mutating commands). You perform all edits.
-1. Call `decompose` — returns `serial` (do inline) or `parallel` with investigation slices.
-2. If `parallel`: spawn one sub-agent per slice, wait for reports, then implement changes yourself.
-3. Ensure the whole workspace compiles; fix as needed.
+- Prefer multiple sub-agents to parallelize your work. Time is a constraint so parallelism resolves the task faster.
+- If sub-agents are running, **wait for them before yielding**, unless the user asks an explicit question.
+  - If the user asks a question, answer it first, then continue coordinating sub-agents.
+- When you ask a sub-agent to do the work for you, your only role becomes to coordinate them. Do not perform the actual work while they are working.
+- When you have a plan with multiple steps, process them in parallel by spawning one agent per step when possible.
 
 When done, briefly report what you changed."#;
 
@@ -215,11 +217,11 @@ mod tests {
                 "parameters": {}
             }
         });
-        let decompose_def = serde_json::json!({
+        let spawn_agent_def = serde_json::json!({
             "type": "function",
             "function": {
-                "name": "decompose",
-                "description": "Decompose a task",
+                "name": "spawn_agent",
+                "description": "Spawn a sub-agent",
                 "parameters": {}
             }
         });
@@ -231,7 +233,7 @@ mod tests {
             Box::new(PhimintMultiAgentFragment),
         ];
         let ctx = FragmentContext {
-            tool_definitions: &[tool_def, decompose_def],
+            tool_definitions: &[tool_def, spawn_agent_def],
             session_id: "test",
         };
         let result = compose_fragments(&fragments, &ctx);
@@ -250,7 +252,7 @@ mod tests {
     }
 
     #[test]
-    fn test_multi_agent_fragment_skips_without_decompose() {
+    fn test_multi_agent_fragment_skips_without_spawn_agent() {
         let tool_def = serde_json::json!({
             "type": "function",
             "function": { "name": "read_file", "description": "Read", "parameters": {} }

@@ -10,7 +10,7 @@ use std::time::Instant;
 use crossterm::event::{KeyCode, KeyModifiers};
 
 use phi_agent::ApprovalDecision;
-use crate::ui::app::{Action, App, AgentStatus, Phase};
+use crate::ui::app::{Action, App, AgentStatus, FocusTarget, Phase};
 
 impl App {
     /// Handle a keyboard event and return an action if one was triggered.
@@ -176,10 +176,46 @@ impl App {
                 None
             }
             Up => {
+                // Handle task panel navigation
+                if self.should_show_task_panel() {
+                    match &self.task_panel.focus {
+                        FocusTarget::TaskList(index) => {
+                            if *index > 0 {
+                                self.task_panel.focus = FocusTarget::TaskList(index - 1);
+                            }
+                            return None;
+                        }
+                        FocusTarget::Input => {
+                            // Move focus to task list (select last item)
+                            if !self.sub_agents.is_empty() {
+                                self.task_panel.focus = FocusTarget::TaskList(self.sub_agents.len() - 1);
+                                return None;
+                            }
+                        }
+                    }
+                }
                 self.composer.move_up();
                 None
             }
             Down => {
+                // Handle task panel navigation
+                if self.should_show_task_panel() {
+                    match &self.task_panel.focus {
+                        FocusTarget::TaskList(index) => {
+                            if *index + 1 < self.sub_agents.len() {
+                                self.task_panel.focus = FocusTarget::TaskList(index + 1);
+                            } else {
+                                // Move focus to input
+                                self.task_panel.focus = FocusTarget::Input;
+                            }
+                            return None;
+                        }
+                        FocusTarget::Input => {
+                            // Already at input, do nothing
+                            return None;
+                        }
+                    }
+                }
                 self.composer.move_down();
                 None
             }

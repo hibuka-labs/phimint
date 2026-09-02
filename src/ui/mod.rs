@@ -148,6 +148,11 @@ pub async fn run_tui(
             dirty = true;
         }
 
+        // Cleanup completed sub-agents (auto-remove after 3 seconds)
+        if app.cleanup_completed_agents() {
+            dirty = true;
+        }
+
         // Drain queued approval requests into the popup queue (one popup at a
         // time — the front of the queue is what gets rendered).
         if let Some(rx) = approval_rx.as_mut() {

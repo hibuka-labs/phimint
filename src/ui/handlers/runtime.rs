@@ -12,7 +12,7 @@
 use agent_base::{PlanStepStatus, UserEvent};
 use phi_agent::RuntimeEvent;
 
-use crate::ui::app::{App, AgentStatus, DiffHunk, LineKind, OutputLine, Phase, SubAgentStatus, ToolDetail};
+use crate::ui::app::{App, AgentStatus, DiffHunk, LineKind, OutputLine, Phase, SubAgentStatus, ToolDetail, ToolEvent};
 use crate::ui::diff::{diff_to_hunks, diff_to_hunks_indexed};
 use crate::ui::wrap::{one_line, wrap};
 
@@ -78,7 +78,21 @@ impl App {
             RuntimeEvent::TextDelta { text, agent_id, .. } => {
                 self.track_agent(agent_id.as_deref());
                 let flushed = self.stream.push_text(&text, agent_id.as_deref());
-                self.transcript.extend(flushed);
+                // Route flushed lines to the correct transcript
+                for line in flushed {
+                    if let Some(id) = agent_id.as_deref() {
+                        if !id.is_empty() {
+                            self.sub_agent_transcripts
+                                .entry(id.to_string())
+                                .or_default()
+                                .push(line);
+                        } else {
+                            self.transcript.push(line);
+                        }
+                    } else {
+                        self.transcript.push(line);
+                    }
+                }
                 self.status = AgentStatus::Running {
                     phase: Phase::Streaming,
                 };
@@ -86,7 +100,21 @@ impl App {
             RuntimeEvent::ThoughtDelta { text, agent_id, .. } => {
                 self.track_agent(agent_id.as_deref());
                 let flushed = self.stream.push_thought(&text, agent_id.as_deref());
-                self.transcript.extend(flushed);
+                // Route flushed lines to the correct transcript
+                for line in flushed {
+                    if let Some(id) = agent_id.as_deref() {
+                        if !id.is_empty() {
+                            self.sub_agent_transcripts
+                                .entry(id.to_string())
+                                .or_default()
+                                .push(line);
+                        } else {
+                            self.transcript.push(line);
+                        }
+                    } else {
+                        self.transcript.push(line);
+                    }
+                }
                 self.status = AgentStatus::Running {
                     phase: Phase::Thinking,
                 };
@@ -104,6 +132,16 @@ impl App {
                 // invocation line now, a result line on `ToolCallFinished`.
                 self.track_agent(agent_id.as_deref());
                 let prefix = agent_prefix(agent_id.as_deref());
+                // Update SubAgentState events
+                if let Some(id) = agent_id.as_deref() {
+                    if let Some(state) = self.sub_agents.get_mut(id) {
+                        state.events.push(ToolEvent {
+                            tool_name: tool_name.clone(),
+                            summary: String::new(),
+                            is_finished: false,
+                        });
+                    }
+                }
                 // `update_plan` renders as a plan block (see `PlanUpdated`), so both
                 // its invocation line (raw JSON args) and result line are noise —
                 // suppress them. Its status transition is still applied.
@@ -119,11 +157,24 @@ impl App {
                     } else {
                         format!("⏺ {prefix}{tool_name} {args}")
                     };
-                    self.transcript.push(OutputLine { spans: None, original: None,
+                    let line = OutputLine { spans: None, original: None,
                 detail,
                         text,
                         kind: LineKind::Tool,
-                    });
+                    };
+                    // Route to the correct transcript
+                    if let Some(id) = agent_id.as_deref() {
+                        if !id.is_empty() {
+                            self.sub_agent_transcripts
+                                .entry(id.to_string())
+                                .or_default()
+                                .push(line);
+                        } else {
+                            self.transcript.push(line);
+                        }
+                    } else {
+                        self.transcript.push(line);
+                    }
                 }
                 self.status = AgentStatus::Running {
                     phase: Phase::ToolCall { tool: tool_name },
@@ -139,6 +190,16 @@ impl App {
             } => {
                 self.track_agent(agent_id.as_deref());
                 let prefix = agent_prefix(agent_id.as_deref());
+                // Update SubAgentState events
+                if let Some(id) = agent_id.as_deref() {
+                    if let Some(state) = self.sub_agents.get_mut(id) {
+                        // Find the last unfinished event and mark it as finished
+                        if let Some(event) = state.events.iter_mut().rev().find(|e| !e.is_finished) {
+                            event.summary = summary.clone();
+                            event.is_finished = true;
+                        }
+                    }
+                }
                 // `update_plan` renders as a plan block (see `PlanUpdated`), so its
                 // tool-result line is redundant — suppress it. Everything else
                 // still finalizes the tool-progress state.
@@ -155,7 +216,20 @@ impl App {
                         };
                         (text, LineKind::ToolResult)
                     };
-                    self.transcript.push(OutputLine { spans: None, original: None, detail: None, text, kind });
+                    let line = OutputLine { spans: None, original: None, detail: None, text, kind };
+                    // Route to the correct transcript
+                    if let Some(id) = agent_id.as_deref() {
+                        if !id.is_empty() {
+                            self.sub_agent_transcripts
+                                .entry(id.to_string())
+                                .or_default()
+                                .push(line);
+                        } else {
+                            self.transcript.push(line);
+                        }
+                    } else {
+                        self.transcript.push(line);
+                    }
                 }
                 // Apply real file line numbers from tool metadata (edit_file returns edit_lines)
                 if let Some(ref det) = details {
@@ -270,12 +344,19 @@ impl App {
                 // that sub-agent done in the transcript + status strip).
                 match agent_id.as_deref() {
                     Some(p) if !p.is_empty() => {
-                        self.sub_agents.insert(p.to_string(), SubAgentStatus::Done);
-                        self.transcript.push(OutputLine { spans: None, original: None,
+                        if let Some(state) = self.sub_agents.get_mut(p) {
+                            state.status = SubAgentStatus::Done;
+                            state.completed_at = Some(std::time::Instant::now());
+                        }
+                        // Route to sub-agent transcript
+                        self.sub_agent_transcripts
+                            .entry(p.to_string())
+                            .or_default()
+                            .push(OutputLine { spans: None, original: None,
                 detail: None,
-                            text: format!("✓ [{p}] done"),
-                            kind: LineKind::Done,
-                        });
+                                text: format!("✓ [{p}] done"),
+                                kind: LineKind::Done,
+                            });
                     }
                     _ => {
                         // Root agent: just flush and set idle.  The actual
@@ -284,6 +365,7 @@ impl App {
                         self.status = AgentStatus::Idle;
                         self.running = false;
                         self.sub_agents.clear();
+                        self.sub_agent_transcripts.clear();
                         tracing::info!(
                             follow_bottom = self.viewport.follow_bottom,
                             scroll_offset = self.viewport.scroll_offset,
@@ -297,12 +379,19 @@ impl App {
                 self.flush_pending();
                 match agent_id.as_deref() {
                     Some(p) if !p.is_empty() => {
-                        self.sub_agents.insert(p.to_string(), SubAgentStatus::Done);
-                        self.transcript.push(OutputLine { spans: None, original: None,
+                        if let Some(state) = self.sub_agents.get_mut(p) {
+                            state.status = SubAgentStatus::Done;
+                            state.completed_at = Some(std::time::Instant::now());
+                        }
+                        // Route to sub-agent transcript
+                        self.sub_agent_transcripts
+                            .entry(p.to_string())
+                            .or_default()
+                            .push(OutputLine { spans: None, original: None,
                 detail: None,
-                            text: format!("✓ [{p}] done"),
-                            kind: LineKind::Done,
-                        });
+                                text: format!("✓ [{p}] done"),
+                                kind: LineKind::Done,
+                            });
                     }
                     _ => {
                         self.transcript.push(OutputLine { spans: None, original: None,
@@ -313,6 +402,7 @@ impl App {
                         self.status = AgentStatus::Idle;
                         self.running = false;
                         self.sub_agents.clear();
+                        self.sub_agent_transcripts.clear();
                         tracing::info!(
                             follow_bottom = self.viewport.follow_bottom,
                             scroll_offset = self.viewport.scroll_offset,

@@ -48,11 +48,64 @@ pub enum AgentStatus {
     Running { phase: Phase },
 }
 
-/// Live state of a sub-agent shown in the sub-agent status strip.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Live state of a sub-agent shown in the task panel.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubAgentStatus {
     Running,
     Done,
+}
+
+/// A tool call event from a sub-agent (for detail display).
+#[derive(Debug, Clone)]
+pub struct ToolEvent {
+    pub tool_name: String,
+    pub summary: String,
+    pub is_finished: bool,
+}
+
+/// Detailed state of a sub-agent for the task panel.
+#[derive(Debug, Clone)]
+pub struct SubAgentState {
+    /// Task name (from spawn_agent name argument)
+    pub name: String,
+    /// Current status
+    pub status: SubAgentStatus,
+    /// Key files (from spawn_agent task argument)
+    pub files: Vec<String>,
+    /// Task description (from spawn_agent task argument)
+    pub task: String,
+    /// Context info (from spawn_agent task argument)
+    pub context: String,
+    /// When the sub-agent started
+    pub started_at: Instant,
+    /// When the sub-agent completed (for auto-removal timing)
+    pub completed_at: Option<Instant>,
+    /// Tool call events (for detail display)
+    pub events: Vec<ToolEvent>,
+}
+
+/// Where the keyboard focus is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FocusTarget {
+    /// Focus is on the input box
+    Input,
+    /// Focus is on the task list, with the given index selected
+    TaskList(usize),
+}
+
+/// Task panel UI state.
+#[derive(Debug, Clone)]
+pub struct TaskPanel {
+    /// Current focus position
+    pub focus: FocusTarget,
+}
+
+impl Default for TaskPanel {
+    fn default() -> Self {
+        Self {
+            focus: FocusTarget::Input,
+        }
+    }
 }
 
 /// Visual kind of an output line (mapped to a ratatui style in render.rs).
@@ -167,7 +220,12 @@ pub struct App {
     /// Pending approval requests (front = the popup currently shown).
     pub approval_queue: VecDeque<ApprovalItem>,
     /// Live sub-agent states, keyed by `agent_id` (`root/<task_name>`).
-    pub sub_agents: BTreeMap<String, SubAgentStatus>,
+    pub sub_agents: BTreeMap<String, SubAgentState>,
+    /// Task panel UI state (focus, selection).
+    pub task_panel: TaskPanel,
+    /// Sub-agent transcripts (separate from main transcript).
+    /// Key: agent_id, value: output lines for that sub-agent.
+    pub sub_agent_transcripts: BTreeMap<String, Vec<OutputLine>>,
     /// Mouse selection + right-click copy menu.
     pub selection_state: SelectionState,
     /// Timestamp of the last "press Ctrl+C again to exit" hint. If set and
@@ -221,6 +279,8 @@ impl App {
             viewport: Viewport::new(),
             approval_queue: VecDeque::new(),
             sub_agents: BTreeMap::new(),
+            task_panel: TaskPanel::default(),
+            sub_agent_transcripts: BTreeMap::new(),
             selection_state: SelectionState::new(),
             quit_hint_at: None,
             mention: None,
@@ -334,7 +394,18 @@ impl App {
             // Any pending root text precedes the first sub-agent event, so flush
             // it before the `started` marker to keep transcript order correct.
             self.flush_pending();
-            self.sub_agents.insert(p.to_string(), SubAgentStatus::Running);
+            // Extract task name from agent_id (format: "root/<task_name>")
+            let name = p.split('/').last().unwrap_or(p).to_string();
+            self.sub_agents.insert(p.to_string(), SubAgentState {
+                name,
+                status: SubAgentStatus::Running,
+                files: Vec::new(),
+                task: String::new(),
+                context: String::new(),
+                started_at: Instant::now(),
+                completed_at: None,
+                events: Vec::new(),
+            });
             self.transcript.push(OutputLine { spans: None, original: None,
                 detail: None,
                 text: format!("⏺ [{p}] started"),
@@ -343,13 +414,67 @@ impl App {
         }
     }
 
+    /// Whether the task panel should be shown (has active sub-agents).
+    pub fn should_show_task_panel(&self) -> bool {
+        !self.sub_agents.is_empty()
+    }
+
+    /// Remove completed sub-agents that have been done for more than 3 seconds.
+    /// Returns true if any agents were removed.
+    pub fn cleanup_completed_agents(&mut self) -> bool {
+        let now = Instant::now();
+        let mut removed = false;
+        let ids_to_remove: Vec<String> = self.sub_agents.iter()
+            .filter(|(_, state)| {
+                state.status == SubAgentStatus::Done &&
+                state.completed_at.map_or(false, |at| now.duration_since(at).as_secs() >= 3)
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        for id in ids_to_remove {
+            self.sub_agents.remove(&id);
+            self.sub_agent_transcripts.remove(&id);
+            removed = true;
+        }
+
+        // Reset focus if it's now out of bounds
+        if let FocusTarget::TaskList(index) = &self.task_panel.focus {
+            if *index >= self.sub_agents.len() {
+                self.task_panel.focus = if self.sub_agents.is_empty() {
+                    FocusTarget::Input
+                } else {
+                    FocusTarget::TaskList(self.sub_agents.len() - 1)
+                };
+            }
+        }
+
+        removed
+    }
+
     /// Commit any pending streaming text/thought into the transcript (thought
     /// first, then prose). Called on structural events and turn end.
     pub(crate) fn flush_pending(&mut self) {
         let had_text = self.stream.has_pending_text();
         let had_thought = self.stream.has_pending_thought();
+        // Get the pending agent BEFORE flushing (flush takes it)
+        let pending_agent = self.stream.pending_agent().map(|s| s.to_string());
         let flushed = self.stream.flush();
-        self.transcript.extend(flushed);
+        // Route flushed lines to the correct transcript based on pending_agent
+        for line in flushed {
+            if let Some(ref agent_id) = pending_agent {
+                if !agent_id.is_empty() {
+                    self.sub_agent_transcripts
+                        .entry(agent_id.clone())
+                        .or_default()
+                        .push(line);
+                } else {
+                    self.transcript.push(line);
+                }
+            } else {
+                self.transcript.push(line);
+            }
+        }
         if had_text || had_thought {
             tracing::info!(
                 follow_bottom = self.viewport.follow_bottom,
@@ -697,3 +822,7 @@ pub fn agent_prefix(agent_id: Option<&str>) -> String {
 #[cfg(test)]
 #[path = "app_tests.rs"]
 mod app_tests;
+
+#[cfg(test)]
+#[path = "task_panel_tests.rs"]
+mod task_panel_tests;
