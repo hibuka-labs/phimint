@@ -1,8 +1,13 @@
 # 子 Agent 状态机设计（状态单一事实源）
 
-> 状态：设计阶段（2026-09-04）。源于 session 20260904_c6559510 复盘
-> （见 `docs/child-result-push-design.md` Phase 8-9 之后的第四次实战回归）。
-> P0/P1 修复已落地（注入限幅 + 出队标 Running），本设计是根治层。
+> 状态：设计已 review（2026-09-04 晚），可直接实施。源于 session 20260904_c6559510
+> 复盘（见 `docs/child-result-push-design.md` Phase 8-9 之后的第四次实战回归）。
+> 标记层修复批次已落地（注入限幅 + 出队标 Running），本设计是根治层。
+>
+> **P0/P1 标签消歧**：本文档说的 P0/P1 指 **c6559510 批次**（bug ② 注入限幅、
+> bug ① 出队标 Running）。20260904_efad759c 复盘批次（agent-base 53a9629 事件门、
+> c8c75db+37f6b03 guard 判据）与状态机**正交**——guard 判据在回合完成判定层，
+> 不读子 agent 状态，不受本设计影响。
 
 ## 问题
 
@@ -85,8 +90,31 @@ fn derive_status(queue_len: usize, in_flight: bool, registered: bool) -> AgentSt
   保留 `Idle` 会迫使模型区分"从没干过活"和"干完了"，徒增轮询理由。
 - **`send_task` 入队时不再需要标 Running**。排队期是 `Queued`，第一次出队才
   `Running`。"Queued 但从未 Running"和"Running 中又排队了"由事实自然区分。
-- **watcher 的 quiescence = `所有 agent: !in_flight && queue_len==0`**，
-  与"谁记得打标记"无关。
+- **watcher 的 quiescence 基础是事实**，与"谁记得打标记"无关。完整谓词见下节。
+
+### quiescence 谓词：三个事实（review 补强）
+
+只有 `in_flight`/`queue_len` 两个事实，quiescence 有一个结构性盲区：
+`spawn_agent` 工具里 `spawn_child_with_history` 和 `send_task` 是**两次 await**，
+中间 register 的 seq bump 会唤醒 watcher，此刻新 agent 派生为 Done（无队列、
+无在飞）——quiescence 对它成立。窗口内 batch 恰有兄弟结果时，会提前发出
+缺人批次的唤醒（c6559510 提前批次的近亲）。今天不炸靠两个偶然：窗口内
+batch 通常为空（`batch.is_empty() → continue` 挡住）、父 agent 已结束回合
+不会并发 spawn。状态机不靠偶然。
+
+**修正**：quiescence 谓词加第三个事实——**批次交付完备性**：
+
+```rust
+// 批次 quiescence = 三条同时成立
+//  1. 所有 agent: !in_flight && queue_len == 0        （没人干活）
+//  2. 批次内每个成员都交付过 ≥1 次结果                 （人人交齐）
+//  3. batch 非空                                       （有东西可唤醒）
+```
+
+事实 2 物理上现成：`ChildMailbox` 已有 `has_results` 访问器（`mailbox.rs`），
+`has_pending` 即 queue_len>0 的查询。**这才是 fan-in 的真实语义——
+"所有人交齐才唤醒"，而不是"没人干活了就唤醒"。** 它同时结构性封死
+spawn→send 窗口（新成员没交付过 → 谓词不成立 → 不提前唤醒）。
 
 ### 状态定义
 
@@ -108,6 +136,11 @@ pub enum AgentStatus {
 `Running` 附属 `since: Instant`（进入时刻），供 stall 检测使用
 （见 Phase 6）。`last_activity` / `tool_calls` 保留为 metrics 事实，
 不参与状态推导。
+
+**枚举变更影响面（已核实 2026-09-04）**：删除 Idle / 新增 Queued 的编译
+影响被锁在 agent-works 内部——phimint UI 用自己的 `ui::AgentStatus` /
+`SubAgentStatus`（Phase 5 才映射）、phi-agent 零引用、phi-kernel-tools
+`list_agents` 只消费字符串快照。Phase 1 可以放心动枚举。
 
 ### 单一事实源 + 生命周期广播
 
@@ -132,7 +165,7 @@ pub struct AgentLifecycleEvent {
 
 | 消费者 | 现状 | 改造后 |
 |--------|------|--------|
-| watcher quiescence | `registry.running_count() == 0`（读标记） | `snapshot: 所有 !in_flight && queue_len==0`（读事实）；时序不变式（Done-before-post 等）由派生规则**结构性保证**，不再依赖注释约束 |
+| watcher quiescence | `registry.running_count() == 0`（读标记） | 三事实谓词：`!in_flight && queue_len==0` + 批次交付完备（人人 ≥1 结果，见上节）；时序不变式（Done-before-post 等）由派生规则**结构性保证**，不再依赖注释约束 |
 | list_agents | status 字符串来自标记 | 来自派生状态；`Running` 附 `running_secs`（替代裸 `last_activity_secs`）；`Queued` 显示"排队中，结果稍后随批次到达" |
 | phimint UI 面板 | 自己从 Progress 事件推断 `SubAgentStatus` | 订阅同一快照（经 phimint 已有的事件桥）；映射 `Running/Queued→Running`、`Done→Done`、`Closed→移除`。Phase 5 可选——现状 UI 未出错，优先级最低 |
 | phimint 根状态 `Waiting{running}` | `running = sub_agents 表 Running 数` | `running = 快照中 in_flight‖queue 非空 数`（语义不变，来源变准） |
@@ -140,13 +173,13 @@ pub struct AgentLifecycleEvent {
 | guard | 不读子 agent 状态 | 不变（DefaultGuard 只判 text-only 结束） |
 | heartbeat reaper | 不存在（deferred） | Phase 6：`Running{since}` 超过 `max_wait` → 收割（现有 `task_timeout` 10min 的框架级推广） |
 
-### 与 P1 修复的关系
+### 与标记层修复（c6559510 批次）的关系
 
-`spawn.rs` 刚落地的出队 peek（`try_recv` → 有任务标 Running / 无则标 Done，
+`spawn.rs` 已落地的出队 peek（`try_recv` → 有任务标 Running / 无则标 Done，
 然后才 `post_result`）是本设计的第一块砖：它把"正确事实"写进了正确时点。
 状态机改造把这一步**从调用方义务变成结构性必然**——`run_child_loop` 不再
 `set_status`，只做"出队（事实）"和"post（事实）"，状态自己长出来。
-P1 的回归测试 `test_queued_task_does_not_fire_premature_batch` 原样保留，
+回归测试 `test_queued_task_does_not_fire_premature_batch` 原样保留，
 是本次改造最重要的验收用例。
 
 ### 错误与取消场景
@@ -158,24 +191,32 @@ P1 的回归测试 `test_queued_task_does_not_fire_premature_batch` 原样保留
   任务边界生效，状态机不需要知道。
 - **进程级 cancel_all**：逐个走注销 → Closed。
 
-## 已落地的前置工作（2026-09-04，本次修复批次）
+## 已落地的前置工作（2026-09-04）
 
-- [x] **P0 注入限幅**：phimint `child_results.rs` 单报告 24k 字符截断（带可见标记）；
-      phi-agent builder `max_message_tokens` 50k→120k——bug ② 双侧封堵
-- [x] **P1 出队标 Running**：`spawn.rs` `run_child_loop` 出队 peek（`try_recv`），
-      有排队任务 post 前标 Running、无则 Done——bug ① 的标记层修复
-      （回归测试 `test_queued_task_does_not_fire_premature_batch`）
-- [x] **list_agents 描述重写** + **prompt 软约束修补**（无条件 end-turn、禁轮询/
+- [x] **标记层修复批次（c6559510，注意与 efad759c 批次的 P0/P1 标签区分，见文首）**：
+      **注入限幅**——phimint `child_results.rs` 单报告 24k 字符截断（带可见标记）、
+      phi-agent builder `max_message_tokens` 50k→120k（bug ② 双侧封堵）；
+      **出队标 Running**——`spawn.rs` `run_child_loop` 出队 peek（`try_recv`），
+      有排队任务 post 前标 Running、无则 Done（bug ① 的标记层修复，
+      回归测试 `test_queued_task_does_not_fire_premature_batch`）；
+      **list_agents 描述重写** + **prompt 软约束修补**（无条件 end-turn、禁轮询/
       禁 nudge/禁中途 close，带 guard 测试）
+- [x] **efad759c 复盘批次（与本设计正交）**：agent-base 53a9629（tool_call 后
+      text/thought 事件不再吞）、phi-kernel-tools 2abfcdb（spawn task 3-5 句 +
+      静态报告脚手架）、guard 判据 c8c75db+37f6b03（未执行的 tool_call 不得判完成）
+- [x] **实战验证 d1020cc6（2026-09-04 晚）**：同 prompt 重跑，机制+行为双零故障
+      （4/4 spawn、0 轮询、fan-in 一次注入，双零详见记忆 child-result-push）——标记层修复全数生效
 
-P1 仍是"调用方负责打对标记"。以下 Phase 把它变成结构性必然。
+标记层仍是"调用方负责打对标记"。以下 Phase 把它变成结构性必然。
 
 ## 实现步骤
 
 ### Phase 1：registry 事实化
 - [ ] `AgentEntry` 增加 `queue_len: usize`、`in_flight: bool`（`since: Instant`）
 - [ ] `status()` 改为派生纯函数；`set_status` 删除，改为 `note_enqueued/dequeued/posted/unregistered`
-- [ ] `runtime.send_task` / `run_child_loop` 出队 / `post_result` 三处调用点接线
+- [ ] 三处生产调用点接线：`runtime.rs:269`（send_task→Running 改 note_enqueued）、
+      `spawn.rs:613`（post→Running/Done 改 dequeued+posted）、
+      `spawn.rs:231`（spawn→Idle **直接删**——派生规则下 spawn 不产生状态转移）
 - [ ] 回归：`test_queued_task_does_not_fire_premature_batch` 继续绿；registry 单测改写
 
 ### Phase 2：生命周期广播
@@ -184,7 +225,8 @@ P1 仍是"调用方负责打对标记"。以下 Phase 把它变成结构性必�
 - [ ] 文档不变式更新（watcher.rs 模块注释从"调用方必须…"改为"派生保证…"）
 
 ### Phase 3：watcher 改读事实
-- [ ] quiescence 判断从 `running_count()` 换成快照谓词
+- [ ] quiescence 换成三事实谓词：`running_count()` → `!in_flight && queue_len==0`
+      **+ 批次交付完备**（每成员 ≥1 结果，`has_results` 现成）——封死 spawn→send 窗口
 - [ ] 全量 watcher 测试不改动语义（现测试即验收）
 
 ### Phase 4：状态语义透出（phi-kernel-tools）
@@ -219,7 +261,7 @@ P1 仍是"调用方负责打对标记"。以下 Phase 把它变成结构性必�
 - `src/multi_agent/registry.rs` — AgentEntry/AgentStatus，Phase 1 主战场
 - `src/multi_agent/runtime.rs` — send_task 入队事实（:269 现标 Running 处）
 - `src/multi_agent/runtime/spawn.rs` — run_child_loop 出队/post 事实（P1 已改）
-- `src/multi_agent/runtime/watcher.rs` — quiescence 消费者（:218）
+- `src/multi_agent/runtime/watcher.rs` — quiescence 消费者（:242，2026-09-04 核实）
 - `src/multi_agent/mailbox.rs` — 队列本体（事实的物理来源）
 - `src/multi_agent/runtime/tests/lifecycle.rs` — 回归测试
 
