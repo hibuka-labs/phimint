@@ -54,6 +54,15 @@ enum Cmd {
     Quit,
 }
 
+/// Liveness tick: while a turn or a child wait is in flight, re-render at
+/// least this often even with zero events, so the spinner/elapsed readout in
+/// the status bar advance through silent stretches (a long LLM call emits no
+/// events — the old purely event-driven loop froze the whole screen for its
+/// full duration, session 20260904_e6612477 "卡一会"). Tick-only redraws are
+/// NOT captured to frames.txt — an animated status bar would otherwise defeat
+/// the flipbook's content dedup (~4 frames/s of nothing but spinner motion).
+const UI_TICK: Duration = Duration::from_millis(250);
+
 /// Run the interactive ratatui TUI until the user quits.
 ///
 /// Takes ownership of the agent/session because the turn runner lives in a
@@ -179,6 +188,8 @@ pub async fn run_tui(
     // `dirty` gates the offscreen snapshot: only re-render when state changed,
     // and then at most once per the capture interval.
     let mut dirty = true; // capture the initial screen
+    // Last real render time — drives the UI_TICK liveness redraw.
+    let mut last_draw = Instant::now();
 
     let mut quit = false;
     // Child-result delivery (fan-in redesign). The watcher coordinates: a
@@ -350,10 +361,20 @@ pub async fn run_tui(
             std::thread::sleep(Duration::from_millis(2));
         }
 
+        // Liveness tick: active (Running/Waiting) with no events this
+        // iteration → redraw so spinner/elapsed advance. Tick-only frames are
+        // drawn but not captured (see UI_TICK).
+        let mut tick_fired = false;
+        if !dirty && app.is_active() && last_draw.elapsed() >= UI_TICK {
+            dirty = true;
+            tick_fired = true;
+        }
+
         // Only redraw when state actually changed (dirty flag). With a 2 ms
         // poll timeout the idle loop would otherwise burn ~500 useless draws/s.
         let mut draw_elapsed = Duration::ZERO;
         if dirty {
+            last_draw = Instant::now();
             let draw_start = Instant::now();
             terminal.draw(|f| render::draw(f, &mut app))?;
             draw_elapsed = draw_start.elapsed();
@@ -370,7 +391,7 @@ pub async fn run_tui(
         let mut capture_elapsed = Duration::ZERO;
         if dirty {
             let size = terminal.size()?;
-            capture_elapsed = frames.capture(true, &mut app, size.width, size.height);
+            capture_elapsed = frames.capture(!tick_fired, &mut app, size.width, size.height);
         }
         let loop_elapsed = loop_start.elapsed();
         // Log every frame to perf.log (CSV) for post-hoc analysis.

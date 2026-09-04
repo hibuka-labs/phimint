@@ -63,6 +63,32 @@ fn build_tool_detail(tool_name: &str, args_json: &str) -> Option<ToolDetail> {
     }
 }
 
+/// Compact invocation text for `spawn_agent`: `⏺ spawn_agent <name> — <task
+/// first line>`. The raw args JSON is a multi-KB dump (the full self-contained
+/// task text) — in session 20260904_e6612477 its invisible tail was the dead
+/// air of a 20 s LLM call. Name + one task line is all the transcript needs;
+/// the task panel and the tool result carry the rest. `None` → the caller
+/// falls back to the generic rendering.
+fn spawn_invocation_text(args_json: &str, max_cols: usize, prefix: &str) -> Option<String> {
+    let args: serde_json::Value = serde_json::from_str(args_json).ok()?;
+    let name = args.get("task_name").and_then(|v| v.as_str())?;
+    let head = args
+        .get("task")
+        .and_then(|v| v.as_str())
+        .and_then(|t| t.lines().next())
+        .unwrap_or("")
+        .trim();
+    let budget = max_cols
+        .saturating_sub(2 + prefix.chars().count() + "spawn_agent ".len() + name.chars().count() + 3)
+        .max(16);
+    let head = one_line(head, budget);
+    Some(if head.is_empty() {
+        format!("⏺ {prefix}spawn_agent {name}")
+    } else {
+        format!("⏺ {prefix}spawn_agent {name} — {head}")
+    })
+}
+
 /// Prefix for sub-agent output lines (e.g., `[task_name] `).
 fn agent_prefix(agent_id: Option<&str>) -> String {
     match agent_id {
@@ -78,6 +104,11 @@ impl App {
     /// Running.
     fn note_activity(&mut self, agent_id: Option<&str>, phase: Phase) {
         if agent_id.map_or(true, |id| id.is_empty()) {
+            // A fresh Running stretch (Idle → Running) starts the spinner
+            // clock; Waiting keeps it — the wait belongs to the same stretch.
+            if matches!(self.status, AgentStatus::Idle) {
+                self.activity_since = Some(std::time::Instant::now());
+            }
             self.status = AgentStatus::Running { phase };
         }
     }
@@ -171,11 +202,16 @@ impl App {
                     // the renderer expands the diff block below it.
                     let detail = build_tool_detail(&tool_name, &args_json);
                     let max_cols = self.transcript.wrap_width().saturating_sub(20).max(40);
-                    let args = one_line(&args_json, max_cols);
-                    let text = if args.is_empty() {
-                        format!("⏺ {prefix}{tool_name}")
+                    let text = if tool_name == "spawn_agent" {
+                        spawn_invocation_text(&args_json, max_cols, &prefix)
+                            .unwrap_or_else(|| format!("⏺ {prefix}{tool_name}"))
                     } else {
-                        format!("⏺ {prefix}{tool_name} {args}")
+                        let args = one_line(&args_json, max_cols);
+                        if args.is_empty() {
+                            format!("⏺ {prefix}{tool_name}")
+                        } else {
+                            format!("⏺ {prefix}{tool_name} {args}")
+                        }
                     };
                     let line = OutputLine { spans: None, original: None,
                 detail,
@@ -397,6 +433,7 @@ impl App {
                             self.sub_agents.clear();
                             self.sub_agent_transcripts.clear();
                             self.child_streams.clear();
+                            self.activity_since = None;
                         }
                         tracing::info!(
                             follow_bottom = self.viewport.follow_bottom,
@@ -439,6 +476,7 @@ impl App {
                         });
                         self.status = AgentStatus::Idle;
                         self.running = false;
+                        self.activity_since = None;
                         self.sub_agents.clear();
                         self.sub_agent_transcripts.clear();
                         self.child_streams.clear();

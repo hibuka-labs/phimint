@@ -273,6 +273,13 @@ pub struct App {
     pub(crate) live_progress: Option<String>,
     /// Transient status-bar notice (e.g. "📋 copied …"), cleared on the next key.
     pub(crate) notice: Option<String>,
+    /// When the current Running/Waiting stretch began — drives the spinner and
+    /// the elapsed readout in the status bar. `None` while Idle. The event loop
+    /// has no other clock source: with zero events it never redraws, so a
+    /// silent LLM call used to freeze the whole screen (session
+    /// 20260904_e6612477 "卡一会"). The ~250 ms tick re-renders while this is
+    /// set, keeping spinner/elapsed alive through event-less stretches.
+    pub(crate) activity_since: Option<Instant>,
 }
 
 impl Default for App {
@@ -307,6 +314,7 @@ impl App {
             child_streams: BTreeMap::new(),
             live_progress: None,
             notice: None,
+            activity_since: None,
         }
     }
 
@@ -413,6 +421,7 @@ impl App {
                 });
             }
             self.status = AgentStatus::Idle;
+            self.activity_since = None;
             self.sub_agents.clear();
             self.sub_agent_transcripts.clear();
             self.child_streams.clear();
@@ -895,6 +904,37 @@ impl App {
         self.viewport.scroll_down(SCROLL_STEP)
     }
 
+    /// True while a turn or a child wait is in flight — gates the event loop's
+    /// liveness tick (spinner/elapsed need periodic redraws even with zero
+    /// events; see `activity_since`).
+    pub fn is_active(&self) -> bool {
+        !matches!(self.status, AgentStatus::Idle)
+    }
+
+    /// Braille spinner frame for the current activity stretch (advances every
+    /// 120 ms). Static when idle.
+    pub(crate) fn spinner_char(&self) -> &'static str {
+        const FRAMES: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
+        let ms = self.activity_since.map_or(0, |t| t.elapsed().as_millis());
+        FRAMES[(ms / 120) as usize % FRAMES.len()]
+    }
+
+    /// ` · 42s`-style elapsed readout for the active stretch (empty when idle).
+    /// Rounded up so a just-started stretch doesn't read as "0s".
+    fn elapsed_suffix(&self) -> String {
+        match self.activity_since {
+            Some(t) => {
+                let s = t.elapsed().as_secs() + 1;
+                if s < 60 {
+                    format!(" · {s}s")
+                } else {
+                    format!(" · {}m{:02}s", s / 60, s % 60)
+                }
+            }
+            None => String::new(),
+        }
+    }
+
     /// The status-bar text for the current state (§9.6).
     pub fn status_line(&self) -> String {
         match &self.status {
@@ -906,14 +946,26 @@ impl App {
                 }
             }
             AgentStatus::Waiting { running } => {
-                format!("⏳ 等待子 agent 返回（{running} 个运行中）… 结果到达后自动继续")
+                format!(
+                    "{} ⏳ 等待子 agent 返回（{running} 个运行中）…{} 结果到达后自动继续",
+                    self.spinner_char(),
+                    self.elapsed_suffix()
+                )
             }
             AgentStatus::Running { phase } => match phase {
-                Phase::Thinking => "🤔 thinking… (Ctrl+C cancel)".to_string(),
-                Phase::Streaming => "💬 streaming… (Ctrl+C cancel)".to_string(),
+                Phase::Thinking => {
+                    format!("{} thinking…{} (Ctrl+C cancel)", self.spinner_char(), self.elapsed_suffix())
+                }
+                Phase::Streaming => {
+                    format!("{} streaming…{} (Ctrl+C cancel)", self.spinner_char(), self.elapsed_suffix())
+                }
                 Phase::ToolCall { tool } => match &self.live_progress {
-                    Some(p) => format!("🔧 {tool}: {p}"),
-                    None => format!("🔧 {tool} (Ctrl+C cancel)"),
+                    Some(p) => {
+                        format!("{} 🔧 {tool}: {p}{}", self.spinner_char(), self.elapsed_suffix())
+                    }
+                    None => {
+                        format!("{} 🔧 {tool}{} (Ctrl+C cancel)", self.spinner_char(), self.elapsed_suffix())
+                    }
                 },
                 Phase::AwaitingApproval => "⚠️ waiting approval… (y/a/n, Ctrl+C cancel)".to_string(),
             },

@@ -267,7 +267,11 @@ fn submit_echoes_user_message() {
 fn progress_updates_and_clears_live_progress() {
     let mut app = App::new();
     app.handle_event(TuiEvent::Runtime(tool_started("execute_command")));
-    assert_eq!(app.status_line(), "🔧 execute_command (Ctrl+C cancel)");
+    // The status line now carries a spinner frame + elapsed readout (the
+    // liveness tick redraws it); assert the stable parts.
+    let line = app.status_line();
+    assert!(line.contains("🔧 execute_command"), "got: {line}");
+    assert!(line.contains("(Ctrl+C cancel)"), "got: {line}");
 
     let prog = RuntimeEvent::UserEvent {
         session_id: SessionId::new(1),
@@ -278,14 +282,68 @@ fn progress_updates_and_clears_live_progress() {
         trace_id: None,
     };
     app.handle_event(TuiEvent::Runtime(prog));
-    assert_eq!(
-        app.status_line(),
-        "🔧 execute_command: Compiling phimint v0.1.0"
+    let line = app.status_line();
+    assert!(
+        line.contains("🔧 execute_command: Compiling phimint v0.1.0"),
+        "got: {line}"
     );
 
     // A new tool call drops the previous tool's live progress.
     app.handle_event(TuiEvent::Runtime(tool_started("read_file")));
-    assert_eq!(app.status_line(), "🔧 read_file (Ctrl+C cancel)");
+    let line = app.status_line();
+    assert!(line.contains("🔧 read_file"), "got: {line}");
+    assert!(!line.contains("Compiling"), "stale progress must drop, got: {line}");
+}
+
+#[test]
+fn spawn_agent_invocation_line_is_compacted() {
+    let mut app = App::new();
+    let args = serde_json::json!({
+        "task_name": "analyze-pi",
+        "task": "分析 /Users/me/pi 工程的 agent 循环\n然后还要看工具系统\n报告带文件行号"
+    })
+    .to_string();
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallStarted {
+        session_id: SessionId::new(1),
+        tool_name: "spawn_agent".to_string(),
+        args_json: args,
+        agent_id: None,
+        trace_id: None,
+    }));
+    let last = app.transcript.output.last().unwrap();
+    assert!(
+        last.text.starts_with("⏺ spawn_agent analyze-pi — 分析 /Users/me/pi 工程的 agent 循环"),
+        "got: {}",
+        last.text
+    );
+    assert!(!last.text.contains("然后还要看"), "must not dump the full task");
+}
+
+#[test]
+fn activity_clock_follows_root_status() {
+    let mut app = App::new();
+    assert!(!app.is_active());
+    assert_eq!(app.spinner_char(), "⠋"); // idle: static first frame
+    assert_eq!(app.elapsed_suffix(), "");
+
+    app.handle_event(TuiEvent::Runtime(tool_started("read_file")));
+    assert!(app.is_active());
+    assert!(app.activity_since.is_some());
+    let line = app.status_line();
+    assert!(line.contains("· "), "running status carries elapsed, got: {line}");
+
+    // Turn settles with no children → Idle clears the clock.
+    app.settle_after_turn(false);
+    assert!(!app.is_active());
+    assert!(app.activity_since.is_none());
+    assert_eq!(app.spinner_char(), "⠋");
+}
+
+#[test]
+fn elapsed_suffix_formats_minutes() {
+    let mut app = App::new();
+    app.activity_since = Some(Instant::now() - std::time::Duration::from_secs(91));
+    assert_eq!(app.elapsed_suffix(), " · 1m32s");
 }
 
 #[test]

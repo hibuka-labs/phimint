@@ -6,7 +6,7 @@
 use std::time::{Duration, Instant};
 
 use super::*;
-use crate::ui::app::{App, FocusTarget, LineKind, OutputLine, SubAgentState, SubAgentStatus};
+use crate::ui::app::{App, FocusTarget, LineKind, OutputLine, SubAgentState, SubAgentStatus, ToolEvent};
 use phi_agent::{RuntimeEvent, SessionId};
 
 // ── Mock Event Builders ──────────────────────────────────────────────────────
@@ -521,6 +521,83 @@ fn cleanup_with_no_completed_at() {
     // Cleanup should not remove it
     assert!(!app.cleanup_completed_agents());
     assert!(app.sub_agents.contains_key("root/auth"));
+}
+
+// ── Panel Rendering (activity column + timer freeze, 20260904 UX batch) ─────
+
+/// Insert a SubAgentState with a preset tool event.
+fn insert_agent_with_event(app: &mut App, agent_id: &str, name: &str, tool: &str, finished: bool) {
+    let mut state = mock_sub_agent(name, SubAgentStatus::Running);
+    state.events.push(ToolEvent {
+        tool_name: tool.to_string(),
+        summary: String::new(),
+        is_finished: finished,
+    });
+    app.sub_agents.insert(agent_id.to_string(), state);
+}
+
+#[test]
+fn panel_shows_frozen_time_for_done_agents() {
+    let mut app = App::new();
+    let mut state = mock_completed_agent("auth", 10);
+    // Started 65 s ago, finished 10 s ago → final runtime 55 s, frozen.
+    state.started_at = Instant::now() - Duration::from_secs(65);
+    state.completed_at = Some(Instant::now() - Duration::from_secs(10));
+    app.sub_agents.insert("root/auth".to_string(), state);
+
+    let snap = crate::ui::render::snapshot_text(&mut app, 100, 30);
+    assert!(
+        snap.contains("│   55s"),
+        "done agent's runtime must freeze at completed-started, got:\n{snap}"
+    );
+}
+
+#[test]
+fn panel_activity_column_shows_latest_tool() {
+    let mut app = App::new();
+    insert_agent_with_event(&mut app, "root/auth", "auth", "read_file", false);
+
+    let snap = crate::ui::render::snapshot_text(&mut app, 100, 30);
+    assert!(
+        snap.contains("→ read_file"),
+        "panel must show the in-flight tool, got:\n{snap}"
+    );
+
+    // Finished → the checkmark form.
+    app.handle_event(TuiEvent::Runtime(
+        sub_tool_finished("root/auth", "read_file", "10 lines"),
+    ));
+    let snap = crate::ui::render::snapshot_text(&mut app, 100, 30);
+    assert!(
+        snap.contains("✓ read_file"),
+        "finished tool must show as ✓, got:\n{snap}"
+    );
+}
+
+#[test]
+fn panel_columns_align_with_long_names() {
+    let mut app = App::new();
+    insert_agent_with_event(
+        &mut app,
+        "root/analyze-deepseek-harness",
+        "analyze-deepseek-harness",
+        "read_file",
+        false,
+    );
+    insert_agent_with_event(&mut app, "root/pi", "pi", "read_file", false);
+
+    let snap = crate::ui::render::snapshot_text(&mut app, 100, 30);
+    // Name column capped at 16 → the long name is ellipsized instead of
+    // shoving the later columns out of alignment.
+    assert!(snap.contains("analyze-deepsee…"), "got:\n{snap}");
+    // Both rows' time column (│) must sit at the same character position.
+    let cols: Vec<usize> = snap
+        .lines()
+        .filter(|l| l.contains("analyze-deepsee…") || l.contains(" pi "))
+        .filter_map(|l| l.find('│'))
+        .collect();
+    assert_eq!(cols.len(), 2, "both panel rows expected, got:\n{snap}");
+    assert_eq!(cols[0], cols[1], "time column must align, got:\n{snap}");
 }
 
 // ── Visibility Guarantees (session 20260903 fan-in) ──────────────────────────

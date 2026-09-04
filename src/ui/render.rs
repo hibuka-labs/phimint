@@ -482,6 +482,16 @@ fn format_time(elapsed: std::time::Duration) -> String {
     }
 }
 
+/// Char-safe truncation to exactly `max` chars, ellipsis-terminated.
+fn ellipsize(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let head: String = s.chars().take(max.saturating_sub(1)).collect();
+        format!("{head}…")
+    }
+}
+
 /// Render the task panel showing sub-agents and their status.
 fn render_task_panel(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
@@ -492,6 +502,21 @@ fn render_task_panel(f: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
+    // Column widths adapt to content: the longest name sets the name column
+    // (capped — `analyze-deepseek-harness` must not shove later columns out
+    // of alignment), and the activity column takes whatever width is left.
+    let name_w = app
+        .sub_agents
+        .values()
+        .map(|s| s.name.chars().count())
+        .max()
+        .unwrap_or(0)
+        .clamp(8, 16);
+    let files_w = 20usize;
+    // marker+" ", icon+" ", `│ `+5 for the time column.
+    let fixed_w = 2 + 2 + name_w + files_w + 2 + 5;
+    let act_w = (inner.width as usize).saturating_sub(fixed_w).min(30);
+
     let mut lines: Vec<Line> = Vec::new();
     for (i, (agent_id, state)) in app.sub_agents.iter().enumerate() {
         let is_selected = matches!(&app.task_panel.focus, FocusTarget::TaskList(idx) if *idx == i);
@@ -501,7 +526,29 @@ fn render_task_panel(f: &mut Frame, app: &App, area: Rect) {
             SubAgentStatus::Done => ("✓", Color::Green),
         };
         let files = format_files(&state.files, 20);
-        let time = format_time(state.started_at.elapsed());
+        // Done agents show their final runtime; only Running ones keep ticking.
+        let time = format_time(match state.completed_at {
+            Some(at) => at.duration_since(state.started_at),
+            None => state.started_at.elapsed(),
+        });
+        // Current activity = the latest tool event (→ in flight, ✓ finished).
+        // Kept to a tool name — the child's detail view has the full history.
+        let activity = if act_w > 6 {
+            state
+                .events
+                .last()
+                .map(|e| {
+                    let (mark, color) = if e.is_finished {
+                        ("✓", Color::DarkGray)
+                    } else {
+                        ("→", Color::Reset)
+                    };
+                    (ellipsize(&format!("{mark} {}", e.tool_name), act_w), color)
+                })
+                .unwrap_or((String::new(), Color::Reset))
+        } else {
+            (String::new(), Color::Reset)
+        };
         let bg_color = if is_selected {
             Color::DarkGray
         } else {
@@ -511,8 +558,12 @@ fn render_task_panel(f: &mut Frame, app: &App, area: Rect) {
         let spans = vec![
             Span::styled(format!("{marker} "), Style::default().bg(bg_color)),
             Span::styled(format!("{status_icon} "), Style::default().fg(status_color).bg(bg_color)),
-            Span::styled(format!("{:<12}", state.name), Style::default().bg(bg_color)),
-            Span::styled(format!("{:<20}", files), Style::default().fg(Color::DarkGray).bg(bg_color)),
+            Span::styled(format!("{:<name_w$}", ellipsize(&state.name, name_w)), Style::default().bg(bg_color)),
+            Span::styled(
+                format!("{:<act_w$}", activity.0),
+                Style::default().fg(activity.1).bg(bg_color),
+            ),
+            Span::styled(format!("{:<files_w$}", files), Style::default().fg(Color::DarkGray).bg(bg_color)),
             Span::styled(format!("│ {:>5}", time), Style::default().fg(Color::DarkGray).bg(bg_color)),
         ];
         lines.push(Line::from(spans));
