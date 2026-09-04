@@ -100,6 +100,22 @@ pub async fn run_tui(
     // inject after the current turn ends (agent running).
     let (_watcher_handle, mut child_result_rx) = if let Some(ma_rt) = agent.multi_agent_runtime() {
         let (h, cr) = ma_rt.start_watcher();
+
+        // Phase 5: forward registry lifecycle snapshots into the UI event
+        // stream. The task panel reconciles against these facts (entries
+        // appear at spawn, before the child's first tool call) instead of
+        // inferring state purely from child runtime events.
+        let mut life_rx = ma_rt.subscribe_lifecycle();
+        let life_tx = event_tx.clone();
+        tokio::spawn(async move {
+            while life_rx.changed().await.is_ok() {
+                let snap = life_rx.borrow_and_update().clone();
+                if life_tx.send(TuiEvent::Lifecycle(snap)).is_err() {
+                    break; // UI loop gone
+                }
+            }
+        });
+
         (Some(h), Some(cr))
     } else {
         (None, None)

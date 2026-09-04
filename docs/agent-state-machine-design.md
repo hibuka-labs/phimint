@@ -282,9 +282,17 @@ pub struct AgentLifecycleEvent {
 - [x] 描述文字与状态机对齐（"done = 结果已投递或即将随批次到达"）；
       close 输出测试桩的 "idle" 字符串改 "done"（旧词表消失）
 
-### Phase 5：phimint UI 订阅快照（可选）
-- [ ] 事件桥透传 lifecycle 快照；`SubAgentStatus` 映射
-- [ ] 根状态 `Waiting{running}` 改读快照
+### Phase 5：phimint UI 订阅快照（可选）（✅ 2026-09-05）
+- [x] 事件桥透传 lifecycle 快照（`TuiEvent::Lifecycle`，`subscribe_lifecycle`
+      watch → UI 事件流）；`SubAgentStatus` 映射：`queued`/`running`→Running、
+      `done`→Done、快照消失（unregister=正常退出或 close）→Done 但**不移除**
+      （3s reaper 保留 review 窗口）；未知 `done` 不插入（新注册 agent 在首个
+      send_task 前读 done，插入即幽灵条目）；条目在 spawn 时刻即出现，
+      不再等子 agent 首次工具调用
+- [x] 根状态 `Waiting{running}` 改读快照——经面板条目事实化间接达成：
+      条目存在性与状态完全由快照维护，`refresh_waiting_count` 每个快照重算
+- 回归 +6（task_panel_tests）：spawn 即建条目、running↔done 双向翻转、
+  未知 done 不插入、消失保条目、Waiting 计数同步
 
 ### Phase 6：heartbeat reaper（stall 收割）
 - [ ] `max_wait`（默认待定，建议 15min > task_timeout 10min）到期收割

@@ -13,6 +13,8 @@ use std::time::Instant;
 use crossterm::event::{KeyCode, KeyModifiers};
 use phi_agent::{ApprovalDecision, ApprovalRequest, RuntimeEvent};
 
+use agent_works::multi_agent::registry::RegistrySnapshot;
+
 use crate::approval::ApprovalItem;
 use crate::banner::{BannerRow, ColorScheme, SpanSpec};
 use crate::ui::input::Composer;
@@ -204,6 +206,11 @@ pub enum Action {
 #[derive(Debug)]
 pub enum TuiEvent {
     Runtime(RuntimeEvent),
+    /// Registry lifecycle snapshot (Phase 5): the authoritative fact view of
+    /// every registered sub-agent, forwarded from `subscribe_lifecycle`. The
+    /// task panel reconciles against this instead of inferring state from
+    /// child runtime events.
+    Lifecycle(std::sync::Arc<RegistrySnapshot>),
     /// A turn ended with an error (surfaced as a red output line).
     TurnError(String),
     /// A turn completed (safety net in case `RunFinished` was never seen).
@@ -390,6 +397,7 @@ impl App {
                 }
                 self.settle_after_turn(false);
             }
+            TuiEvent::Lifecycle(snap) => self.apply_lifecycle_snapshot(&snap),
             TuiEvent::TurnDone => {
                 self.flush_pending();
                 self.settle_after_turn(true);
@@ -506,6 +514,53 @@ impl App {
     /// Whether the task panel should be shown (has active sub-agents).
     pub fn should_show_task_panel(&self) -> bool {
         !self.sub_agents.is_empty()
+    }
+
+    /// Reconcile the task panel against the registry's authoritative fact
+    /// snapshot (Phase 5: `subscribe_lifecycle` watch → `TuiEvent::Lifecycle`).
+    ///
+    /// Mapping (design doc `agent-state-machine-design.md` Phase 5):
+    /// `queued`/`running` → panel `Running`, `done` → panel `Done`,
+    /// disappearance (unregistration: normal exit after posting, or close)
+    /// → panel `Done`, never removal — the 3s reaper owns removal so the
+    /// user keeps the review window. Unknown `done` agents are ignored: a
+    /// freshly registered agent reads `done` until its first `send_task`,
+    /// and entries should appear with the first fact of real work, not as
+    /// phantom dones.
+    pub(crate) fn apply_lifecycle_snapshot(&mut self, snap: &RegistrySnapshot) {
+        for agent in &snap.agents {
+            let running_fact = matches!(agent.status.as_str(), "queued" | "running");
+            if running_fact {
+                // Creates the entry (with the `⏺ started` transcript marker)
+                // at spawn time — before the child's first tool call, which
+                // is when the event-driven path used to discover it.
+                self.track_agent(Some(&agent.path));
+            }
+            if let Some(state) = self.sub_agents.get_mut(&agent.path) {
+                match (&state.status, running_fact) {
+                    (SubAgentStatus::Running, false) => {
+                        state.status = SubAgentStatus::Done;
+                        state.completed_at = Some(Instant::now());
+                    },
+                    (SubAgentStatus::Done, true) => {
+                        // Re-tasked (send_message trigger): reopen the entry.
+                        state.status = SubAgentStatus::Running;
+                        state.completed_at = None;
+                    },
+                    _ => {},
+                }
+            }
+        }
+        // Tracked entries absent from the snapshot have unregistered.
+        let live: std::collections::HashSet<&str> =
+            snap.agents.iter().map(|a| a.path.as_str()).collect();
+        for (path, state) in self.sub_agents.iter_mut() {
+            if !live.contains(path.as_str()) && state.status == SubAgentStatus::Running {
+                state.status = SubAgentStatus::Done;
+                state.completed_at = Some(Instant::now());
+            }
+        }
+        self.refresh_waiting_count();
     }
 
     /// Remove completed sub-agents that have been done for more than 3 seconds.
