@@ -7,6 +7,7 @@
 
 pub mod app;
 pub mod completer;
+mod child_results;
 pub mod diff;
 pub mod frame_log;
 pub mod handlers;
@@ -36,7 +37,7 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use phi_agent::{PhiAgent, RunOutcome, RuntimeEvent, SessionContext, SessionId, save_turn_log};
+use phi_agent::{ChildResultEvent, PhiAgent, RunOutcome, RuntimeEvent, SessionContext, SessionId, save_turn_log};
 use ratatui::{Terminal, backend::CrosstermBackend};
 use tokio::sync::mpsc;
 
@@ -44,6 +45,7 @@ use crate::approval::ApprovalItem;
 use crate::banner::ColorScheme;
 use crate::skills::SkillResolver;
 use app::{Action, App, TuiEvent};
+use child_results::{ChildResultRoute, ChildResultRouter};
 use frame_log::{ComposerLog, FrameCapture, PerfLog, PerfRow};
 
 /// A command from the TUI loop to the agent task.
@@ -83,14 +85,54 @@ pub async fn run_tui(
     // 在 skill_resolver 移入 agent_loop 前提取 (name, description) 摘要列表
     let skill_summaries = skill_resolver.skill_summaries();
 
+    // Start the child-result watcher (Phase 2): monitors the mailbox and
+    // delivers each finished child's result as a ChildResultEvent. The loop
+    // below decides per event: inject immediately (agent idle) or stash and
+    // inject after the current turn ends (agent running).
+    let (_watcher_handle, mut child_result_rx) = if let Some(ma_rt) = agent.multi_agent_runtime() {
+        let (h, cr) = ma_rt.start_watcher();
+        (Some(h), Some(cr))
+    } else {
+        (None, None)
+    };
+
     let agent_task = tokio::spawn(agent_loop(
         agent.clone(),
         skill_resolver,
         session,
         session_ctx,
-        event_tx,
+        event_tx.clone(),
         cmd_rx,
     ));
+
+    // Persistent event bridge: subscribe to the runtime's event bus ONCE for
+    // the whole TUI lifetime. The per-run callback only exists inside
+    // `run_turn`, so in the fan-in model — where the parent ends its turn
+    // while sub-agents keep working for minutes — nobody drained the bus
+    // between turns and every child event was lost (the task panel showed
+    // frozen sub-agents, session 20260903_b7dbf2c1). With this task the UI
+    // receives root and child events regardless of turn lifecycle; the turn
+    // callback now only collects events for persistence. This is the single
+    // source of `TuiEvent::Runtime` — no double delivery.
+    {
+        let mut bus_rx = agent.runtime().subscribe_runtime_events();
+        let bus_tx = event_tx.clone();
+        tokio::spawn(async move {
+            loop {
+                match bus_rx.recv().await {
+                    Ok(ev) => {
+                        if bus_tx.send(TuiEvent::Runtime(ev)).is_err() {
+                            break; // UI loop gone
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!(skipped = n, "UI event bus consumer lagged");
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+    }
 
     // Terminal setup. The guard restores the terminal on any exit path.
     enable_raw_mode()?;
@@ -139,6 +181,14 @@ pub async fn run_tui(
     let mut dirty = true; // capture the initial screen
 
     let mut quit = false;
+    // Child-result delivery (fan-in redesign). The watcher coordinates: a
+    // Progress event is display-only, a Batch event wakes the parent. The
+    // router decides per event — inject immediately when the agent is idle,
+    // hold and flush as one batch right after the turn ends when it is
+    // running — and the loop below only executes the side effects. Decision
+    // logic lives in `child_results` (unit-tested); this loop must stay free
+    // of timing policy.
+    let mut child_results = ChildResultRouter::new();
     while !quit {
         let loop_start = Instant::now();
 
@@ -146,6 +196,45 @@ pub async fn run_tui(
         while let Ok(ev) = event_rx.try_recv() {
             app.handle_event(ev);
             dirty = true;
+        }
+
+        // Drain child-result events from the watcher task.
+        if let Some(rx) = child_result_rx.as_mut() {
+            while let Ok(cr) = rx.try_recv() {
+                // Task-panel bookkeeping: a finished child flips its panel
+                // entry to done and refreshes the Waiting count. Must happen
+                // before routing so the status strip is current this frame.
+                if let ChildResultEvent::Progress { agent_path, status, .. } = &cr {
+                    if status != "running" {
+                        app.mark_sub_agent_finished(agent_path);
+                    }
+                }
+                match child_results.on_event(app.running, cr) {
+                    ChildResultRoute::Notice { notice } => app.push_system(&notice),
+                    ChildResultRoute::Hold { notice } => app.set_notice(notice),
+                    ChildResultRoute::Inject { notice, input } => {
+                        // A batch means every child returned — settle the panel
+                        // before the synthetic run starts.
+                        app.mark_all_sub_agents_finished();
+                        app.push_system(&notice);
+                        let _ = cmd_tx.send(Cmd::Run(input));
+                    }
+                }
+                dirty = true;
+            }
+        }
+
+        // The turn just ended and results arrived while it was running —
+        // inject them now as one synthetic run.
+        if !app.running {
+            if let Some(ChildResultRoute::Inject { notice, input }) =
+                child_results.flush_when_idle()
+            {
+                app.mark_all_sub_agents_finished();
+                app.push_system(&notice);
+                let _ = cmd_tx.send(Cmd::Run(input));
+                dirty = true;
+            }
         }
 
         // Cleanup completed sub-agents (auto-remove after 3 seconds)
@@ -370,10 +459,11 @@ async fn agent_loop(
                 let turn_input = resolved_input;
 
                 let turn_events_clone = turn_events.clone();
-                let event_tx_clone = event_tx.clone();
                 let result = agent
                     .run_turn(session.clone(), &turn_input, move |ev| {
-                        let _ = event_tx_clone.send(TuiEvent::Runtime(ev.clone()));
+                        // Persistence only — the UI is fed by the persistent
+                        // bus subscription (see the bridge in run_tui). Sending
+                        // here too would double-deliver every event.
                         turn_events_clone.lock().unwrap().push(ev);
                         Ok(())
                     })

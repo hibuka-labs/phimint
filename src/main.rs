@@ -9,7 +9,6 @@ mod banner;
 mod gate;
 mod lang;
 mod lsp;
-mod prompt;
 mod skills;
 mod tools;
 mod ui;

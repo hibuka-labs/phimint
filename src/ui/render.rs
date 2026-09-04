@@ -412,6 +412,7 @@ fn render_composer(f: &mut Frame, app: &App, area: Rect) {
 fn render_status(f: &mut Frame, app: &App, area: Rect) {
     let style = match app.status {
         AgentStatus::Idle => Style::default().fg(Color::Green),
+        AgentStatus::Waiting { .. } => Style::default().fg(Color::Cyan),
         AgentStatus::Running { .. } => Style::default().fg(Color::Yellow),
     };
     f.render_widget(Paragraph::new(Line::from(Span::styled(app.status_line(), style))), area);
