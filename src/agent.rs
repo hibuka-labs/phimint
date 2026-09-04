@@ -77,11 +77,11 @@ Your final message should read naturally, like an update from a concise teammate
 ## Multi-agent (tasks with clearly independent parts)
 Sub-agents are READ-ONLY (read/search/report, no writes or mutating commands). You perform all edits.
 - Prefer multiple sub-agents to parallelize your work. Time is a constraint so parallelism resolves the task faster.
-- **Results are pushed to you automatically**: when every sub-agent has finished, all their full reports arrive together as one message and a new turn starts. There is no wait tool and you never need to poll.
-- **To wait, simply end your turn**: after spawning sub-agents, end your reply with a brief progress note and stop. If you still have work of your own (e.g. analyzing the shared context), do that work NEXT — end the turn FIRST, then continue it when the results arrive. Never hold the turn open to "keep an eye on" sub-agents.
+- **Results are pushed to you automatically**: when every sub-agent has finished, all their full reports arrive together as one message and a new turn starts. There is no wait tool and you never need to poll. A `done` status means the report is held by the runtime — it is NOT lost and NOT a delivery failure; it is injected the instant your turn ends.
+- **To wait, simply end your turn**: after spawning sub-agents, end your reply with a brief progress note and stop. Ending the turn is the ONLY way to receive their reports. Do NOT "use the waiting time" to investigate the topics you delegated — that duplicates the work you just paid sub-agents to do. End the turn FIRST, then continue your own work when the results arrive.
 - NEVER call `list_agents` to check progress or wait. Polling burns tokens, does not make sub-agents finish faster, and repeated snapshots tell you nothing new. Their reports come to you whether you watch or not.
 - NEVER use shell commands to pass time while sub-agents run (`sleep`, `wait`, watch loops, repeated no-op calls). Ending your turn is the ONLY wait mechanism — if you catch yourself waiting, end the turn.
-- While sub-agents run, your only role is coordination: do not perform the work you delegated, do not send them follow-up nudges (e.g. "please finalize" — they are still working), and do not close them. Interrupting a running sub-agent mid-task only delays and fragments the results.
+- While sub-agents run, your only role is coordination: do not perform the work you delegated, do not send them follow-up nudges (e.g. "please finalize" — they are still working), and do not close them. Never hold the turn open to "keep an eye on" sub-agents, and never close agents just because their status looks quiet — a quiet `done` agent with a held report is healthy. Interrupting a running sub-agent mid-task only delays and fragments the results.
 - If the user asks a question while sub-agents run, answer it first; coordination continues afterwards.
 - When you have a plan with multiple steps, process them in parallel by spawning one agent per step when possible.
 
@@ -340,6 +340,45 @@ mod prompt_guard_tests {
         assert!(
             SYSTEM_PROMPT.contains("if you catch yourself waiting, end the turn"),
             "the ban must name the correct replacement action"
+        );
+    }
+
+    #[test]
+    fn live_prompt_explains_done_delivery_semantics() {
+        // Session 20260904_841ed65b: a mid-turn parent saw `done` children
+        // with no reports in context and concluded "the system didn't
+        // deliver" — then killed the healthy agents. `done` must be defined
+        // as held-for-injection, not as something to verify or fix.
+        assert!(
+            SYSTEM_PROMPT.contains("A `done` status means the report is held by the runtime"),
+            "system prompt must define done = held by the runtime, pending \
+             injection at turn end"
+        );
+        assert!(
+            SYSTEM_PROMPT.contains("NOT lost and NOT a delivery failure"),
+            "system prompt must preempt the 'system didn't deliver' misread"
+        );
+        assert!(
+            SYSTEM_PROMPT.contains("Ending the turn is the ONLY way to receive their reports"),
+            "system prompt must make ending the turn the sole delivery action"
+        );
+    }
+
+    #[test]
+    fn live_prompt_bans_killing_time_with_delegated_work() {
+        // Session 20260904_841ed65b, divergence point at spawn+3s: the root
+        // chose to "use the waiting time" investigating the very topics it
+        // had just delegated, and never ended the turn. The rationalization
+        // must be banned by name.
+        assert!(
+            SYSTEM_PROMPT.contains("use the waiting time"),
+            "system prompt must ban 'using the waiting time' to redo delegated \
+             work — that was the 841ed65b divergence point"
+        );
+        assert!(
+            !SYSTEM_PROMPT.contains("analyze the shared context"),
+            "the old '(e.g. analyzing the shared context)' example reads as a \
+             sanctioned waiting activity — it must stay out"
         );
     }
 }
