@@ -72,52 +72,63 @@ fn agent_prefix(agent_id: Option<&str>) -> String {
 }
 
 impl App {
+    /// Reflect streaming activity in the status strip — root events only.
+    /// Child events arrive through the persistent bus subscription even while
+    /// the root is Waiting/Idle; they must not flip the root's state back to
+    /// Running.
+    fn note_activity(&mut self, agent_id: Option<&str>, phase: Phase) {
+        if agent_id.map_or(true, |id| id.is_empty()) {
+            self.status = AgentStatus::Running { phase };
+        }
+    }
+
     /// Handle a runtime event from the agent.
     pub fn handle_runtime(&mut self, event: RuntimeEvent) {
         match event {
             RuntimeEvent::TextDelta { text, agent_id, .. } => {
                 self.track_agent(agent_id.as_deref());
-                let flushed = self.stream.push_text(&text, agent_id.as_deref());
-                // Route flushed lines to the correct transcript
-                for line in flushed {
-                    if let Some(id) = agent_id.as_deref() {
-                        if !id.is_empty() {
-                            self.sub_agent_transcripts
-                                .entry(id.to_string())
-                                .or_default()
-                                .push(line);
-                        } else {
+                let child = agent_id.as_deref().filter(|id| !id.is_empty());
+                match child {
+                    // Child deltas accumulate per-child (never in the shared
+                    // `stream`: its pending tail IS the main view's live tail,
+                    // and a minutes-long child run flooded it — session
+                    // 20260904_3eeb5610). Flushed lines land in the child's
+                    // own transcript; visibility = task panel, not the main view.
+                    Some(id) => {
+                        let flushed = self.push_child_text(id, &text);
+                        self.sub_agent_transcripts
+                            .entry(id.to_string())
+                            .or_default()
+                            .extend(flushed);
+                    }
+                    None => {
+                        let flushed = self.stream.push_text(&text, agent_id.as_deref());
+                        for line in flushed {
                             self.transcript.push(line);
                         }
-                    } else {
-                        self.transcript.push(line);
                     }
                 }
-                self.status = AgentStatus::Running {
-                    phase: Phase::Streaming,
-                };
+                self.note_activity(agent_id.as_deref(), Phase::Streaming);
             }
             RuntimeEvent::ThoughtDelta { text, agent_id, .. } => {
                 self.track_agent(agent_id.as_deref());
-                let flushed = self.stream.push_thought(&text, agent_id.as_deref());
-                // Route flushed lines to the correct transcript
-                for line in flushed {
-                    if let Some(id) = agent_id.as_deref() {
-                        if !id.is_empty() {
-                            self.sub_agent_transcripts
-                                .entry(id.to_string())
-                                .or_default()
-                                .push(line);
-                        } else {
+                let child = agent_id.as_deref().filter(|id| !id.is_empty());
+                match child {
+                    Some(id) => {
+                        let flushed = self.push_child_thought(id, &text);
+                        self.sub_agent_transcripts
+                            .entry(id.to_string())
+                            .or_default()
+                            .extend(flushed);
+                    }
+                    None => {
+                        let flushed = self.stream.push_thought(&text, agent_id.as_deref());
+                        for line in flushed {
                             self.transcript.push(line);
                         }
-                    } else {
-                        self.transcript.push(line);
                     }
                 }
-                self.status = AgentStatus::Running {
-                    phase: Phase::Thinking,
-                };
+                self.note_activity(agent_id.as_deref(), Phase::Thinking);
             }
             RuntimeEvent::ToolCallStarted {
                 tool_name,
@@ -126,6 +137,15 @@ impl App {
                 ..
             } => {
                 self.flush_pending();
+                // Child tool call: commit that child's pending stream first so
+                // its text lands above the invocation line in its transcript.
+                if let Some(id) = agent_id.as_deref().filter(|id| !id.is_empty()) {
+                    let flushed = self.flush_child_stream(id);
+                    self.sub_agent_transcripts
+                        .entry(id.to_string())
+                        .or_default()
+                        .extend(flushed);
+                }
                 // Fresh tool call → drop any progress from the previous one.
                 self.live_progress = None;
                 // Tools render inline in the transcript (Claude Code style): an
@@ -176,9 +196,7 @@ impl App {
                         self.transcript.push(line);
                     }
                 }
-                self.status = AgentStatus::Running {
-                    phase: Phase::ToolCall { tool: tool_name },
-                };
+                self.note_activity(agent_id.as_deref(), Phase::ToolCall { tool: tool_name });
             }
             RuntimeEvent::ToolCallFinished {
                 tool_name,
@@ -264,9 +282,7 @@ impl App {
                     }
                 }
                 self.live_progress = None;
-                self.status = AgentStatus::Running {
-                    phase: Phase::Thinking,
-                };
+                self.note_activity(agent_id.as_deref(), Phase::Thinking);
             }
             RuntimeEvent::PlanUpdated {
                 objective,
@@ -344,6 +360,12 @@ impl App {
                 // that sub-agent done in the transcript + status strip).
                 match agent_id.as_deref() {
                     Some(p) if !p.is_empty() => {
+                        // Commit any pending child stream before the done marker.
+                        let flushed = self.flush_child_stream(p);
+                        self.sub_agent_transcripts
+                            .entry(p.to_string())
+                            .or_default()
+                            .extend(flushed);
                         if let Some(state) = self.sub_agents.get_mut(p) {
                             state.status = SubAgentStatus::Done;
                             state.completed_at = Some(std::time::Instant::now());
@@ -360,12 +382,22 @@ impl App {
                     }
                     _ => {
                         // Root agent: just flush and set idle.  The actual
-                        // outcome message ("✅ done" or "❌ error") is rendered
-                        // by TurnDone / TurnError after run_turn returns.
+                        // outcome message ("✅ done" / "⏳ waiting" / "❌ error")
+                        // is rendered by TurnDone / TurnError after run_turn
+                        // returns. With sub-agents still running the panel stays
+                        // alive — the fan-in batch injection continues the work.
                         self.status = AgentStatus::Idle;
                         self.running = false;
-                        self.sub_agents.clear();
-                        self.sub_agent_transcripts.clear();
+                        if self.sub_agents.values().any(|s| s.status == SubAgentStatus::Running) {
+                            self.status = AgentStatus::Waiting {
+                                running: self.sub_agents.values()
+                                    .filter(|s| s.status == SubAgentStatus::Running).count(),
+                            };
+                        } else {
+                            self.sub_agents.clear();
+                            self.sub_agent_transcripts.clear();
+                            self.child_streams.clear();
+                        }
                         tracing::info!(
                             follow_bottom = self.viewport.follow_bottom,
                             scroll_offset = self.viewport.scroll_offset,
@@ -379,6 +411,12 @@ impl App {
                 self.flush_pending();
                 match agent_id.as_deref() {
                     Some(p) if !p.is_empty() => {
+                        // Commit any pending child stream before the done marker.
+                        let flushed = self.flush_child_stream(p);
+                        self.sub_agent_transcripts
+                            .entry(p.to_string())
+                            .or_default()
+                            .extend(flushed);
                         if let Some(state) = self.sub_agents.get_mut(p) {
                             state.status = SubAgentStatus::Done;
                             state.completed_at = Some(std::time::Instant::now());
@@ -403,6 +441,7 @@ impl App {
                         self.running = false;
                         self.sub_agents.clear();
                         self.sub_agent_transcripts.clear();
+                        self.child_streams.clear();
                         tracing::info!(
                             follow_bottom = self.viewport.follow_bottom,
                             scroll_offset = self.viewport.scroll_offset,

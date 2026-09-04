@@ -6,9 +6,7 @@
 use std::time::{Duration, Instant};
 
 use super::*;
-use crate::ui::app::{
-    App, FocusTarget, LineKind, OutputLine, SubAgentState, SubAgentStatus, TaskPanel,
-};
+use crate::ui::app::{App, FocusTarget, LineKind, OutputLine, SubAgentState, SubAgentStatus};
 use phi_agent::{RuntimeEvent, SessionId};
 
 // ── Mock Event Builders ──────────────────────────────────────────────────────
@@ -173,14 +171,19 @@ fn task_panel_focus_resets_on_cleanup() {
     insert_mock_agent(&mut app, "root/cache", "cache", SubAgentStatus::Running);
     insert_completed_agent(&mut app, "root/auth", "auth", 4);
 
-    // Focus on auth (index 1)
+    // Focus on auth (index 1): the user is inspecting the list, so cleanup
+    // must NOT reap under their eyes.
     app.task_panel.focus = FocusTarget::TaskList(1);
+    assert!(!app.cleanup_completed_agents());
+    assert_eq!(app.sub_agents.len(), 2);
 
-    // Cleanup should remove auth
+    // Back to input: cleanup now removes auth...
+    app.task_panel.focus = FocusTarget::Input;
     assert!(app.cleanup_completed_agents());
 
-    // Focus should reset to last valid index
-    assert_eq!(app.task_panel.focus, FocusTarget::TaskList(0));
+    // ...and focus would reset to the last valid index (still on Input here,
+    // but the list shrank to cache only).
+    assert_eq!(app.sub_agents.len(), 1);
 }
 
 #[test]
@@ -191,14 +194,14 @@ fn task_panel_focus_resets_to_input_when_all_removed() {
     insert_completed_agent(&mut app, "root/auth", "auth", 4);
     insert_completed_agent(&mut app, "root/cache", "cache", 5);
 
-    // Focus on auth (index 0)
+    // Focus on auth (index 0) blocks cleanup
     app.task_panel.focus = FocusTarget::TaskList(0);
+    assert!(!app.cleanup_completed_agents());
 
-    // Cleanup should remove all
+    // Input focus lets it run: all removed
+    app.task_panel.focus = FocusTarget::Input;
     assert!(app.cleanup_completed_agents());
-
-    // Focus should reset to Input
-    assert_eq!(app.task_panel.focus, FocusTarget::Input);
+    assert!(app.sub_agents.is_empty());
 }
 
 // ── Transcript Routing Tests ─────────────────────────────────────────────────
@@ -210,19 +213,21 @@ fn sub_agent_text_routes_to_transcript() {
     // Send text from sub-agent
     app.handle_event(TuiEvent::Runtime(sub_text("root/auth", "analyzing auth module")));
 
-    // Flush pending text to commit it to transcript
-    app.flush_pending();
-
     // Main transcript should only have the "started" marker
     let main_texts: Vec<&str> = app.transcript.output.iter().map(|l| l.text.as_str()).collect();
     assert!(main_texts.iter().all(|t| !t.contains("analyzing auth module")));
 
-    // Should be in sub_agent_transcripts
+    // Child deltas bypass the shared stream (whose pending tail is the main
+    // view's live tail) — they commit on the child's lifecycle events.
+    app.handle_event(TuiEvent::Runtime(sub_run_finished("root/auth")));
+
+    // Should be in sub_agent_transcripts, ahead of the done marker
     let sub_lines = app.sub_agent_transcripts.get("root/auth").unwrap();
-    assert_eq!(sub_lines.len(), 1);
+    assert_eq!(sub_lines.len(), 2);
     // Note: stream adds [agent_id] prefix to text
     assert!(sub_lines[0].text.contains("analyzing auth module"));
     assert_eq!(sub_lines[0].kind, LineKind::Normal);
+    assert!(sub_lines[1].text.contains("done"));
 }
 
 #[test]
@@ -232,16 +237,13 @@ fn sub_agent_thought_routes_to_transcript() {
     // Send thought from sub-agent
     app.handle_event(TuiEvent::Runtime(sub_thought("root/auth", "thinking about security")));
 
-    // Thought might be buffered in stream, so check if it's in sub_agent_transcripts
-    // or will be flushed on next event
-    if let Some(sub_lines) = app.sub_agent_transcripts.get("root/auth") {
-        assert_eq!(sub_lines.len(), 1);
-        assert_eq!(sub_lines[0].kind, LineKind::Thought);
-    } else {
-        // Thought is still in stream buffer, which is expected
-        // It will be flushed on the next structural event
-        assert!(app.stream.has_pending_thought());
-    }
+    // Child thought pends in the per-child stream — never the shared one.
+    assert!(!app.stream.has_pending_thought());
+    app.handle_event(TuiEvent::Runtime(sub_run_finished("root/auth")));
+
+    let sub_lines = app.sub_agent_transcripts.get("root/auth").unwrap();
+    assert!(sub_lines.len() >= 1);
+    assert_eq!(sub_lines[0].kind, LineKind::Thought);
 }
 
 #[test]
@@ -489,20 +491,22 @@ fn empty_agent_id_ignored() {
 fn duplicate_agent_id_merges() {
     let mut app = App::new();
 
-    // Send multiple events from same agent
+    // Send multiple events from same agent, with the child's tool call as
+    // the flush point between them (child deltas commit on child lifecycle
+    // events, not on the root's flush_pending).
     app.handle_event(TuiEvent::Runtime(sub_text("root/auth", "first")));
-    // Flush to commit first text
-    app.flush_pending();
+    app.handle_event(TuiEvent::Runtime(sub_tool_started("root/auth", "read_file")));
     app.handle_event(TuiEvent::Runtime(sub_text("root/auth", "second")));
-    // Flush to commit second text
-    app.flush_pending();
+    app.handle_event(TuiEvent::Runtime(sub_run_finished("root/auth")));
 
-    // Should be in same transcript
+    // All in the same transcript, in order
     let lines = app.sub_agent_transcripts.get("root/auth").unwrap();
-    assert_eq!(lines.len(), 2);
+    assert_eq!(lines.len(), 4);
     // Note: stream adds [agent_id] prefix to text
     assert!(lines[0].text.contains("first"));
-    assert!(lines[1].text.contains("second"));
+    assert!(lines[1].text.contains("read_file"));
+    assert!(lines[2].text.contains("second"));
+    assert!(lines[3].text.contains("done"));
 }
 
 #[test]
@@ -517,4 +521,60 @@ fn cleanup_with_no_completed_at() {
     // Cleanup should not remove it
     assert!(!app.cleanup_completed_agents());
     assert!(app.sub_agents.contains_key("root/auth"));
+}
+
+// ── Visibility Guarantees (session 20260903 fan-in) ──────────────────────────
+// The root turn ends while children still run (the fan-in norm), so between
+// turns child events keep flowing through the persistent bus subscription.
+// They must not clobber the root's Waiting status, and finished children's
+// transcripts must survive until the root is Idle and the user is not reading.
+
+#[test]
+fn cleanup_skipped_while_root_waiting() {
+    let mut app = App::new();
+
+    // A child finished 10s ago but the root is Waiting for its siblings.
+    insert_completed_agent(&mut app, "root/auth", "auth", 10);
+    app.sub_agent_transcripts.insert(
+        "root/auth".to_string(),
+        vec![OutputLine {
+            text: "partial progress".to_string(),
+            kind: LineKind::Normal,
+            spans: None,
+            original: None,
+            detail: None,
+        }],
+    );
+    app.status = AgentStatus::Waiting { running: 2 };
+
+    // Cleanup must not reap: the transcript is the only record of what the
+    // sub-agent did, and the turn may resume at any moment.
+    assert!(!app.cleanup_completed_agents());
+    assert!(app.sub_agents.contains_key("root/auth"));
+    assert!(app.sub_agent_transcripts.contains_key("root/auth"));
+}
+
+#[test]
+fn child_streaming_does_not_clobber_waiting_status() {
+    let mut app = App::new();
+
+    // Root turn ended, two children still running.
+    app.status = AgentStatus::Waiting { running: 2 };
+    insert_mock_agent(&mut app, "root/auth", "auth", SubAgentStatus::Running);
+
+    // Child text/thought/tool events arrive via the persistent subscription.
+    app.handle_event(TuiEvent::Runtime(sub_text("root/auth", "reading files")));
+    app.handle_event(TuiEvent::Runtime(sub_tool_started("root/auth", "read_file")));
+    app.handle_event(TuiEvent::Runtime(sub_tool_finished("root/auth", "read_file", "10 lines")));
+
+    // Root status must stay Waiting; only root events drive it.
+    assert_eq!(
+        app.status,
+        AgentStatus::Waiting { running: 2 },
+        "child events must not flip the root back to Running"
+    );
+
+    // ...but the child's activity still lands in its transcript.
+    let sub_lines = app.sub_agent_transcripts.get("root/auth").unwrap();
+    assert!(sub_lines.iter().any(|l| l.text.contains("read_file")));
 }

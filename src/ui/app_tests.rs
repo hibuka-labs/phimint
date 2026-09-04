@@ -62,6 +62,15 @@ fn child_text(agent: &str, s: &str) -> RuntimeEvent {
     }
 }
 
+fn child_thought(agent: &str, s: &str) -> RuntimeEvent {
+    RuntimeEvent::ThoughtDelta {
+        session_id: SessionId::new(1),
+        text: s.to_string(),
+        agent_id: Some(agent.to_string()),
+        trace_id: None,
+    }
+}
+
 fn child_tool_started(agent: &str, name: &str) -> RuntimeEvent {
     RuntimeEvent::ToolCallStarted {
         session_id: SessionId::new(1),
@@ -546,6 +555,10 @@ fn sub_agents_cleared_on_root_finish() {
 fn sub_agent_run_finished_does_not_end_turn() {
     let mut app = App::new();
     app.running = true;
+    // Root activity establishes the status...
+    app.handle_event(TuiEvent::Runtime(text("working")));
+    assert!(matches!(app.status, AgentStatus::Running { .. }));
+    // ...child streaming and its RunFinished must leave it untouched.
     app.handle_event(TuiEvent::Runtime(child_text("root/a", "hi")));
     app.handle_event(TuiEvent::Runtime(run_finished(Some("root/a"))));
     assert!(app.running);
@@ -558,6 +571,95 @@ fn agent_prefix_labels_sub_agents_only() {
     assert_eq!(agent_prefix(None), "");
     assert_eq!(agent_prefix(Some("")), "");
     assert_eq!(agent_prefix(Some("root/a")), "[root/a] ");
+}
+
+// ── Child streams stay out of the main view (session 20260904_3eeb5610) ──
+//
+// A minutes-long child run streamed its TextDelta/ThoughtDelta into the
+// shared stream buffer, whose pending tail IS the main view's live tail —
+// the user watched it churn at ~10 events/sec. Child deltas must accumulate
+// per-child (visible in the child's focus view), never in the main tail.
+
+#[test]
+fn child_deltas_bypass_main_stream_tail() {
+    let mut app = App::new();
+    app.handle_event(TuiEvent::Runtime(child_thought("root/a", "thinking hard")));
+    app.handle_event(TuiEvent::Runtime(child_text("root/a", "partial prose")));
+    // Main live tail: untouched by child deltas.
+    assert!(app.streaming_tail_raw().is_none());
+    assert!(!app.stream.has_pending_text());
+    assert!(!app.stream.has_pending_thought());
+    // Main transcript: only the started marker.
+    let texts: Vec<&str> = app.transcript.output.iter().map(|l| l.text.as_str()).collect();
+    assert_eq!(texts, vec!["⏺ [root/a] started"]);
+    // Child content is preserved, committed ahead of the done marker.
+    app.handle_event(TuiEvent::Runtime(run_finished(Some("root/a"))));
+    let sub_texts: Vec<&str> = app.sub_agent_transcripts.get("root/a")
+        .map(|t| t.iter().map(|l| l.text.as_str()).collect())
+        .unwrap_or_default();
+    let done_idx = sub_texts.iter().position(|t| t.contains("done")).unwrap();
+    assert!(
+        sub_texts[..done_idx].iter().any(|t| t.contains("thinking hard")),
+        "child thought must reach the child transcript: {sub_texts:?}"
+    );
+    assert!(
+        sub_texts[..done_idx].iter().any(|t| t.contains("partial prose")),
+        "child text must reach the child transcript: {sub_texts:?}"
+    );
+}
+
+#[test]
+fn child_stream_flushes_before_its_tool_line() {
+    let mut app = App::new();
+    app.handle_event(TuiEvent::Runtime(child_text("root/a", "read the config first")));
+    app.handle_event(TuiEvent::Runtime(child_tool_started("root/a", "read_file")));
+    let sub_texts: Vec<&str> = app.sub_agent_transcripts.get("root/a")
+        .map(|t| t.iter().map(|l| l.text.as_str()).collect())
+        .unwrap_or_default();
+    // Pending child text commits above the invocation line, in order.
+    assert!(
+        sub_texts.len() >= 2
+            && sub_texts[0].contains("read the config first")
+            && sub_texts[1].starts_with("⏺ [root/a] read_file"),
+        "child text must precede its tool line: {sub_texts:?}"
+    );
+    assert!(app.streaming_tail_raw().is_none());
+}
+
+#[test]
+fn root_tail_survives_child_interleaving() {
+    let mut app = App::new();
+    app.handle_event(TuiEvent::Runtime(text("hel")));
+    // First sight of the child flushes root pending text (started-marker
+    // ordering); child deltas themselves must never join the root buffer.
+    app.handle_event(TuiEvent::Runtime(child_text("root/a", "child chunk")));
+    app.handle_event(TuiEvent::Runtime(text("lo")));
+    // Root tail: only root prose — no child content mixed in.
+    let (raw, kind) = app.streaming_tail_raw().expect("root tail present");
+    assert_eq!(raw, "lo");
+    assert_eq!(kind, LineKind::Normal);
+    // "hel" was committed whole by the started marker, unchopped.
+    let texts: Vec<&str> = app.transcript.output.iter().map(|l| l.text.as_str()).collect();
+    assert!(texts.contains(&"hel"), "root text flushed intact: {texts:?}");
+    assert!(
+        texts.iter().all(|t| !t.contains("child chunk")),
+        "child content must stay out of the main transcript: {texts:?}"
+    );
+}
+
+#[test]
+fn cleanup_completed_agents_drops_child_stream() {
+    let mut app = App::new();
+    app.handle_event(TuiEvent::Runtime(child_text("root/a", "some prose")));
+    app.handle_event(TuiEvent::Runtime(run_finished(Some("root/a"))));
+    assert!(app.child_streams.contains_key("root/a"));
+    // Backdate past the 3s reap delay, then reap from Idle.
+    app.status = AgentStatus::Idle;
+    app.sub_agents.get_mut("root/a").unwrap().completed_at =
+        Some(std::time::Instant::now() - std::time::Duration::from_secs(4));
+    assert!(app.cleanup_completed_agents());
+    assert!(!app.child_streams.contains_key("root/a"));
+    assert!(!app.sub_agent_transcripts.contains_key("root/a"));
 }
 
 #[test]
@@ -1190,4 +1292,82 @@ fn edit_file_diff_lines_appear_in_transcript() {
     // The tool line itself should be present
     let texts: Vec<&str> = app.transcript.output.iter().map(|l| l.text.as_str()).collect();
     assert!(texts[0].contains("edit_file"));
+}
+
+// ── Fan-in waiting state (turn ends while sub-agents run) ──────────────────
+
+#[test]
+fn turn_done_with_running_children_enters_waiting_state() {
+    let mut app = App::new();
+    app.running = true;
+    app.handle_event(TuiEvent::Runtime(child_text("root/a", "working")));
+    app.handle_event(TuiEvent::Runtime(child_text("root/b", "working")));
+    // Root finishes its turn but children are still out — root RunFinished
+    // must keep the panel alive and flip to Waiting.
+    app.handle_event(TuiEvent::Runtime(run_finished(None)));
+    assert_eq!(app.sub_agents.len(), 2);
+    assert!(matches!(app.status, AgentStatus::Waiting { running: 2 }));
+
+    app.handle_event(TuiEvent::TurnDone);
+    let texts: Vec<&str> = app.transcript.output.iter().map(|l| l.text.as_str()).collect();
+    assert!(texts.iter().any(|t| t.contains("⏳ 等待子 agent 返回（2 个运行中）")));
+    assert!(!texts.iter().any(|t| t.contains("✅ done")), "waiting is not done");
+    assert!(!app.running);
+    assert!(matches!(app.status, AgentStatus::Waiting { running: 2 }));
+    // Panel + per-agent transcripts stay alive for inspection while waiting.
+    assert_eq!(app.sub_agents.len(), 2);
+    assert!(app.sub_agent_transcripts.contains_key("root/a"));
+}
+
+#[test]
+fn turn_done_without_running_children_shows_done_and_clears_panel() {
+    let mut app = App::new();
+    app.running = true;
+    app.handle_event(TuiEvent::Runtime(child_text("root/a", "hi")));
+    app.handle_event(TuiEvent::Runtime(run_finished(Some("root/a")))); // child done first
+    app.handle_event(TuiEvent::Runtime(run_finished(None)));
+    app.handle_event(TuiEvent::TurnDone);
+    let texts: Vec<&str> = app.transcript.output.iter().map(|l| l.text.as_str()).collect();
+    assert!(texts.iter().any(|t| t.contains("✅ done")));
+    assert_eq!(app.status, AgentStatus::Idle);
+    assert!(app.sub_agents.is_empty());
+}
+
+#[test]
+fn finishing_children_updates_waiting_count_to_idle_at_zero() {
+    let mut app = App::new();
+    app.running = true;
+    app.handle_event(TuiEvent::Runtime(child_text("root/a", "x")));
+    app.handle_event(TuiEvent::Runtime(child_text("root/b", "y")));
+    app.handle_event(TuiEvent::TurnDone);
+    assert!(matches!(app.status, AgentStatus::Waiting { running: 2 }));
+
+    // Watcher Progress events flip panel entries and refresh the count.
+    app.mark_sub_agent_finished("root/a");
+    assert!(matches!(app.status, AgentStatus::Waiting { running: 1 }));
+    assert_eq!(app.sub_agents.get("root/a").map(|s| &s.status), Some(&SubAgentStatus::Done));
+
+    app.mark_sub_agent_finished("root/b");
+    assert_eq!(app.status, AgentStatus::Idle);
+}
+
+#[test]
+fn batch_inject_marks_all_children_finished() {
+    let mut app = App::new();
+    app.running = true;
+    app.handle_event(TuiEvent::Runtime(child_text("root/a", "x")));
+    app.handle_event(TuiEvent::Runtime(child_text("root/b", "y")));
+    app.handle_event(TuiEvent::TurnDone);
+    app.mark_all_sub_agents_finished();
+    assert!(app.sub_agents.values().all(|s| s.status == SubAgentStatus::Done));
+    assert_eq!(app.status, AgentStatus::Idle);
+}
+
+#[test]
+fn waiting_status_line_mentions_running_count() {
+    let mut app = App::new();
+    app.status = AgentStatus::Waiting { running: 3 };
+    let line = app.status_line();
+    assert!(line.contains('3'), "count missing: {line}");
+    assert!(line.contains("等待"), "waiting wording missing: {line}");
 }

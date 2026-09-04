@@ -45,6 +45,9 @@ pub enum Phase {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentStatus {
     Idle,
+    /// The root turn ended but sub-agents are still running — the fan-in wake
+    /// (batch injection) will start the next turn automatically.
+    Waiting { running: usize },
     Running { phase: Phase },
 }
 
@@ -255,7 +258,16 @@ pub struct App {
     /// the visually-selected lines rather than the full raw `output` block.
     pub(crate) visual_lines_text: Vec<String>,
     /// Live streaming tail state (pending text/thought + incremental wrap cache).
+    /// Root-agent deltas only — see `child_streams` for why children are separate.
     pub(crate) stream: StreamState,
+    /// Per-child streaming accumulators. Child deltas never touch the shared
+    /// `stream`: that buffer's pending tail renders as the main view's live
+    /// tail, so a child streaming for minutes flooded it at ~10 events/sec
+    /// (session 20260904_3eeb5610 "一直在刷"). Per-child buffers also stop two
+    /// interleaved children from chopping each other's pending text into
+    /// fragments on every agent switch. Flushed lines land in
+    /// `sub_agent_transcripts` (the child's focus view).
+    pub(crate) child_streams: BTreeMap<String, StreamState>,
     /// Latest live tool-progress line (e.g. streaming `execute_command` output),
     /// shown in the status bar and cleared when the tool call finishes.
     pub(crate) live_progress: Option<String>,
@@ -292,6 +304,7 @@ impl App {
             visual_to_output: Vec::new(),
             visual_lines_text: Vec::new(),
             stream: StreamState::new(DEFAULT_WRAP_WIDTH),
+            child_streams: BTreeMap::new(),
             live_progress: None,
             notice: None,
         }
@@ -332,6 +345,9 @@ impl App {
         // Always rebuild the tail cache at the new width so future streaming
         // text wraps correctly, even when there is no pending text right now.
         self.stream.rewrap(width);
+        for child in self.child_streams.values_mut() {
+            child.rewrap(width);
+        }
     }
 
     /// Current output wrap width (columns).
@@ -364,21 +380,85 @@ impl App {
                         kind: LineKind::Error,
                     });
                 }
-                self.status = AgentStatus::Idle;
-                self.running = false;
-                self.sub_agents.clear();
+                self.settle_after_turn(false);
             }
             TuiEvent::TurnDone => {
                 self.flush_pending();
-                self.transcript.push(OutputLine { spans: None, original: None,
+                self.settle_after_turn(true);
+            }
+        }
+    }
+
+    /// Common end-of-turn settlement. If sub-agents are still running the task
+    /// is NOT done — enter the fan-in `Waiting` state and keep the task panel
+    /// alive (the batch injection starts the next turn). Otherwise show the
+    /// done marker (unless an error line was already pushed) and clear the
+    /// panel.
+    fn settle_after_turn(&mut self, show_done_marker: bool) {
+        let running = self.running_sub_agents();
+        if running > 0 {
+            let text = format!("⏳ 等待子 agent 返回（{running} 个运行中），结果将自动注入");
+            self.transcript.push(OutputLine { spans: None, original: None,
                 detail: None,
+                text,
+                kind: LineKind::System,
+            });
+            self.status = AgentStatus::Waiting { running };
+        } else {
+            if show_done_marker {
+                self.transcript.push(OutputLine { spans: None, original: None,
+                    detail: None,
                     text: "✅ done".to_string(),
                     kind: LineKind::Done,
                 });
-                self.status = AgentStatus::Idle;
-                self.running = false;
-                self.sub_agents.clear();
             }
+            self.status = AgentStatus::Idle;
+            self.sub_agents.clear();
+            self.sub_agent_transcripts.clear();
+            self.child_streams.clear();
+        }
+        self.running = false;
+    }
+
+    /// Number of tracked sub-agents still `Running`.
+    fn running_sub_agents(&self) -> usize {
+        self.sub_agents.values().filter(|s| s.status == SubAgentStatus::Running).count()
+    }
+
+    /// A sub-agent finished (watcher Progress event): mark it done in the task
+    /// panel and, while in the `Waiting` state, refresh the remaining count.
+    pub fn mark_sub_agent_finished(&mut self, agent_path: &str) {
+        if let Some(state) = self.sub_agents.get_mut(agent_path) {
+            if state.status == SubAgentStatus::Running {
+                state.status = SubAgentStatus::Done;
+                state.completed_at = Some(std::time::Instant::now());
+            }
+        }
+        self.refresh_waiting_count();
+    }
+
+    /// All pending sub-agents finished (batch injection): mark every still-
+    /// running entry done so the 3s auto-cleanup can sweep the panel.
+    pub fn mark_all_sub_agents_finished(&mut self) {
+        for state in self.sub_agents.values_mut() {
+            if state.status == SubAgentStatus::Running {
+                state.status = SubAgentStatus::Done;
+                state.completed_at = Some(std::time::Instant::now());
+            }
+        }
+        self.refresh_waiting_count();
+    }
+
+    /// While `Waiting`, recompute the running count from the panel; drop to
+    /// `Idle` when the last sub-agent finished (the batch injection follows).
+    fn refresh_waiting_count(&mut self) {
+        if let AgentStatus::Waiting { .. } = self.status {
+            let n = self.running_sub_agents();
+            self.status = if n > 0 {
+                AgentStatus::Waiting { running: n }
+            } else {
+                AgentStatus::Idle
+            };
         }
     }
 
@@ -422,6 +502,20 @@ impl App {
     /// Remove completed sub-agents that have been done for more than 3 seconds.
     /// Returns true if any agents were removed.
     pub fn cleanup_completed_agents(&mut self) -> bool {
+        // Only reap when the root is fully Idle. While the root is Waiting
+        // (children still running) the finished children's transcripts are the
+        // only place the user can review what they did — deleting them 3s after
+        // completion made sub-agent execution invisible (session 20260903 fan-in
+        // made "turn ends while children run" the norm, so this fired constantly).
+        if !matches!(self.status, AgentStatus::Idle) {
+            return false;
+        }
+        // Likewise while the user is inspecting the task list: reaping under
+        // their eyes is exactly the "can't see what the sub-agent did" bug.
+        // Cleanup resumes once focus returns to the input box.
+        if matches!(self.task_panel.focus, FocusTarget::TaskList(_)) {
+            return false;
+        }
         let now = Instant::now();
         let mut removed = false;
         let ids_to_remove: Vec<String> = self.sub_agents.iter()
@@ -435,6 +529,7 @@ impl App {
         for id in ids_to_remove {
             self.sub_agents.remove(&id);
             self.sub_agent_transcripts.remove(&id);
+            self.child_streams.remove(&id);
             removed = true;
         }
 
@@ -491,6 +586,37 @@ impl App {
     /// Returns `None` when there is no uncommitted text/thought.
     pub fn streaming_tail_lines(&self) -> Option<(&[String], LineKind)> {
         self.stream.tail_lines()
+    }
+
+    // ── Per-child streaming ───────────────────────────────────────────────
+
+    /// Accumulate a child's prose delta into its own stream buffer, returning
+    /// any lines the flush committed (caller routes them into the child's
+    /// transcript). Lines are prefixed `[<id>] ` like the pre-split behavior.
+    pub(crate) fn push_child_text(&mut self, id: &str, text: &str) -> Vec<OutputLine> {
+        self.child_streams
+            .entry(id.to_string())
+            .or_insert_with(|| StreamState::new(DEFAULT_WRAP_WIDTH))
+            .push_text(text, Some(id))
+    }
+
+    /// Accumulate a child's reasoning delta into its own stream buffer.
+    pub(crate) fn push_child_thought(&mut self, id: &str, text: &str) -> Vec<OutputLine> {
+        self.child_streams
+            .entry(id.to_string())
+            .or_insert_with(|| StreamState::new(DEFAULT_WRAP_WIDTH))
+            .push_thought(text, Some(id))
+    }
+
+    /// Commit a child's pending text/thought into whole lines (e.g. before its
+    /// tool-invocation line or its `done` marker, so ordering inside the
+    /// child's transcript stays chronological). Empty when the child has no
+    /// pending stream content.
+    pub(crate) fn flush_child_stream(&mut self, id: &str) -> Vec<OutputLine> {
+        match self.child_streams.get_mut(id) {
+            Some(st) => st.flush(),
+            None => Vec::new(),
+        }
     }
 
     /// Raw pending text for markdown rendering (streaming tail).
@@ -778,6 +904,9 @@ impl App {
                 } else {
                     "⏸ Idle — Enter send · Shift+Enter newline · Ctrl+Y copy · PgUp/PgDn scroll · Ctrl+C quit".to_string()
                 }
+            }
+            AgentStatus::Waiting { running } => {
+                format!("⏳ 等待子 agent 返回（{running} 个运行中）… 结果到达后自动继续")
             }
             AgentStatus::Running { phase } => match phase {
                 Phase::Thinking => "🤔 thinking… (Ctrl+C cancel)".to_string(),

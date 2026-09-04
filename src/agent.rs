@@ -7,7 +7,7 @@ use anyhow::Result;
 use agent_base::ReasoningEffort;
 use agent_base::engine::max_turns_nudge::{MaxTurnsNudgeConfig, MaxTurnsNudgeMiddleware};
 use agent_works::guard::{DefaultGuard, DefaultGuardConfig, ReasoningOnlyAction};
-use phi_agent::{ApprovalHandler, ChildPermissionMode, MultiAgentConfig, PhiAgent, PhiAgentConfig, ToolPolicy, base_agent_builder_with_excludes};
+use phi_agent::{ApprovalHandler, ChildPermissionMode, ControlConfig, MultiAgentConfig, PhiAgent, PhiAgentConfig, ToolPolicy, base_agent_builder_with_excludes};
 use phi_kernel_tools::local_shell::LocalShellTool;
 
 use crate::lsp::LspManager;
@@ -77,9 +77,12 @@ Your final message should read naturally, like an update from a concise teammate
 ## Multi-agent (tasks with clearly independent parts)
 Sub-agents are READ-ONLY (read/search/report, no writes or mutating commands). You perform all edits.
 - Prefer multiple sub-agents to parallelize your work. Time is a constraint so parallelism resolves the task faster.
-- If sub-agents are running, **wait for them before yielding**, unless the user asks an explicit question.
-  - If the user asks a question, answer it first, then continue coordinating sub-agents.
-- When you ask a sub-agent to do the work for you, your only role becomes to coordinate them. Do not perform the actual work while they are working.
+- **Results are pushed to you automatically**: when every sub-agent has finished, all their full reports arrive together as one message and a new turn starts. There is no wait tool and you never need to poll.
+- **To wait, simply end your turn**: after spawning sub-agents, end your reply with a brief progress note and stop. If you still have work of your own (e.g. analyzing the shared context), do that work NEXT — end the turn FIRST, then continue it when the results arrive. Never hold the turn open to "keep an eye on" sub-agents.
+- NEVER call `list_agents` to check progress or wait. Polling burns tokens, does not make sub-agents finish faster, and repeated snapshots tell you nothing new. Their reports come to you whether you watch or not.
+- NEVER use shell commands to pass time while sub-agents run (`sleep`, `wait`, watch loops, repeated no-op calls). Ending your turn is the ONLY wait mechanism — if you catch yourself waiting, end the turn.
+- While sub-agents run, your only role is coordination: do not perform the work you delegated, do not send them follow-up nudges (e.g. "please finalize" — they are still working), and do not close them. Interrupting a running sub-agent mid-task only delays and fragments the results.
+- If the user asks a question while sub-agents run, answer it first; coordination continues afterwards.
 - When you have a plan with multiple steps, process them in parallel by spawning one agent per step when possible.
 
 When done, briefly report what you changed."#;
@@ -103,6 +106,9 @@ pub fn build(
     reasoning_effort: &str,
     model: String,
 ) -> Result<(PhiAgent, SkillResolver)> {
+    // Keep a handle for the guard below — `llm_client` itself is moved into the
+    // builder here.
+    let guard_client = Arc::clone(&llm_client);
     let mut builder = base_agent_builder_with_excludes(
         llm_client,
         // Coding-specific noise the framework (domain-agnostic) must not know
@@ -160,6 +166,13 @@ pub fn build(
         // Redundant with the default, but explicit: children get the framework's
         // read-only nudge on top of the hard gate above.
         child_read_only: true,
+        // Hang guard (§9.2): a child stuck on one task is hard-stopped after
+        // 10 min and an Error result is pushed to the parent — without this,
+        // a hung child would never wake the push-based parent.
+        control: ControlConfig {
+            task_timeout: Some(std::time::Duration::from_secs(10 * 60)),
+            ..ControlConfig::default()
+        },
         ..MultiAgentConfig::default()
     });
 
@@ -183,9 +196,18 @@ pub fn build(
             You MUST now either call a tool or write your final answer. \
             Do NOT attempt to reason further. Just DO something NOW."
             .to_string(),
+        // Judge failures (timeout / parse error) fail OPEN. Session
+        // 20260903_0cf95e79: with a clientless judge every check "failed" and
+        // fail-closed turned that into a block on every legitimate turn-end
+        // (including the fan-in "end turn to wait for sub-agents" move).
+        // Letting an occasional unverified answer through is far cheaper than
+        // blocking correct behavior — the next turn self-corrects.
+        judge_fail_open: true,
         ..DefaultGuardConfig::default()
     };
-    builder = builder.guard(DefaultGuard::new(guard_config));
+    // Wire the judge's LLM client — `new()` leaves it None, making the judge
+    // permanently unable to reach a verdict (the root cause above).
+    builder = builder.guard(DefaultGuard::with_llm_client(guard_config, guard_client));
 
     // Max turns nudge: firm message on the last 3 turns before the hard limit.
     builder = builder.middleware(MaxTurnsNudgeMiddleware::new(MaxTurnsNudgeConfig {
@@ -239,4 +261,85 @@ pub fn build(
     }
 
     Ok((agent, skill_resolver))
+}
+
+#[cfg(test)]
+mod prompt_guard_tests {
+    //! Guards the wiring lesson from session 20260903_9255c25e: the prompt the
+    //! model actually sees is THIS file's inline `SYSTEM_PROMPT`. An earlier
+    //! fix edited a dead duplicate (src/prompt/mod.rs) and never reached the
+    //! model — the 65× `list_agents` polling loop in that session was the
+    //! result. These assertions fail if the fan-in semantics drift out of the
+    //! live text.
+
+    use super::SYSTEM_PROMPT;
+
+    #[test]
+    fn live_prompt_carries_fan_in_wait_semantics() {
+        assert!(
+            SYSTEM_PROMPT.contains("Results are pushed to you automatically"),
+            "system prompt must state that results are pushed"
+        );
+        assert!(
+            SYSTEM_PROMPT.contains("To wait, simply end your turn"),
+            "system prompt must tell the model that ending the turn IS the wait"
+        );
+        assert!(
+            SYSTEM_PROMPT.contains("never need to poll"),
+            "system prompt must say polling is unnecessary"
+        );
+        assert!(
+            SYSTEM_PROMPT.contains("NEVER call `list_agents` to check progress or wait"),
+            "system prompt must ban list_agents polling unconditionally \
+             (session 20260904_c6559510: the model polled 52x)"
+        );
+    }
+
+    #[test]
+    fn live_prompt_has_no_conditional_wait_loophole() {
+        // Session 20260904_c6559510: "if you have no other useful work" let
+        // the model declare its own analysis "useful work", keep the turn
+        // open, and poll. The wait instruction must be unconditional.
+        assert!(
+            !SYSTEM_PROMPT.contains("if you have no other useful work"),
+            "the conditional-wait loophole is back — it lets the model hold \
+             the turn open whenever it invents side work"
+        );
+        assert!(
+            !SYSTEM_PROMPT.contains("while waiting"),
+            "the polling ban must not be scoped to 'while waiting' — the \
+             model reasoned it was 'working', not 'waiting', and ignored it"
+        );
+        assert!(
+            SYSTEM_PROMPT.contains("do not send them follow-up nudges"),
+            "system prompt must ban mid-flight nudges (trigger=true) that \
+             created extra task rounds in session 20260904_c6559510"
+        );
+    }
+
+    #[test]
+    fn live_prompt_has_no_pre_fan_in_wait_semantics() {
+        assert!(
+            !SYSTEM_PROMPT.contains("wait for them before yielding"),
+            "pre-fan-in wording is back — it makes the model poll list_agents \
+             instead of ending the turn"
+        );
+    }
+
+    #[test]
+    fn live_prompt_bans_shell_wait_loops() {
+        // Session 20260904_3eeb5610: with list_agents banned, the model
+        // invented `sleep 30` + poll loops as its own wait mechanism instead
+        // of ending the turn. The ban must be as unconditional as the
+        // list_agents one.
+        assert!(
+            SYSTEM_PROMPT.contains("NEVER use shell commands to pass time"),
+            "system prompt must ban sleep/wait shell tricks — ending the turn \
+             is the only wait mechanism"
+        );
+        assert!(
+            SYSTEM_PROMPT.contains("if you catch yourself waiting, end the turn"),
+            "the ban must name the correct replacement action"
+        );
+    }
 }
