@@ -11,6 +11,7 @@
 
 use agent_base::{PlanStepStatus, UserEvent};
 use phi_agent::RuntimeEvent;
+use std::time::Instant;
 
 use crate::ui::app::{App, AgentStatus, DiffHunk, LineKind, OutputLine, Phase, SubAgentStatus, ToolDetail, ToolEvent};
 use crate::ui::diff::{diff_to_hunks, diff_to_hunks_indexed};
@@ -186,6 +187,7 @@ impl App {
                 // Update SubAgentState events
                 if let Some(id) = agent_id.as_deref() {
                     if let Some(state) = self.sub_agents.get_mut(id) {
+                        state.last_tool_at = Instant::now();
                         state.events.push(ToolEvent {
                             tool_name: tool_name.clone(),
                             summary: String::new(),
@@ -252,6 +254,7 @@ impl App {
                             event.summary = summary.clone();
                             event.is_finished = true;
                         }
+                        state.last_tool_at = Instant::now();
                     }
                 }
                 // `update_plan` renders as a plan block (see `PlanUpdated`), so its

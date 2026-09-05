@@ -1,6 +1,7 @@
 //! ratatui frame rendering: transcript (output) / composer / status bar.
 
 use phi_agent::RiskLevel;
+use std::time::Instant;
 use ratatui::{
     Frame, Terminal,
     backend::TestBackend,
@@ -15,6 +16,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::banner::{BannerStyle, ColorScheme, SpanSpec};
 use crate::ui::app::{
     AgentStatus, App, CONTEXT_MENU_H, CONTEXT_MENU_W, FocusTarget, LineKind, SubAgentStatus, context_menu_pos,
+    is_writing_hint,
 };
 use crate::ui::markdown::{line_plain_text, render_markdown};
 use crate::ui::wrap::wrap;
@@ -92,44 +94,44 @@ fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
     let height = area.height as usize;
 
     // Choose which transcript to display based on focus
-    let (transcript, is_sub_agent) = match &app.task_panel.focus {
-        FocusTarget::TaskList(index) => {
-            // Get the selected agent_id
-            let agent_id = app.sub_agents.keys().nth(*index);
-            if let Some(id) = agent_id {
-                if let Some(sub_transcript) = app.sub_agent_transcripts.get(id) {
-                    (sub_transcript.as_slice(), true)
-                } else {
-                    (app.transcript.output.as_slice(), false)
-                }
-            } else {
-                (app.transcript.output.as_slice(), false)
-            }
-        }
-        FocusTarget::Input => {
-            (app.transcript.output.as_slice(), false)
-        }
+    let focused_agent: Option<String> = match &app.task_panel.focus {
+        FocusTarget::TaskList(index) => app.sub_agents.keys().nth(*index).cloned(),
+        FocusTarget::Input => None,
     };
-
-    let committed = transcript.len();
+    let (transcript, is_sub_agent) = match &focused_agent {
+        Some(id) => match app.sub_agent_transcripts.get(id) {
+            Some(sub_transcript) => (sub_transcript.as_slice(), true),
+            None => (app.transcript.output.as_slice(), false),
+        },
+        None => (app.transcript.output.as_slice(), false),
+    };
 
     // Streaming tail: for Normal (AI prose), render the full pending_text
     // through markdown so the user sees styled output during streaming.
     // For other kinds (Thought), fall back to pre-wrapped tail_lines.
-    let tail_raw = if !is_sub_agent {
-        app.streaming_tail_raw()
-    } else {
-        None
-    };
-    // For non-Normal streaming tail, fall back to pre-wrapped tail_lines.
-    let tail_lines_fallback = if !is_sub_agent {
-        match app.streaming_tail_lines() {
-            Some((lines, _)) => lines,
-            None => &[][..],
-        }
-    } else {
-        &[][..]
-    };
+    // A focused child shows ITS live tail — the whole point of following a
+    // sub-agent is watching it work (e.g. the long silent report-writing
+    // stretch that has no tool-call boundary to flush at).
+    let (tail_raw, tail_lines_fallback): (Option<(String, LineKind)>, Vec<String>) =
+        if is_sub_agent {
+            let id = focused_agent.as_deref().expect("is_sub_agent implies focus");
+            (
+                app.child_stream_tail_raw(id),
+                app.child_stream_tail_lines(id)
+                    .map(|(lines, _)| lines)
+                    .unwrap_or_default(),
+            )
+        } else {
+            (
+                app.streaming_tail_raw()
+                    .map(|(raw, kind)| (raw.to_string(), kind)),
+                app.streaming_tail_lines()
+                    .map(|(lines, _)| lines.to_vec())
+                    .unwrap_or_default(),
+            )
+        };
+
+    let committed = transcript.len();
 
     // Pre-render committed lines and streaming tail into a flat vec.
     let mut lines: Vec<Line> = Vec::with_capacity(committed + 32);
@@ -273,8 +275,8 @@ fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
     }
 
     // --- streaming tail ---
-    if let Some((raw, kind)) = tail_raw {
-        if kind == LineKind::Normal {
+    if let Some((raw, kind)) = &tail_raw {
+        if *kind == LineKind::Normal {
             let md_lines = render_markdown(raw);
             for md_line in md_lines {
                 visual_lines_text.push(line_plain_text(&md_line));
@@ -284,7 +286,7 @@ fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
         } else {
             // Thought / other kinds: use pre-wrapped lines.
             for text in tail_lines_fallback.iter() {
-                let base = style_for(kind);
+                let base = style_for(*kind);
                 let styled = span_line(text, &[], base, app.scheme());
                 visual_lines_text.push(text.clone());
                 visual_to_output.push(usize::MAX);
@@ -533,19 +535,26 @@ fn render_task_panel(f: &mut Frame, app: &App, area: Rect) {
         });
         // Current activity = the latest tool event (→ in flight, ✓ finished).
         // Kept to a tool name — the child's detail view has the full history.
+        // A Running agent whose tool feed has gone quiet switches to the
+        // `✍ writing…` hint: it is generating prose/thought between tool
+        // calls (the long silent report-writing stretch has no tool events).
         let activity = if act_w > 6 {
-            state
-                .events
-                .last()
-                .map(|e| {
-                    let (mark, color) = if e.is_finished {
-                        ("✓", Color::DarkGray)
-                    } else {
-                        ("→", Color::Reset)
-                    };
-                    (ellipsize(&format!("{mark} {}", e.tool_name), act_w), color)
-                })
-                .unwrap_or((String::new(), Color::Reset))
+            if is_writing_hint(state, Instant::now()) {
+                (ellipsize("✍ writing…", act_w), Color::DarkGray)
+            } else {
+                state
+                    .events
+                    .last()
+                    .map(|e| {
+                        let (mark, color) = if e.is_finished {
+                            ("✓", Color::DarkGray)
+                        } else {
+                            ("→", Color::Reset)
+                        };
+                        (ellipsize(&format!("{mark} {}", e.tool_name), act_w), color)
+                    })
+                    .unwrap_or((String::new(), Color::Reset))
+            }
         } else {
             (String::new(), Color::Reset)
         };

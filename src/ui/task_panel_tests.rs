@@ -85,6 +85,7 @@ fn mock_sub_agent(name: &str, status: SubAgentStatus) -> SubAgentState {
         context: String::new(),
         started_at: Instant::now(),
         completed_at: None,
+        last_tool_at: Instant::now(),
         events: Vec::new(),
     }
 }
@@ -99,6 +100,7 @@ fn mock_completed_agent(name: &str, completed_secs_ago: u64) -> SubAgentState {
         context: String::new(),
         started_at: Instant::now() - Duration::from_secs(completed_secs_ago + 5),
         completed_at: Some(Instant::now() - Duration::from_secs(completed_secs_ago)),
+        last_tool_at: Instant::now() - Duration::from_secs(completed_secs_ago),
         events: Vec::new(),
     }
 }
@@ -776,4 +778,125 @@ fn snapshot_keeps_waiting_count_in_sync() {
 
     app.handle_event(TuiEvent::Lifecycle(two("done", "done")));
     assert!(matches!(app.status, AgentStatus::Idle));
+}
+
+// ── Focused-child live tail (10.1 backlog batch) ─────────────────────────────
+// F3 demotes child stream text to per-child buffers flushed only at tool-call
+// boundaries. The focused child view must still render the UNFLUSHED tail —
+// the long silent report-writing stretch has no tool boundary to flush at
+// (session 20260905_913766db: pi wrote 3.5 invisible minutes).
+
+#[test]
+fn focused_child_tail_raw_is_prefixed_and_live() {
+    let mut app = App::new();
+    insert_mock_agent(&mut app, "root/pi", "pi", SubAgentStatus::Running);
+
+    app.handle_event(TuiEvent::Runtime(sub_text("root/pi", "# Report\n\nfindings")));
+    let (raw, kind) = app
+        .child_stream_tail_raw("root/pi")
+        .expect("pending text is the live tail");
+    assert_eq!(kind, LineKind::Normal);
+    assert_eq!(raw, "[root/pi] # Report\n\nfindings");
+}
+
+#[test]
+fn focused_child_tail_disappears_at_tool_boundary_flush() {
+    let mut app = App::new();
+    insert_mock_agent(&mut app, "root/pi", "pi", SubAgentStatus::Running);
+
+    app.handle_event(TuiEvent::Runtime(sub_text("root/pi", "now examining")));
+    assert!(app.child_stream_tail_raw("root/pi").is_some());
+
+    // The tool call flushes the pending text into the transcript.
+    app.handle_event(TuiEvent::Runtime(sub_tool_started("root/pi", "read_file")));
+    assert!(app.child_stream_tail_raw("root/pi").is_none());
+    assert!(app
+        .sub_agent_transcripts
+        .get("root/pi")
+        .unwrap()
+        .iter()
+        .any(|l| l.text.contains("now examining")));
+}
+
+#[test]
+fn focused_child_thought_tail_uses_wrapped_lines() {
+    let mut app = App::new();
+    insert_mock_agent(&mut app, "root/pi", "pi", SubAgentStatus::Running);
+
+    app.handle_event(TuiEvent::Runtime(sub_thought("root/pi", "thinking hard")));
+    let (lines, kind) = app
+        .child_stream_tail_lines("root/pi")
+        .expect("pending thought is the live tail");
+    assert_eq!(kind, LineKind::Thought);
+    assert_eq!(lines[0], "[root/pi] thinking hard");
+    // raw accessor reports the same pending content with the thought kind
+    assert_eq!(
+        app.child_stream_tail_raw("root/pi").map(|(_, k)| k),
+        Some(LineKind::Thought)
+    );
+}
+
+// ── ✍ writing… hint (10.1 backlog batch) ─────────────────────────────────────
+
+#[test]
+fn writing_hint_shows_for_quiet_running_agent() {
+    let mut state = mock_sub_agent("pi", SubAgentStatus::Running);
+    state.events.push(ToolEvent {
+        tool_name: "read_file".to_string(),
+        summary: String::new(),
+        is_finished: true,
+    });
+    state.last_tool_at = Instant::now() - Duration::from_secs(21);
+    assert!(is_writing_hint(&state, Instant::now()));
+}
+
+#[test]
+fn writing_hint_suppressed_for_fresh_tool_or_inflight_or_done() {
+    // Fresh finished tool: show the honest ✓ tool_name.
+    let mut fresh = mock_sub_agent("pi", SubAgentStatus::Running);
+    fresh.events.push(ToolEvent {
+        tool_name: "read_file".to_string(),
+        summary: String::new(),
+        is_finished: true,
+    });
+    fresh.last_tool_at = Instant::now() - Duration::from_secs(2);
+    assert!(!is_writing_hint(&fresh, Instant::now()));
+
+    // In-flight tool: `→ tool` is more accurate than the hint, however long.
+    let mut inflight = mock_sub_agent("pi", SubAgentStatus::Running);
+    inflight.events.push(ToolEvent {
+        tool_name: "repo_map".to_string(),
+        summary: String::new(),
+        is_finished: false,
+    });
+    inflight.last_tool_at = Instant::now() - Duration::from_secs(300);
+    assert!(!is_writing_hint(&inflight, Instant::now()));
+
+    // Done agents keep their frozen final activity.
+    let mut done = mock_completed_agent("pi", 60);
+    done.events.push(ToolEvent {
+        tool_name: "read_file".to_string(),
+        summary: String::new(),
+        is_finished: true,
+    });
+    assert!(!is_writing_hint(&done, Instant::now()));
+}
+
+#[test]
+fn tool_events_refresh_last_tool_at() {
+    let mut app = App::new();
+    insert_mock_agent(&mut app, "root/pi", "pi", SubAgentStatus::Running);
+    // Backdate, then let real events arrive — both boundaries must re-stamp.
+    app.sub_agents.get_mut("root/pi").unwrap().last_tool_at =
+        Instant::now() - Duration::from_secs(120);
+
+    app.handle_event(TuiEvent::Runtime(sub_tool_started("root/pi", "read_file")));
+    let stamped = app.sub_agents.get("root/pi").unwrap().last_tool_at;
+    assert!(stamped.elapsed() < Duration::from_secs(5), "start must re-stamp");
+
+    app.sub_agents.get_mut("root/pi").unwrap().last_tool_at =
+        Instant::now() - Duration::from_secs(120);
+    app.handle_event(TuiEvent::Runtime(sub_tool_finished("root/pi", "read_file", "10 lines")));
+    let stamped = app.sub_agents.get("root/pi").unwrap().last_tool_at;
+    assert!(stamped.elapsed() < Duration::from_secs(5), "finish must re-stamp");
 }

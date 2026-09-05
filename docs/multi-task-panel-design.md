@@ -488,3 +488,40 @@ RuntimeEvent::ToolCallStarted { tool_name, agent_id, .. } => {
 - 点击任务跳转到对应的输出位置
 - 显示子代理的 token 消耗统计
 - 支持取消单个子代理
+
+### 10.1 子 agent 纯生成期反馈（✅ 2026-09-05 实装，方案 A + 聚焦实时 tail）
+
+**场景**（session 20260905_913766db，pi 分析 6m47s）：子 agent 说完最后一句
+过渡语、读完最后一批文件后进入纯写报告阶段（本例 ~3.5 分钟）。F3 把子
+agent 流式文本降级到聚焦视图、flush 时机绑死工具调用边界——最后一棒没有
+下一个工具边界，主视图零内容动感（面板只有 ● + 秒表），用户以为卡死。
+实际 h2 流 ~6 帧/秒持续生成，交付全场最长报告。
+
+**方案 A（推荐，纯 UI，无框架改动）**：面板活动列启发式——agent 处于
+Running 且超过 N 秒（建议 20s，> 常见工具间隔）无新工具事件时，活动列
+从过期的工具名切换为 `✍ writing…`（或 spinner 变体）。不引入新事实，
+误报代价仅为一个提示词，下一工具事件立即纠正。
+
+**方案 B（框架事实）**：lifecycle 增加"LLM 生成中"事实（子 agent 回合
+开始/结束打点），面板读事实显示。准确但机械多——Phase 6 reaper 前不
+值得单独立项；若做 Phase 6 时顺手加。
+
+**不做**：把子 agent 报告文本 flush 进主视图转录（重新引入灌屏风险；
+报告全文已经随批次注入，结果可见性无缺口——缺的只是过程反馈）。
+
+**实装记录（2026-09-05）**：除方案 A 外，同批实装了聚焦子 agent 的实时
+streaming tail（渲染层放开，比提示更直接回应用户"是不是卡了"的体感）：
+
+- `App::child_stream_tail_raw/child_stream_tail_lines`（app.rs）：per-child
+  `StreamState` 的未提交 tail，带 `[<id>] ` 首行前缀，与 flush 后的行形状
+  一致，交接零跳变
+- `render_output`（render.rs）：`is_sub_agent` 分支不再强制 `tail=None`，
+  聚焦子 agent 有 pending tail 时走与 root 相同的 markdown 实时路径
+  （Thought 仍走预折行 fallback）；flush 时机不变，tail 与转录不重叠
+- `SubAgentState.last_tool_at`（handlers/runtime.rs 两个工具事件边界打点）
+  + `is_writing_hint` 纯函数（Running + 末工具已完结 + 静默 ≥20s
+  `CHILD_WRITING_HINT_AFTER`；在飞工具保持诚实的 `→ tool`，Done 永不提示）
+- 面板活动列：静默超阈值切换 `✍ writing…`（DarkGray），下一工具事件自动纠正
+- 方案 B（lifecycle"LLM 生成中"事实）保留给 Phase 6 顺手做
+- 回归 +6：tail 前缀/活体、工具边界 flush 后 tail 消失、thought 折行
+  fallback、提示三抑制（新工具/在飞/Done）、事件边界重打 last_tool_at

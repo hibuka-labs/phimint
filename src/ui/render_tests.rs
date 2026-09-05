@@ -175,6 +175,7 @@ fn snapshot_shows_sub_agent_strip() {
         context: String::new(),
         started_at: std::time::Instant::now(),
         completed_at: None,
+        last_tool_at: std::time::Instant::now(),
         events: Vec::new(),
     });
     app.sub_agents.insert("root/b".to_string(), SubAgentState {
@@ -185,6 +186,7 @@ fn snapshot_shows_sub_agent_strip() {
         context: String::new(),
         started_at: std::time::Instant::now(),
         completed_at: Some(std::time::Instant::now()),
+        last_tool_at: std::time::Instant::now(),
         events: Vec::new(),
     });
     let text = snapshot_text(&mut app, 80, 24);

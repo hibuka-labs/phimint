@@ -8,7 +8,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyModifiers};
 use phi_agent::{ApprovalDecision, ApprovalRequest, RuntimeEvent};
@@ -85,8 +85,31 @@ pub struct SubAgentState {
     pub started_at: Instant,
     /// When the sub-agent completed (for auto-removal timing)
     pub completed_at: Option<Instant>,
+    /// Last time a tool event (started or finished) arrived. Drives the
+    /// panel's `✍ writing…` hint — a Running agent whose tool feed has been
+    /// quiet this long is generating prose/thought between tool calls.
+    pub last_tool_at: Instant,
     /// Tool call events (for detail display)
     pub events: Vec<ToolEvent>,
+}
+
+/// Running-agent quiet period before the activity column switches from the
+/// (stale) last tool event to `✍ writing…`. Chosen above typical inter-tool
+/// gaps so it never flashes during an active tool loop.
+pub(crate) const CHILD_WRITING_HINT_AFTER: Duration = Duration::from_secs(20);
+
+/// Whether the panel should show `✍ writing…` for this sub-agent: it is
+/// Running, its last tool call has finished (or none yet), and the tool feed
+/// has been quiet for [`CHILD_WRITING_HINT_AFTER`]. An in-flight tool keeps
+/// its own honest `→ tool` display.
+pub(crate) fn is_writing_hint(state: &SubAgentState, now: Instant) -> bool {
+    if !matches!(state.status, SubAgentStatus::Running) {
+        return false;
+    }
+    if state.events.last().is_some_and(|e| !e.is_finished) {
+        return false;
+    }
+    now.duration_since(state.last_tool_at) >= CHILD_WRITING_HINT_AFTER
 }
 
 /// Where the keyboard focus is.
@@ -501,6 +524,7 @@ impl App {
                 context: String::new(),
                 started_at: Instant::now(),
                 completed_at: None,
+                last_tool_at: Instant::now(),
                 events: Vec::new(),
             });
             self.transcript.push(OutputLine { spans: None, original: None,
@@ -687,6 +711,26 @@ impl App {
     /// Returns `(text, kind)` or `None` when there is nothing pending.
     pub fn streaming_tail_raw(&self) -> Option<(&str, LineKind)> {
         self.stream.tail_raw()
+    }
+
+    /// A child's live streaming tail for the focused view: `(text, kind)` with
+    /// the `[<id>] ` first-line prefix already applied, matching the shape the
+    /// eventual committed line will have (`StreamState::flush_text`). Owned
+    /// copy — keeps `render_output`'s borrow graph simple at ~1 clone/frame.
+    pub fn child_stream_tail_raw(&self, id: &str) -> Option<(String, LineKind)> {
+        let (raw, kind) = self.child_streams.get(id)?.tail_raw()?;
+        Some((format!("[{id}] {raw}"), kind))
+    }
+
+    /// A child's live tail as pre-wrapped lines (the Thought-fallback path),
+    /// first line prefixed like the committed lines will be.
+    pub fn child_stream_tail_lines(&self, id: &str) -> Option<(Vec<String>, LineKind)> {
+        let (lines, kind) = self.child_streams.get(id)?.tail_lines()?;
+        let mut lines = lines.to_vec();
+        if let Some(first) = lines.first_mut() {
+            *first = format!("[{id}] {first}");
+        }
+        Some((lines, kind))
     }
 
     /// The assistant's last reply as plain text: every committed `Normal` line
