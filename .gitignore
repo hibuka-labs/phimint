@@ -8,3 +8,6 @@
 # superpowers visual-companion session artifacts
 .superpowers/
 
+
+# local docs (not tracked)
+docs/
