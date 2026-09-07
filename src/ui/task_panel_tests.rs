@@ -5,7 +5,9 @@
 
 use std::time::{Duration, Instant};
 
-use super::*;
+use crossterm::event::{KeyCode, KeyModifiers};
+
+use crate::ui::app::*;
 use crate::ui::app::{App, FocusTarget, SubAgentState, SubAgentStatus, ToolEvent};
 use phi_tui::lines::{LineKind, OutputLine};
 use phi_agent::{RuntimeEvent, SessionId};
