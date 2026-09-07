@@ -2,44 +2,44 @@
 
 **读作** `/ˈfaɪmɪnt/`（phi-mint，同英文 "fie-mint"），不是「皮敏特」。
 
-> 基于 [phi-agent](https://github.com/) 的 AI 编码 agent —— **永远不把编不过的代码交给你**。
+> 基于 [phi-agent](../phi-agent) 的终端 AI 编码 agent —— **「产品优先」**，同时是 phi-agent 框架的真实压测场。
 
-phimint 在终端里做一款「产品优先」的编码工具：改完先验、验过才交。它同时是 `phi-agent` 框架的真实压测场——写代码是唯一把「理解需求 → 读码 → 多文件改 → 编译/测试 → 报错迭代」整条链路跑全的场景。
+phimint 跑「理解需求 → 读码 → 多文件改 → 编译/测试 → 报错迭代」的完整编码链路。设计目标是**「先验再交」**：改完先验、验过才交付——目前这一纪律由 system prompt 承载（交前编译/测试必须过），强制闸门已实现但暂缓接线（见「路线图」）。
 
 ## 特性
 
-- **流式 TUI（默认界面）**：ratatui + crossterm，Claude Code 风格固定底部输入栏，逐字流式输出、工具调用内联、执行命令逐行实时回显、审批弹窗（`y`/`a`/`n`）。
-- **「先验再交」强制闸门**：动过代码文件却没跑 `verify`，就拦下「报 done」、逼先验（`VerifyEnforcementMiddleware`，consumer-side、零改框架）。
-- **LSP 快速内环**：手写最小 LSP 客户端，改完不重编译秒级拿到 `file:line:col` 诊断（rust-analyzer / typescript-language-server / clangd）。
-- **拉取式上下文架构**：`repo_map`（tree-sitter 符号/结构索引）+ `search_content`（ripgrep），agent 主动搜、主动读，而非把整个仓库塞进 context。
-- **多 agent 大任务分解**：`decompose`（判串行/并行）→ 只读子 agent 扇出调查 → `merge`（冲突检测 + 合并验证）。
-- **三态审批**：`auto`（全自动）/ `ask`（写操作逐条弹窗）/ `deny`（只读）。
-- **多语言**：注册制 `LanguageAdapter`，Rust / Java / TypeScript / JavaScript / C / C++ 开箱即用，加一门语言只需补配置。
-- **优雅架构**：高内聚低耦合的 UI 模块设计，统一泛型补全器、事件处理分离、模块化测试文件，易于扩展和维护。
+- **流式 TUI**：ratatui + crossterm，底部固定输入栏、逐字流式输出、工具调用内联、shell 命令逐行实时回显、审批弹窗、启动 banner（自动识别终端明暗配色）。
+- **`/skill` 斜杠命令**：启动时扫描 `.claude/skills`，`/skill-name args` 直接注入 skill 正文（phi-agent `skill` feature）。
+- **拉取式上下文**：`repo_map`（tree-sitter 符号/结构索引）+ `search_content`（ripgrep），agent 主动搜、主动读，而非把整个仓库塞进 context。
+- **LSP 快速内环**：多 server 懒启动（rust-analyzer / typescript-language-server / clangd），改完不重编译秒级拿到 `file:line:col` 诊断；server 起不来降级到 shell。
+- **多 agent 扇出 + 推送式 fan-in**：`spawn_agent` 派只读子 agent 调查，主 agent **结束回合即收全量报告**（无需轮询）；TUI 任务面板逐子 agent 实时跟踪，单任务 10 分钟超时硬停。
+- **审批三态**：`auto`（全自动）/ `ask`（写操作逐条弹窗）/ `deny`（只读）；子 agent 权限跟随主 agent 模式。
+- **防护栏**：reasoning-only 纠偏（连续空转 → 自动关思考）、max-turns 预警（最后 3 轮逼收尾）、provider 截断守卫（谎报 `finish_reason` 的容错，agent-base 提供）、工具输出 16k 上限。
+- **多语言**：`code-intel` 注册表（扩展名 → LSP server → verify 兜底），Rust / TypeScript / JavaScript / C / C++ 开箱即用。
+- **模块化底座**：UI 组件与语言智能已沉淀为独立 crate —— [`phi-tui`](../phi-tui)（聊天 TUI 组件）与 [`code-intel`](../code-intel)（LSP/repomap/ripgrep 核心），phimint 只保留产品壳。
 
 ## 快速开始
 
 ### 前置条件
 
 - Rust 工具链（edition 2024）
-- 一个 OpenAI 兼容的 LLM API（OpenAI / DeepSeek / Groq / Ollama / Copilot …）
-- 本仓库的 sibling crates：`phi-agent` / `phi-kernel-tools` / `agent-base` / `log-core`（与 phimint 同级目录，`Cargo.toml` 用 `path` 引用）
-- （可选）`cargo` / `npm` / `make` 等构建工具，以及对应语言的 LSP server 在 `PATH` 上
+- 任一 genai 支持的模型 provider 的 API key（OpenAI / Anthropic / DeepSeek / Aliyun / Moonshot / Gemini / Ollama …）
+- 本仓库的同级 sibling crates（`Cargo.toml` 以 `path` 引用）：直接依赖 `phi-agent` / `phi-tui` / `code-intel` / `phi-telemetry` / `log-core`；`agent-base` / `agent-works` / `phi-kernel-tools` / `llm-*` 经 `[patch.crates-io]` 钉到本地源
+- （可选）各语言的 LSP server 在 `PATH` 上；`cargo` / `npm` / `make` 等构建工具
 
 ### 配置
 
 ```bash
 cp .env.example .env
-# 编辑 .env，填入：
-#   LLM_API_KEY=sk-...
-#   LLM_MODEL=deepseek-chat        # 或 gpt-4o / llama3 / copilot …
-#   LLM_BASE_URL=https://api.deepseek.com/v1
+# 编辑 .env，填入模型名与对应 provider 的 API key：
+#   LLM_MODEL=gpt-5.4-mini        # genai 按模型名自动识别 provider
+#   OPENAI_API_KEY=sk-...         # 或 ANTHROPIC_API_KEY / DEEPSEEK_API_KEY / …
 ```
 
 ### 运行
 
 ```bash
-cargo run                          # 启动 TUI（默认界面）
+cargo run                          # 启动 TUI
 cargo run -- -w ../some-project    # 指定工作区目录
 ```
 
@@ -48,26 +48,29 @@ cargo run -- -w ../some-project    # 指定工作区目录
 ```
 cargo run -- [OPTIONS]
 
-  -w, --workspace <PATH>   工作区目录（默认：当前目录）
-      --model <NAME>       模型名（覆盖 LLM_MODEL / OPENAI_MODEL）
-      --base-url <URL>     API base URL（覆盖 env）
-      --approval <MODE>    auto（默认）/ ask / deny
-      --shell-timeout-ms   shell 命令超时（默认 120000）
-      --session <ID>       会话 ID（默认 PHI_SESSION_ID，否则自动生成）
-      --inline             改用行内聊天（TUI 是默认）
-      --log-level <LEVEL>  session.log 级别（默认 info）
+  -w, --workspace <PATH>    工作区目录（默认：当前目录）
+      --model <NAME>        模型名（覆盖 LLM_MODEL，provider 自动识别）
+      --approval <MODE>     auto（默认）/ ask / deny
+      --shell-timeout-ms    shell 命令超时（默认 120000）
+      --session <ID>        会话 ID（默认 PHI_SESSION_ID，否则自动生成；复用同 ID 续写同一会话）
+      --log-level <LEVEL>   session.log 级别（默认 info）
+      --color-scheme <S>    banner 配色：auto（默认，探测终端底色）/ dark / light
+      --banner <on|off>     启动 banner（默认 on）
+      --thinking-budget <N> 思考 token 预算（默认 8192）
+      --reasoning-effort <E> 推理深度：none/low/medium/high/xhigh（默认 medium）
 ```
 
-### 界面与模式
+### 界面与交互
 
-- **TUI（默认）**：底部固定输入栏，输出在上方滚动，支持鼠标滚轮、括号粘贴、CJK 双宽。`Ctrl+Y` 复制最后一条 AI 回复到剪贴板；复制任意文本＝左键拖选出行范围 → `Ctrl+C`，或右键（弹出「拷贝 / 取消」菜单后**鼠标点击**或方向键+`Enter`）；退出 `Ctrl+C`（或输入后按 `Esc`/`Ctrl+D`）。
-  > macOS 提示：`Cmd+C` 只在终端把该组合键转发给程序时才生效（需把终端自己的「复制」快捷键改为别的组合）。macOS 自带 Terminal.app 不支持转发 `Cmd` 修饰键**，`Cmd+C` 无法进程序，请用 `Ctrl+C` 或右键菜单。iTerm2 可在 Preferences → Keys 将 Copy 重绑到 `⌘⇧C` 后让 `Cmd+C` 生效。
-- **行内聊天（`--inline`）**：不进 alternate screen，`TextDelta` 直写 stdout，适合原生终端回滚 / 管道。
+- **输入与输出**：底部固定输入栏（多行 Composer、括号粘贴、CJK 双宽），输出区逐字流式 + Markdown 渲染；`@` 触发文件路径补全，`/` 触发 skill 选择。
+- **按键**：`Ctrl+Y` 复制最后一条 AI 回复；`Ctrl+C` 按状态分流——有选区→复制、运行中/审批中→取消、空闲→提示后再次按下退出；`Ctrl+D` 退出。
+- **鼠标**：滚轮滚动、左键拖选出行范围、右键弹出拷贝菜单。
 - **审批三态**：
+
   | 模式 | 行为 |
   |---|---|
-  | `auto` | 全自动，什么都不问 |
-  | `ask` | 写操作逐条弹窗：`y` 放行一次 / `a` 永久放行 / `n` 拒绝 |
+  | `auto` | 全自动，什么都不问；子 agent 拿满权限 |
+  | `ask` | 写操作逐条弹窗：`y` 放行一次 / `a` 永久放行 / `n` 拒绝；子 agent 受限、决策上抛父级 |
   | `deny` | 只读，拒绝所有写 |
 
 ### 一次典型任务
@@ -76,33 +79,42 @@ cargo run -- [OPTIONS]
 用户: "帮我在 lib 里加一个带缓存的 get_user 函数"
 1. repo_map 拿结构 → search_content 定位 → read_file 读相关代码
 2. edit_file / write_file 改代码
-3. diagnostics 秒级拿类型错误（LSP 快速内环）
-4. verify 跑 cargo check 拿精简错误摘要 → 修 → 重跑（验证闭环）
-5. 闸门放行（验过了）→ 汇报改动
+3. diagnostics 秒级拿类型错误（LSP 快速内环，不重编译）
+4. execute_command 跑 cargo check / 测试 → 修 → 重跑，直到全绿
+5. 简述改动、汇报收工（system prompt 纪律：交前编译/测试必须过）
+```
+
+### 一次典型多 agent 协作
+
+```
+用户: "调查 X / Y / Z 三个问题"
+1. spawn_agent × 3 派只读子 agent（各带窄切片任务），主 agent 立即结束回合
+2. 子 agent 运行期间主 agent 什么都不做——报告是推送的，不是拉的
+3. 全部完成后报告合为一帧批量到达（TUI 任务面板可见每个子 agent 状态与实时输出）
+4. 主 agent 汇总报告，自行完成所有编辑（子 agent 永远只读）
 ```
 
 ## 工具面
 
 | 工具 | 作用 |
 |---|---|
-| `repo_map` | tree-sitter 符号/结构索引（多语言，拉取式上下文） |
+| `read_file` / `write_file` / `edit_file` / `list_files` | 文件读写与精准编辑（`edit_file` 原子写 + 4 级匹配；phi-kernel-tools） |
+| `execute_command` | shell（跑构建/测试/命令，逐行流式回显 + 超时/取消杀进程组） |
 | `search_content` | ripgrep 内容搜索（regex） |
-| `read_file` / `write_file` / `edit_file` / `list_files` | 文件读写与精准编辑（`edit_file` 原子写 + 4 级匹配） |
-| `execute_command` | shell（跑构建/测试/命令，逐行流式回显 + 超时/取消杀进程组，输出自截断） |
-| `verify` | 跑构建/测试命令，把报错解析成 `file:line:col code message` 精简摘要 |
-| `diagnostics` | LSP 诊断（改完不重编译的快速内环；服务缺失时降级到 `verify`） |
-| `update_plan` | 复杂任务先展示结构化清单（目标+步骤+状态），随进度更新 |
-| `decompose` / `merge` | 多 agent 大任务分解 / 冲突检测 + 合并验证 |
-| `spawn_agent` / `send_message` / `wait_agent` / `list_agents` / `close_agent` | 只读子 agent 原语（调查并汇报，主 agent 负责所有编辑） |
+| `repo_map` | tree-sitter 符号/结构索引（多语言，拉取式上下文） |
+| `diagnostics` | LSP 诊断（改完不重编译的快速内环；server 缺失降级到 shell） |
+| `update_plan` | 复杂任务先展示结构化清单（display-only，Codex 风格；agent-base） |
+| `spawn_agent` / `send_message` / `wait_agent` / `list_agents` / `close_agent` | 子 agent 原语（agent-works；推荐用法见上：spawn 后结束回合等推送） |
 
 ## 工作原理
 
-phimint 是 `phi-agent` 框架的 consumer：复用框架的 agent 循环 / ReAct / 审批 / 会话事件流，注入编码专属工具与策略。
+phimint 是 `phi-agent` 框架的 consumer：agent 循环 / ReAct / 审批 / 会话事件流 / 守卫全部来自框架（经 facade 一个依赖引入），phimint 只做产品壳——系统提示、工具注册、审批接线、TUI。
 
-- **强制 verify 闸门**：`EditTracker` 包装 `write_file`/`edit_file` 置脏、`verify`/`merge` 清脏；agent 改了代码却想「报 done」时，`on_post_llm` 压掉本次结束并注入「先 verify」，`max_nudges`(3) 后降级为「⚠️ 未验证」标记交用户仲裁。框架只提供 `skip_push`/`follow_up_message` 通用能力，编码专属策略留在 consumer。
-- **多 agent**：`decompose` 用一次嵌套 LLM 调用产出 `{strategy, slices}`；`parallel` 时每 slice 一个**只读**子 agent 调查，主 agent 汇总报告后自行编辑；`merge` 按文件聚合 diff、标冲突、再跑一次编译验证。
-- **LSP**：进程级单例 server（按语言），`didOpen`/`didChange`/`didSave` 同步 + `publishDiagnostics` 缓存，`diagnostics` 工具拉取。
-- **多语言边界**：`lang.rs` 注册表（扩展名 → 默认 verify 命令 → manifest → LSP server）+ 通用兜底（列文件 / ripgrep / 任意 verify 命令 / 原始 stderr 尾部），任何语言零成本覆盖。
+- **推送式 fan-in**（agent-works）：子 agent 的报告在完成时被持有，主 agent 回合结束的瞬间批量注入为新回合；进度信息 display-only（不唤醒、不插话）；单任务超 10 分钟硬停并推 Error 结果——挂死的子 agent 一定能唤醒父级。子 agent 硬闸只读：`write_file` / `edit_file` / `execute_command` 不进子 agent 工具面。
+- **TUI 架构**：`ui/run.rs` 主循环里，后台任务跑 agent 回合并把 `RuntimeEvent` 推过 mpsc 通道，主循环把事件灌进 `App` 状态机、轮询键盘、重绘——输入与事件只经通道相遇，无共享可变状态，agent 循环零侵入。
+- **任务面板**：`task_panel.rs` 记账子 agent 生命周期（spawn 出现 / done 翻转 / 完成 3s 后回收，根 agent 忙碌或用户正在看面板时不回收），每个子 agent 独立流式缓冲，交叉输出互不切断；`child_results.rs` 把框架的 fan-in 路由事件映射成面板文案与聚焦子 agent 的实时尾随。
+- **LSP**：`code-intel` 按语言懒启动进程级单例 server，`didOpen`/`didChange`/`didSave` 同步 + `publishDiagnostics` 缓存，`diagnostics` 工具拉取；注册表决定 server 选择，code-intel 不感知「phimint」。
+- **守卫**（框架提供、phimint 调参）：reasoning-only 连续 2 次空转 → 注入「立即行动」nudge 并关闭思考；回合末裁决器 fail-open（裁决不可用不阻塞正常收尾）；`MaxTurnsNudgeMiddleware` 在 256 轮预算的最后 3 轮逼出最终答复。
 
 ## 会话与可观测性
 
@@ -110,10 +122,11 @@ phimint 是 `phi-agent` 框架的 consumer：复用框架的 agent 循环 / ReAc
 
 | 文件 | 内容 |
 |---|---|
-| `session.log` | tracing 日志（`log-core` 写入） |
+| `session.log` | tracing 日志（log-core 写入） |
 | `turn_NNN.jsonl` | 每轮结构化事件流（工具调用、文本增量、推理 …） |
 | `frames.txt` | TUI 帧翻页书（去色留布局，供离线回看 UI） |
-| `inline.raw` | 行内模式字节流镜像（`src/bin/replay.rs` 可离线回放） |
+| `perf.log` | 每帧渲染耗时 CSV（性能回归排查） |
+| `session_metrics.json` | 每轮 token 用量与会话汇总（phi-telemetry） |
 
 复用 `--session <id>` 会在同一目录续号追加 turn。
 
@@ -122,42 +135,31 @@ phimint 是 `phi-agent` 框架的 consumer：复用框架的 agent 循环 / ReAc
 ```
 phimint/
 ├── src/
-│   ├── main.rs        # CLI 入口（clap），组装 agent + 选择 UI
-│   ├── agent.rs       # 系统提示 + 工具注册 + 审批/多 agent/闸门接线
+│   ├── main.rs        # CLI 入口（clap）、装配、选配色
+│   ├── agent.rs       # 系统提示 + 工具注册 + 多 agent/守卫/审批接线（verify 闸门 parked 在此）
 │   ├── approval.rs    # 审批两层：ApprovalPolicy 闸门 + 决策 handler（含 TUI 队列）
-│   ├── gate.rs        # 强制 verify 闸门（VerifyEnforcementMiddleware）
-│   ├── lang.rs        # 语言注册表（多语言边界）
-│   ├── lsp.rs         # 手写 LSP 客户端（diagnostics）
-│   ├── inline.rs      # 行内聊天（--inline）
-│   ├── ui/            # ratatui TUI 模块
-│   │   ├── app.rs           # App 核心状态机（事件驱动）
-│   │   ├── app_tests.rs     # App 单元测试（独立文件）
-│   │   ├── render.rs        # ratatui 帧渲染
-│   │   ├── render_tests.rs  # 渲染单元测试（独立文件）
-│   │   ├── completer.rs     # 统一补全系统（InlineCompleter<T> 泛型）
-│   │   ├── handlers/        # 事件处理模块（高内聚低耦合）
-│   │   │   ├── mod.rs       # handlers 模块声明
-│   │   │   ├── runtime.rs   # 运行时事件处理（RuntimeEvent）
-│   │   │   └── keyboard.rs  # 键盘事件处理（KeyCode/Mouse）
-│   │   ├── markdown.rs      # Markdown 渲染（tui-markdown）
-│   │   ├── input.rs         # 多行输入组件（Composer）
-│   │   ├── stream.rs        # 流式状态（未提交的文本/思考）
-│   │   ├── transcript.rs    # 输出缓冲（已提交的行）
-│   │   ├── viewport.rs      # 滚动视口（offset + follow-bottom）
-│   │   ├── selection.rs     # 鼠标选择 + 右键菜单状态
-│   │   ├── wrap.rs          # 文本换行逻辑
-│   │   ├── frame_log.rs     # 帧翻书日志
-│   │   ├── picker.rs        # 通用 picker 抽象（提及/技能选择器）
-│   │   ├── mention.rs       # @ 文件路径补全（Phase 10）
-│   │   └── mod.rs           # ui 模块声明
-│   ├── tools/         # 应用工具
-│   │   ├── decompose.rs     # 大任务分解（串行/并行策略）
+│   ├── banner.rs      # 启动 banner（明暗两套配色）
+│   ├── gate.rs        # 强制 verify 闸门（VerifyEnforcementMiddleware，暂缓接线）
+│   ├── skills.rs      # /skill 斜杠解析（扫描 .claude/skills）
+│   ├── tools/         # 应用工具壳（核心在 code-intel）
 │   │   ├── diagnostics.rs   # LSP 诊断工具
-│   │   └── workspace.rs     # 工作区操作
-│   └── bin/replay.rs  # 离线回放 inline.raw
-├── docs/              # 设计文档与分阶段计划/记录
+│   │   ├── repomap.rs       # repo_map 工具
+│   │   └── ripgrep.rs       # search_content 工具
+│   └── ui/            # TUI 产品壳（通用组件已沉淀到 phi-tui）
+│       ├── run.rs             # 主循环：终端装配、事件/命令通道、回合 runner
+│       ├── app.rs (+tests)    # App 状态机（事件驱动）
+│       ├── render.rs (+tests) # 帧渲染
+│       ├── task_panel.rs (+tests)   # 子 agent 任务面板（生命周期 + 每子流式缓冲）
+│       ├── child_results.rs (+tests)# fan-in 结果呈现（聚焦尾随、文案路由）
+│       ├── frame_log.rs       # frames.txt + perf.log
+│       └── handlers/          # keyboard.rs / mouse.rs / runtime.rs
 └── Cargo.toml
 ```
+
+## 设计目标与路线图
+
+- **先验再交（PARKED）**：`gate.rs` 的 `VerifyEnforcementMiddleware` 已实现——动过代码却没跑验证就拦下「报 done」、注入「先 verify」nudge；接线暂注释（`agent.rs` Phase 6a），当前纪律由 system prompt 承载。重新接线即恢复硬保证。
+- **子 agent 受控写**：从只读调查演进到受限写委派（agent-works 的 `ChildPermissionMode` 基建已就位）。
 
 ## 开发
 
@@ -169,18 +171,9 @@ cargo clippy           # lint
 
 ### 测试组织
 
-项目采用 **模块分离测试** 模式（Rust 社区最佳实践）：
+**模块分离测试**模式：业务代码（`app.rs`、`render.rs` 等）只含业务逻辑，测试放独立文件（`app_tests.rs` 等），`#[cfg(test)]` 隔离出生产构建；测试仍在 crate 内部，可访问 `pub(crate)` 成员。
 
-- **业务代码**：`app.rs`、`render.rs` 等只包含业务逻辑
-- **测试代码**：`app_tests.rs`、`render_tests.rs` 等独立测试文件
-- **访问权限**：测试仍能访问 `pub(crate)` 字段和方法（测试在 crate 内部）
-- **编译隔离**：`#[cfg(test)]` 确保测试代码不会进入生产构建
-
-这种结构让源文件更聚焦、测试更易维护，同时保持 Rust 的类型安全和访问控制。
-
-依赖的 sibling crates 用 `path` 引用（`Cargo.toml`），任一 crate 里 `cargo test` 直接吃本地源码；发布时用 `version` 字段走 crates.io。
-
-更多背景与决策记录见 `docs/design.md`（设计）与 `docs/phase*-plan.md`（各阶段计划/完成记录）。
+依赖的 sibling crates 用 `path` 引用，任一 crate 里 `cargo test` 直接吃本地源；`phi-tui` / `code-intel` 已独立发布（GitHub hibuka-labs + crates.io），发布流程走 `version` 字段。设计文档在 `docs/`（本地目录，不进版本库）。
 
 ## License
 

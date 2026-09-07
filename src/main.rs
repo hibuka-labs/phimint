@@ -3,13 +3,8 @@
 //! The UI is a ratatui TUI with a fixed input bar at the bottom (the cursor
 //! stays in the bar while output scrolls above it).
 
-mod agent;
-mod approval;
-mod banner;
-mod gate;
-mod skills;
-mod tools;
-mod ui;
+// Modules live in the lib crate (src/lib.rs) so tests/ can exercise them.
+use phimint::{agent, approval, banner, skills, ui};
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -130,7 +125,7 @@ async fn main() -> Result<()> {
     init_logging(&session_ctx, &cli.log_level).await?;
 
     // `deny` 模式只读（写工具全被拒），强制 verify 闸门无意义，故关闭。
-    let (agent, skill_resolver) = agent::build(
+    let (agent, skill_resolver, skill_telemetry) = agent::build(
         llm_client,
         approval,
         policy,
@@ -140,6 +135,7 @@ async fn main() -> Result<()> {
         cli.thinking_budget,
         &cli.reasoning_effort,
         llm_config.model.clone(),
+        skills::default_skill_dirs(),
     )?;
     let session = agent.create_session().await;
 
@@ -154,7 +150,7 @@ async fn main() -> Result<()> {
     let show_banner = cli.banner != "off";
     let version = env!("CARGO_PKG_VERSION");
 
-    ui::run_tui(agent, skill_resolver, session, session_ctx, workspace, approval_rx, scheme, show_banner, version).await
+    ui::run_tui(agent, skill_resolver, skill_telemetry, session, session_ctx, workspace, approval_rx, scheme, show_banner, version).await
 }
 
 /// Base directory for all phimint session data (~/.phimint).

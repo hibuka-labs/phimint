@@ -54,7 +54,8 @@ const UI_TICK: Duration = Duration::from_millis(250);
 /// spawned task for the whole lifetime of the TUI.
 pub async fn run_tui(
     agent: PhiAgent,
-    skill_resolver: SkillResolver,
+    skill_resolver: Arc<SkillResolver>,
+    skill_telemetry: Arc<crate::telemetry::SkillTelemetry>,
     session: SessionId,
     session_ctx: SessionContext,
     workspace: PathBuf,
@@ -109,6 +110,7 @@ pub async fn run_tui(
     let agent_task = tokio::spawn(agent_loop(
         agent.clone(),
         skill_resolver,
+        skill_telemetry,
         session,
         session_ctx,
         event_tx.clone(),
@@ -444,7 +446,8 @@ fn copy_text(app: &mut App, clipboard: &mut Option<arboard::Clipboard>, text: St
 /// persist per-turn JSONL logs exactly like the REPL path does.
 async fn agent_loop(
     agent: Arc<PhiAgent>,
-    skill_resolver: SkillResolver,
+    skill_resolver: Arc<SkillResolver>,
+    skill_telemetry: Arc<crate::telemetry::SkillTelemetry>,
     session: SessionId,
     session_ctx: SessionContext,
     event_tx: mpsc::UnboundedSender<TuiEvent>,
@@ -477,8 +480,33 @@ async fn agent_loop(
                 let turn_events: std::sync::Arc<std::sync::Mutex<Vec<RuntimeEvent>>> = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
 
                 // 7b: `/skill-name args` → 解析为 skill body 再提交给 agent
+                // If the input was a skill slash command, record it for telemetry.
+                let original_input = input.clone();
                 let resolved_input = skill_resolver.resolve(&input).unwrap_or(input);
+                if resolved_input != original_input {
+                    // resolve() transformed the input → it was a slash skill.
+                    // Extract skill name (first word after the slash).
+                    let skill_name = original_input
+                        .strip_prefix('/')
+                        .and_then(|s| s.split_whitespace().next())
+                        .unwrap_or("unknown");
+                    skill_telemetry.record_slash(skill_name);
+                }
                 let turn_input = resolved_input;
+
+                // Pre-turn telemetry: snapshot slash events BEFORE run_turn so
+                // the on_turn_end hook (which fires inside run_turn) sees them.
+                // The hook reads `pending_turn_custom` at turn-end; setting it
+                // now ensures slash-triggered skills appear in turn.custom.
+                // Model-triggered events (SkillTool::call) happen DURING the
+                // turn, after the hook fires — they only appear in session-level
+                // custom (via set_session_custom post-turn).
+                {
+                    let turn_skill_snap = skill_telemetry.snapshot_and_reset();
+                    if !turn_skill_snap.as_object().map_or(true, |m| m.is_empty()) {
+                        telemetry.set_turn_custom(turn_skill_snap);
+                    }
+                }
 
                 let turn_events_clone = turn_events.clone();
                 let result = agent
@@ -497,8 +525,18 @@ async fn agent_loop(
                     tracing::warn!(error = %e, "failed to save turn log");
                 }
 
-                // Save token usage metrics incrementally.
+                // Post-turn telemetry: model-triggered skill events (recorded by
+                // SkillTool::call during the turn) are captured here. These can't
+                // go into turn.custom (the on_turn_end hook already fired), so
+                // they only appear in session-level custom via set_session_custom.
                 {
+                    skill_telemetry.snapshot_and_reset(); // clear per-turn state
+                    telemetry.set_session_custom(skill_telemetry.session_snapshot());
+                    // Yield so the observer processes SetSessionCustom before we
+                    // read the session for the per-turn save. Without this, the
+                    // save races with the observer and reads stale custom data.
+                    tokio::task::yield_now().await;
+
                     let metrics = telemetry.session.read().await;
                     let _ = phi_telemetry::save_metrics(&metrics, &session_ctx.session_dir);
                 }

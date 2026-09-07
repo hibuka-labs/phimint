@@ -11,8 +11,10 @@ use phi_agent::{
 };
 
 use code_intel::lsp::{ClientInfo, LspManager, LspServerSpec};
-use crate::skills::{SkillResolver, default_skill_dirs};
+use crate::skills::{SkillResolver, render_catalog};
+use crate::telemetry::SkillTelemetry;
 use crate::tools::diagnostics::DiagnosticsTool;
+use crate::tools::skill::SkillTool;
 use crate::tools::{repomap::RepoMapTool, ripgrep::RipgrepTool};
 
 /// Coding-oriented system prompt (adapted from Codex).
@@ -87,11 +89,30 @@ Sub-agents are READ-ONLY (read/search/report, no writes or mutating commands). Y
 
 When done, briefly report what you changed."#;
 
+/// The one place the live system prompt is composed: the base prompt plus the
+/// skills catalog when any skills are loaded, the base prompt byte-identical
+/// otherwise. Named (not inlined into `build`) so `prompt_guard_tests` can
+/// exercise the exact wiring — the dead-copy lesson of session
+/// 20260903_9255c25e: the prompt the model sees is only what THIS composes.
+///
+/// Also used by `SkillCatalogRefreshMiddleware` (M3a) to refresh the system
+/// prompt before each LLM call.
+pub fn compose_system_prompt(resolver: &SkillResolver) -> String {
+    match render_catalog(resolver) {
+        Some(catalog) => format!("{SYSTEM_PROMPT}\n\n{catalog}"),
+        None => SYSTEM_PROMPT.to_string(),
+    }
+}
+
 /// Build a phimint agent bound to `workspace_root`.
 ///
 /// `base_agent_builder` already registers the file tools (read/write/edit/list).
 /// We add the shell, search, and repo-map tools ourselves — none of them
 /// are part of `base_agent_builder` (the phi CLI registers shell manually too).
+///
+/// `skill_dirs` are the directories scanned for skills; they feed both the
+/// system-prompt catalog and the returned resolver (the `/skill` slash
+/// command). Parameterized so tests can point the scan at a fixture directory.
 ///
 /// Returns `(PhiAgent, SkillResolver)` — the resolver powers the `/skill` slash
 /// command in the TUI loop.
@@ -105,7 +126,22 @@ pub fn build(
     thinking_budget: u64,
     reasoning_effort: &str,
     model: String,
-) -> Result<(PhiAgent, SkillResolver)> {
+    skill_dirs: Vec<PathBuf>,
+) -> Result<(PhiAgent, Arc<SkillResolver>, Arc<SkillTelemetry>)> {
+    // Skills catalog (skill-injection design D1): the resolver must exist
+    // BEFORE the builder — the catalog joins the system prompt at build time,
+    // not after the agent is constructed. Wrapped in Arc so the `skill` tool
+    // and the TUI's `/` path share one instance.
+    let skill_resolver = Arc::new(SkillResolver::from_dirs(&skill_dirs));
+    let skill_telemetry = Arc::new(SkillTelemetry::new());
+    if !skill_resolver.is_empty() {
+        tracing::info!(
+            count = skill_resolver.len(),
+            names = %skill_resolver.skill_names().join(", "),
+            "loaded skills for /skill command"
+        );
+    }
+    let system_prompt = compose_system_prompt(&skill_resolver);
     // Keep a handle for the guard below — `llm_client` itself is moved into the
     // builder here.
     let guard_client = Arc::clone(&llm_client);
@@ -120,7 +156,7 @@ pub fn build(
         // output doesn't flood the listing.
         vec!["target".to_string(), "node_modules".to_string()],
     )
-        .system_prompt(SYSTEM_PROMPT)
+        .system_prompt(system_prompt)
         .approval_handler(approval)
         // base_agent_builder caps tool output at 4000 chars and REJECTS (rather
         // than truncates) anything larger. That is too small to read a normal
@@ -131,6 +167,14 @@ pub fn build(
         .register_tool(LocalShellTool::new(shell_timeout_ms))
         .register_tool(RipgrepTool::new(workspace_root.clone()))
         .register_tool(RepoMapTool::new(workspace_root.clone()))
+        // skill tool (skill-injection D2): model-initiated skill body loader.
+        .register_tool(SkillTool::new(Arc::clone(&skill_resolver), Arc::clone(&skill_telemetry)))
+        // Per-turn catalog refresh (skill-injection M3a): replaces the system
+        // message before each LLM call so the model always sees the current
+        // skill catalog. Zero cross-repo changes — uses agent-base Middleware.
+        .middleware(crate::middleware::SkillCatalogRefreshMiddleware::new(
+            Arc::clone(&skill_resolver),
+        ))
         // TESTING: low max_turns to verify nudge feature
         .execution_max_turns(256);
 
@@ -268,17 +312,7 @@ pub fn build(
         ..PhiAgentConfig::default()
     })?;
 
-    // 构建 SkillResolver（扫描 `.claude/skills` 目录，供 /skill 斜杠命令使用）
-    let skill_resolver = SkillResolver::from_dirs(&default_skill_dirs());
-    if !skill_resolver.is_empty() {
-        tracing::info!(
-            count = skill_resolver.len(),
-            names = %skill_resolver.skill_names().join(", "),
-            "loaded skills for /skill command"
-        );
-    }
-
-    Ok((agent, skill_resolver))
+    Ok((agent, skill_resolver, skill_telemetry))
 }
 
 #[cfg(test)]
@@ -397,6 +431,183 @@ mod prompt_guard_tests {
             !SYSTEM_PROMPT.contains("analyze the shared context"),
             "the old '(e.g. analyzing the shared context)' example reads as a \
              sanctioned waiting activity — it must stay out"
+        );
+    }
+
+    // ── Skills catalog wiring (skill-injection design M1) ──
+    //
+    // Same lesson as above, one level up: the catalog must reach the prompt
+    // the MODEL actually receives. `compose_system_prompt` is guarded at the
+    // function level (these tests), and the two `built_agent_*` tests below
+    // run a real `build()` + turn against a capturing mock provider — delete
+    // the compose call in `build()` and those go red.
+
+    use super::compose_system_prompt;
+    use phi_agent::llm_trait::{
+        Capabilities, ChatMessage, ChatRequest, ChatResponse, ChatStream, FinishReason,
+        LlmError, LlmProvider, ProviderInfo, StreamChunk, UsageInfo,
+    };
+    use std::sync::{Arc, Mutex};
+
+    /// LLM stub that records the system prompt of every request it receives
+    /// and answers with a tool-free "done" (the turn ends immediately).
+    struct CapturingMockProvider {
+        system_prompts: Mutex<Vec<String>>,
+    }
+
+    impl CapturingMockProvider {
+        fn record(&self, request: &ChatRequest) {
+            if let Some(ChatMessage::System { content, .. }) = request.messages.first() {
+                self.system_prompts.lock().unwrap().push(content.clone());
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for CapturingMockProvider {
+        async fn stream(&self, request: ChatRequest) -> Result<ChatStream, LlmError> {
+            self.record(&request);
+            let chunks: Vec<Result<StreamChunk, LlmError>> = vec![
+                Ok(StreamChunk::Text("done".to_string())),
+                Ok(StreamChunk::Stop { finish_reason: Some("stop".to_string()) }),
+            ];
+            Ok(ChatStream::new(Box::pin(futures_util::stream::iter(chunks))))
+        }
+
+        async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, LlmError> {
+            self.record(&request);
+            Ok(ChatResponse {
+                content: "done".to_string(),
+                reasoning_content: None,
+                thinking_signature: None,
+                tool_calls: vec![],
+                usage: UsageInfo::default(),
+                finish_reason: FinishReason::Stop,
+                raw: None,
+            })
+        }
+
+        fn capabilities(&self) -> Capabilities {
+            Capabilities {
+                supports_streaming: true,
+                supports_tools: true,
+                ..Default::default()
+            }
+        }
+
+        fn info(&self) -> ProviderInfo {
+            ProviderInfo {
+                name: "mock".to_string(),
+                model: "mock-model".to_string(),
+                version: None,
+            }
+        }
+    }
+
+    /// Fixture: one skill in `<tmp>/skills/catalog-skill/SKILL.md`.
+    fn fixture_skill_dir(tmp: &std::path::Path) -> std::path::PathBuf {
+        let dir = tmp.join("skills").join("catalog-skill");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: catalog-skill\ndescription: guard fixture skill\n\
+             user-invocable: true\n---\n\nfixture body",
+        )
+        .unwrap();
+        tmp.join("skills")
+    }
+
+    /// Build a real agent via `build()` and run one turn against the
+    /// capturing mock, returning every system prompt the LLM received.
+    async fn system_prompts_received(skill_dirs: Vec<std::path::PathBuf>) -> Vec<String> {
+        let provider = Arc::new(CapturingMockProvider {
+            system_prompts: Mutex::new(Vec::new()),
+        });
+        let workspace = tempfile::tempdir().unwrap();
+        let (approval, policy) = crate::approval::build_approval("auto");
+        let (agent, _resolver, _telemetry) = super::build(
+            provider.clone() as Arc<dyn LlmProvider>,
+            approval,
+            policy,
+            1_000,
+            workspace.path().to_path_buf(),
+            true,
+            1024,
+            "low",
+            "mock-model".to_string(),
+            skill_dirs,
+        )
+        .unwrap();
+        let session = agent.create_session().await;
+        agent.run_turn(session, "hello", |_ev| Ok(())).await.unwrap();
+
+        let prompts = provider.system_prompts.lock().unwrap().clone();
+        assert!(
+            !prompts.is_empty(),
+            "mock provider must receive at least one request"
+        );
+        prompts
+    }
+
+    #[test]
+    fn compose_appends_catalog_when_skills_exist() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skill_dir = fixture_skill_dir(tmp.path());
+        let resolver = crate::skills::SkillResolver::from_dirs(&[skill_dir]);
+
+        let prompt = compose_system_prompt(&resolver);
+        assert!(prompt.starts_with(SYSTEM_PROMPT), "catalog must be appended AFTER the base prompt");
+        assert!(prompt[SYSTEM_PROMPT.len()..].contains("## Skills"), "{prompt}");
+        assert!(prompt.contains("- catalog-skill: guard fixture skill\n"), "{prompt}");
+        assert!(prompt.contains("### How to use skills"), "{prompt}");
+        assert!(prompt.contains("Do not carry skills across turns unless re-mentioned"), "{prompt}");
+    }
+
+    #[test]
+    fn compose_byte_identical_without_skills() {
+        // M1 acceptance: an empty skill environment must not perturb the
+        // prompt AT ALL — byte-identical to the pre-change baseline.
+        let tmp = tempfile::tempdir().unwrap();
+        let resolver = crate::skills::SkillResolver::from_dirs(&[tmp.path().join("nonexistent")]);
+        assert_eq!(compose_system_prompt(&resolver), SYSTEM_PROMPT);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn built_agent_receives_catalog_in_live_prompt() {
+        // The wiring guard: if the compose call is dropped from `build()`,
+        // the model stops seeing the catalog and THIS test goes red —
+        // exactly the dead-copy failure mode of session 20260903_9255c25e.
+        let tmp = tempfile::tempdir().unwrap();
+        let skill_dir = fixture_skill_dir(tmp.path());
+        let prompts = system_prompts_received(vec![skill_dir]).await;
+
+        assert!(
+            prompts.iter().any(|p| {
+                p.starts_with(SYSTEM_PROMPT)
+                    && p.contains("## Skills")
+                    && p.contains("- catalog-skill: guard fixture skill\n")
+            }),
+            "the live request must carry base prompt + catalog; got {} request(s)",
+            prompts.len()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn built_agent_without_skills_receives_base_prompt_verbatim() {
+        // Wiring-level version of the byte-identical acceptance: build() with
+        // an (empty) skill dir must send the untouched SYSTEM_PROMPT. The
+        // runtime appends its own fixed guidance after whatever we pass, so
+        // the assertion is: our base prompt verbatim up front, and NO catalog
+        // fragment anywhere. Exact byte-identity of the composed prompt is
+        // pinned by `compose_byte_identical_without_skills`.
+        let tmp = tempfile::tempdir().unwrap();
+        let empty = tmp.path().join("skills");
+        std::fs::create_dir_all(&empty).unwrap();
+        let prompts = system_prompts_received(vec![empty]).await;
+
+        assert!(
+            prompts.iter().any(|p| p.starts_with(SYSTEM_PROMPT) && !p.contains("## Skills")),
+            "with no skills the live prompt must be the base prompt with no catalog fragment"
         );
     }
 }
