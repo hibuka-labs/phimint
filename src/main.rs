@@ -7,8 +7,6 @@ mod agent;
 mod approval;
 mod banner;
 mod gate;
-mod lang;
-mod lsp;
 mod skills;
 mod tools;
 mod ui;
@@ -88,17 +86,17 @@ async fn main() -> Result<()> {
         .or_else(|| std::env::var("LLM_MODEL").ok())
         .unwrap_or_else(|| "gpt-5.4-mini".to_string());
     // Build LLM provider from env vars + CLI model override.
-    // LlmAdapter is gone; use llm_unified::create_provider() with LlmConfig.
+    // LlmAdapter is gone; use phi_agent::create_provider() with LlmConfig.
     // Resolve API key from LLM_API_KEY or OPENAI_API_KEY.
     let api_key = std::env::var("LLM_API_KEY")
         .or_else(|_| std::env::var("OPENAI_API_KEY"))
         .context("Set LLM_API_KEY (or OPENAI_API_KEY) in .env or environment")?;
     let base_url = std::env::var("LLM_BASE_URL")
         .context("Set LLM_BASE_URL in .env or environment")?;
-    let llm_config = agent_base::llm_trait::config::LlmConfig {
+    let llm_config = phi_agent::llm_trait::config::LlmConfig {
         protocol: std::env::var("LLM_PROTOCOL")
             .ok()
-            .and_then(|s| s.parse::<agent_base::llm_trait::Protocol>().ok()),
+            .and_then(|s| s.parse::<phi_agent::llm_trait::Protocol>().ok()),
         api_key,
         model,
         base_url,
@@ -108,8 +106,8 @@ async fn main() -> Result<()> {
             opts
         },
     };
-    let llm_client: Arc<dyn agent_base::llm_trait::LlmProvider> =
-        llm_unified::create_provider(&llm_config)
+    let llm_client: Arc<dyn phi_agent::llm_trait::LlmProvider> =
+        phi_agent::create_provider(&llm_config)
             .context("Failed to create LLM provider")?;
 
     // Approval is two layers (see approval.rs): a policy (the gate) + a handler

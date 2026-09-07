@@ -5,22 +5,16 @@
 //! drains those events into [`App`] state, polls keyboard input, and redraws.
 //! Input and events meet only through the channel — no shared mutable state.
 
+// Chat-TUI component layer (lines / transcript / stream / wrap / viewport /
+// selection / picker / completer / mention / input / diff / markdown) moved
+// to the `phi-tui` crate (path dependency). This module keeps only the
+// product shell: app state root, layout renderer, input/event handlers, and
+// the TUI main loop.
 pub mod app;
-pub mod completer;
 mod child_results;
-pub mod diff;
 pub mod frame_log;
 pub mod handlers;
-pub mod input;
-pub mod markdown;
-pub mod mention;
-pub mod picker;
 pub mod render;
-pub mod selection;
-pub mod stream;
-pub mod transcript;
-pub mod viewport;
-pub mod wrap;
 
 use std::io;
 use std::path::PathBuf;

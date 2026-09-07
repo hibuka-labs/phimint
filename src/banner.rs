@@ -77,12 +77,9 @@ pub struct BannerRow {
 
 /// A styled byte-range within an output line's plain text (TUI rendering).
 /// `start`/`len` align with the concatenated run strings in `BannerRow::text`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SpanSpec {
-    pub start: usize,
-    pub len: usize,
-    pub style: BannerStyle,
-}
+/// The generic span model lives in `ui::lines` (style-token agnostic); this
+/// alias pins the banner's token so `SpanSpec { .. }` literals keep working.
+pub type SpanSpec = phi_tui::lines::SpanSpec<BannerStyle>;
 
 impl BannerRow {
     /// The concatenated plain text of the row (used by renderers and tests).

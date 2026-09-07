@@ -1,7 +1,8 @@
 //! Tests for ratatui frame rendering.
 
 use super::*;
-use crate::ui::app::{AgentStatus, App, LineKind, OutputLine, Phase, SubAgentState, SubAgentStatus, TuiEvent};
+use crate::ui::app::{AgentStatus, App, Phase, SubAgentState, SubAgentStatus, TuiEvent};
+use phi_tui::lines::{LineKind, OutputLine};
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use phi_agent::{RuntimeEvent, SessionId};
 use ratatui::backend::TestBackend;
@@ -171,8 +172,6 @@ fn snapshot_shows_sub_agent_strip() {
         name: "a".to_string(),
         status: SubAgentStatus::Running,
         files: Vec::new(),
-        task: String::new(),
-        context: String::new(),
         started_at: std::time::Instant::now(),
         completed_at: None,
         last_tool_at: std::time::Instant::now(),
@@ -182,8 +181,6 @@ fn snapshot_shows_sub_agent_strip() {
         name: "b".to_string(),
         status: SubAgentStatus::Done,
         files: Vec::new(),
-        task: String::new(),
-        context: String::new(),
         started_at: std::time::Instant::now(),
         completed_at: Some(std::time::Instant::now()),
         last_tool_at: std::time::Instant::now(),

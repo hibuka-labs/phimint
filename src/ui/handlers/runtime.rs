@@ -9,13 +9,15 @@
 //! - Run lifecycle (RunFinished, RunCancelled)
 //! - User events (Progress)
 
-use agent_base::{PlanStepStatus, UserEvent};
+use phi_agent::{PlanStepStatus, UserEvent};
 use phi_agent::RuntimeEvent;
 use std::time::Instant;
 
-use crate::ui::app::{App, AgentStatus, DiffHunk, LineKind, OutputLine, Phase, SubAgentStatus, ToolDetail, ToolEvent};
-use crate::ui::diff::{diff_to_hunks, diff_to_hunks_indexed};
-use crate::ui::wrap::{one_line, wrap};
+use crate::banner::BannerStyle;
+use crate::ui::app::{App, AgentStatus, Phase, SubAgentStatus, ToolEvent};
+use phi_tui::lines::{DiffHunk, LineKind, OutputLine, ToolDetail};
+use phi_tui::diff::{diff_to_hunks, diff_to_hunks_indexed};
+use phi_tui::wrap::{one_line, wrap};
 
 /// Build a `ToolDetail::Diff` from a file tool's `args_json`, or `None` if
 /// the tool is not a file-edit tool or parsing fails.
@@ -91,7 +93,7 @@ fn spawn_invocation_text(args_json: &str, max_cols: usize, prefix: &str) -> Opti
 }
 
 /// Prefix for sub-agent output lines (e.g., `[task_name] `).
-fn agent_prefix(agent_id: Option<&str>) -> String {
+pub(crate) fn agent_prefix(agent_id: Option<&str>) -> String {
     match agent_id {
         Some(id) if !id.is_empty() => format!("[{id}] "),
         _ => String::new(),
@@ -335,7 +337,7 @@ impl App {
                 // optional explanation. Steps are normalized to ≤60 chars by the
                 // tool (fits one line); objective/explanation wrap with a hanging
                 // indent.
-                let mut block: Vec<OutputLine> = Vec::new();
+                let mut block: Vec<OutputLine<BannerStyle>> = Vec::new();
                 for (i, line) in wrap(&objective, self.transcript.wrap_width()).into_iter().enumerate() {
                     let text = if i == 0 {
                         format!("📋 {line}")

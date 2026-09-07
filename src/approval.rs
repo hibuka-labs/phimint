@@ -16,10 +16,15 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use phi_agent::{
     AgentError, AgentResult, ApprovalDecision, ApprovalHandler, ApprovalMode, ApprovalRequest,
-    AutoApprovalHandler, RiskLevel, ToolPolicy,
+    AutoApprovalHandler, QueuedApprovalHandler, RiskLevel, ToolPolicy,
 };
 use serde_json::Value;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
+
+// The pending-request type now lives in the framework (phi_agent::cli::approval,
+// sunk down in the distillation plan); re-exported here because phimint's
+// approval module stays the product's approval façade (ui/ consumes it).
+pub use phi_agent::ApprovalItem;
 
 // ── Command risk classification ─────────────────────────────────────────────
 
@@ -268,52 +273,12 @@ impl ApprovalHandler for CliApprovalHandler {
 }
 
 // ── The decision: QueuedApprovalHandler (Phase 5b) ─────────────────────────────
-
-/// A pending approval request handed to the UI, carrying the channel the
-/// user's decision is returned on.
-#[derive(Debug)]
-pub struct ApprovalItem {
-    pub request: ApprovalRequest,
-    pub decision_tx: oneshot::Sender<ApprovalDecision>,
-}
-
-/// Queued approval handler: enqueue each request and let the UI render one
-/// prompt at a time, then return the user's decision.
-///
-/// Unlike [`CliApprovalHandler`] (which reads stdin) this never touches the
-/// terminal itself. It pushes the request into a queue the UI drains and waits
-/// on a per-request oneshot. Parallel sub-agents each call `approve`; the queue
-/// serializes them so only one prompt is shown at a time (fixing the REPL's
-/// interleaved multi-sub-agent prompts).
-#[derive(Debug, Clone)]
-pub struct QueuedApprovalHandler {
-    queue_tx: mpsc::UnboundedSender<ApprovalItem>,
-}
-
-impl QueuedApprovalHandler {
-    /// Create a handler wired to `queue_tx`. The caller keeps the matching
-    /// `UnboundedReceiver` and feeds it to the UI.
-    pub fn new(queue_tx: mpsc::UnboundedSender<ApprovalItem>) -> Self {
-        Self { queue_tx }
-    }
-}
-
-#[async_trait]
-impl ApprovalHandler for QueuedApprovalHandler {
-    async fn approve(
-        &self,
-        request: ApprovalRequest,
-        cancel_token: tokio_util::sync::CancellationToken,
-    ) -> AgentResult<ApprovalDecision> {
-        let (decision_tx, decision_rx) = oneshot::channel();
-        let _ = self.queue_tx.send(ApprovalItem { request, decision_tx });
-
-        tokio::select! {
-            _ = cancel_token.cancelled() => Err(AgentError::Cancelled),
-            result = decision_rx => result.map_err(|_| AgentError::Cancelled),
-        }
-    }
-}
+//
+// The queued handler itself (`QueuedApprovalHandler` + `ApprovalItem`) is
+// framework code now — re-exported from phi-agent (`cli::approval`), since any
+// phi-agent UI runtime needs the same enqueue-and-answer pattern. What stays
+// here is only the wiring: `build_queued_approval` pairs the handler with
+// phimint's policy.
 
 /// Read a stdin line, racing against `cancel_token` so the prompt doesn't block
 /// the runtime or ignore Ctrl+C.
@@ -559,62 +524,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn queued_handler_roundtrips_decision() {
-        let (queue_tx, mut queue_rx) = tokio::sync::mpsc::unbounded_channel();
-        let handler = QueuedApprovalHandler::new(queue_tx);
+    async fn build_queued_approval_wires_handler_to_queue() {
+        // The sunk-down handler (now from phi-agent) must still be reachable
+        // through phimint's wiring: requests enqueued, policy attached.
+        let (handler, policy, mut queue_rx) = build_queued_approval();
+        assert!(policy.is_some(), "queued mode must carry the policy");
+
         let cancel = tokio_util::sync::CancellationToken::new();
-
-        let request = ApprovalRequest {
-            title: "write_file".to_string(),
-            message: "Write file: src/lib.rs".to_string(),
-            action_key: Some("write_file:src/lib.rs".to_string()),
-            risk_level: RiskLevel::Sensitive,
-            raw: None,
-        };
-
-        let handle = {
-            let handler = handler.clone();
-            let request = request.clone();
+        let handle = tokio::spawn({
             let cancel = cancel.clone();
-            tokio::spawn(async move { handler.approve(request, cancel).await })
-        };
+            async move {
+                handler.approve(
+                    ApprovalRequest {
+                        title: "write_file".to_string(),
+                        message: "m".to_string(),
+                        action_key: None,
+                        risk_level: RiskLevel::Sensitive,
+                        raw: None,
+                    },
+                    cancel,
+                )
+                .await
+            }
+        });
 
-        // The TUI side receives the queued item and answers "allow always".
         let item = queue_rx.recv().await.expect("request should be queued");
         assert_eq!(item.request.title, "write_file");
         item.decision_tx
-            .send(ApprovalDecision::AllowAlways)
-            .expect("TUI should be able to answer");
-
+            .send(ApprovalDecision::Deny)
+            .expect("UI should be able to answer");
         let decision = handle.await.expect("handler task").expect("approve");
-        assert_eq!(decision, ApprovalDecision::AllowAlways);
-    }
-
-    #[tokio::test]
-    async fn queued_handler_respects_cancel() {
-        let (queue_tx, mut queue_rx) = tokio::sync::mpsc::unbounded_channel();
-        let handler = QueuedApprovalHandler::new(queue_tx);
-        let cancel = tokio_util::sync::CancellationToken::new();
-
-        let request = ApprovalRequest {
-            title: "t".to_string(),
-            message: "m".to_string(),
-            action_key: None,
-            risk_level: RiskLevel::Safe,
-            raw: None,
-        };
-
-        let handle = {
-            let handler = handler.clone();
-            let request = request.clone();
-            let cancel = cancel.clone();
-            tokio::spawn(async move { handler.approve(request, cancel).await })
-        };
-
-        let _item = queue_rx.recv().await.expect("request queued");
-        cancel.cancel();
-
-        let result = handle.await.expect("handler task");
-        assert!(matches!(result, Err(AgentError::Cancelled)));
+        assert_eq!(decision, ApprovalDecision::Deny);
     }
 }

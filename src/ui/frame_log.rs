@@ -185,3 +185,107 @@ impl ComposerLog {
         let _ = self.file.flush();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::app::App;
+
+    fn read(path: &Path) -> String {
+        std::fs::read_to_string(path).unwrap()
+    }
+
+    #[test]
+    fn frame_capture_dedups_identical_frames() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("frames.txt");
+        let mut cap = FrameCapture::new(&path).unwrap();
+        let mut app = App::new();
+
+        // First dirty frame renders and is captured.
+        let spent = cap.capture(true, &mut app, 80, 24);
+        assert!(spent > Duration::ZERO, "first capture must render");
+        assert_eq!(cap.frame_id(), 1);
+
+        // Identical frame (nothing changed) is skipped by the dedup.
+        cap.last_capture = Instant::now() - CAPTURE_INTERVAL; // bypass throttle
+        let spent = cap.capture(true, &mut app, 80, 24);
+        let _ = spent; // render cost is real even when the dedup drops the frame
+        assert_eq!(cap.frame_id(), 1, "identical frame must not be captured");
+
+        cap.flush();
+        let log = read(&path);
+        assert!(log.contains("──── frame 1 ────"), "{log}");
+    }
+
+    #[test]
+    fn frame_capture_skips_clean_loops() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("frames.txt");
+        let mut cap = FrameCapture::new(&path).unwrap();
+        let mut app = App::new();
+
+        let spent = cap.capture(false, &mut app, 80, 24);
+        assert_eq!(spent, Duration::ZERO, "clean loop must not render");
+        assert_eq!(cap.frame_id(), 0);
+        cap.flush();
+        assert_eq!(read(&path), "");
+    }
+
+    #[test]
+    fn perf_log_writes_header_then_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("perf.log");
+        let mut log = PerfLog::new(&path).unwrap();
+
+        log.record(&PerfRow {
+            frame_id: 7,
+            draw_ms: 3,
+            capture_ms: 1,
+            loop_ms: 9,
+            dirty: true,
+            scroll_offset: 42,
+            follow_bottom: false,
+            output_lines: 120,
+            crossterm_events: 4,
+            slept: false,
+            event_types: "k",
+        });
+        log.flush();
+
+        let binding = read(&path);
+        let lines: Vec<&str> = binding.lines().collect();
+        assert_eq!(lines.len(), 2, "header + one row: {lines:?}");
+        assert!(lines[0].starts_with("frame_id,draw_ms"), "{}", lines[0]);
+        assert_eq!(
+            lines[1], "7,3,1,9,true,42,false,120,4,false,k",
+            "CSV row must be field-ordered"
+        );
+    }
+
+    #[test]
+    fn composer_log_records_only_visible_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("composer.log");
+        let mut log = ComposerLog::new(&path).unwrap();
+        let mut app = App::new();
+        let size = (80, 24);
+
+        // Empty composer → nothing to log.
+        log.record(&app, 1, size);
+        assert_eq!(read(&path), "");
+
+        // Typed text → a state change → one record.
+        app.composer.insert_str("hello");
+        log.record(&app, 2, size);
+        log.flush(); // records sit in a BufWriter; flush before reading
+        let first = read(&path);
+        assert!(first.contains("frame=2"), "{first}");
+        assert!(first.contains("hello"), "{first}");
+
+        // Same state again → no new record.
+        log.record(&app, 3, size);
+        log.flush();
+        assert_eq!(read(&path), first, "unchanged state must not be re-logged");
+    }
+}

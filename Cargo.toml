@@ -11,15 +11,19 @@ path = "src/main.rs"
 
 [dependencies]
 # The framework (library) we build on. `shell` enables the local_shell tool;
-# `multi-agent` enables the spawn/send/wait/close sub-agent tools.
-phi-agent = { path = "../phi-agent", features = ["shell", "multi-agent"] }
-# Kernel tools: LocalShellTool lives here (not re-exported by phi-agent's lib).
-phi-kernel-tools = { path = "../phi-kernel-tools", features = ["shell"] }
-# Runtime types not re-exported by phi-agent (ChatMessage, ResponseFormat,
-# StreamClient) — needed by the `decompose` tool's nested structured LLM call.
-agent-base = { path = "../agent-base" }
-# Skill types (PromptSkill) for /skill slash command (Phase 7b).
-agent-works = { path = "../agent-works", default-features = false, features = ["skill", "prompt_skill"] }
+# `multi-agent` enables the spawn/send/wait/close sub-agent tools; `skill`
+# enables the /skill slash command (PromptSkill). The facade re-exports
+# everything else the product needs (llm_trait, create_provider, guard,
+# max_turns_nudge, registry snapshots, fan-in router) — no direct deps on
+# agent-base / agent-works / phi-kernel-tools / llm-unified.
+phi-agent = { path = "../phi-agent", features = ["shell", "multi-agent", "skill"] }
+# Chat-style TUI components (lines/transcript/stream/markdown/completion/…),
+# extracted from src/ui/ — the product keeps only the shell (app/render/handlers).
+phi-tui = { path = "../phi-tui" }
+# Language intelligence (lsp/lang/repomap/ripgrep/diagnostics cores), extracted
+# from src/lsp.rs + src/lang.rs + src/tools cores — the product keeps the Tool
+# shells. Features declared explicitly per the distillation plan.
+code-intel = { path = "../code-intel", default-features = false, features = ["lsp", "repomap"] }
 
 tokio = { version = "1", features = ["full"] }
 # CancellationToken for the interactive approval handler's `approve` signature.
@@ -44,29 +48,13 @@ arboard = "3"
 # Observability: mirror phi-agent's CLI — write `tracing` records to a
 # session.log file (via log-core's LogCoreLayer) and per-turn event JSONL
 # (via phi_agent::save_turn_log).
+# phi-telemetry: per-turn token usage → session_metrics.json
+phi-telemetry = { path = "../phi-telemetry" }
 log-core = { path = "../log-core" }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# RepoMap (Phase 2): tree-sitter grammars for symbol extraction across
-# Rust, Java, TypeScript/TSX, JavaScript, C, C++ and Python.
-tree-sitter = "0.25"
-tree-sitter-rust = "0.23"
-tree-sitter-java = "0.23"
-tree-sitter-typescript = "0.23"
-tree-sitter-javascript = "0.23"
-tree-sitter-c = "0.23"
-tree-sitter-cpp = "0.23"
-tree-sitter-python = "0.23"
-
-# LSP diagnostics (Phase 6b): protocol types only — the client is hand-rolled
-# (JSON-RPC framing + rust-analyzer process) to stay dependency-light.
-lsp-types = "0.95"
-
 [dev-dependencies]
-# Needed only to name `futures_core::Stream` in the `StreamClient` test stub
-# for the `decompose` tool (the trait's `stream` return type).
-futures-core = "0.3"
 # 临时目录测试（skills 测试需要创建临时 SKILL.md 文件结构）。
 tempfile = "3"
 
@@ -75,3 +63,9 @@ tempfile = "3"
 [patch.crates-io]
 agent-base = { path = "../agent-base" }
 agent-works = { path = "../agent-works" }
+# TEMP(阶段 3 联调):phi-agent 依赖 phi-kernel-tools 0.6.0 未发布;发布后可移除
+phi-kernel-tools = { path = "../phi-kernel-tools" }
+# 统一 llm 类型到本地源(否则 agent-base 链上的 llm-trait 与本地
+# llm-providers/llm-trait 是两套 crate,LlmProvider 类型不匹配)
+llm-unified = { path = "../llm-providers" }
+llm-trait = { path = "../llm-providers/llm-trait" }

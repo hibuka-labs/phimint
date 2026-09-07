@@ -6,7 +6,8 @@
 use std::time::{Duration, Instant};
 
 use super::*;
-use crate::ui::app::{App, FocusTarget, LineKind, OutputLine, SubAgentState, SubAgentStatus, ToolEvent};
+use crate::ui::app::{App, FocusTarget, SubAgentState, SubAgentStatus, ToolEvent};
+use phi_tui::lines::{LineKind, OutputLine};
 use phi_agent::{RuntimeEvent, SessionId};
 
 // ── Mock Event Builders ──────────────────────────────────────────────────────
@@ -64,15 +65,6 @@ fn sub_run_finished(agent_id: &str) -> RuntimeEvent {
     }
 }
 
-/// Create a RunCancelled event for a sub-agent.
-fn sub_run_cancelled(agent_id: &str) -> RuntimeEvent {
-    RuntimeEvent::RunCancelled {
-        session_id: SessionId::new(1),
-        agent_id: Some(agent_id.to_string()),
-        trace_id: None,
-    }
-}
-
 // ── Test Helpers ─────────────────────────────────────────────────────────────
 
 /// Helper to create a SubAgentState with minimal fields.
@@ -81,8 +73,6 @@ fn mock_sub_agent(name: &str, status: SubAgentStatus) -> SubAgentState {
         name: name.to_string(),
         status,
         files: vec![format!("src/{name}.rs")],
-        task: format!("Implement {name}"),
-        context: String::new(),
         started_at: Instant::now(),
         completed_at: None,
         last_tool_at: Instant::now(),
@@ -96,8 +86,6 @@ fn mock_completed_agent(name: &str, completed_secs_ago: u64) -> SubAgentState {
         name: name.to_string(),
         status: SubAgentStatus::Done,
         files: vec![format!("src/{name}.rs")],
-        task: format!("Implement {name}"),
-        context: String::new(),
         started_at: Instant::now() - Duration::from_secs(completed_secs_ago + 5),
         completed_at: Some(Instant::now() - Duration::from_secs(completed_secs_ago)),
         last_tool_at: Instant::now() - Duration::from_secs(completed_secs_ago),
@@ -660,7 +648,7 @@ fn child_streaming_does_not_clobber_waiting_status() {
 
 // ── Phase 5: lifecycle snapshot reconciliation ───────────────────────────────
 
-use agent_works::multi_agent::registry::{AgentSnapshot, RegistrySnapshot};
+use phi_agent::{AgentSnapshot, RegistrySnapshot};
 
 /// A snapshot with a single agent in the given derived status.
 fn snap(path: &str, status: &str) -> std::sync::Arc<RegistrySnapshot> {

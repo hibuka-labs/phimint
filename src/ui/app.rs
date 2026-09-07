@@ -13,22 +13,23 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyCode, KeyModifiers};
 use phi_agent::{ApprovalDecision, ApprovalRequest, RuntimeEvent};
 
-use agent_works::multi_agent::registry::RegistrySnapshot;
+use phi_agent::RegistrySnapshot;
 
 use crate::approval::ApprovalItem;
-use crate::banner::{BannerRow, ColorScheme, SpanSpec};
-use crate::ui::input::Composer;
-use crate::ui::completer::{MentionCompleter, SlashCompleter, CompleterAction};
-use crate::ui::selection::SelectionState;
-use crate::ui::stream::StreamState;
-use crate::ui::transcript::{Transcript, DEFAULT_WRAP_WIDTH};
-use crate::ui::viewport::Viewport;
-use crate::ui::wrap::wrap;
+use crate::banner::{BannerRow, BannerStyle, ColorScheme};
+use phi_tui::input::Composer;
+use phi_tui::lines::{LineKind, OutputLine};
+use phi_tui::completer::{MentionCompleter, SlashCompleter, CompleterAction};
+use phi_tui::selection::SelectionState;
+use phi_tui::stream::StreamState;
+use phi_tui::transcript::{Transcript, DEFAULT_WRAP_WIDTH};
+use phi_tui::viewport::Viewport;
+use phi_tui::wrap::wrap;
 
 // Selection / ContextMenu / context_menu_pos / CONTEXT_MENU_* moved to
 // selection.rs; re-exported here for the renderer and tests.
 #[allow(unused_imports)] // re-exported for external consumers (tests use it via super::*)
-pub use crate::ui::selection::{
+pub use phi_tui::selection::{
     ContextMenu, Selection, CONTEXT_MENU_H, CONTEXT_MENU_W, context_menu_pos,
 };
 
@@ -77,10 +78,6 @@ pub struct SubAgentState {
     pub status: SubAgentStatus,
     /// Key files (from spawn_agent task argument)
     pub files: Vec<String>,
-    /// Task description (from spawn_agent task argument)
-    pub task: String,
-    /// Context info (from spawn_agent task argument)
-    pub context: String,
     /// When the sub-agent started
     pub started_at: Instant,
     /// When the sub-agent completed (for auto-removal timing)
@@ -136,81 +133,6 @@ impl Default for TaskPanel {
     }
 }
 
-/// Visual kind of an output line (mapped to a ratatui style in render.rs).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LineKind {
-    Normal,
-    Thought,
-    Plan,
-    Tool,
-    Done,
-    ToolResult,
-    Error,
-    System,
-    Cancelled,
-    Approval,
-    User,
-}
-
-/// Structured detail for a tool call, rendered as a multi-line visual block.
-/// Attached to `OutputLine.detail`; `None` for non-file tools (zero impact on
-/// existing code paths).
-#[derive(Debug, Clone)]
-pub enum ToolDetail {
-    /// Inline diff for `edit_file` / `write_file`.
-    Diff { path: String, hunks: Vec<DiffHunk> },
-}
-
-/// A diff hunk: a group of related changes with a unified-diff header.
-#[derive(Debug, Clone)]
-pub struct DiffHunk {
-    /// `"@@ -a,b +c,d @@"` header line.
-    pub header: String,
-    pub lines: Vec<DiffLine>,
-    /// Which edit (0-based) this hunk came from. Used to apply real file line offsets.
-    pub edit_index: usize,
-}
-
-/// A single line within a diff hunk.
-#[derive(Debug, Clone)]
-pub struct DiffLine {
-    pub kind: DiffLineKind,
-    pub text: String,
-    /// Line number in the old file (1-based). `None` for Add lines.
-    pub old_line: Option<u32>,
-    /// Line number in the new file (1-based). `None` for Del lines.
-    pub new_line: Option<u32>,
-}
-
-/// Whether a diff line is an addition, deletion, or unchanged context.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DiffLineKind {
-    Add,
-    Del,
-    Context,
-}
-
-#[derive(Debug, Clone)]
-pub struct OutputLine {
-    pub text: String,
-    pub kind: LineKind,
-    /// Optional styled byte-ranges into `text` (startup banner runs). `None`
-    /// means the whole line takes the `kind` style. `text` is always the plain
-    /// concatenation, so copy/selection and the frame capture stay style-blind.
-    pub spans: Option<Vec<SpanSpec>>,
-    /// The original (unwrapped) text for this logical block. When the terminal
-    /// width changes, lines with a non-empty `original` are re-wrapped. Lines
-    /// without `original` (banners, tool calls, plan blocks) are kept as-is.
-    /// For multi-line originals (user text, thoughts), the `original` is stored
-    /// only on the *first* output line of the block; subsequent lines have
-    /// `original = None` and are replaced during re-wrap.
-    pub original: Option<String>,
-    /// Structured detail for multi-line tool output (e.g. inline diff).
-    /// When `Some`, the renderer expands this into a visual block instead of
-    /// rendering `text` alone. `None` for all non-file tools.
-    pub detail: Option<ToolDetail>,
-}
-
 /// A user action surfaced from key handling, consumed by the TUI loop.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Action {
@@ -243,7 +165,7 @@ pub enum TuiEvent {
 #[derive(Debug)]
 pub struct App {
     /// Committed transcript: output lines, the plan block, and wrap width.
-    pub transcript: Transcript,
+    pub transcript: Transcript<BannerStyle>,
     pub composer: Composer,
     pub status: AgentStatus,
     /// True while a turn is running (gates submitting another task).
@@ -258,7 +180,7 @@ pub struct App {
     pub task_panel: TaskPanel,
     /// Sub-agent transcripts (separate from main transcript).
     /// Key: agent_id, value: output lines for that sub-agent.
-    pub sub_agent_transcripts: BTreeMap<String, Vec<OutputLine>>,
+    pub sub_agent_transcripts: BTreeMap<String, Vec<OutputLine<BannerStyle>>>,
     /// Mouse selection + right-click copy menu.
     pub selection_state: SelectionState,
     /// Timestamp of the last "press Ctrl+C again to exit" hint. If set and
@@ -289,7 +211,7 @@ pub struct App {
     pub(crate) visual_lines_text: Vec<String>,
     /// Live streaming tail state (pending text/thought + incremental wrap cache).
     /// Root-agent deltas only — see `child_streams` for why children are separate.
-    pub(crate) stream: StreamState,
+    pub(crate) stream: StreamState<BannerStyle>,
     /// Per-child streaming accumulators. Child deltas never touch the shared
     /// `stream`: that buffer's pending tail renders as the main view's live
     /// tail, so a child streaming for minutes flooded it at ~10 events/sec
@@ -297,7 +219,7 @@ pub struct App {
     /// interleaved children from chopping each other's pending text into
     /// fragments on every agent switch. Flushed lines land in
     /// `sub_agent_transcripts` (the child's focus view).
-    pub(crate) child_streams: BTreeMap<String, StreamState>,
+    pub(crate) child_streams: BTreeMap<String, StreamState<BannerStyle>>,
     /// Latest live tool-progress line (e.g. streaming `execute_command` output),
     /// shown in the status bar and cleared when the tool call finishes.
     pub(crate) live_progress: Option<String>,
@@ -357,8 +279,13 @@ impl App {
     /// soft-wrap (the wordmark must stay whole; ratatui clips on narrow
     /// terminals). Styled runs become `spans`, resolved against `scheme` at
     /// render time; the plain `text` keeps copy/selection style-blind.
+    /// (Brand-side: `BannerRow` runs are flattened to the generic
+    /// styled-line entry here, at the product layer.)
     pub fn push_banner(&mut self, rows: Vec<BannerRow>) {
-        self.transcript.push_banner(rows);
+        for row in rows {
+            let (text, spans) = row.to_runs();
+            self.transcript.push_styled_line(text, spans);
+        }
     }
 
     /// The terminal color scheme banner spans resolve against at render time.
@@ -520,8 +447,6 @@ impl App {
                 name,
                 status: SubAgentStatus::Running,
                 files: Vec::new(),
-                task: String::new(),
-                context: String::new(),
                 started_at: Instant::now(),
                 completed_at: None,
                 last_tool_at: Instant::now(),
@@ -681,7 +606,7 @@ impl App {
     /// Accumulate a child's prose delta into its own stream buffer, returning
     /// any lines the flush committed (caller routes them into the child's
     /// transcript). Lines are prefixed `[<id>] ` like the pre-split behavior.
-    pub(crate) fn push_child_text(&mut self, id: &str, text: &str) -> Vec<OutputLine> {
+    pub(crate) fn push_child_text(&mut self, id: &str, text: &str) -> Vec<OutputLine<BannerStyle>> {
         self.child_streams
             .entry(id.to_string())
             .or_insert_with(|| StreamState::new(DEFAULT_WRAP_WIDTH))
@@ -689,7 +614,7 @@ impl App {
     }
 
     /// Accumulate a child's reasoning delta into its own stream buffer.
-    pub(crate) fn push_child_thought(&mut self, id: &str, text: &str) -> Vec<OutputLine> {
+    pub(crate) fn push_child_thought(&mut self, id: &str, text: &str) -> Vec<OutputLine<BannerStyle>> {
         self.child_streams
             .entry(id.to_string())
             .or_insert_with(|| StreamState::new(DEFAULT_WRAP_WIDTH))
@@ -700,7 +625,7 @@ impl App {
     /// tool-invocation line or its `done` marker, so ordering inside the
     /// child's transcript stays chronological). Empty when the child has no
     /// pending stream content.
-    pub(crate) fn flush_child_stream(&mut self, id: &str) -> Vec<OutputLine> {
+    pub(crate) fn flush_child_stream(&mut self, id: &str) -> Vec<OutputLine<BannerStyle>> {
         match self.child_streams.get_mut(id) {
             Some(st) => st.flush(),
             None => Vec::new(),
@@ -807,41 +732,6 @@ impl App {
         }
     }
 
-    /// Remove the last prefix char (and the matching composer char), or cancel
-    /// the picker entirely when the prefix is already empty.
-    fn mention_backspace(&mut self) {
-        let empty = self.mention.as_ref().map_or(true, |m| m.is_empty());
-        if empty {
-            self.mention = None;
-            self.composer.backspace(); // remove the `@`
-        } else {
-            self.composer.backspace();
-            if let Some(m) = self.mention.as_mut() {
-                let _ = m.handle_key(KeyCode::Backspace);
-            }
-        }
-    }
-
-    fn move_mention(&mut self, delta: i32) {
-        if let Some(m) = self.mention.as_mut() {
-            let _ = m.handle_key(if delta > 0 { KeyCode::Down } else { KeyCode::Up });
-        }
-    }
-
-    /// Replace `@<prefix>` in the composer with the selected path (or the typed
-    /// prefix, when the synthetic row is highlighted).
-    fn finish_mention(&mut self) {
-        let Some(m) = self.mention.take() else {
-            return;
-        };
-        let to_delete = 1 + m.prefix().chars().count();
-        for _ in 0..to_delete {
-            self.composer.backspace();
-        }
-        let text = m.finish_text();
-        self.composer.insert_str(&text);
-    }
-
     /// Key handling while the mention picker is open (swallows everything).
     pub(crate) fn handle_mention_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Option<Action> {
         let _ = modifiers;
@@ -908,44 +798,7 @@ impl App {
         self.composer.insert_char(c);
     }
 
-    /// Backspace in the slash picker: remove last char from prefix; close if
-    /// prefix becomes empty and the user backspaces again (removes the `/`).
-    fn slash_backspace(&mut self) {
-        let empty = self.slash.as_ref().map_or(true, |s| s.is_empty());
-        if empty {
-            // Prefix is already empty → user is deleting the `/` itself → close picker
-            self.slash = None;
-            self.composer.backspace();
-            return;
-        }
-        if let Some(s) = self.slash.as_mut() {
-            let _ = s.handle_key(KeyCode::Backspace);
-        }
-        self.composer.backspace();
-    }
-
-    /// Move the slash picker highlight by `delta` (±1).
-    fn move_slash(&mut self, delta: i32) {
-        if let Some(s) = self.slash.as_mut() {
-            let _ = s.handle_key(if delta > 0 { KeyCode::Down } else { KeyCode::Up });
-        }
-    }
-
-    /// Confirm selection: replace `/prefix` in the composer with `/selected-name `.
-    fn finish_slash(&mut self) {
-        let Some(s) = self.slash.take() else { return };
-        let prefix_len = s.prefix().chars().count();
-        let name = s.selected_item()
-            .map(|(n, _)| n.clone())
-            .unwrap_or_else(|| s.prefix().to_string());
-        // 删掉已输入的 `/prefix`
-        let to_delete = 1 + prefix_len;
-        for _ in 0..to_delete {
-            self.composer.backspace();
-        }
-        // 插入 `/name `（带尾部空格，方便用户继续输入参数）
-        self.composer.insert_str(&format!("/{name} "));
-    }
+    // ── / skill picker ──────────────────────────────────────────────────────
 
     /// Key handling while the skill picker is open.
     pub(crate) fn handle_slash_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Option<Action> {
@@ -1086,16 +939,6 @@ impl App {
         if let Some(item) = self.approval_queue.pop_front() {
             let _ = item.decision_tx.send(decision);
         }
-    }
-}
-
-
-/// `"[path] "` for a sub-agent, `""` for the root agent — labels a sub-agent's
-/// lines so they read `[root/searcher] …` in the transcript.
-pub fn agent_prefix(agent_id: Option<&str>) -> String {
-    match agent_id {
-        Some(p) if !p.is_empty() => format!("[{p}] "),
-        _ => String::new(),
     }
 }
 

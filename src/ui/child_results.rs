@@ -1,8 +1,15 @@
-//! Child-result delivery policy for the TUI loop (fan-in redesign).
+//! Child-result presentation for the TUI loop (fan-in redesign).
 //!
-//! Session 20260903_0cf95e79: the watcher is now the fan-in coordinator and
-//! emits two kinds of events, so the old "hold every single result and
-//! flush at turn end" policy split in two:
+//! The delivery-timing policy — Progress display-only / Batch wake,
+//! hold-until-idle, per-report truncation cap — is framework code now: it
+//! lives in `agent-works` (`multi_agent::fan_in`) next to `ChildReport` /
+//! `ChildResultEvent` and is re-exported by phi-agent. This module is the
+//! thin presentation half that stayed behind: it maps the policy's data-only
+//! routes to the TUI's words (Chinese copy) and synthetic runs.
+//!
+//! Session 20260903_0cf95e79: the watcher is the fan-in coordinator and emits
+//! two kinds of events, so the old "hold every single result and flush at
+//! turn end" policy split in two:
 //!
 //! - **Progress** — one child returned. Display-only, never injected into
 //!   the parent's context (the parent is deliberately not woken). The
@@ -13,10 +20,9 @@
 //!
 //! The decision logic used to be inline in `run_tui`'s `while` body with
 //! zero test coverage — exactly where the Phase 2-4 dead-channel bug hid
-//! (session 20260903_2438d139, P3). [`ChildResultRouter`] is pure state plus
-//! decisions; the caller executes the side effects (`set_notice`,
-//! `push_system`, `Cmd::Run`), so the timing policy is unit-testable without
-//! a terminal.
+//! (session 20260903_2438d139, P3). The timing policy itself is unit-tested
+//! in agent-works; this module keeps the copy tests, and the caller executes
+//! the side effects (`set_notice`, `push_system`, `Cmd::Run`).
 
 use phi_agent::{ChildReport, ChildResultEvent};
 
@@ -43,41 +49,36 @@ pub enum ChildResultRoute {
     },
 }
 
-/// Owns batch reports held during a turn and decides their delivery timing.
+/// Presentation adapter over the framework router
+/// ([`phi_agent::ChildResultRouter`]): holds the delivery state and formats
+/// its routes as TUI copy.
 pub struct ChildResultRouter {
-    pending_reports: Vec<ChildReport>,
+    inner: phi_agent::ChildResultRouter,
 }
 
 impl ChildResultRouter {
     pub fn new() -> Self {
         Self {
-            pending_reports: Vec::new(),
+            inner: phi_agent::ChildResultRouter::new(),
         }
     }
 
     /// Route one freshly delivered watcher event.
     pub fn on_event(&mut self, agent_running: bool, event: ChildResultEvent) -> ChildResultRoute {
-        match event {
-            ChildResultEvent::Progress {
+        match self.inner.on_event(agent_running, event) {
+            phi_agent::ChildResultRoute::Progress {
                 agent_path,
                 status,
                 summary,
             } => ChildResultRoute::Notice {
                 notice: progress_notice(&agent_path, &status, summary.as_deref()),
             },
-            ChildResultEvent::Batch { reports } => {
-                if agent_running {
-                    self.pending_reports.extend(reports);
-                    ChildResultRoute::Hold {
-                        notice: format!(
-                            "所有子 agent 已返回（{} 个），结果将在本轮结束后注入",
-                            self.pending_reports.len()
-                        ),
-                    }
-                } else {
-                    let (notice, input) = compose_inject(&reports);
-                    ChildResultRoute::Inject { notice, input }
-                }
+            phi_agent::ChildResultRoute::Held { held } => ChildResultRoute::Hold {
+                notice: format!("所有子 agent 已返回（{held} 个），结果将在本轮结束后注入"),
+            },
+            phi_agent::ChildResultRoute::Batch { reports } => {
+                let (notice, input) = compose_inject(&reports);
+                ChildResultRoute::Inject { notice, input }
             }
         }
     }
@@ -85,10 +86,7 @@ impl ChildResultRouter {
     /// Drain reports held during the turn that just ended, as one batched
     /// synthetic run. Returns `None` while nothing is pending.
     pub fn flush_when_idle(&mut self) -> Option<ChildResultRoute> {
-        if self.pending_reports.is_empty() {
-            return None;
-        }
-        let reports = std::mem::take(&mut self.pending_reports);
+        let reports = self.inner.flush_when_idle()?;
         let (notice, input) = compose_inject(&reports);
         Some(ChildResultRoute::Inject { notice, input })
     }
@@ -108,14 +106,10 @@ fn progress_notice(agent_path: &str, status: &str, summary: Option<&str>) -> Str
     }
 }
 
-/// Per-report injection cap, in characters. The whole batch must stay well
-/// under the session's `max_message_tokens` safety valve — session
-/// 20260904_c6559510: a 212,996-char / 53,276-token batch (extra rounds
-/// created by the parent's own nudges) exceeded the valve and was silently
-/// popped; the parent then synthesized from memory. ~4 chars/token for
-/// mixed CJK/EN, so 24,000 chars ≈ 6k tokens/report; even 8 reports land
-/// near 50k tokens, far under the 120k valve.
-const MAX_REPORT_CHARS: usize = 24_000;
+/// Per-report injection cap, in characters — owned by the framework router
+/// (see `phi_agent::ChildResultRouter::MAX_REPORT_CHARS` for the session
+/// 20260904_c6559510 history).
+const MAX_REPORT_CHARS: usize = phi_agent::ChildResultRouter::MAX_REPORT_CHARS;
 
 /// Notification + synthetic input for a set of batch reports.
 fn compose_inject(reports: &[ChildReport]) -> (String, String) {
@@ -123,13 +117,12 @@ fn compose_inject(reports: &[ChildReport]) -> (String, String) {
     let input = reports
         .iter()
         .map(|r| {
-            if r.message.chars().count() <= MAX_REPORT_CHARS {
-                r.message.clone()
+            let (kept, total) = phi_agent::ChildResultRouter::clamp_report(&r.message);
+            if total <= MAX_REPORT_CHARS {
+                kept
             } else {
-                let truncated: String = r.message.chars().take(MAX_REPORT_CHARS).collect();
                 format!(
-                    "{truncated}\n\n[⚠️ 报告过长已截断：{}/{} 字符，关键结论可能在后段；如需细节请向该子 agent 追问]",
-                    r.message.chars().count(),
+                    "{kept}\n\n[⚠️ 报告过长已截断：{total}/{} 字符，关键结论可能在后段；如需细节请向该子 agent 追问]",
                     MAX_REPORT_CHARS
                 )
             }

@@ -4,13 +4,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
-use agent_base::ReasoningEffort;
-use agent_base::engine::max_turns_nudge::{MaxTurnsNudgeConfig, MaxTurnsNudgeMiddleware};
-use agent_works::guard::{DefaultGuard, DefaultGuardConfig, ReasoningOnlyAction};
-use phi_agent::{ApprovalHandler, ChildPermissionMode, ControlConfig, MultiAgentConfig, PhiAgent, PhiAgentConfig, ToolPolicy, base_agent_builder_with_excludes};
-use phi_kernel_tools::local_shell::LocalShellTool;
+use phi_agent::{
+    ApprovalHandler, ChildPermissionMode, ControlConfig, DefaultGuard, DefaultGuardConfig,
+    LocalShellTool, MaxTurnsNudgeConfig, MaxTurnsNudgeMiddleware, MultiAgentConfig, PhiAgent,
+    PhiAgentConfig, ReasoningEffort, ReasoningOnlyAction, ToolPolicy, base_agent_builder_with_excludes,
+};
 
-use crate::lsp::LspManager;
+use code_intel::lsp::{ClientInfo, LspManager, LspServerSpec};
 use crate::skills::{SkillResolver, default_skill_dirs};
 use crate::tools::diagnostics::DiagnosticsTool;
 use crate::tools::{repomap::RepoMapTool, ripgrep::RipgrepTool};
@@ -96,7 +96,7 @@ When done, briefly report what you changed."#;
 /// Returns `(PhiAgent, SkillResolver)` — the resolver powers the `/skill` slash
 /// command in the TUI loop.
 pub fn build(
-    llm_client: Arc<dyn agent_base::llm_trait::LlmProvider>,
+    llm_client: Arc<dyn phi_agent::llm_trait::LlmProvider>,
     approval: Arc<dyn ApprovalHandler>,
     policy: Option<Arc<dyn ToolPolicy>>,
     shell_timeout_ms: u64,
@@ -109,6 +109,10 @@ pub fn build(
     // Keep a handle for the guard below — `llm_client` itself is moved into the
     // builder here.
     let guard_client = Arc::clone(&llm_client);
+    // PARKED with the verify gate below: the flag only feeds the (currently
+    // commented-out) `VerifyEnforcementMiddleware` wiring. Keep the parameter
+    // so re-enabling the gate needs no signature change.
+    let _ = writes_possible;
     let mut builder = base_agent_builder_with_excludes(
         llm_client,
         // Coding-specific noise the framework (domain-agnostic) must not know
@@ -134,8 +138,22 @@ pub fn build(
     // language (rust-analyzer / typescript-language-server / clangd) and shares
     // them with the `diagnostics` pull tool, which reads each `publishDiagnostics`
     // cache. A server that can't be started degrades gracefully to shell commands.
+    // Routing (registry-backed resolver) and the client identity are injected —
+    // code-intel doesn't know about "phimint".
+    let lsp_manager = LspManager::new(
+        workspace_root.clone(),
+        ClientInfo {
+            name: "phimint".into(),
+            version: Some(env!("CARGO_PKG_VERSION").into()),
+        },
+        |p| {
+            code_intel::lang::lsp_spec_for_path(&p.to_string_lossy()).map(|spec| LspServerSpec {
+                command: spec.command.iter().map(|s| s.to_string()).collect(),
+            })
+        },
+    );
     builder = builder.register_tool(DiagnosticsTool::new(
-        Arc::new(LspManager::new(workspace_root.clone())),
+        Arc::new(lsp_manager),
         workspace_root.clone(),
     ));
 

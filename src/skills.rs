@@ -7,8 +7,8 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use agent_works::skill::prompt_skill::PromptSkill;
-use agent_works::skill::Skill;
+use phi_agent::PromptSkill;
+use phi_agent::Skill;
 
 /// 启动时扫描 `.claude/skills` 目录，提供运行时 `/skill` 查找。
 pub struct SkillResolver {

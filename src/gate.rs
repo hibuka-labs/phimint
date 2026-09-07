@@ -1,5 +1,10 @@
 //! 强制 verify 闸门（Phase 6a）：consumer-side middleware，零改框架。
 //!
+//! **PARKED**：接线在 `agent.rs` 中被整块注释停用（见该处说明），本模块
+//! 因此在 bin 构建里整体 dead。按"停放不拆除"处理：保留实现与全部测试，
+//! 待产品决策重新接线或移除。`#![allow(dead_code)]` 仅压停放期的告警。
+#![allow(dead_code)]
+//!
 //! 产品招牌「永远不把编不过的代码交给你」的强制半截。agent 在本轮（一条
 //! 用户消息内）动过代码文件（`write_file` / `edit_file`）却还没跑过 `verify`
 //! 时，把它试图「报 done」的纯文本回复压掉（`skip_push`），注入
@@ -32,7 +37,7 @@ fn is_code_edit(args: &str) -> bool {
         .ok()
         .and_then(|v| v.get("path").and_then(Value::as_str).map(str::to_owned));
     match path {
-        Some(p) => crate::lang::is_code_path(&p),
+        Some(p) => code_intel::lang::is_code_path(&p),
         None => true,
     }
 }
@@ -277,18 +282,18 @@ mod tests {
 
     #[test]
     fn is_code_path_classifies() {
-        assert!(crate::lang::is_code_path("src/lib.rs"));
-        assert!(crate::lang::is_code_path("build.rs"));
-        assert!(crate::lang::is_code_path("Cargo.toml"));
-        assert!(crate::lang::is_code_path("Cargo.lock"));
-        assert!(crate::lang::is_code_path("docs/Cargo.toml"));
-        assert!(crate::lang::is_code_path("Foo.java"));
-        assert!(crate::lang::is_code_path("src/a.ts"));
-        assert!(crate::lang::is_code_path("src/b.tsx"));
-        assert!(crate::lang::is_code_path("src/c.cpp"));
-        assert!(!crate::lang::is_code_path("README.md"));
-        assert!(!crate::lang::is_code_path("docs/notes.txt"));
-        assert!(!crate::lang::is_code_path("src/"));
+        assert!(code_intel::lang::is_code_path("src/lib.rs"));
+        assert!(code_intel::lang::is_code_path("build.rs"));
+        assert!(code_intel::lang::is_code_path("Cargo.toml"));
+        assert!(code_intel::lang::is_code_path("Cargo.lock"));
+        assert!(code_intel::lang::is_code_path("docs/Cargo.toml"));
+        assert!(code_intel::lang::is_code_path("Foo.java"));
+        assert!(code_intel::lang::is_code_path("src/a.ts"));
+        assert!(code_intel::lang::is_code_path("src/b.tsx"));
+        assert!(code_intel::lang::is_code_path("src/c.cpp"));
+        assert!(!code_intel::lang::is_code_path("README.md"));
+        assert!(!code_intel::lang::is_code_path("docs/notes.txt"));
+        assert!(!code_intel::lang::is_code_path("src/"));
     }
 
     #[test]

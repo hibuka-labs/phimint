@@ -1,7 +1,8 @@
 //! Tests for App state machine and event handling.
 
 use super::*;
-use agent_base::{PlanItem, PlanStepStatus, UserEvent};
+use phi_tui::lines::{DiffLineKind, ToolDetail};
+use phi_agent::{PlanItem, PlanStepStatus, UserEvent};
 use crossterm::event::{MouseButton, MouseEventKind};
 use phi_agent::SessionId;
 
@@ -626,6 +627,7 @@ fn sub_agent_run_finished_does_not_end_turn() {
 
 #[test]
 fn agent_prefix_labels_sub_agents_only() {
+    use crate::ui::handlers::runtime::agent_prefix;
     assert_eq!(agent_prefix(None), "");
     assert_eq!(agent_prefix(Some("")), "");
     assert_eq!(agent_prefix(Some("root/a")), "[root/a] ");

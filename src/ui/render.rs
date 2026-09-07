@@ -15,11 +15,12 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::banner::{BannerStyle, ColorScheme, SpanSpec};
 use crate::ui::app::{
-    AgentStatus, App, CONTEXT_MENU_H, CONTEXT_MENU_W, FocusTarget, LineKind, SubAgentStatus, context_menu_pos,
+    AgentStatus, App, CONTEXT_MENU_H, CONTEXT_MENU_W, FocusTarget, SubAgentStatus, context_menu_pos,
     is_writing_hint,
 };
-use crate::ui::markdown::{line_plain_text, render_markdown};
-use crate::ui::wrap::wrap;
+use phi_tui::lines::LineKind;
+use phi_tui::markdown::{line_plain_text, render_markdown};
+use phi_tui::wrap::wrap;
 
 /// Max composer rows shown (its box grows with the buffer up to this).
 const MAX_COMPOSER_ROWS: usize = 8;
@@ -153,7 +154,7 @@ fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
         // Diff detail: render the invocation line, then expand the diff block.
         if let Some(ref detail) = line.detail {
             match detail {
-                crate::ui::app::ToolDetail::Diff { path, hunks } => {
+                phi_tui::lines::ToolDetail::Diff { path, hunks } => {
                     // Invocation line (same as non-diff tool lines)
                     let base = style_for(kind);
                     let mut styled = span_line(&line.text, spans, base, app.scheme());
@@ -207,15 +208,15 @@ fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
 
                         for dl in &hunk.lines {
                             let (sign, color) = match dl.kind {
-                                crate::ui::app::DiffLineKind::Add => ("+", Color::Green),
-                                crate::ui::app::DiffLineKind::Del => ("-", Color::Red),
-                                crate::ui::app::DiffLineKind::Context => (" ", Color::DarkGray),
+                                phi_tui::lines::DiffLineKind::Add => ("+", Color::Green),
+                                phi_tui::lines::DiffLineKind::Del => ("-", Color::Red),
+                                phi_tui::lines::DiffLineKind::Context => (" ", Color::DarkGray),
                             };
                             // Line number: prefer old_line for context/del, new_line for add
                             let line_num = match dl.kind {
-                                crate::ui::app::DiffLineKind::Add => dl.new_line,
-                                crate::ui::app::DiffLineKind::Del => dl.old_line,
-                                crate::ui::app::DiffLineKind::Context => dl.old_line,
+                                phi_tui::lines::DiffLineKind::Add => dl.new_line,
+                                phi_tui::lines::DiffLineKind::Del => dl.old_line,
+                                phi_tui::lines::DiffLineKind::Context => dl.old_line,
                             };
                             let num_str = match line_num {
                                 Some(n) => format!("{n:>num_w$}"),
@@ -420,32 +421,6 @@ fn render_status(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(Line::from(Span::styled(app.status_line(), style))), area);
 }
 
-/// A one-row "sub-agents" strip (Claude Code style): `● [p]` in cyan while
-/// running, `✓ [p]` in green once done, joined by ` · `. Static markers (not an
-/// animated spinner) keep the offscreen frame-capture dedup stable.
-fn render_sub_agents(f: &mut Frame, app: &App, area: Rect) {
-    let spans: Vec<Span> = app
-        .sub_agents
-        .iter()
-        .enumerate()
-        .flat_map(|(i, (_path, state))| {
-            let (marker, color) = match state.status {
-                SubAgentStatus::Running => ("●", Color::Cyan),
-                SubAgentStatus::Done => ("✓", Color::Green),
-            };
-            let mut items = vec![Span::styled(
-                format!("{marker} [{}]", state.name),
-                Style::default().fg(color),
-            )];
-            if i + 1 < app.sub_agents.len() {
-                items.push(Span::styled(" · ", Style::default().fg(Color::DarkGray)));
-            }
-            items
-        })
-        .collect();
-    f.render_widget(Paragraph::new(Line::from(spans)), area);
-}
-
 /// Format files list for display (max 2 files, truncate with ...).
 fn format_files(files: &[String], max_width: usize) -> String {
     if files.is_empty() {
@@ -520,7 +495,7 @@ fn render_task_panel(f: &mut Frame, app: &App, area: Rect) {
     let act_w = (inner.width as usize).saturating_sub(fixed_w).min(30);
 
     let mut lines: Vec<Line> = Vec::new();
-    for (i, (agent_id, state)) in app.sub_agents.iter().enumerate() {
+    for (i, (_agent_id, state)) in app.sub_agents.iter().enumerate() {
         let is_selected = matches!(&app.task_panel.focus, FocusTarget::TaskList(idx) if *idx == i);
         let marker = if is_selected { ">" } else { " " };
         let (status_icon, status_color) = match state.status {
@@ -882,21 +857,6 @@ fn span_line(text: &str, spans: &[SpanSpec], base: Style, scheme: ColorScheme) -
         out.push(Span::styled(text[cur..].to_string(), base));
     }
     Line::from(out)
-}
-
-/// Convert an borrowed `Line<'_>` (from tui-markdown) into an owned `Line<'static>`,
-/// merging the line-level style into each span so ratatui renders it.
-fn line_to_static(line: Line<'_>) -> Line<'static> {
-    let line_style = line.style;
-    let spans: Vec<Span<'static>> = line
-        .spans
-        .into_iter()
-        .map(|s| {
-            let merged = s.style.patch(line_style);
-            Span::styled(s.content.into_owned(), merged)
-        })
-        .collect();
-    Line::from(spans)
 }
 
 /// Apply a background color to every span and the line-level style.

@@ -6,7 +6,7 @@
 use crossterm::event::{MouseButton, MouseEventKind};
 
 use crate::ui::app::{Action, App, ContextMenu};
-use crate::ui::selection::MenuClick;
+use phi_tui::selection::MenuClick;
 
 impl App {
     /// Handle a mouse event at `(x, y)` (terminal cells) against a terminal of
@@ -117,8 +117,9 @@ impl App {
     /// Uses `visual_lines_text` so the copy matches exactly what the user
     /// selected visually, not the full raw `output` block.
     pub fn selection_text(&self) -> String {
+        let fallback: Vec<&str> = self.transcript.output.iter().map(|l| l.text.as_str()).collect();
         self.selection_state
-            .text(&self.transcript.output, &self.visual_lines_text)
+            .text(&fallback, &self.visual_lines_text)
     }
 
     /// Clear the active transcript selection.
