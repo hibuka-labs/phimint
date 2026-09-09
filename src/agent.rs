@@ -13,14 +13,13 @@ use phi_agent::{
 };
 
 use code_intel::lsp::{ClientInfo, LspManager, LspServerSpec};
-use crate::history::HistoryStore;
-use crate::notes::NotesStore;
+use phi_kernel_tools::context_rotation::{HistoryStore, NotesStore, create_history_tools, create_notes_tools};
 use crate::skills::{SkillResolver, render_catalog};
 use crate::telemetry::SkillTelemetry;
 use crate::tools::diagnostics::DiagnosticsTool;
 use crate::tools::skill::SkillTool;
 use crate::tools::{repomap::RepoMapTool, ripgrep::RipgrepTool};
-use crate::token_budget::TokenBudgetCompactor;
+use crate::context_rotation::TokenBudgetCompactor;
 
 /// Coding-oriented system prompt (adapted from Codex).
 const SYSTEM_PROMPT: &str = r#"You are phimint, a coding agent running in a terminal-based TUI. You are expected to be precise, safe, and helpful.
@@ -237,7 +236,7 @@ pub fn build(
                 core.base_overhead(),
                 TokenBudgetConfig::default().work_budget,
             );
-            crate::token_budget::set_clamp_notice(notice.clone());
+            crate::context_rotation::set_clamp_notice(notice.clone());
             tracing::warn!("{}", notice);
         }
 
@@ -258,7 +257,7 @@ pub fn build(
         ));
 
         // Store globally so the TUI can check reset_count
-        crate::token_budget::set_global_compactor(Arc::clone(&compactor));
+        crate::context_rotation::set_global_compactor(Arc::clone(&compactor));
 
         // Register history + notes tools
         let history_store = Arc::new(HistoryStore::new(
@@ -272,10 +271,10 @@ pub fn build(
         ));
 
         let mut builder = builder.context_compactor(compactor);
-        for tool in crate::tools::history::create_history_tools(history_store) {
+        for tool in create_history_tools(history_store) {
             builder = builder.register_tool_arc(Arc::from(tool));
         }
-        for tool in crate::tools::notes::create_notes_tools(notes_store) {
+        for tool in create_notes_tools(notes_store) {
             builder = builder.register_tool_arc(Arc::from(tool));
         }
         builder
@@ -579,6 +578,7 @@ mod prompt_guard_tests {
         Capabilities, ChatMessage, ChatRequest, ChatResponse, ChatStream, FinishReason,
         LlmError, LlmProvider, ProviderInfo, StreamChunk, UsageInfo,
     };
+    use futures_util;
     use std::sync::{Arc, Mutex};
 
     /// LLM stub that records the system prompt of every request it receives

@@ -185,7 +185,7 @@ pub async fn run_tui(
 
     // v4 A-side: surface a clamped token budget (requested < viability
     // floor) right in the transcript — the user must see the true minimum.
-    if let Some(notice) = crate::token_budget::take_clamp_notice() {
+    if let Some(notice) = crate::context_rotation::take_clamp_notice() {
         app.push_system(&format!("! {notice}"));
     }
 
@@ -225,7 +225,7 @@ pub async fn run_tui(
 
         // Check for window rotation after turn ends.
         {
-            let current = crate::token_budget::window_reset_count();
+            let current = crate::context_rotation::window_reset_count();
             if current > last_reset_count {
                 let n = current - last_reset_count;
                 app.push_system(&format!(
@@ -234,7 +234,7 @@ pub async fn run_tui(
                 last_reset_count = current;
                 dirty = true;
             }
-            if !brake_announced && crate::token_budget::futility_braked() {
+            if !brake_announced && crate::context_rotation::futility_braked() {
                 brake_announced = true;
                 app.push_system(
                     "! Futility brake: work budget too small - window rotation paused. \

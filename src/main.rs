@@ -63,12 +63,12 @@ struct Cli {
     /// Work-room token budget for context windows (tokens of conversation
     /// space ABOVE the fixed window base). Window rotation + history/notes
     /// tools replace LLM summarization; this is now the default mode. Bare
-    /// `--token-budget` or omitting the flag uses the default (96K).
+    /// `--token-budget` or omitting the flag uses the default (160K).
     #[arg(
         long,
         num_args(0..=1),
-        default_missing_value = "96000",
-        default_value = "96000"
+        default_missing_value = "160000",
+        default_value = "160000"
     )]
     token_budget: usize,
 

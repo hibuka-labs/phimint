@@ -9,8 +9,6 @@
 //! `phi_agent::Tool` adapter shells over them.
 
 pub mod diagnostics;
-pub mod history;
-pub mod notes;
 pub mod repomap;
 pub mod ripgrep;
 pub mod skill;
