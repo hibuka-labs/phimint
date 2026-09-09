@@ -460,12 +460,15 @@ fn format_time(elapsed: std::time::Duration) -> String {
 }
 
 /// Char-safe truncation to exactly `max` chars, ellipsis-terminated.
+/// ASCII `...` instead of `…`: CJK fonts render `…` double-width while the
+/// layout counts it single-width, and the accumulated drift pushes the
+/// composer off-screen (session 20260908_a9f7a846).
 fn ellipsize(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
     } else {
-        let head: String = s.chars().take(max.saturating_sub(1)).collect();
-        format!("{head}…")
+        let head: String = s.chars().take(max.saturating_sub(3)).collect();
+        format!("{head}...")
     }
 }
 
@@ -499,8 +502,8 @@ fn render_task_panel(f: &mut Frame, app: &App, area: Rect) {
         let is_selected = matches!(&app.task_panel.focus, FocusTarget::TaskList(idx) if *idx == i);
         let marker = if is_selected { ">" } else { " " };
         let (status_icon, status_color) = match state.status {
-            SubAgentStatus::Running => ("●", Color::Cyan),
-            SubAgentStatus::Done => ("✓", Color::Green),
+            SubAgentStatus::Running => ("*", Color::Cyan),
+            SubAgentStatus::Done => ("+", Color::Green),
         };
         let files = format_files(&state.files, 20);
         // Done agents show their final runtime; only Running ones keep ticking.
@@ -508,23 +511,23 @@ fn render_task_panel(f: &mut Frame, app: &App, area: Rect) {
             Some(at) => at.duration_since(state.started_at),
             None => state.started_at.elapsed(),
         });
-        // Current activity = the latest tool event (→ in flight, ✓ finished).
+        // Current activity = the latest tool event (> in flight, + finished).
         // Kept to a tool name — the child's detail view has the full history.
         // A Running agent whose tool feed has gone quiet switches to the
-        // `✍ writing…` hint: it is generating prose/thought between tool
+        // `writing...` hint: it is generating prose/thought between tool
         // calls (the long silent report-writing stretch has no tool events).
         let activity = if act_w > 6 {
             if is_writing_hint(state, Instant::now()) {
-                (ellipsize("✍ writing…", act_w), Color::DarkGray)
+                (ellipsize("writing...", act_w), Color::DarkGray)
             } else {
                 state
                     .events
                     .last()
                     .map(|e| {
                         let (mark, color) = if e.is_finished {
-                            ("✓", Color::DarkGray)
+                            ("+", Color::DarkGray)
                         } else {
-                            ("→", Color::Reset)
+                            (">", Color::Reset)
                         };
                         (ellipsize(&format!("{mark} {}", e.tool_name), act_w), color)
                     })
@@ -568,7 +571,7 @@ fn render_approval_popup(f: &mut Frame, app: &App) {
     let (risk, risk_color) = risk_label(&request.risk_level);
     let mut lines = vec![
         Line::from(Span::styled(
-            "⚠️ Approval required",
+            "!! Approval required",
             Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
@@ -747,10 +750,12 @@ fn render_slash_popup(f: &mut Frame, app: &App, composer: Rect) {
                     Style::default().fg(Color::DarkGray),
                 )
             };
-            // 截断描述，避免超出弹窗宽度
+            // 截断描述，避免超出弹窗宽度。按字符而非字节（byte 切片会在
+            // CJK 中间断开直接 panic）；ASCII "..." 而非 "…"（CJK 字体双宽）。
             let max_desc = 40usize;
-            let short_desc = if desc.len() > max_desc {
-                format!("{}…", &desc[..max_desc])
+            let short_desc = if desc.chars().count() > max_desc {
+                let head: String = desc.chars().take(max_desc - 3).collect();
+                format!("{head}...")
             } else {
                 desc.clone()
             };

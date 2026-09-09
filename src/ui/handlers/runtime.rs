@@ -66,7 +66,7 @@ fn build_tool_detail(tool_name: &str, args_json: &str) -> Option<ToolDetail> {
     }
 }
 
-/// Compact invocation text for `spawn_agent`: `⏺ spawn_agent <name> — <task
+/// Compact invocation text for `spawn_agent`: `* spawn_agent <name> - <task
 /// first line>`. The raw args JSON is a multi-KB dump (the full self-contained
 /// task text) — in session 20260904_e6612477 its invisible tail was the dead
 /// air of a 20 s LLM call. Name + one task line is all the transcript needs;
@@ -86,9 +86,9 @@ fn spawn_invocation_text(args_json: &str, max_cols: usize, prefix: &str) -> Opti
         .max(16);
     let head = one_line(head, budget);
     Some(if head.is_empty() {
-        format!("⏺ {prefix}spawn_agent {name}")
+        format!("* {prefix}spawn_agent {name}")
     } else {
-        format!("⏺ {prefix}spawn_agent {name} — {head}")
+        format!("* {prefix}spawn_agent {name} - {head}")
     })
 }
 
@@ -208,13 +208,13 @@ impl App {
                     let max_cols = self.transcript.wrap_width().saturating_sub(20).max(40);
                     let text = if tool_name == "spawn_agent" {
                         spawn_invocation_text(&args_json, max_cols, &prefix)
-                            .unwrap_or_else(|| format!("⏺ {prefix}{tool_name}"))
+                            .unwrap_or_else(|| format!("* {prefix}{tool_name}"))
                     } else {
                         let args = one_line(&args_json, max_cols);
                         if args.is_empty() {
-                            format!("⏺ {prefix}{tool_name}")
+                            format!("* {prefix}{tool_name}")
                         } else {
-                            format!("⏺ {prefix}{tool_name} {args}")
+                            format!("* {prefix}{tool_name} {args}")
                         }
                     };
                     let line = OutputLine { spans: None, original: None,
@@ -269,9 +269,9 @@ impl App {
                         let max_cols = self.transcript.wrap_width().saturating_sub(20).max(40);
                         let s = one_line(&summary, max_cols);
                         let text = if s.is_empty() {
-                            format!("  {prefix}✓ {tool_name}")
+                            format!("  {prefix}+ {tool_name}")
                         } else {
-                            format!("  {prefix}✓ {tool_name} {s}")
+                            format!("  {prefix}+ {tool_name} {s}")
                         };
                         (text, LineKind::ToolResult)
                     };
@@ -350,7 +350,7 @@ impl App {
                     let marker = match item.status {
                         PlanStepStatus::Completed => "✅",
                         PlanStepStatus::InProgress => "🔄",
-                        PlanStepStatus::Pending => "○",
+                        PlanStepStatus::Pending => "-",
                     };
                     block.push(OutputLine { spans: None, original: None,
                 detail: None,
@@ -382,7 +382,7 @@ impl App {
                 self.flush_pending();
                 self.transcript.push(OutputLine { spans: None, original: None,
                 detail: None,
-                    text: format!("⚠️  approval: {}", request.title),
+                    text: format!("!! approval: {}", request.title),
                     kind: LineKind::Approval,
                 });
                 self.transcript.push(OutputLine { spans: None, original: None,
@@ -417,7 +417,7 @@ impl App {
                             .or_default()
                             .push(OutputLine { spans: None, original: None,
                 detail: None,
-                                text: format!("✓ [{p}] done"),
+                                text: format!("+ [{p}] done"),
                                 kind: LineKind::Done,
                             });
                     }
@@ -469,7 +469,7 @@ impl App {
                             .or_default()
                             .push(OutputLine { spans: None, original: None,
                 detail: None,
-                                text: format!("✓ [{p}] done"),
+                                text: format!("+ [{p}] done"),
                                 kind: LineKind::Done,
                             });
                     }

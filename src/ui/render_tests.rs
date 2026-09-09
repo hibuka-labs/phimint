@@ -20,7 +20,7 @@ fn populated_app() -> App {
     }
     app.transcript.push(OutputLine { spans: None, original: None,
                 detail: None,
-        text: "⏺ [sub/1] read_file {\"path\":\"src/lib.rs\"}".into(),
+        text: "* [sub/1] read_file {\"path\":\"src/lib.rs\"}".into(),
         kind: LineKind::Tool,
     });
     app.transcript.push(OutputLine { spans: None, original: None,
@@ -187,15 +187,15 @@ fn snapshot_shows_sub_agent_strip() {
         events: Vec::new(),
     });
     let text = snapshot_text(&mut app, 80, 24);
-    assert!(text.contains("● a"), "running marker missing:\n{text}");
-    assert!(text.contains("✓ b"), "done marker missing:\n{text}");
+    assert!(text.contains("* a"), "running marker missing:\n{text}");
+    assert!(text.contains("+ b"), "done marker missing:\n{text}");
 }
 
 #[test]
 fn snapshot_omits_strip_when_no_sub_agents() {
     let mut app = App::new();
     let text = snapshot_text(&mut app, 80, 24);
-    assert!(!text.contains("● ["), "strip should be absent:\n{text}");
+    assert!(!text.contains("* ["), "strip should be absent:\n{text}");
 }
 
 #[test]
@@ -316,4 +316,92 @@ fn snapshot_shows_diff_block() {
     assert!(text.contains("println"), "diff content missing:\n{text}");
     // Verify line numbers are present (hunk header has "1,3")
     assert!(text.contains("-1,3"), "line numbers missing:\n{text}");
+}
+
+// ── CJK width-safety guard (session 20260908_a9f7a846) ──────────────────────
+// CJK terminal fonts render symbols like ⏺ ✓ ● → ⚠ … — as double-width while
+// the layout counts them single-width; the accumulated drift wrapped rows and
+// pushed the composer off-screen. All chrome now uses ASCII; these tests keep
+// it that way.
+
+/// Symbols whose rendered width disagrees with `unicode-width` in CJK fonts.
+/// Box drawing (─│╭) and block elements (█) are deliberately NOT listed:
+/// CJK mono fonts keep those single-width (proven in the session above).
+const CJK_WIDTH_UNSAFE: &[char] = &[
+    '⏺', '⏸', '⏳', '✓', '✔', '✗', '✘', '●', '○', '→', '←', '⇒', '⇐',
+    '⟳', '⚠', '❯', '×', '÷', '±', '≤', '≥', '≠', '≈', '≡', '…', '·',
+    '—', '–', '•', '√', '§', '∑', '∏', '∫', '∂', '∇', '∞', '①',
+];
+
+#[test]
+fn rendered_chrome_stays_cjk_width_safe() {
+    let mut app = App::new();
+    // Drive the real event pipeline so production format strings are exercised.
+    let args = serde_json::json!({"path": "src/main.rs"});
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallStarted {
+        session_id: SessionId::new(1),
+        tool_name: "read_file".to_string(),
+        args_json: args.to_string(),
+        agent_id: None,
+        trace_id: None,
+    }));
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallFinished {
+        session_id: SessionId::new(1),
+        tool_name: "read_file".to_string(),
+        summary: "10 lines".to_string(),
+        denied: false,
+        details: None,
+        agent_id: None,
+        trace_id: None,
+    }));
+    // Every status variant's chrome.
+    let mut status_texts = Vec::new();
+    status_texts.push(app.status_line());
+    app.status = AgentStatus::Running { phase: Phase::Thinking };
+    status_texts.push(app.status_line());
+    app.status = AgentStatus::Running { phase: Phase::Streaming };
+    status_texts.push(app.status_line());
+    app.status = AgentStatus::Running { phase: Phase::ToolCall { tool: "edit_file".into() } };
+    status_texts.push(app.status_line());
+    app.status = AgentStatus::Running { phase: Phase::AwaitingApproval };
+    status_texts.push(app.status_line());
+    app.status = AgentStatus::Idle;
+    status_texts.push(app.status_line());
+
+    let text = snapshot_text(&mut app, 100, 30);
+    let all = text + &status_texts.join("\n");
+    let offenders: Vec<char> = all.chars().filter(|c| CJK_WIDTH_UNSAFE.contains(c)).collect();
+    assert!(
+        offenders.is_empty(),
+        "CJK-double-width glyphs in rendered chrome: {offenders:?}\n{all}"
+    );
+}
+
+#[test]
+fn chrome_sources_stay_cjk_width_safe() {
+    // Scan the chrome-rendering sources (outside comments) for the symbols.
+    const FILES: &[&str] = &[
+        "src/ui/render.rs",
+        "src/ui/app.rs",
+        "src/ui/run.rs",
+        "src/ui/task_panel.rs",
+        "src/ui/child_results.rs",
+        "src/ui/handlers/runtime.rs",
+        "src/banner.rs",
+    ];
+    for file in FILES {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(file);
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {file}: {e}"));
+        for (i, line) in source.lines().enumerate() {
+            let code = line.split_once("//").map_or(line, |(code, _)| code);
+            let offenders: Vec<char> =
+                code.chars().filter(|c| CJK_WIDTH_UNSAFE.contains(c)).collect();
+            assert!(
+                offenders.is_empty(),
+                "{file}:{} renders CJK-double-width glyphs {offenders:?}: {line}",
+                i + 1
+            );
+        }
+    }
 }

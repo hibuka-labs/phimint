@@ -61,7 +61,7 @@ impl App {
         }
     }
 
-    /// Record a sub-agent's first appearance — emitting a `⏺ [p] started` marker
+    /// Record a sub-agent's first appearance — emitting a `* [p] started` marker
     /// and registering it in `sub_agents` — so the transcript and status strip
     /// show its lifecycle. No-op for the root agent (`agent_id == None`) and for
     /// sub-agents already seen this turn.
@@ -86,7 +86,7 @@ impl App {
             });
             self.transcript.push(OutputLine { spans: None, original: None,
                 detail: None,
-                text: format!("⏺ [{p}] started"),
+                text: format!("* [{p}] started"),
                 kind: LineKind::Tool,
             });
         }
@@ -112,7 +112,7 @@ impl App {
         for agent in &snap.agents {
             let running_fact = matches!(agent.status.as_str(), "queued" | "running");
             if running_fact {
-                // Creates the entry (with the `⏺ started` transcript marker)
+                // Creates the entry (with the `* started` transcript marker)
                 // at spawn time — before the child's first tool call, which
                 // is when the event-driven path used to discover it.
                 self.track_agent(Some(&agent.path));

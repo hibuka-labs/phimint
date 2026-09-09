@@ -255,8 +255,8 @@ fn truncate_description(desc: &str) -> String {
     if flattened.chars().count() <= MAX_DESCRIPTION_CHARS {
         return flattened;
     }
-    let cut: String = flattened.chars().take(MAX_DESCRIPTION_CHARS - 1).collect();
-    format!("{cut}…")
+    let cut: String = flattened.chars().take(MAX_DESCRIPTION_CHARS - 3).collect();
+    format!("{cut}...")
 }
 
 /// 构建默认的 SkillResolver（扫描 `.claude/skills` + `~/.claude/skills`）。
@@ -543,7 +543,7 @@ mod tests {
             .trim_start_matches("- long: ");
         let chars = rendered.chars().count();
         assert_eq!(chars, MAX_DESCRIPTION_CHARS, "truncated to exactly {MAX_DESCRIPTION_CHARS} chars");
-        assert!(rendered.ends_with('…'), "truncation is ellipsis-terminated: {rendered}");
+        assert!(rendered.ends_with("..."), "truncation is ellipsis-terminated: {rendered}");
     }
 
     #[test]
@@ -556,7 +556,7 @@ mod tests {
         let resolver = SkillResolver::from_dirs(&[tmp.path().join("skills")]);
         let catalog = render_catalog(&resolver).unwrap();
         assert!(catalog.contains(&format!("- exact: {desc}\n")), "{catalog}");
-        assert!(!catalog.contains('…'), "{catalog}");
+        assert!(!catalog.contains("..."), "{catalog}");
     }
 
     #[test]
@@ -575,7 +575,7 @@ mod tests {
             .expect("CJK entry must stay on one line")
             .trim_start_matches("- cjk: ");
         assert_eq!(rendered.chars().count(), MAX_DESCRIPTION_CHARS);
-        assert!(rendered.ends_with('…'));
+        assert!(rendered.ends_with("..."));
     }
 
     #[test]

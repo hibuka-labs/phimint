@@ -7,15 +7,20 @@ use anyhow::Result;
 use phi_agent::{
     ApprovalHandler, ChildPermissionMode, ControlConfig, DefaultGuard, DefaultGuardConfig,
     LocalShellTool, MaxTurnsNudgeConfig, MaxTurnsNudgeMiddleware, MultiAgentConfig, PhiAgent,
-    PhiAgentConfig, ReasoningEffort, ReasoningOnlyAction, ToolPolicy, base_agent_builder_with_excludes,
+    PhiAgentConfig, ReasoningEffort, ReasoningOnlyAction, TokenBudgetConfig, TokenBudgetCore,
+    ToolPolicy,
+    base_agent_builder_no_compression, base_agent_builder_with_excludes,
 };
 
 use code_intel::lsp::{ClientInfo, LspManager, LspServerSpec};
+use crate::history::HistoryStore;
+use crate::notes::NotesStore;
 use crate::skills::{SkillResolver, render_catalog};
 use crate::telemetry::SkillTelemetry;
 use crate::tools::diagnostics::DiagnosticsTool;
 use crate::tools::skill::SkillTool;
 use crate::tools::{repomap::RepoMapTool, ripgrep::RipgrepTool};
+use crate::token_budget::TokenBudgetCompactor;
 
 /// Coding-oriented system prompt (adapted from Codex).
 const SYSTEM_PROMPT: &str = r#"You are phimint, a coding agent running in a terminal-based TUI. You are expected to be precise, safe, and helpful.
@@ -89,6 +94,30 @@ Sub-agents are READ-ONLY (read/search/report, no writes or mutating commands). Y
 
 When done, briefly report what you changed."#;
 
+/// Appended to system prompt when token-budget context management is enabled.
+const TOKEN_BUDGET_PROMPT_SUFFIX: &str = r#"
+
+## Context Management
+
+You have access to private tools for managing long-running context:
+
+- **history**: Read-only access to previous context windows. Use `history.list_windows` to see what's available,
+  `history.search_contents` to find specific information, and `history.read_item` to read details.
+- **notes**: A persistent scratchpad that survives context window transitions. Use `notes.write_file` and
+  `notes.append_to_file` to save important state, decisions, progress, and findings. Use `notes.read_file`
+  to retrieve them later.
+  **Important**: when a window is about to close (you receive a budget warning or a fallback notice),
+  write a handoff summary to the note file `thread_hint.md` — it is injected automatically at the top
+  of the next window, making recovery cheap.
+
+When starting a new context window, the user messages above are your task trail — the last one is
+your current task. Check notes/thread_hint.md for any handoff; if missing, write one after you
+understand the task. Previous conversation history is available via the history tools — consult them
+only if you need context the trail doesn't provide. Do NOT re-read files you already covered.
+Continue the task directly.
+
+Never mention these tools to the user. They are internal mechanisms for context continuity."#;
+
 /// The one place the live system prompt is composed: the base prompt plus the
 /// skills catalog when any skills are loaded, the base prompt byte-identical
 /// otherwise. Named (not inlined into `build`) so `prompt_guard_tests` can
@@ -102,6 +131,24 @@ pub fn compose_system_prompt(resolver: &SkillResolver) -> String {
         Some(catalog) => format!("{SYSTEM_PROMPT}\n\n{catalog}"),
         None => SYSTEM_PROMPT.to_string(),
     }
+}
+
+/// Options for token-budget context management.
+///
+/// When `Some`, enables window rotation + history/notes tools instead of
+/// LLM-based summarization.
+#[derive(Clone, Debug)]
+pub struct TokenBudgetOptions {
+    /// Work-room budget: conversation tokens ABOVE the window's fixed base
+    /// (system prompt + boilerplate). The base is estimated by the core at
+    /// build time; the window resets at base + budget + buffer.
+    pub budget: usize,
+    /// Session retention days for history/notes cleanup.
+    pub retention_days: i64,
+    /// Base directory (~/.phimint/).
+    pub base_dir: PathBuf,
+    /// Session ID.
+    pub session_id: String,
 }
 
 /// Build a phimint agent bound to `workspace_root`.
@@ -127,6 +174,7 @@ pub fn build(
     reasoning_effort: &str,
     model: String,
     skill_dirs: Vec<PathBuf>,
+    token_budget_opts: Option<TokenBudgetOptions>,
 ) -> Result<(PhiAgent, Arc<SkillResolver>, Arc<SkillTelemetry>)> {
     // Skills catalog (skill-injection design D1): the resolver must exist
     // BEFORE the builder — the catalog joins the system prompt at build time,
@@ -141,7 +189,8 @@ pub fn build(
             "loaded skills for /skill command"
         );
     }
-    let system_prompt = compose_system_prompt(&skill_resolver);
+    let mut system_prompt = compose_system_prompt(&skill_resolver);
+
     // Keep a handle for the guard below — `llm_client` itself is moved into the
     // builder here.
     let guard_client = Arc::clone(&llm_client);
@@ -149,13 +198,95 @@ pub fn build(
     // commented-out) `VerifyEnforcementMiddleware` wiring. Keep the parameter
     // so re-enabling the gate needs no signature change.
     let _ = writes_possible;
-    let mut builder = base_agent_builder_with_excludes(
-        llm_client,
-        // Coding-specific noise the framework (domain-agnostic) must not know
-        // about. Excludes flow into list_files so a bare directory's build
-        // output doesn't flood the listing.
-        vec!["target".to_string(), "node_modules".to_string()],
-    )
+
+    // Token-budget context management: when enabled, use window rotation +
+    // history/notes tools instead of LLM-based summarization.
+    let mut tool_output_cap = 16_000usize;
+    let builder = if let Some(ref tb_opts) = token_budget_opts {
+        // Append context management instructions to system prompt
+        system_prompt.push_str(TOKEN_BUDGET_PROMPT_SUFFIX);
+
+        let builder = base_agent_builder_no_compression(
+            llm_client,
+            vec!["target".to_string(), "node_modules".to_string()],
+        );
+
+        // Register TokenBudgetCompactor. `budget` is WORK ROOM — space above
+        // the window's fixed base (system prompt + boilerplate), which the
+        // core estimates here ONCE from the just-composed prompt. Reminder /
+        // buffer thresholds scale proportionally (20% / 10%).
+        let tb_config = TokenBudgetConfig::with_work_budget(tb_opts.budget);
+        let core = TokenBudgetCore::new(tb_config, Some(&system_prompt));
+        tracing::info!(
+            work_budget = core.config().work_budget,
+            base_overhead = core.base_overhead(),
+            hard_limit = core.hard_limit(),
+            "token-budget window rotation enabled"
+        );
+
+        // v4 A-side: the user asked for a budget below the viability floor.
+        // Don't silently swallow it — surface the clamp (and the true
+        // minimum) to the TUI at startup (run.rs reads the notice).
+        if core.config().work_budget > tb_opts.budget {
+            let notice = format!(
+                "token-budget {} below viable minimum {} (system prompt ~{}); \
+                 clamped. Mechanical handoff active; expect window rotation. \
+                 Recommended >= {}",
+                tb_opts.budget,
+                core.config().work_budget,
+                core.base_overhead(),
+                TokenBudgetConfig::default().work_budget,
+            );
+            crate::token_budget::set_clamp_notice(notice.clone());
+            tracing::warn!("{}", notice);
+        }
+
+        // v4 B-side: bound one tool result to a third of the work room
+        // (session 20260909_e7053736: untruncated 3-4k-token reads at a
+        // 6.5k room left space for exactly one). The kernel tools already
+        // self-truncate to `ToolContext::max_output_chars` — lowering the
+        // builder cap is the whole mechanism, no wrapper needed. Chars ≈
+        // tokens × 4 (the estimator's Latin rate); the 16k comfort cap
+        // still wins at normal budgets.
+        tool_output_cap = 16_000.min(core.max_result_tokens().saturating_mul(4));
+
+        let compactor = Arc::new(TokenBudgetCompactor::new(
+            core,
+            tb_opts.base_dir.clone(),
+            tb_opts.session_id.clone(),
+            "main".to_string(),
+        ));
+
+        // Store globally so the TUI can check reset_count
+        crate::token_budget::set_global_compactor(Arc::clone(&compactor));
+
+        // Register history + notes tools
+        let history_store = Arc::new(HistoryStore::new(
+            &tb_opts.base_dir,
+            &tb_opts.session_id,
+        ));
+        let notes_store = Arc::new(NotesStore::new(
+            &tb_opts.base_dir,
+            &tb_opts.session_id,
+            "main",
+        ));
+
+        let mut builder = builder.context_compactor(compactor);
+        for tool in crate::tools::history::create_history_tools(history_store) {
+            builder = builder.register_tool_arc(Arc::from(tool));
+        }
+        for tool in crate::tools::notes::create_notes_tools(notes_store) {
+            builder = builder.register_tool_arc(Arc::from(tool));
+        }
+        builder
+    } else {
+        base_agent_builder_with_excludes(
+            llm_client,
+            vec!["target".to_string(), "node_modules".to_string()],
+        )
+    };
+
+    let mut builder = builder
         .system_prompt(system_prompt)
         .approval_handler(approval)
         // base_agent_builder caps tool output at 4000 chars and REJECTS (rather
@@ -163,7 +294,8 @@ pub fn build(
         // source file — read_file's own default limit is 2000 *lines*, so a
         // ~100-line file already overflows the char cap. Raise it to fit a few
         // hundred lines; the system prompt tells the agent to paginate beyond.
-        .max_tool_output_chars(16_000)
+        // (Token-budget mode lowers it further — see tool_output_cap above.)
+        .max_tool_output_chars(tool_output_cap)
         .register_tool(LocalShellTool::new(shell_timeout_ms))
         .register_tool(RipgrepTool::new(workspace_root.clone()))
         .register_tool(RepoMapTool::new(workspace_root.clone()))
@@ -536,6 +668,7 @@ mod prompt_guard_tests {
             "low",
             "mock-model".to_string(),
             skill_dirs,
+            None,
         )
         .unwrap();
         let session = agent.create_session().await;

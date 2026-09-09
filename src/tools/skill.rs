@@ -108,7 +108,7 @@ impl Tool for SkillTool {
                         let truncated: String = body.chars().take(max_chars).collect();
                         let path_hint = resolver
                             .source_path_for(matched_name)
-                            .map(|p| format!("\n\n[truncated — full body at: {}]", p.display()))
+                            .map(|p| format!("\n\n[truncated - full body at: {}]", p.display()))
                             .unwrap_or_default();
                         Ok(format!("{truncated}{path_hint}"))
                     }

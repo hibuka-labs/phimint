@@ -59,6 +59,23 @@ struct Cli {
     /// Controls the depth of model's reasoning. Higher = more thorough but slower.
     #[arg(long, default_value = "medium")]
     reasoning_effort: String,
+
+    /// Work-room token budget for context windows (tokens of conversation
+    /// space ABOVE the fixed window base). Window rotation + history/notes
+    /// tools replace LLM summarization; this is now the default mode. Bare
+    /// `--token-budget` or omitting the flag uses the default (96K).
+    #[arg(
+        long,
+        num_args(0..=1),
+        default_missing_value = "96000",
+        default_value = "96000"
+    )]
+    token_budget: usize,
+
+    /// Days to retain session history and notes (default: 7).
+    /// Expired data is cleaned up at startup.
+    #[arg(long, default_value_t = 7)]
+    session_retention_days: i64,
 }
 
 #[tokio::main]
@@ -124,6 +141,19 @@ async fn main() -> Result<()> {
     let session_ctx = resolve_session(cli.session.as_deref(), &base_dir)?;
     init_logging(&session_ctx, &cli.log_level).await?;
 
+    // Cleanup expired session data (history, notes, sessions) at startup.
+    cleanup_expired_data(&base_dir, cli.session_retention_days);
+
+    // Token-budget context management is always on (window rotation +
+    // history/notes tools instead of LLM summarization). `--token-budget`
+    // overrides the work-room budget; the default comes from the flag.
+    let token_budget_opts = agent::TokenBudgetOptions {
+        budget: cli.token_budget,
+        retention_days: cli.session_retention_days,
+        base_dir: base_dir.clone(),
+        session_id: session_ctx.session_id.clone(),
+    };
+
     // `deny` 模式只读（写工具全被拒），强制 verify 闸门无意义，故关闭。
     let (agent, skill_resolver, skill_telemetry) = agent::build(
         llm_client,
@@ -136,6 +166,7 @@ async fn main() -> Result<()> {
         &cli.reasoning_effort,
         llm_config.model.clone(),
         skills::default_skill_dirs(),
+        Some(token_budget_opts),
     )?;
     let session = agent.create_session().await;
 
@@ -157,6 +188,63 @@ async fn main() -> Result<()> {
 fn sessions_base_dir() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     PathBuf::from(home).join(".phimint")
+}
+
+/// Cleanup expired session data at startup.
+///
+/// Removes history/ and notes/ subdirectories for sessions older than
+/// `retention_days`, and delegates session directory cleanup to phi-agent.
+fn cleanup_expired_data(base_dir: &PathBuf, retention_days: i64) {
+    // Cleanup history and notes directories
+    for subdir in &["history", "notes"] {
+        let dir = base_dir.join(subdir);
+        if !dir.exists() {
+            continue;
+        }
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            // Check directory age via metadata modification time
+            if let Ok(meta) = std::fs::metadata(&path) {
+                if let Ok(modified) = meta.modified() {
+                    let age = std::time::SystemTime::now()
+                        .duration_since(modified)
+                        .unwrap_or_default();
+                    if age.as_secs() > (retention_days as u64) * 86400 {
+                        if let Err(e) = std::fs::remove_dir_all(&path) {
+                            tracing::warn!(
+                                path = %path.display(),
+                                error = %e,
+                                "failed to remove expired directory"
+                            );
+                        } else {
+                            tracing::info!(
+                                path = %path.display(),
+                                "removed expired data directory"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Delegate session directory cleanup to phi-agent
+    match phi_agent::cleanup_expired_sessions(base_dir, retention_days) {
+        Ok(count) if count > 0 => {
+            tracing::info!(count, "cleaned up expired session directories");
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "session cleanup failed");
+        }
+        _ => {}
+    }
 }
 
 /// Initialize tracing to write to the session's `session.log` file (no console).

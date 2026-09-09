@@ -81,7 +81,7 @@ pub struct SubAgentState {
     /// When the sub-agent completed (for auto-removal timing)
     pub completed_at: Option<Instant>,
     /// Last time a tool event (started or finished) arrived. Drives the
-    /// panel's `✍ writing…` hint — a Running agent whose tool feed has been
+    /// panel's `writing...` hint — a Running agent whose tool feed has been
     /// quiet this long is generating prose/thought between tool calls.
     pub last_tool_at: Instant,
     /// Tool call events (for detail display)
@@ -89,11 +89,11 @@ pub struct SubAgentState {
 }
 
 /// Running-agent quiet period before the activity column switches from the
-/// (stale) last tool event to `✍ writing…`. Chosen above typical inter-tool
+/// (stale) last tool event to `writing...`. Chosen above typical inter-tool
 /// gaps so it never flashes during an active tool loop.
 pub(crate) const CHILD_WRITING_HINT_AFTER: Duration = Duration::from_secs(20);
 
-/// Whether the panel should show `✍ writing…` for this sub-agent: it is
+/// Whether the panel should show `writing...` for this sub-agent: it is
 /// Running, its last tool call has finished (or none yet), and the tool feed
 /// has been quiet for [`CHILD_WRITING_HINT_AFTER`]. An in-flight tool keeps
 /// its own honest `→ tool` display.
@@ -361,7 +361,7 @@ impl App {
     fn settle_after_turn(&mut self, show_done_marker: bool) {
         let running = self.running_sub_agents();
         if running > 0 {
-            let text = format!("⏳ 等待子 agent 返回（{running} 个运行中），结果将自动注入");
+            let text = format!("... 等待子 agent 返回（{running} 个运行中），结果将自动注入");
             self.transcript.push(OutputLine { spans: None, original: None,
                 detail: None,
                 text,
@@ -617,9 +617,9 @@ impl App {
             Some(t) => {
                 let s = t.elapsed().as_secs() + 1;
                 if s < 60 {
-                    format!(" · {s}s")
+                    format!(" - {s}s")
                 } else {
-                    format!(" · {}m{:02}s", s / 60, s % 60)
+                    format!(" - {}m{:02}s", s / 60, s % 60)
                 }
             }
             None => String::new(),
@@ -633,22 +633,22 @@ impl App {
                 if let Some(n) = &self.notice {
                     n.clone()
                 } else {
-                    "⏸ Idle — Enter send · Shift+Enter newline · Ctrl+Y copy · PgUp/PgDn scroll · Ctrl+C quit".to_string()
+                    "Idle - Enter send | Shift+Enter newline | Ctrl+Y copy | PgUp/PgDn scroll | Ctrl+C quit".to_string()
                 }
             }
             AgentStatus::Waiting { running } => {
                 format!(
-                    "{} ⏳ 等待子 agent 返回（{running} 个运行中）…{} 结果到达后自动继续",
+                    "{} 等待子 agent 返回（{running} 个运行中）...{} 结果到达后自动继续",
                     self.spinner_char(),
                     self.elapsed_suffix()
                 )
             }
             AgentStatus::Running { phase } => match phase {
                 Phase::Thinking => {
-                    format!("{} thinking…{} (Ctrl+C cancel)", self.spinner_char(), self.elapsed_suffix())
+                    format!("{} thinking...{} (Ctrl+C cancel)", self.spinner_char(), self.elapsed_suffix())
                 }
                 Phase::Streaming => {
-                    format!("{} streaming…{} (Ctrl+C cancel)", self.spinner_char(), self.elapsed_suffix())
+                    format!("{} streaming...{} (Ctrl+C cancel)", self.spinner_char(), self.elapsed_suffix())
                 }
                 Phase::ToolCall { tool } => match &self.live_progress {
                     Some(p) => {
@@ -658,7 +658,7 @@ impl App {
                         format!("{} 🔧 {tool}{} (Ctrl+C cancel)", self.spinner_char(), self.elapsed_suffix())
                     }
                 },
-                Phase::AwaitingApproval => "⚠️ waiting approval… (y/a/n, Ctrl+C cancel)".to_string(),
+                Phase::AwaitingApproval => "!! waiting approval... (y/a/n, Ctrl+C cancel)".to_string(),
             },
         }
     }

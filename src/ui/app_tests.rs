@@ -166,8 +166,8 @@ fn tool_calls_render_inline_in_output() {
     assert_eq!(
         texts,
         vec![
-            "⏺ read_file {}",
-            "  ✓ read_file done",
+            "* read_file {}",
+            "  + read_file done",
             "  ⛔ execute_command denied",
         ]
     );
@@ -261,7 +261,7 @@ fn submit_echoes_user_message() {
         .filter(|l| l.kind == LineKind::User)
         .map(|l| l.text.as_str())
         .collect();
-    assert_eq!(users, vec!["❯ hello world"]);
+    assert_eq!(users, vec!["> hello world"]);
 }
 
 #[test]
@@ -313,7 +313,7 @@ fn spawn_agent_invocation_line_is_compacted() {
     }));
     let last = app.transcript.output.last().unwrap();
     assert!(
-        last.text.starts_with("⏺ spawn_agent analyze-pi — 分析 /Users/me/pi 工程的 agent 循环"),
+        last.text.starts_with("* spawn_agent analyze-pi - 分析 /Users/me/pi 工程的 agent 循环"),
         "got: {}",
         last.text
     );
@@ -331,7 +331,7 @@ fn activity_clock_follows_root_status() {
     assert!(app.is_active());
     assert!(app.activity_since.is_some());
     let line = app.status_line();
-    assert!(line.contains("· "), "running status carries elapsed, got: {line}");
+    assert!(line.contains(" - "), "running status carries elapsed, got: {line}");
 
     // Turn settles with no children → Idle clears the clock.
     app.settle_after_turn(false);
@@ -344,7 +344,7 @@ fn activity_clock_follows_root_status() {
 fn elapsed_suffix_formats_minutes() {
     let mut app = App::new();
     app.activity_since = Some(Instant::now() - std::time::Duration::from_secs(91));
-    assert_eq!(app.elapsed_suffix(), " · 1m32s");
+    assert_eq!(app.elapsed_suffix(), " - 1m32s");
 }
 
 #[test]
@@ -563,7 +563,7 @@ fn sub_agent_text_is_labeled_and_lifecycle_tracked() {
     assert_eq!(
         texts,
         vec![
-            "⏺ [root/a] started",
+            "* [root/a] started",
         ]
     );
     // Check sub-agent transcript
@@ -572,7 +572,7 @@ fn sub_agent_text_is_labeled_and_lifecycle_tracked() {
         .unwrap_or_default();
     // Sub-agent transcript should have the text and done marker
     assert!(sub_texts.iter().any(|t| t.contains("found a thing")));
-    assert!(sub_texts.iter().any(|t| t.contains("✓ [root/a] done")));
+    assert!(sub_texts.iter().any(|t| t.contains("+ [root/a] done")));
 }
 
 #[test]
@@ -584,7 +584,7 @@ fn sub_agent_tool_calls_are_labeled() {
     assert_eq!(
         texts,
         vec![
-            "⏺ [root/a] started",
+            "* [root/a] started",
         ]
     );
     // Check sub-agent transcript
@@ -594,8 +594,8 @@ fn sub_agent_tool_calls_are_labeled() {
     assert_eq!(
         sub_texts,
         vec![
-            "⏺ [root/a] read_file {}",
-            "  [root/a] ✓ read_file done",
+            "* [root/a] read_file {}",
+            "  [root/a] + read_file done",
         ]
     );
 }
@@ -651,7 +651,7 @@ fn child_deltas_bypass_main_stream_tail() {
     assert!(!app.stream.has_pending_thought());
     // Main transcript: only the started marker.
     let texts: Vec<&str> = app.transcript.output.iter().map(|l| l.text.as_str()).collect();
-    assert_eq!(texts, vec!["⏺ [root/a] started"]);
+    assert_eq!(texts, vec!["* [root/a] started"]);
     // Child content is preserved, committed ahead of the done marker.
     app.handle_event(TuiEvent::Runtime(run_finished(Some("root/a"))));
     let sub_texts: Vec<&str> = app.sub_agent_transcripts.get("root/a")
@@ -680,7 +680,7 @@ fn child_stream_flushes_before_its_tool_line() {
     assert!(
         sub_texts.len() >= 2
             && sub_texts[0].contains("read the config first")
-            && sub_texts[1].starts_with("⏺ [root/a] read_file"),
+            && sub_texts[1].starts_with("* [root/a] read_file"),
         "child text must precede its tool line: {sub_texts:?}"
     );
     assert!(app.streaming_tail_raw().is_none());
@@ -771,12 +771,12 @@ fn ctrl_y_emits_copy_last_reply_and_plain_y_types() {
 #[test]
 fn notice_shows_in_status_line_and_clears_on_key() {
     let mut app = App::new();
-    assert!(app.status_line().starts_with("⏸ Idle"));
+    assert!(app.status_line().starts_with("Idle"));
     app.set_notice("📋 copied 5 chars");
     assert_eq!(app.status_line(), "📋 copied 5 chars");
     // Any keypress clears the notice before being handled.
     app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
-    assert!(app.status_line().starts_with("⏸ Idle"));
+    assert!(app.status_line().starts_with("Idle"));
 }
 
 #[test]
@@ -794,7 +794,7 @@ fn plan_renders_status_markers() {
     assert!(lines.iter().any(|l| l.contains("📋 目标")), "got: {lines:?}");
     assert!(lines.iter().any(|l| l.contains("✅ 已完成")), "got: {lines:?}");
     assert!(lines.iter().any(|l| l.contains("🔄 进行中")), "got: {lines:?}");
-    assert!(lines.iter().any(|l| l.contains("○ 待办")), "got: {lines:?}");
+    assert!(lines.iter().any(|l| l.contains("- 待办")), "got: {lines:?}");
 }
 
 #[test]
@@ -1370,7 +1370,7 @@ fn turn_done_with_running_children_enters_waiting_state() {
 
     app.handle_event(TuiEvent::TurnDone);
     let texts: Vec<&str> = app.transcript.output.iter().map(|l| l.text.as_str()).collect();
-    assert!(texts.iter().any(|t| t.contains("⏳ 等待子 agent 返回（2 个运行中）")));
+    assert!(texts.iter().any(|t| t.contains("... 等待子 agent 返回（2 个运行中）")));
     assert!(!texts.iter().any(|t| t.contains("✅ done")), "waiting is not done");
     assert!(!app.running);
     assert!(matches!(app.status, AgentStatus::Waiting { running: 2 }));

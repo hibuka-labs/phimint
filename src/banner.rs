@@ -171,7 +171,7 @@ fn tagline_row(version: &str) -> BannerRow {
     BannerRow {
         spans: vec![
             ("Phimint".to_string(), BannerStyle::Brand),
-            (format!(" v{version} · Forged with intent. Shipped with care. · Built on phi-agent"), BannerStyle::Tagline),
+            (format!(" v{version} - Forged with intent. Shipped with care. - Built on phi-agent"), BannerStyle::Tagline),
         ],
     }
 }

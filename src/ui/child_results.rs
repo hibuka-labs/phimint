@@ -122,7 +122,7 @@ fn compose_inject(reports: &[ChildReport]) -> (String, String) {
                 kept
             } else {
                 format!(
-                    "{kept}\n\n[⚠️ 报告过长已截断：{total}/{} 字符，关键结论可能在后段；如需细节请向该子 agent 追问]",
+                    "{kept}\n\n[! 报告过长已截断：{total}/{} 字符，关键结论可能在后段；如需细节请向该子 agent 追问]",
                     MAX_REPORT_CHARS
                 )
             }

@@ -124,7 +124,7 @@ impl Tool for DiagnosticsTool {
         }
         if clients.is_empty() {
             return Ok(vec![Content::text(
-                "No LSP server is registered for these files' languages — run `verify` instead."
+                "No LSP server is registered for these files' languages - run `verify` instead."
                     .to_string(),
             )]);
         }
@@ -135,7 +135,7 @@ impl Tool for DiagnosticsTool {
         wait_ready(&clients).await;
         if let Some(e) = first_health_error(&clients) {
             return Ok(vec![Content::text(format!(
-                "[Error]: diagnostics unavailable — {e}. Run `verify` instead."
+                "[Error]: diagnostics unavailable - {e}. Run `verify` instead."
             ))]);
         }
 

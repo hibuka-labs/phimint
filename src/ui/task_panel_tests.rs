@@ -250,7 +250,7 @@ fn sub_agent_tool_calls_route_to_transcript() {
     let sub_lines = app.sub_agent_transcripts.get("root/auth").unwrap();
     assert_eq!(sub_lines.len(), 2);
     assert!(sub_lines[0].text.contains("read_file"));
-    assert!(sub_lines[1].text.contains("✓"));
+    assert!(sub_lines[1].text.contains("+"));
 }
 
 #[test]
@@ -551,7 +551,7 @@ fn panel_activity_column_shows_latest_tool() {
 
     let snap = crate::ui::render::snapshot_text(&mut app, 100, 30);
     assert!(
-        snap.contains("→ read_file"),
+        snap.contains("> read_file"),
         "panel must show the in-flight tool, got:\n{snap}"
     );
 
@@ -561,8 +561,8 @@ fn panel_activity_column_shows_latest_tool() {
     ));
     let snap = crate::ui::render::snapshot_text(&mut app, 100, 30);
     assert!(
-        snap.contains("✓ read_file"),
-        "finished tool must show as ✓, got:\n{snap}"
+        snap.contains("+ read_file"),
+        "finished tool must show as +, got:\n{snap}"
     );
 }
 
@@ -579,13 +579,13 @@ fn panel_columns_align_with_long_names() {
     insert_agent_with_event(&mut app, "root/pi", "pi", "read_file", false);
 
     let snap = crate::ui::render::snapshot_text(&mut app, 100, 30);
-    // Name column capped at 16 → the long name is ellipsized instead of
+    // Name column capped at 16 → the long name is ellipsized (13 chars + "...") instead of
     // shoving the later columns out of alignment.
-    assert!(snap.contains("analyze-deepsee…"), "got:\n{snap}");
+    assert!(snap.contains("analyze-deeps..."), "got:\n{snap}");
     // Both rows' time column (│) must sit at the same character position.
     let cols: Vec<usize> = snap
         .lines()
-        .filter(|l| l.contains("analyze-deepsee…") || l.contains(" pi "))
+        .filter(|l| l.contains("analyze-deeps...") || l.contains(" pi "))
         .filter_map(|l| l.find('│'))
         .collect();
     assert_eq!(cols.len(), 2, "both panel rows expected, got:\n{snap}");
@@ -826,7 +826,7 @@ fn focused_child_thought_tail_uses_wrapped_lines() {
     );
 }
 
-// ── ✍ writing… hint (10.1 backlog batch) ─────────────────────────────────────
+// ── writing... hint (10.1 backlog batch) ─────────────────────────────────────
 
 #[test]
 fn writing_hint_shows_for_quiet_running_agent() {
@@ -842,7 +842,7 @@ fn writing_hint_shows_for_quiet_running_agent() {
 
 #[test]
 fn writing_hint_suppressed_for_fresh_tool_or_inflight_or_done() {
-    // Fresh finished tool: show the honest ✓ tool_name.
+    // Fresh finished tool: show the honest + tool_name.
     let mut fresh = mock_sub_agent("pi", SubAgentStatus::Running);
     fresh.events.push(ToolEvent {
         tool_name: "read_file".to_string(),

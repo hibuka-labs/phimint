@@ -113,6 +113,7 @@ async fn build_with_skills(
         "low",
         "mock-model".to_string(),
         vec![tmp.path().join("skills")],
+        None,
     )
     .unwrap();
     let session = agent.create_session().await;

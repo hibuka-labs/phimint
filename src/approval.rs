@@ -225,7 +225,7 @@ impl CliApprovalHandler {
         cancel_token: &tokio_util::sync::CancellationToken,
     ) -> AgentResult<ApprovalDecision> {
         eprintln!();
-        eprintln!("  ⚠️  {}", request.title);
+        eprintln!("  !! {}", request.title);
         eprintln!("     Risk: {}", Self::risk_badge(&request.risk_level));
         eprintln!("     {}", request.message);
         eprintln!();
@@ -242,7 +242,7 @@ impl CliApprovalHandler {
             let line = read_stdin_line_cancellable(cancel_token).await?;
             match map_input(&line) {
                 Some(decision) => return Ok(decision),
-                None => eprintln!("     Invalid input — enter y / a / n"),
+                None => eprintln!("     Invalid input - enter y / a / n"),
             }
         }
     }

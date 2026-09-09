@@ -175,13 +175,24 @@ pub async fn run_tui(
             version,
         ));
     } else {
-        app.push_system("Phimint · Forged with intent. Shipped with care. · Built on phi-agent");
+        app.push_system("Phimint - Forged with intent. Shipped with care. - Built on phi-agent");
     }
 
     // Clipboard for Ctrl+Y "copy last reply". Optional: on headless or
     // Linux/Wayland setups `arboard` may fail to open a clipboard; copy then
     // just reports "clipboard unavailable" instead of crashing.
     let mut clipboard = arboard::Clipboard::new().ok();
+
+    // v4 A-side: surface a clamped token budget (requested < viability
+    // floor) right in the transcript — the user must see the true minimum.
+    if let Some(notice) = crate::token_budget::take_clamp_notice() {
+        app.push_system(&format!("! {notice}"));
+    }
+
+    // Track window rotations for TUI notification.
+    let mut last_reset_count: usize = 0;
+    // Announce the futility brake at most once.
+    let mut brake_announced = false;
 
     // Session logs (frame capture, perf timing, composer state) each own their
     // file handle + dedup/throttle state; see frame_log.rs.
@@ -212,6 +223,27 @@ pub async fn run_tui(
             dirty = true;
         }
 
+        // Check for window rotation after turn ends.
+        {
+            let current = crate::token_budget::window_reset_count();
+            if current > last_reset_count {
+                let n = current - last_reset_count;
+                app.push_system(&format!(
+                    "~ Context window rotated (x{n}) - previous history archived"
+                ));
+                last_reset_count = current;
+                dirty = true;
+            }
+            if !brake_announced && crate::token_budget::futility_braked() {
+                brake_announced = true;
+                app.push_system(
+                    "! Futility brake: work budget too small - window rotation paused. \
+                     Restart with a larger --token-budget.",
+                );
+                dirty = true;
+            }
+        }
+
         // Drain child-result events from the watcher task.
         if let Some(rx) = child_result_rx.as_mut() {
             while let Ok(cr) = rx.try_recv() {
@@ -223,7 +255,13 @@ pub async fn run_tui(
                         app.mark_sub_agent_finished(agent_path);
                     }
                 }
-                match child_results.on_event(app.running, cr) {
+                let route = child_results.on_event(app.running, cr);
+                tracing::info!(
+                    running = app.running,
+                    route = ?std::mem::discriminant(&route),
+                    "tui: child_result event routed"
+                );
+                match route {
                     ChildResultRoute::Notice { notice } => app.push_system(&notice),
                     ChildResultRoute::Hold { notice } => app.set_notice(notice),
                     ChildResultRoute::Inject { notice, input } => {
@@ -244,6 +282,7 @@ pub async fn run_tui(
             if let Some(ChildResultRoute::Inject { notice, input }) =
                 child_results.flush_when_idle()
             {
+                tracing::info!("tui: flush_when_idle → injecting batch");
                 app.mark_all_sub_agents_finished();
                 app.push_system(&notice);
                 let _ = cmd_tx.send(Cmd::Run(input));
