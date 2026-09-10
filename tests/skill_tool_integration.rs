@@ -15,7 +15,7 @@ use phi_agent::llm_trait::{
     Capabilities, ChatMessage, ChatRequest, ChatResponse, ChatStream, FinishReason,
     LlmError, LlmProvider, ProviderInfo, StreamChunk, UsageInfo,
 };
-use phi_agent::{AgentResult, Content};
+use phi_agent::Content;
 
 /// A mock LLM that plays back a scripted sequence of turns.
 ///
@@ -121,6 +121,7 @@ async fn build_with_skills(
 }
 
 /// Helper: extract all Text content from a Vec<Content>.
+#[allow(dead_code)]
 fn text(out: &[Content]) -> String {
     out.iter()
         .filter_map(|c| match c {

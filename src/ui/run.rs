@@ -27,7 +27,7 @@ use tokio::sync::mpsc;
 
 use crate::approval::ApprovalItem;
 use crate::banner::ColorScheme;
-use crate::skills::SkillResolver;
+use crate::skills::{SkillResolver, SkillTelemetry};
 use super::app::{Action, App, TuiEvent};
 use super::child_results::{ChildResultRoute, ChildResultRouter};
 use super::frame_log::{ComposerLog, FrameCapture, PerfLog, PerfRow};
@@ -55,7 +55,7 @@ const UI_TICK: Duration = Duration::from_millis(250);
 pub async fn run_tui(
     agent: PhiAgent,
     skill_resolver: Arc<SkillResolver>,
-    skill_telemetry: Arc<crate::telemetry::SkillTelemetry>,
+    skill_telemetry: Arc<SkillTelemetry>,
     session: SessionId,
     session_ctx: SessionContext,
     workspace: PathBuf,
@@ -486,7 +486,7 @@ fn copy_text(app: &mut App, clipboard: &mut Option<arboard::Clipboard>, text: St
 async fn agent_loop(
     agent: Arc<PhiAgent>,
     skill_resolver: Arc<SkillResolver>,
-    skill_telemetry: Arc<crate::telemetry::SkillTelemetry>,
+    skill_telemetry: Arc<SkillTelemetry>,
     session: SessionId,
     session_ctx: SessionContext,
     event_tx: mpsc::UnboundedSender<TuiEvent>,

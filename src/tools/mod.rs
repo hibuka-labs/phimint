@@ -11,4 +11,3 @@
 pub mod diagnostics;
 pub mod repomap;
 pub mod ripgrep;
-pub mod skill;

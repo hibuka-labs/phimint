@@ -9,8 +9,6 @@ pub mod approval;
 pub mod banner;
 pub mod context_rotation;
 pub mod gate;
-pub mod middleware;
 pub mod skills;
-pub mod telemetry;
 pub mod tools;
 pub mod ui;

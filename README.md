@@ -140,7 +140,7 @@ phimint/
 │   ├── approval.rs    # 审批两层：ApprovalPolicy 闸门 + 决策 handler（含 TUI 队列）
 │   ├── banner.rs      # 启动 banner（明暗两套配色）
 │   ├── gate.rs        # 强制 verify 闸门（VerifyEnforcementMiddleware，暂缓接线）
-│   ├── skills.rs      # /skill 斜杠解析（扫描 .claude/skills）
+│   ├── skills.rs      # Skill 薄壳：re-export agent-works 的 skill 子系统 + phimint 默认目录策略
 │   ├── tools/         # 应用工具壳（核心在 code-intel）
 │   │   ├── diagnostics.rs   # LSP 诊断工具
 │   │   ├── repomap.rs       # repo_map 工具

@@ -14,10 +14,8 @@ use phi_agent::{
 
 use code_intel::lsp::{ClientInfo, LspManager, LspServerSpec};
 use phi_kernel_tools::context_rotation::{HistoryStore, NotesStore, create_history_tools, create_notes_tools};
-use crate::skills::{SkillResolver, render_catalog};
-use crate::telemetry::SkillTelemetry;
+use crate::skills::{SkillResolver, SkillTelemetry, SkillTool, render_catalog};
 use crate::tools::diagnostics::DiagnosticsTool;
-use crate::tools::skill::SkillTool;
 use crate::tools::{repomap::RepoMapTool, ripgrep::RipgrepTool};
 use crate::context_rotation::TokenBudgetCompactor;
 
@@ -285,9 +283,30 @@ pub fn build(
         )
     };
 
+    // Agent instruction files (CLAUDE.md): user-level + project-level.
+    // phimint uses Claude Code compatible paths for seamless migration.
+    // Claude Code scans all three locations; we do the same.
+    let agent_instructions_paths = {
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| std::path::PathBuf::from("."));
+
+        vec![
+            home.join(".claude").join("CLAUDE.md"),  // user-level (lowest priority)
+            std::path::PathBuf::from(".claude/CLAUDE.md"),  // project-level (.claude/)
+            std::path::PathBuf::from("CLAUDE.md"),   // project-level (root)
+        ]
+    };
+
     let mut builder = builder
         .system_prompt(system_prompt)
         .approval_handler(approval)
+        // phimint 已在 compose_system_prompt 中自行注入 skill catalog——
+        // 禁止 agent-works 的 LazySkillPrompter 再追加一份 "## Available Skills"。
+        .disable_skill_prompt_injection()
+        // Inject CLAUDE.md (user-level + project-level) into system prompt
+        .agent_instructions_paths(agent_instructions_paths)
         // base_agent_builder caps tool output at 4000 chars and REJECTS (rather
         // than truncates) anything larger. That is too small to read a normal
         // source file — read_file's own default limit is 2000 *lines*, so a
@@ -300,10 +319,10 @@ pub fn build(
         .register_tool(RepoMapTool::new(workspace_root.clone()))
         // skill tool (skill-injection D2): model-initiated skill body loader.
         .register_tool(SkillTool::new(Arc::clone(&skill_resolver), Arc::clone(&skill_telemetry)))
-        // Per-turn catalog refresh (skill-injection M3a): replaces the system
-        // message before each LLM call so the model always sees the current
-        // skill catalog. Zero cross-repo changes — uses agent-base Middleware.
-        .middleware(crate::middleware::SkillCatalogRefreshMiddleware::new(
+        // Per-turn catalog refresh (skill-injection M3a): in-place swap of the
+        // catalog section before each LLM call — the builder injected one copy
+        // at build time, this middleware keeps it current without duplication.
+        .middleware(crate::skills::SkillCatalogRefreshMiddleware::new(
             Arc::clone(&skill_resolver),
         ))
         // TESTING: low max_turns to verify nudge feature
@@ -455,7 +474,8 @@ mod prompt_guard_tests {
     //! result. These assertions fail if the fan-in semantics drift out of the
     //! live text.
 
-    use super::SYSTEM_PROMPT;
+    use super::{SYSTEM_PROMPT, compose_system_prompt};
+    use crate::skills::SkillResolver;
 
     #[test]
     fn live_prompt_carries_fan_in_wait_semantics() {
@@ -573,7 +593,6 @@ mod prompt_guard_tests {
     // run a real `build()` + turn against a capturing mock provider — delete
     // the compose call in `build()` and those go red.
 
-    use super::compose_system_prompt;
     use phi_agent::llm_trait::{
         Capabilities, ChatMessage, ChatRequest, ChatResponse, ChatStream, FinishReason,
         LlmError, LlmProvider, ProviderInfo, StreamChunk, UsageInfo,
@@ -741,6 +760,71 @@ mod prompt_guard_tests {
         assert!(
             prompts.iter().any(|p| p.starts_with(SYSTEM_PROMPT) && !p.contains("## Skills")),
             "with no skills the live prompt must be the base prompt with no catalog fragment"
+        );
+    }
+
+    // ── Skill catalog double-injection guard ──
+
+    #[test]
+    fn compose_system_prompt_has_exactly_one_skills_heading() {
+        // build() calls compose_system_prompt which embeds one catalog copy.
+        // If disable_skill_prompt_injection() were missing, agent-works'
+        // LazySkillPrompter would append a second "## Available Skills" section
+        // at build() time — the model would see two separate skill listings.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("skills").join("review");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: review\ndescription: d\nuser-invocable: true\n---\n\nreview body",
+        )
+        .unwrap();
+        let resolver = SkillResolver::from_dirs(&[tmp.path().join("skills")]);
+        let prompt = compose_system_prompt(&resolver);
+        assert_eq!(
+            prompt.matches("## Skills").count(),
+            1,
+            "compose_system_prompt must produce exactly one ## Skills heading"
+        );
+        assert!(
+            !prompt.contains("## Available Skills"),
+            "compose_system_prompt must not contain agent-works' '## Available Skills' heading"
+        );
+    }
+
+    // ── Integration: disable_skill_prompt_injection end-to-end ──
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn built_agent_has_no_duplicate_skills_heading() {
+        // Verifies disable_skill_prompt_injection() end-to-end: the model
+        // must see exactly one "## Skills" heading and zero "## Available Skills"
+        // headings. The unit test compose_system_prompt_has_exactly_one_skills_heading
+        // covers the pure function; this covers the full build() → run_turn() path.
+        let tmp = tempfile::tempdir().unwrap();
+        let skill_dir = fixture_skill_dir(tmp.path());
+        let prompts = system_prompts_received(vec![skill_dir]).await;
+
+        for (i, p) in prompts.iter().enumerate() {
+            let skills_count = p.matches("## Skills").count();
+            assert_eq!(
+                skills_count, 1,
+                "request {i}: expected exactly one '## Skills' heading, found {skills_count}"
+            );
+            assert!(
+                !p.contains("## Available Skills"),
+                "request {i}: must not contain agent-works' '## Available Skills' heading"
+            );
+        }
+    }
+
+    #[test]
+    fn system_prompt_base_has_no_available_skills_heading() {
+        // Red-team guard: the raw SYSTEM_PROMPT constant must never contain
+        // the agent-works LazySkillPrompter heading — that would mean the
+        // base prompt itself carries a second catalog section.
+        assert!(
+            !SYSTEM_PROMPT.contains("## Available Skills"),
+            "SYSTEM_PROMPT must not contain agent-works' '## Available Skills' heading"
         );
     }
 }
