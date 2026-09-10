@@ -478,9 +478,12 @@ impl App {
             return None;
         };
 
+        // Save old prefix to detect directory navigation
+        let old_prefix = m.prefix().to_string();
+
         match m.handle_key(code) {
             CompleterAction::Cancelled => {
-                let to_delete = 1 + m.prefix().chars().count();
+                let to_delete = 1 + old_prefix.chars().count();
                 self.mention = None;
                 for _ in 0..to_delete {
                     self.composer.backspace();
@@ -488,22 +491,32 @@ impl App {
                 None
             }
             CompleterAction::Selected(_) => {
-                // 先获取需要删除的字符数和插入的文本
-                let to_delete = 1 + m.prefix().chars().count();
+                // Get delete count and insertion text first
+                let to_delete = 1 + old_prefix.chars().count();
                 let text = m.finish_text();
-                // 然后 take mention
+                // Then take mention
                 self.mention = None;
-                // 删除 `@prefix`
+                // Delete `@prefix`
                 for _ in 0..to_delete {
                     self.composer.backspace();
                 }
-                // 插入选中的路径
+                // Insert selected path
                 self.composer.insert_str(&text);
                 None
             }
             CompleterAction::Continue => {
-                // 如果是字符输入，需要同步到 composer
-                if let KeyCode::Char(c) = code {
+                // Check if prefix changed (directory navigation)
+                let new_prefix = m.prefix().to_string();
+                if new_prefix != old_prefix {
+                    // Prefix changed, sync composer
+                    // Delete old prefix
+                    for _ in 0..old_prefix.chars().count() {
+                        self.composer.backspace();
+                    }
+                    // Insert new prefix
+                    self.composer.insert_str(&new_prefix);
+                } else if let KeyCode::Char(c) = code {
+                    // Normal char input, sync to composer
                     self.composer.insert_char(c);
                 }
                 None
