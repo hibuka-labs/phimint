@@ -282,7 +282,7 @@ pub async fn run_tui(
             if let Some(ChildResultRoute::Inject { notice, input }) =
                 child_results.flush_when_idle()
             {
-                tracing::info!("tui: flush_when_idle → injecting batch");
+                tracing::info!("tui: flush_when_idle -> injecting batch");
                 app.mark_all_sub_agents_finished();
                 app.push_system(&notice);
                 let _ = cmd_tx.send(Cmd::Run(input));

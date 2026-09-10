@@ -41,32 +41,44 @@ impl App {
 
         // Ctrl+C: copy selection → cancel running → double-press to quit.
         //   1. If there's an active selection, copy it (caller clears selection).
-        //   2. If the agent is running (or approval pending), cancel it.
+        //   2. If the agent is running (or approval pending), cancel it; a
+        //      second press within the timeout force-quits (the cancel path
+        //      can stall deep in the runtime — the escape hatch must not).
         //   3. Otherwise, show a hint; a second Ctrl+C within timeout quits.
         if ctrl && code == Char('c') {
+            const DOUBLE_PRESS_TIMEOUT: std::time::Duration =
+                std::time::Duration::from_secs(2);
             if self.selection_state.selection.is_some() {
-                tracing::info!("ctrl+c: has selection → copy");
+                tracing::info!("ctrl+c: has selection -> copy");
                 self.selection_state.context_menu = None;
                 self.quit_hint_at = None;
                 return Some(Action::CopySelection);
             }
             if self.running || !self.approval_queue.is_empty() {
-                tracing::info!("ctrl+c: running/approval → cancel");
-                self.quit_hint_at = None;
+                // A cancel was already requested recently and the agent is
+                // still stuck: force-quit instead of sending a no-op cancel.
+                if let Some(at) = self.quit_hint_at {
+                    if at.elapsed() < DOUBLE_PRESS_TIMEOUT {
+                        tracing::info!("ctrl+c: stuck after cancel -> force quit");
+                        self.quit_hint_at = None;
+                        return Some(Action::Quit);
+                    }
+                }
+                tracing::info!("ctrl+c: running/approval -> cancel");
+                self.quit_hint_at = Some(Instant::now());
+                self.set_notice("Cancelling... press Ctrl+C again to force quit");
                 return Some(Action::Cancel);
             }
             // Double-press to quit: first press shows hint, second press
             // within timeout actually quits.
-            const QUIT_HINT_TIMEOUT: std::time::Duration =
-                std::time::Duration::from_secs(2);
             if let Some(at) = self.quit_hint_at {
-                if at.elapsed() < QUIT_HINT_TIMEOUT {
-                    tracing::info!("ctrl+c: hint active → quit");
+                if at.elapsed() < DOUBLE_PRESS_TIMEOUT {
+                    tracing::info!("ctrl+c: hint active -> quit");
                     self.quit_hint_at = None;
                     return Some(Action::Quit);
                 }
             }
-            tracing::info!("ctrl+c: idle → show quit hint");
+            tracing::info!("ctrl+c: idle -> show quit hint");
             self.quit_hint_at = Some(Instant::now());
             self.set_notice("Press Ctrl+C again to exit");
             return None;

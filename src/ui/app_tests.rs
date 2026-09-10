@@ -943,6 +943,37 @@ fn ctrl_c_copies_selection_then_double_press_quits() {
 }
 
 #[test]
+fn ctrl_c_force_quits_when_stuck_after_cancel() {
+    let mut app = App::new();
+    app.running = true;
+    app.quit_hint_at = None;
+    // First Ctrl+C while running -> cancel (and arms the force-quit window).
+    assert_eq!(
+        app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        Some(Action::Cancel)
+    );
+    assert!(app
+        .notice
+        .as_deref()
+        .unwrap_or("")
+        .contains("force quit"));
+    // Second Ctrl+C within the window while still stuck -> force quit.
+    assert_eq!(
+        app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        Some(Action::Quit)
+    );
+    // After the window lapses (cancel landed but user pressed late), the
+    // next press cancels again instead of quitting.
+    app.running = true;
+    app.quit_hint_at =
+        Some(Instant::now() - std::time::Duration::from_secs(5));
+    assert_eq!(
+        app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        Some(Action::Cancel)
+    );
+}
+
+#[test]
 fn right_click_opens_menu_and_enter_copies() {
     let mut app = App::new();
     app.transcript.push(OutputLine { spans: None, original: None, text: "x".into(), kind: LineKind::Normal, detail: None });
