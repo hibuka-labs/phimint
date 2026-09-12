@@ -1397,14 +1397,14 @@ fn turn_done_with_running_children_enters_waiting_state() {
     // must keep the panel alive and flip to Waiting.
     app.handle_event(TuiEvent::Runtime(run_finished(None)));
     assert_eq!(app.sub_agents.len(), 2);
-    assert!(matches!(app.status, AgentStatus::Waiting { running: 2 }));
+    assert!(matches!(app.status, AgentStatus::Waiting { running: 2, bg: 0 }));
 
     app.handle_event(TuiEvent::TurnDone);
     let texts: Vec<&str> = app.transcript.output.iter().map(|l| l.text.as_str()).collect();
     assert!(texts.iter().any(|t| t.contains("... 等待子 agent 返回（2 个运行中）")));
     assert!(!texts.iter().any(|t| t.contains("✅ done")), "waiting is not done");
     assert!(!app.running);
-    assert!(matches!(app.status, AgentStatus::Waiting { running: 2 }));
+    assert!(matches!(app.status, AgentStatus::Waiting { running: 2, bg: 0 }));
     // Panel + per-agent transcripts stay alive for inspection while waiting.
     assert_eq!(app.sub_agents.len(), 2);
     assert!(app.sub_agent_transcripts.contains_key("root/a"));
@@ -1431,11 +1431,11 @@ fn finishing_children_updates_waiting_count_to_idle_at_zero() {
     app.handle_event(TuiEvent::Runtime(child_text("root/a", "x")));
     app.handle_event(TuiEvent::Runtime(child_text("root/b", "y")));
     app.handle_event(TuiEvent::TurnDone);
-    assert!(matches!(app.status, AgentStatus::Waiting { running: 2 }));
+    assert!(matches!(app.status, AgentStatus::Waiting { running: 2, bg: 0 }));
 
     // Watcher Progress events flip panel entries and refresh the count.
     app.mark_sub_agent_finished("root/a");
-    assert!(matches!(app.status, AgentStatus::Waiting { running: 1 }));
+    assert!(matches!(app.status, AgentStatus::Waiting { running: 1, bg: 0 }));
     assert_eq!(app.sub_agents.get("root/a").map(|s| &s.status), Some(&SubAgentStatus::Done));
 
     app.mark_sub_agent_finished("root/b");
@@ -1457,8 +1457,77 @@ fn batch_inject_marks_all_children_finished() {
 #[test]
 fn waiting_status_line_mentions_running_count() {
     let mut app = App::new();
-    app.status = AgentStatus::Waiting { running: 3 };
+    app.status = AgentStatus::Waiting { running: 3, bg: 0 };
     let line = app.status_line();
     assert!(line.contains('3'), "count missing: {line}");
     assert!(line.contains("等待"), "waiting wording missing: {line}");
+}
+
+// ── Background-task waiting state (turn ends while bg tasks run) ────────────
+
+fn running_bg_task(app: &mut App, id: &str, command: &str) {
+    app.background_tasks.insert(id.to_string(), BackgroundTaskEntry {
+        id: id.to_string(),
+        command: command.to_string(),
+        status: BackgroundTaskStatus::Running,
+        started_at: std::time::Instant::now(),
+        finished_at: None,
+        reported: false,
+    });
+}
+
+#[test]
+fn turn_done_with_running_bg_tasks_enters_waiting_not_idle() {
+    let mut app = App::new();
+    app.running = true;
+    running_bg_task(&mut app, "bg_aaaa1111", "cargo test");
+    running_bg_task(&mut app, "bg_bbbb2222", "npm run build");
+
+    // Root finishes its turn while the two background tasks are still out —
+    // the status must NOT drop to Idle ("done"), it must wait on the bg
+    // tasks the same way it waits on sub-agents.
+    app.handle_event(TuiEvent::Runtime(run_finished(None)));
+    assert!(matches!(app.status, AgentStatus::Waiting { running: 0, bg: 2 }));
+
+    app.handle_event(TuiEvent::TurnDone);
+    let texts: Vec<&str> = app.transcript.output.iter().map(|l| l.text.as_str()).collect();
+    assert!(texts.iter().any(|t| t.contains("等待后台任务") && t.contains('2')));
+    assert!(!texts.iter().any(|t| t.contains("✅ done")), "waiting is not done");
+    assert!(!app.running);
+    assert!(matches!(app.status, AgentStatus::Waiting { running: 0, bg: 2 }));
+    // Status bar: "waiting for background tasks", not "done".
+    let line = app.status_line();
+    assert!(line.contains("后台任务"), "bg wording missing: {line}");
+    assert!(line.contains('2'), "bg count missing: {line}");
+}
+
+#[test]
+fn turn_done_with_children_and_bg_tasks_waits_for_both() {
+    let mut app = App::new();
+    app.running = true;
+    app.handle_event(TuiEvent::Runtime(child_text("root/a", "working")));
+    running_bg_task(&mut app, "bg_aaaa1111", "sleep 5");
+
+    app.handle_event(TuiEvent::TurnDone);
+    assert!(matches!(app.status, AgentStatus::Waiting { running: 1, bg: 1 }));
+    let line = app.status_line();
+    assert!(line.contains("子 agent") && line.contains("后台任务"), "both: {line}");
+}
+
+#[test]
+fn bg_task_finishing_while_waiting_updates_count() {
+    let mut app = App::new();
+    app.status = AgentStatus::Waiting { running: 0, bg: 1 };
+
+    // Registry flip → reconcile → refresh (the production trigger path).
+    let registry = BackgroundTaskRegistry::new(4);
+    app.set_background_registry(registry.clone());
+    let token = tokio_util::sync::CancellationToken::new();
+    let id = registry.register("cargo test", None, token, None).unwrap();
+    assert!(app.reconcile_background_tasks(), "new task is a change");
+    assert!(matches!(app.status, AgentStatus::Waiting { running: 0, bg: 1 }));
+
+    registry.finish(&id, Some(0));
+    assert!(app.reconcile_background_tasks(), "status flip is a change");
+    assert_eq!(app.status, AgentStatus::Idle, "last bg task done → idle");
 }

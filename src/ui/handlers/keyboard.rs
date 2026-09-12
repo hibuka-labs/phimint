@@ -10,6 +10,7 @@ use std::time::Instant;
 use crossterm::event::{KeyCode, KeyModifiers};
 
 use phi_agent::ApprovalDecision;
+use phi_kernel_tools::background_shell::BackgroundTaskStatus;
 use crate::ui::app::{Action, App, AgentStatus, FocusTarget, Phase};
 
 impl App {
@@ -44,7 +45,8 @@ impl App {
         //   2. If the agent is running (or approval pending), cancel it; a
         //      second press within the timeout force-quits (the cancel path
         //      can stall deep in the runtime — the escape hatch must not).
-        //   3. Otherwise, show a hint; a second Ctrl+C within timeout quits.
+        //   3. If there are running background tasks, cancel them.
+        //   4. Otherwise, show a hint; a second Ctrl+C within timeout quits.
         if ctrl && code == Char('c') {
             const DOUBLE_PRESS_TIMEOUT: std::time::Duration =
                 std::time::Duration::from_secs(2);
@@ -68,6 +70,21 @@ impl App {
                 self.quit_hint_at = Some(Instant::now());
                 self.set_notice("Cancelling... press Ctrl+C again to force quit");
                 return Some(Action::Cancel);
+            }
+            // Cancel running background tasks
+            let running_bg_tasks: Vec<String> = self.background_tasks.iter()
+                .filter(|(_, t)| t.status == BackgroundTaskStatus::Running)
+                .map(|(id, _)| id.clone())
+                .collect();
+            if !running_bg_tasks.is_empty() {
+                tracing::info!(task_ids = ?running_bg_tasks, "ctrl+c: cancel background tasks");
+                for task_id in &running_bg_tasks {
+                    if let Some(registry) = &self.background_registry {
+                        registry.cancel(task_id);
+                    }
+                }
+                self.set_notice("Background tasks cancelled");
+                return None;
             }
             // Double-press to quit: first press shows hint, second press
             // within timeout actually quits.
@@ -199,8 +216,9 @@ impl App {
                         }
                         FocusTarget::Input => {
                             // Move focus to task list (select last item)
-                            if !self.sub_agents.is_empty() {
-                                self.task_panel.focus = FocusTarget::TaskList(self.sub_agents.len() - 1);
+                            let total = self.sub_agents.len() + self.background_tasks.len();
+                            if total > 0 {
+                                self.task_panel.focus = FocusTarget::TaskList(total - 1);
                                 return None;
                             }
                         }
@@ -214,7 +232,8 @@ impl App {
                 if self.should_show_task_panel() {
                     match &self.task_panel.focus {
                         FocusTarget::TaskList(index) => {
-                            if *index + 1 < self.sub_agents.len() {
+                            let total = self.sub_agents.len() + self.background_tasks.len();
+                            if *index + 1 < total {
                                 self.task_panel.focus = FocusTarget::TaskList(index + 1);
                             } else {
                                 // Move focus to input

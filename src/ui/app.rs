@@ -8,10 +8,12 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyModifiers};
 use phi_agent::{ApprovalDecision, ApprovalRequest, RegistrySnapshot, RuntimeEvent};
+use phi_kernel_tools::background_shell::{BackgroundTaskRegistry, BackgroundTaskStatus};
 
 use crate::approval::ApprovalItem;
 use crate::banner::{BannerRow, BannerStyle, ColorScheme};
@@ -46,9 +48,11 @@ pub enum Phase {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentStatus {
     Idle,
-    /// The root turn ended but sub-agents are still running — the fan-in wake
-    /// (batch injection) will start the next turn automatically.
-    Waiting { running: usize },
+    /// The root turn ended but work is still in flight — sub-agents
+    /// (`running`, fan-in wake) and/or background shell tasks (`bg`, bg
+    /// wake). The two counts are independent: either alone, or both, keep
+    /// the agent in `Waiting` instead of dropping to `Idle`.
+    Waiting { running: usize, bg: usize },
     Running { phase: Phase },
 }
 
@@ -57,6 +61,21 @@ pub enum AgentStatus {
 pub enum SubAgentStatus {
     Running,
     Done,
+}
+
+/// A background shell task tracked in the task panel.
+#[derive(Debug, Clone)]
+pub struct BackgroundTaskEntry {
+    pub id: String,
+    pub command: String,
+    pub status: BackgroundTaskStatus,
+    pub started_at: Instant,
+    pub finished_at: Option<Instant>,
+    /// Whether this task's completion has already been included in a
+    /// background-wake injection (`take_bg_wake`). One task is reported to
+    /// the agent at most once — a later wake (new tasks spawned after the
+    /// report turn) lists only the not-yet-reported ones.
+    pub reported: bool,
 }
 
 /// A tool call event from a sub-agent (for detail display).
@@ -230,6 +249,10 @@ pub struct App {
     /// 20260904_e6612477 "卡一会"). The ~250 ms tick re-renders while this is
     /// set, keeping spinner/elapsed alive through event-less stretches.
     pub(crate) activity_since: Option<Instant>,
+    /// Background task registry (injected from agent::build).
+    pub(crate) background_registry: Option<Arc<BackgroundTaskRegistry>>,
+    /// Background shell tasks displayed in the task panel.
+    pub(crate) background_tasks: BTreeMap<String, BackgroundTaskEntry>,
 }
 
 impl Default for App {
@@ -265,7 +288,14 @@ impl App {
             live_progress: None,
             notice: None,
             activity_since: None,
+            background_registry: None,
+            background_tasks: BTreeMap::new(),
         }
+    }
+
+    /// Inject the background task registry (from agent::build).
+    pub fn set_background_registry(&mut self, registry: Arc<BackgroundTaskRegistry>) {
+        self.background_registry = Some(registry);
     }
 
     /// Append a system/banner line (welcome, workspace, log path).
@@ -353,36 +383,66 @@ impl App {
         }
     }
 
-    /// Common end-of-turn settlement. If sub-agents are still running the task
-    /// is NOT done — enter the fan-in `Waiting` state and keep the task panel
-    /// alive (the batch injection starts the next turn). Otherwise show the
-    /// done marker (unless an error line was already pushed) and clear the
-    /// panel.
+    /// Common end-of-turn settlement. If sub-agents or background tasks are
+    /// still running the task is NOT done — enter the `Waiting` state (with
+    /// both counts) and keep the task panel alive (the fan-in batch injection
+    /// or the background wake starts the next turn automatically). Otherwise
+    /// show the done marker (unless an error line was already pushed) and
+    /// clear the panel.
     fn settle_after_turn(&mut self, show_done_marker: bool) {
-        let running = self.running_sub_agents();
-        if running > 0 {
-            let text = format!("... 等待子 agent 返回（{running} 个运行中），结果将自动注入");
-            self.transcript.push(OutputLine { spans: None, original: None,
-                detail: None,
-                text,
-                kind: LineKind::System,
-            });
-            self.status = AgentStatus::Waiting { running };
-        } else {
-            if show_done_marker {
+        if self.settle_status_from_inflight() {
+            if let AgentStatus::Waiting { running, bg } = &self.status {
+                let text = match (*running, *bg) {
+                    (r, 0) => {
+                        format!("... 等待子 agent 返回（{r} 个运行中），结果将自动注入")
+                    }
+                    (0, b) => format!(
+                        "... 等待后台任务完成（{b} 个运行中），完成后将自动汇报结果"
+                    ),
+                    (r, b) => format!(
+                        "... 等待子 agent（{r} 个）+ 后台任务（{b} 个）完成，结果将自动注入"
+                    ),
+                };
                 self.transcript.push(OutputLine { spans: None, original: None,
                     detail: None,
-                    text: "✅ done".to_string(),
-                    kind: LineKind::Done,
+                    text,
+                    kind: LineKind::System,
                 });
             }
+        } else if show_done_marker {
+            self.transcript.push(OutputLine { spans: None, original: None,
+                detail: None,
+                text: "✅ done".to_string(),
+                kind: LineKind::Done,
+            });
+        }
+        self.running = false;
+    }
+
+    /// Settle the status enum from in-flight work — the single source of
+    /// truth for "can the agent rest?". Sub-agents and/or background shell
+    /// tasks still running → `Waiting { running, bg }` (returns `true`).
+    /// Nothing in flight → `Idle`, spinner clock stopped, panel bookkeeping
+    /// cleared (returns `false`).
+    ///
+    /// Every turn-end path (TurnDone/TurnError settlement, root `RunFinished`,
+    /// root `RunCancelled`) must go through this so a running background task
+    /// can never be dropped on the floor as `Idle` — the user would see
+    /// "done" while the task is still working.
+    pub(crate) fn settle_status_from_inflight(&mut self) -> bool {
+        let running = self.running_sub_agents();
+        let bg = self.running_bg_tasks();
+        if running > 0 || bg > 0 {
+            self.status = AgentStatus::Waiting { running, bg };
+            true
+        } else {
             self.status = AgentStatus::Idle;
             self.activity_since = None;
             self.sub_agents.clear();
             self.sub_agent_transcripts.clear();
             self.child_streams.clear();
+            false
         }
-        self.running = false;
     }
 
     /// The live streaming tail as incrementally-wrapped lines.
@@ -649,13 +709,23 @@ impl App {
                     "Idle - Enter send | Shift+Enter newline | Ctrl+Y copy | PgUp/PgDn scroll | Ctrl+C quit".to_string()
                 }
             }
-            AgentStatus::Waiting { running } => {
-                format!(
+            AgentStatus::Waiting { running, bg } => match (*running, *bg) {
+                (_, 0) => format!(
                     "{} 等待子 agent 返回（{running} 个运行中）...{} 结果到达后自动继续",
                     self.spinner_char(),
                     self.elapsed_suffix()
-                )
-            }
+                ),
+                (0, _) => format!(
+                    "{} 等待后台任务（{bg} 个运行中）...{} 完成后自动汇报结果",
+                    self.spinner_char(),
+                    self.elapsed_suffix()
+                ),
+                (_, _) => format!(
+                    "{} 等待子 agent（{running} 个）+ 后台任务（{bg} 个）...{} 完成后自动继续",
+                    self.spinner_char(),
+                    self.elapsed_suffix()
+                ),
+            },
             AgentStatus::Running { phase } => match phase {
                 Phase::Thinking => {
                     format!("{} thinking...{} (Ctrl+C cancel)", self.spinner_char(), self.elapsed_suffix())

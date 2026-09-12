@@ -614,7 +614,7 @@ fn cleanup_skipped_while_root_waiting() {
             detail: None,
         }],
     );
-    app.status = AgentStatus::Waiting { running: 2 };
+    app.status = AgentStatus::Waiting { running: 2, bg: 0 };
 
     // Cleanup must not reap: the transcript is the only record of what the
     // sub-agent did, and the turn may resume at any moment.
@@ -628,7 +628,7 @@ fn child_streaming_does_not_clobber_waiting_status() {
     let mut app = App::new();
 
     // Root turn ended, two children still running.
-    app.status = AgentStatus::Waiting { running: 2 };
+    app.status = AgentStatus::Waiting { running: 2, bg: 0 };
     insert_mock_agent(&mut app, "root/auth", "auth", SubAgentStatus::Running);
 
     // Child text/thought/tool events arrive via the persistent subscription.
@@ -639,7 +639,7 @@ fn child_streaming_does_not_clobber_waiting_status() {
     // Root status must stay Waiting; only root events drive it.
     assert_eq!(
         app.status,
-        AgentStatus::Waiting { running: 2 },
+        AgentStatus::Waiting { running: 2, bg: 0 },
         "child events must not flip the root back to Running"
     );
 
@@ -759,12 +759,12 @@ fn snapshot_keeps_waiting_count_in_sync() {
     };
 
     let mut app = App::new();
-    app.status = AgentStatus::Waiting { running: 2 };
+    app.status = AgentStatus::Waiting { running: 2, bg: 0 };
     app.handle_event(TuiEvent::Lifecycle(two("running", "running")));
-    assert!(matches!(app.status, AgentStatus::Waiting { running: 2 }));
+    assert!(matches!(app.status, AgentStatus::Waiting { running: 2, bg: 0 }));
 
     app.handle_event(TuiEvent::Lifecycle(two("done", "running")));
-    assert!(matches!(app.status, AgentStatus::Waiting { running: 1 }));
+    assert!(matches!(app.status, AgentStatus::Waiting { running: 1, bg: 0 }));
 
     app.handle_event(TuiEvent::Lifecycle(two("done", "done")));
     assert!(matches!(app.status, AgentStatus::Idle));
@@ -889,4 +889,156 @@ fn tool_events_refresh_last_tool_at() {
     app.handle_event(TuiEvent::Runtime(sub_tool_finished("root/pi", "read_file", "10 lines")));
     let stamped = app.sub_agents.get("root/pi").unwrap().last_tool_at;
     assert!(stamped.elapsed() < Duration::from_secs(5), "finish must re-stamp");
+}
+
+// ── Background Task Reap Tests ─────────────────────────────────────────────
+
+use phi_kernel_tools::background_shell::{BackgroundTaskRegistry, BackgroundTaskStatus};
+
+#[test]
+fn background_task_reap_after_3_seconds() {
+    // Test that background tasks are reaped 3 seconds after completion,
+    // regardless of whether they're still in the registry.
+
+    let registry = BackgroundTaskRegistry::new(4);
+    let mut app = App::new();
+    app.set_background_registry(registry.clone());
+
+    // Register a background task
+    let cancel_token = tokio_util::sync::CancellationToken::new();
+    let task_id = registry.register("echo test", None, cancel_token, None).unwrap();
+
+    // First reconcile: task should appear in app.background_tasks
+    let changed = app.reconcile_background_tasks();
+    assert!(changed, "first reconcile should detect new task");
+    assert_eq!(app.background_tasks.len(), 1);
+    assert_eq!(app.background_tasks[&task_id].status, BackgroundTaskStatus::Running);
+
+    // Finish the task in the registry
+    registry.update_status(&task_id, BackgroundTaskStatus::Done);
+
+    // Reconcile: task should be updated to Done, finished_at set to now
+    let changed = app.reconcile_background_tasks();
+    assert!(changed, "reconcile should detect status change");
+    assert_eq!(app.background_tasks.len(), 1);
+    assert_eq!(app.background_tasks[&task_id].status, BackgroundTaskStatus::Done);
+
+    // Task should NOT be reaped yet (done < 3s ago)
+    let changed = app.reconcile_background_tasks();
+    assert!(!changed, "reconcile should not change anything (done < 3s)");
+    assert_eq!(app.background_tasks.len(), 1, "task should NOT be reaped yet");
+
+    // Simulate time passing (backdate finished_at by 4 seconds)
+    app.background_tasks.get_mut(&task_id).unwrap().finished_at =
+        Some(Instant::now() - Duration::from_secs(4));
+
+    // Reconcile: task should be reaped now (done > 3s ago)
+    let changed = app.reconcile_background_tasks();
+    assert!(changed, "reconcile should reap task (done > 3s)");
+    assert_eq!(app.background_tasks.len(), 0, "task should be reaped");
+}
+
+#[test]
+fn background_task_panel_disappears_after_3_seconds() {
+    // Test the complete lifecycle: panel appears, task completes, panel disappears after 3s.
+
+    let registry = BackgroundTaskRegistry::new(4);
+    let mut app = App::new();
+    app.set_background_registry(registry.clone());
+
+    // Initially: no task panel
+    assert!(!app.should_show_task_panel(), "no panel when no tasks");
+
+    // Register a background task
+    let cancel_token = tokio_util::sync::CancellationToken::new();
+    let task_id = registry.register("sleep 5", None, cancel_token, None).unwrap();
+
+    // Reconcile: panel should appear
+    app.reconcile_background_tasks();
+    assert!(app.should_show_task_panel(), "panel should appear with running task");
+    assert_eq!(app.background_tasks.len(), 1);
+
+    // Finish the task
+    registry.update_status(&task_id, BackgroundTaskStatus::Done);
+
+    // Reconcile: panel should still appear (task is Done but < 3s ago)
+    app.reconcile_background_tasks();
+    assert!(app.should_show_task_panel(), "panel should appear with done task (< 3s)");
+
+    // Panel should still appear on next reconcile (still < 3s)
+    app.reconcile_background_tasks();
+    assert!(app.should_show_task_panel(), "panel should still appear (< 3s)");
+
+    // Simulate time passing (backdate finished_at by 4 seconds)
+    app.background_tasks.get_mut(&task_id).unwrap().finished_at =
+        Some(Instant::now() - Duration::from_secs(4));
+
+    // Reconcile: panel should DISAPPEAR (task done > 3s ago)
+    app.reconcile_background_tasks();
+    assert!(!app.should_show_task_panel(), "panel should disappear after task done > 3s");
+    assert_eq!(app.background_tasks.len(), 0);
+}
+
+#[test]
+fn reaped_task_is_not_readded_by_later_reconciles() {
+    // Regression: reap → re-add → reap loop. `snapshot_all` keeps finished
+    // tasks until the registry's own 5-min GC TTL expires, so after the panel
+    // reaps a task the next tick's snapshot still reports it. Reconcile must
+    // not resurrect it: the upsert skips terminal snapshots whose finished_at
+    // is already past the 3s reap window.
+    //
+    // Uses a real sleep (not app-side backdating): the guard keys off the
+    // registry's own finished_at, which in production equals the panel's —
+    // both are taken at the same finish instant.
+    let registry = BackgroundTaskRegistry::new(4);
+    let mut app = App::new();
+    app.set_background_registry(registry.clone());
+
+    let cancel_token = tokio_util::sync::CancellationToken::new();
+    let task_id = registry.register("sleep 30", None, cancel_token, None).unwrap();
+
+    // Task appears, then finishes; panel reflects Done with the registry's
+    // finished_at.
+    assert!(app.reconcile_background_tasks(), "first reconcile detects the new task");
+    registry.update_status(&task_id, BackgroundTaskStatus::Done);
+    assert!(app.reconcile_background_tasks(), "reconcile detects the status change");
+    assert_eq!(app.background_tasks[&task_id].status, BackgroundTaskStatus::Done);
+
+    // Past the 3s display window: this reconcile reaps the task …
+    std::thread::sleep(Duration::from_millis(3100));
+    assert!(app.reconcile_background_tasks(), "task past the window should be reaped");
+    assert!(app.background_tasks.is_empty(), "task should be reaped");
+
+    // … and every subsequent tick stays quiescent. The registry still holds
+    // the task (its GC TTL is 5 min), but the panel must not re-add it.
+    for tick in 0..3 {
+        assert!(
+            !app.reconcile_background_tasks(),
+            "reconcile {tick} must stay quiescent after reap"
+        );
+        assert!(app.background_tasks.is_empty(), "reaped task must not be re-added");
+    }
+    assert!(!app.should_show_task_panel(), "panel stays hidden after reap");
+}
+
+#[test]
+fn stale_finished_snapshot_never_seen_is_not_inserted() {
+    // A terminal task that aged past the 3s display window before any
+    // reconcile ran (e.g. the UI thread was blocked) is past its window:
+    // inserting it would only get it re-reaped on the same pass.
+    let registry = BackgroundTaskRegistry::new(4);
+    let mut app = App::new();
+    app.set_background_registry(registry.clone());
+
+    let cancel_token = tokio_util::sync::CancellationToken::new();
+    let task_id = registry.register("echo late", None, cancel_token, None).unwrap();
+    registry.update_status(&task_id, BackgroundTaskStatus::Done);
+    std::thread::sleep(Duration::from_millis(3100));
+
+    assert!(
+        !app.reconcile_background_tasks(),
+        "stale finished task must not be inserted"
+    );
+    assert!(app.background_tasks.is_empty());
+    assert!(!app.should_show_task_panel());
 }

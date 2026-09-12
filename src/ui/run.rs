@@ -22,11 +22,14 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use phi_agent::{ChildResultEvent, PhiAgent, RunOutcome, RuntimeEvent, SessionContext, SessionId, save_turn_log};
+use phi_kernel_tools::background_shell::BackgroundTaskRegistry;
 use ratatui::{Terminal, backend::CrosstermBackend};
 use tokio::sync::mpsc;
 
 use crate::approval::ApprovalItem;
 use crate::banner::ColorScheme;
+use crate::model_store::ModelStore;
+use crate::router::PhimintRouter;
 use crate::skills::{SkillResolver, SkillTelemetry};
 use super::app::{Action, App, TuiEvent};
 use super::child_results::{ChildResultRoute, ChildResultRouter};
@@ -56,6 +59,7 @@ pub async fn run_tui(
     agent: PhiAgent,
     skill_resolver: Arc<SkillResolver>,
     skill_telemetry: Arc<SkillTelemetry>,
+    bg_registry: Arc<BackgroundTaskRegistry>,
     session: SessionId,
     session_ctx: SessionContext,
     workspace: PathBuf,
@@ -63,6 +67,8 @@ pub async fn run_tui(
     scheme: ColorScheme,
     show_banner: bool,
     version: &str,
+    model_store: Arc<tokio::sync::Mutex<ModelStore>>,
+    router: Arc<PhimintRouter>,
 ) -> Result<()> {
     let agent = Arc::new(agent);
     let mut approval_rx = approval_rx;
@@ -115,6 +121,8 @@ pub async fn run_tui(
         session_ctx,
         event_tx.clone(),
         cmd_rx,
+        model_store,
+        router,
     ));
 
     // Persistent event bridge: subscribe to the runtime's event bus ONCE for
@@ -168,6 +176,7 @@ pub async fn run_tui(
     app.set_scheme(scheme);
     app.set_workspace_root(workspace.clone());
     app.set_skill_summaries(skill_summaries);
+    app.set_background_registry(bg_registry.clone());
     if show_banner {
         app.push_banner(crate::banner::build(
             &workspace,
@@ -290,8 +299,28 @@ pub async fn run_tui(
             }
         }
 
+        // Background-task auto-wake (the bg sibling of the fan-in batch):
+        // every background shell task has ended, nothing else is in flight,
+        // and at least one done/timed-out/errored outcome is unreported —
+        // start a synthetic run telling the agent to fetch each output via
+        // `task_output` and report it. The delivery gates (hold while the
+        // agent is mid-turn / children run / other tasks run, Cancelled
+        // suppressed, report-once) live in `bg_wake::take_bg_wake`; this loop
+        // only executes the side effects.
+        if let Some((notice, input)) = app.take_bg_wake(app.running) {
+            tracing::info!("tui: bg_wake -> injecting background task report");
+            app.push_system(&notice);
+            let _ = cmd_tx.send(Cmd::Run(input));
+            dirty = true;
+        }
+
         // Cleanup completed sub-agents (auto-remove after 3 seconds)
         if app.cleanup_completed_agents() {
+            dirty = true;
+        }
+
+        // Reconcile background shell tasks from the registry (tick polling).
+        if app.reconcile_background_tasks() {
             dirty = true;
         }
 
@@ -463,6 +492,12 @@ pub async fn run_tui(
     let _ = frames.flush();
     let _ = perf_log.flush();
     let _ = composer_log.flush();
+
+    // Shutdown background task registry: cancel all running tasks and
+    // SIGKILL all process groups. Must be explicit — executor tasks hold
+    // Arc<Registry> so Drop won't fire.
+    bg_registry.shutdown();
+
     Ok(())
 }
 
@@ -491,6 +526,8 @@ async fn agent_loop(
     session_ctx: SessionContext,
     event_tx: mpsc::UnboundedSender<TuiEvent>,
     mut cmd_rx: mpsc::UnboundedReceiver<Cmd>,
+    model_store: Arc<tokio::sync::Mutex<ModelStore>>,
+    router: Arc<PhimintRouter>,
 ) {
     // Resume turn numbering from any turns already logged for this session.
     let mut turn_number = session_ctx.last_turn_number();
@@ -515,6 +552,13 @@ async fn agent_loop(
                 break;
             }
             Cmd::Run(input) => {
+                // Check for model-related commands first
+                if let Some(response) = handle_model_command(&input, &model_store, &router) {
+                    // Send response as a system message (reuse TurnError for display)
+                    let _ = event_tx.send(TuiEvent::TurnError(response));
+                    continue;
+                }
+
                 turn_number += 1;
                 let turn_events: std::sync::Arc<std::sync::Mutex<Vec<RuntimeEvent>>> = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
 
@@ -601,6 +645,79 @@ async fn agent_loop(
     }
 }
 
+/// Handle model-related commands.
+///
+/// Returns Some(response) if the input was a model command, None otherwise.
+fn handle_model_command(
+    input: &str,
+    model_store: &Arc<tokio::sync::Mutex<ModelStore>>,
+    router: &Arc<PhimintRouter>,
+) -> Option<String> {
+    let input = input.trim();
+
+    // /model [name] - show or set main model
+    if input == "/model" || input.starts_with("/model ") {
+        let args = input.strip_prefix("/model").unwrap_or("").trim();
+        if args.is_empty() {
+            // Show current main model
+            let store = model_store.blocking_lock();
+            let model = store.tier_model("main");
+            Some(format!("Current main model: {}", model))
+        } else {
+            // Set main model
+            let mut store = model_store.blocking_lock();
+            store.set_tier_model("main", args.to_string());
+            Some(format!("Main model set to: {}", args))
+        }
+    }
+    // /lite [name] - show or set lite model
+    else if input == "/lite" || input.starts_with("/lite ") {
+        let args = input.strip_prefix("/lite").unwrap_or("").trim();
+        if args.is_empty() {
+            let store = model_store.blocking_lock();
+            let model = store.tier_model("lite");
+            Some(format!("Current lite model: {}", model))
+        } else {
+            let mut store = model_store.blocking_lock();
+            store.set_tier_model("lite", args.to_string());
+            Some(format!("Lite model set to: {}", args))
+        }
+    }
+    // /advanced [name] - show or set advanced model
+    else if input == "/advanced" || input.starts_with("/advanced ") {
+        let args = input.strip_prefix("/advanced").unwrap_or("").trim();
+        if args.is_empty() {
+            let store = model_store.blocking_lock();
+            let model = store.tier_model("advanced");
+            Some(format!("Current advanced model: {}", model))
+        } else {
+            let mut store = model_store.blocking_lock();
+            store.set_tier_model("advanced", args.to_string());
+            Some(format!("Advanced model set to: {}", args))
+        }
+    }
+    // /models - list all configured models
+    else if input == "/models" {
+        let store = model_store.blocking_lock();
+        let tiers = store.list_tiers();
+        let mut response = String::from("Configured models:\n");
+        for (tier, model) in tiers {
+            response.push_str(&format!("  {}: {}\n", tier, model));
+        }
+        response.push_str(&format!("Focus mode: {}", if router.is_focus_mode() { "on" } else { "off" }));
+        Some(response)
+    }
+    // /focus - toggle focus mode
+    else if input == "/focus" {
+        let new_state = !router.is_focus_mode();
+        router.set_focus_mode(new_state);
+        Some(format!("Focus mode: {}", if new_state { "on" } else { "off" }))
+    }
+    else {
+        None
+    }
+}
+
 /// Restores the terminal (raw mode + alternate screen) when dropped.
 struct TerminalGuard;
 
@@ -613,5 +730,144 @@ impl Drop for TerminalGuard {
             PopKeyboardEnhancementFlags,
             LeaveAlternateScreen
         );
+    }
+}
+
+#[cfg(test)]
+mod model_command_tests {
+    use super::*;
+    use crate::model_store::ModelStore;
+    use crate::router::PhimintRouter;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    fn setup() -> (Arc<Mutex<ModelStore>>, Arc<PhimintRouter>) {
+        let config = crate::config::ModelConfig {
+            base_url: Some("https://api.openai.com/v1".to_string()),
+            api_key: Some("test-key".to_string()),
+            protocol: Some("openai".to_string()),
+            main: crate::config::TierConfig::Simple("gpt-4".to_string()),
+            lite: Some(crate::config::TierConfig::Simple("gpt-3.5-turbo".to_string())),
+            advanced: Some(crate::config::TierConfig::Simple("gpt-4-turbo".to_string())),
+            scene_tiers: None,
+        };
+
+        // Create a mock provider for testing
+        struct MockProvider;
+
+        #[async_trait::async_trait]
+        impl phi_agent::llm_trait::LlmProvider for MockProvider {
+            async fn stream(&self, _request: phi_agent::llm_trait::ChatRequest) -> Result<phi_agent::llm_trait::ChatStream, phi_agent::llm_trait::LlmError> {
+                unimplemented!()
+            }
+
+            async fn chat(&self, _request: phi_agent::llm_trait::ChatRequest) -> Result<phi_agent::llm_trait::ChatResponse, phi_agent::llm_trait::LlmError> {
+                unimplemented!()
+            }
+
+            fn capabilities(&self) -> phi_agent::llm_trait::Capabilities {
+                phi_agent::llm_trait::Capabilities::default()
+            }
+
+            fn info(&self) -> phi_agent::llm_trait::ProviderInfo {
+                phi_agent::llm_trait::ProviderInfo {
+                    name: "mock".to_string(),
+                    model: "mock-model".to_string(),
+                    version: None,
+                }
+            }
+        }
+
+        let provider = Arc::new(MockProvider);
+        let model_store = Arc::new(Mutex::new(ModelStore::new(config, provider)));
+        let router = Arc::new(PhimintRouter::new());
+        (model_store, router)
+    }
+
+    #[test]
+    fn test_model_command_show_main() {
+        let (model_store, router) = setup();
+        let response = handle_model_command("/model", &model_store, &router);
+        assert_eq!(response, Some("Current main model: gpt-4".to_string()));
+    }
+
+    #[test]
+    fn test_model_command_set_main() {
+        let (model_store, router) = setup();
+        let response = handle_model_command("/model gpt-4-turbo", &model_store, &router);
+        assert_eq!(response, Some("Main model set to: gpt-4-turbo".to_string()));
+
+        // Verify the model was actually set
+        let store = model_store.blocking_lock();
+        assert_eq!(store.tier_model("main"), "gpt-4-turbo");
+    }
+
+    #[test]
+    fn test_lite_command_show() {
+        let (model_store, router) = setup();
+        let response = handle_model_command("/lite", &model_store, &router);
+        assert_eq!(response, Some("Current lite model: gpt-3.5-turbo".to_string()));
+    }
+
+    #[test]
+    fn test_lite_command_set() {
+        let (model_store, router) = setup();
+        let response = handle_model_command("/lite gpt-4o-mini", &model_store, &router);
+        assert_eq!(response, Some("Lite model set to: gpt-4o-mini".to_string()));
+    }
+
+    #[test]
+    fn test_advanced_command_show() {
+        let (model_store, router) = setup();
+        let response = handle_model_command("/advanced", &model_store, &router);
+        assert_eq!(response, Some("Current advanced model: gpt-4-turbo".to_string()));
+    }
+
+    #[test]
+    fn test_advanced_command_set() {
+        let (model_store, router) = setup();
+        let response = handle_model_command("/advanced o1-preview", &model_store, &router);
+        assert_eq!(response, Some("Advanced model set to: o1-preview".to_string()));
+    }
+
+    #[test]
+    fn test_models_command() {
+        let (model_store, router) = setup();
+        let response = handle_model_command("/models", &model_store, &router);
+        assert!(response.is_some());
+        let response = response.unwrap();
+        assert!(response.contains("main: gpt-4"));
+        assert!(response.contains("lite: gpt-3.5-turbo"));
+        assert!(response.contains("advanced: gpt-4-turbo"));
+        assert!(response.contains("Focus mode: off"));
+    }
+
+    #[test]
+    fn test_focus_command_toggle() {
+        let (model_store, router) = setup();
+
+        // Toggle focus on
+        let response = handle_model_command("/focus", &model_store, &router);
+        assert_eq!(response, Some("Focus mode: on".to_string()));
+        assert!(router.is_focus_mode());
+
+        // Toggle focus off
+        let response = handle_model_command("/focus", &model_store, &router);
+        assert_eq!(response, Some("Focus mode: off".to_string()));
+        assert!(!router.is_focus_mode());
+    }
+
+    #[test]
+    fn test_non_model_command() {
+        let (model_store, router) = setup();
+        let response = handle_model_command("hello", &model_store, &router);
+        assert_eq!(response, None);
+    }
+
+    #[test]
+    fn test_model_command_with_extra_spaces() {
+        let (model_store, router) = setup();
+        let response = handle_model_command("  /model   gpt-4-turbo  ", &model_store, &router);
+        assert_eq!(response, Some("Main model set to: gpt-4-turbo".to_string()));
     }
 }

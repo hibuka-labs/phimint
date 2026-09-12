@@ -6,6 +6,7 @@
 //! - `render`: frame layout and drawing
 //! - `handlers`: `RuntimeEvent` / keyboard / mouse input handling
 //! - `child_results`: fan-in result routing decisions (unit-tested)
+//! - `bg_wake`: background-task auto-wake policy (unit-tested)
 //! - `frame_log`: session logs (frames.txt / perf.log / composer.log)
 //! - `run`: the main loop — terminal setup, channels, agent-side turn runner
 
@@ -15,6 +16,7 @@
 // product shell: app state root, layout renderer, input/event handlers, and
 // the TUI main loop.
 pub mod app;
+mod bg_wake;
 mod child_results;
 pub mod frame_log;
 pub mod handlers;

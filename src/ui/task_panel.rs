@@ -7,21 +7,35 @@
 //! per-child streaming buffers (each child gets its own stream state so two
 //! interleaved children can't chop each other's pending text).
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use phi_agent::RegistrySnapshot;
+use phi_kernel_tools::background_shell::BackgroundTaskStatus;
 use phi_tui::lines::{LineKind, OutputLine};
 use phi_tui::stream::StreamState;
 use phi_tui::transcript::DEFAULT_WRAP_WIDTH;
 
 use crate::banner::BannerStyle;
 
-use super::app::{AgentStatus, App, FocusTarget, SubAgentState, SubAgentStatus};
+use super::app::{AgentStatus, App, BackgroundTaskEntry, FocusTarget, SubAgentState, SubAgentStatus};
+
+/// How long a completed background task stays visible in the panel before
+/// auto-reap. Shared by the reaper and the reconcile upsert guard (which
+/// refuses to resurrect terminal snapshots already past this window) so the
+/// two thresholds can never drift apart.
+const BACKGROUND_REAP_AFTER: Duration = Duration::from_secs(3);
 
 impl App {
     /// Number of tracked sub-agents still `Running`.
     pub(crate) fn running_sub_agents(&self) -> usize {
         self.sub_agents.values().filter(|s| s.status == SubAgentStatus::Running).count()
+    }
+
+    /// Number of tracked background shell tasks still `Running`.
+    pub(crate) fn running_bg_tasks(&self) -> usize {
+        self.background_tasks.values()
+            .filter(|t| t.status == BackgroundTaskStatus::Running)
+            .count()
     }
 
     /// A sub-agent finished (watcher Progress event): mark it done in the task
@@ -48,13 +62,15 @@ impl App {
         self.refresh_waiting_count();
     }
 
-    /// While `Waiting`, recompute the running count from the panel; drop to
-    /// `Idle` when the last sub-agent finished (the batch injection follows).
+    /// While `Waiting`, recompute both in-flight counts from the panel
+    /// (sub-agents + background tasks); drop to `Idle` only when nothing is
+    /// left (the fan-in batch injection / background wake follows).
     fn refresh_waiting_count(&mut self) {
         if let AgentStatus::Waiting { .. } = self.status {
             let n = self.running_sub_agents();
-            self.status = if n > 0 {
-                AgentStatus::Waiting { running: n }
+            let b = self.running_bg_tasks();
+            self.status = if n > 0 || b > 0 {
+                AgentStatus::Waiting { running: n, bg: b }
             } else {
                 AgentStatus::Idle
             };
@@ -92,9 +108,116 @@ impl App {
         }
     }
 
-    /// Whether the task panel should be shown (has active sub-agents).
+    /// Whether the task panel should be shown (has active sub-agents or
+    /// background tasks).
     pub fn should_show_task_panel(&self) -> bool {
-        !self.sub_agents.is_empty()
+        !self.sub_agents.is_empty() || !self.background_tasks.is_empty()
+    }
+
+    /// Poll the background task registry for status updates (called every tick).
+    ///
+    /// Reconciles `background_tasks` against the registry's `snapshot_all()`.
+    /// Also GCs completed tasks older than 3 seconds when the root is Idle.
+    /// Returns `true` if any state changed (caller sets `dirty`).
+    pub(crate) fn reconcile_background_tasks(&mut self) -> bool {
+        let Some(registry) = &self.background_registry else {
+            return false;
+        };
+
+        let gc_ttl = Duration::from_secs(300); // 5 min GC for registry cleanup
+        let snapshots = registry.snapshot_all(gc_ttl);
+        let mut changed = false;
+
+        // Upsert from snapshots
+        let live_ids: std::collections::HashSet<String> =
+            snapshots.iter().map(|s| s.id.clone()).collect();
+
+        for snap in &snapshots {
+            // Never (re-)insert a terminal snapshot whose `finished_at` is
+            // already past the reap window. The registry keeps finished tasks
+            // until its own much longer GC TTL expires, so once the panel has
+            // shown and reaped a task, `snapshot_all` still reports it —
+            // re-inserting it here gets it re-reaped on the same pass, every
+            // tick (the reap → re-add → reap loop). This is safe because the
+            // entry's `finished_at` IS the registry's timestamp and the reap
+            // only ever fires at `BACKGROUND_REAP_AFTER` age: a snapshot past
+            // that age has already been shown and reaped, or was never seen
+            // before its display window closed. Entries still present keep
+            // receiving status updates below.
+            if !self.background_tasks.contains_key(&snap.id)
+                && snap.status != BackgroundTaskStatus::Running
+                && snap.finished_at.map_or(false, |at| at.elapsed() >= BACKGROUND_REAP_AFTER)
+            {
+                continue;
+            }
+            let entry = self.background_tasks.entry(snap.id.clone());
+            let is_new = !matches!(entry, std::collections::btree_map::Entry::Occupied(_));
+            entry.or_insert_with(|| BackgroundTaskEntry {
+                id: snap.id.clone(),
+                command: snap.command.clone(),
+                status: BackgroundTaskStatus::Running,
+                started_at: snap.started_at,
+                finished_at: None,
+                reported: false,
+            });
+
+            let task = self.background_tasks.get_mut(&snap.id).unwrap();
+            if task.status != snap.status {
+                task.status = snap.status.clone();
+                // Use the snapshot's finished_at instead of Instant::now()
+                // to preserve the real completion time across reap-reconcile cycles.
+                task.finished_at = snap.finished_at;
+                changed = true;
+                // A background task just started or (more importantly) ended:
+                // while `Waiting` the status-bar counts must follow, and the
+                // last one flipping to terminal is what arms the bg wake.
+                self.refresh_waiting_count();
+            }
+            if is_new {
+                changed = true;
+            }
+        }
+
+        // Remove entries that were GC'd from the registry
+        let stale_ids: Vec<String> = self.background_tasks.keys()
+            .filter(|id| !live_ids.contains(*id))
+            .cloned()
+            .collect();
+        for id in stale_ids {
+            self.background_tasks.remove(&id);
+            changed = true;
+        }
+
+        // Auto-reap completed background tasks (Done/TimedOut/Cancelled/Error)
+        // after 3 seconds, but only when root is Idle and not inspecting.
+        // We reap regardless of whether the task is still in the registry,
+        // because the registry's GC TTL (5 min) is much longer than our
+        // desired panel display time (3s).
+        if matches!(self.status, AgentStatus::Idle)
+            && !matches!(self.task_panel.focus, FocusTarget::TaskList(_))
+        {
+            let now = Instant::now();
+            let reap_ids: Vec<String> = self.background_tasks.iter()
+                .filter(|(_, t)| {
+                    t.status != BackgroundTaskStatus::Running
+                        && t.finished_at.map_or(false, |at| now.duration_since(at) >= BACKGROUND_REAP_AFTER)
+                })
+                .map(|(id, _)| id.clone())
+                .collect();
+            if !reap_ids.is_empty() {
+                tracing::info!(
+                    reap_count = reap_ids.len(),
+                    reap_ids = ?reap_ids,
+                    "reconcile: reaping background tasks"
+                );
+            }
+            for id in reap_ids {
+                self.background_tasks.remove(&id);
+                changed = true;
+            }
+        }
+
+        changed
     }
 
     /// Reconcile the task panel against the registry's authoritative fact
@@ -179,12 +302,13 @@ impl App {
         }
 
         // Reset focus if it's now out of bounds
+        let total = self.sub_agents.len() + self.background_tasks.len();
         if let FocusTarget::TaskList(index) = &self.task_panel.focus {
-            if *index >= self.sub_agents.len() {
-                self.task_panel.focus = if self.sub_agents.is_empty() {
+            if *index >= total {
+                self.task_panel.focus = if total == 0 {
                     FocusTarget::Input
                 } else {
-                    FocusTarget::TaskList(self.sub_agents.len() - 1)
+                    FocusTarget::TaskList(total - 1)
                 };
             }
         }
