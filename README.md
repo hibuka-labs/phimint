@@ -29,11 +29,32 @@ phimint 跑「理解需求 → 读码 → 多文件改 → 编译/测试 → 报
 
 ### 配置
 
+创建 `~/.phimint/config.json`：
+
+```json
+{
+  "base_url": "https://api.openai.com/v1",
+  "api_key": "sk-xxx",
+  "main": "gpt-5.4-mini",
+  "lite": "gpt-4o-mini",
+  "advanced": "o1-preview"
+}
+```
+
+不同 provider 的配置：
+
+```json
+{
+  "main": { "model": "gpt-5.4-mini", "base_url": "https://api.openai.com/v1", "api_key": "sk-openai" },
+  "lite": { "model": "deepseek-chat", "base_url": "https://api.deepseek.com/v1", "api_key": "sk-deepseek" },
+  "advanced": { "model": "claude-opus-4", "base_url": "https://api.anthropic.com", "api_key": "sk-ant" }
+}
+```
+
+或使用 CLI 参数：
+
 ```bash
-cp .env.example .env
-# 编辑 .env，填入模型名与对应 provider 的 API key：
-#   LLM_MODEL=gpt-5.4-mini        # genai 按模型名自动识别 provider
-#   OPENAI_API_KEY=sk-...         # 或 ANTHROPIC_API_KEY / DEEPSEEK_API_KEY / …
+cargo run -- --model gpt-5.4-mini --base-url https://api.openai.com/v1 --api-key sk-xxx
 ```
 
 ### 运行
@@ -49,15 +70,23 @@ cargo run -- -w ../some-project    # 指定工作区目录
 cargo run -- [OPTIONS]
 
   -w, --workspace <PATH>    工作区目录（默认：当前目录）
-      --model <NAME>        模型名（覆盖 LLM_MODEL，provider 自动识别）
+      --model <NAME>        主模型名（覆盖 config.json）
+      --lite-model <NAME>   lite 模型名（覆盖 config.json）
+      --advanced-model <NAME>  advanced 模型名（覆盖 config.json）
+      --base-url <URL>      API base URL（覆盖 config.json）
+      --api-key <KEY>       API key（覆盖 config.json）
+      --protocol <PROTO>    API 协议（覆盖 config.json，默认自动推断）
+      --config <PATH>       配置文件路径（覆盖默认位置）
       --approval <MODE>     auto（默认）/ ask / deny
       --shell-timeout-ms    shell 命令超时（默认 120000）
-      --session <ID>        会话 ID（默认 PHI_SESSION_ID，否则自动生成；复用同 ID 续写同一会话）
+      --session <ID>        会话 ID（默认自动生成；复用同 ID 续写同一会话）
       --log-level <LEVEL>   session.log 级别（默认 info）
       --color-scheme <S>    banner 配色：auto（默认，探测终端底色）/ dark / light
       --banner <on|off>     启动 banner（默认 on）
       --thinking-budget <N> 思考 token 预算（默认 8192）
       --reasoning-effort <E> 推理深度：none/low/medium/high/xhigh（默认 medium）
+      --token-budget <N>    上下文窗口 token 预算（默认 160000）
+      --session-retention-days <N> 会话保留天数（默认 7）
 ```
 
 ### 界面与交互

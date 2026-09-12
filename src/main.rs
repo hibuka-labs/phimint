@@ -4,7 +4,7 @@
 //! stays in the bar while output scrolls above it).
 
 // Modules live in the lib crate (src/lib.rs) so tests/ can exercise them.
-use phimint::{agent, approval, banner, skills, ui};
+use phimint::{agent, approval, banner, config, model_store, router, skills, ui};
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -20,9 +20,33 @@ struct Cli {
     #[arg(short, long, default_value = ".")]
     workspace: PathBuf,
 
-    /// Model name (overrides LLM_MODEL env; genai auto-detects provider)
+    /// Model name (overrides main tier model)
     #[arg(long)]
     model: Option<String>,
+
+    /// Lite model name (overrides lite tier)
+    #[arg(long)]
+    lite_model: Option<String>,
+
+    /// Advanced model name (overrides advanced tier)
+    #[arg(long)]
+    advanced_model: Option<String>,
+
+    /// API base URL (overrides default base_url)
+    #[arg(long)]
+    base_url: Option<String>,
+
+    /// API key (overrides default api_key)
+    #[arg(long)]
+    api_key: Option<String>,
+
+    /// API protocol (overrides default protocol)
+    #[arg(long)]
+    protocol: Option<String>,
+
+    /// Model config file path (overrides default locations)
+    #[arg(long)]
+    config: Option<String>,
 
     /// Approval mode: `auto` (default), `ask` (prompt on writes/risky shell), or `deny` (reject all writes)
     #[arg(long, default_value = "auto")]
@@ -80,8 +104,6 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    dotenvy::dotenv().ok();
-
     let cli = Cli::parse();
 
     // Resolve the workspace to an absolute path and `cd` into it, so that both
@@ -91,27 +113,64 @@ async fn main() -> Result<()> {
         .with_context(|| format!("workspace not found: {}", cli.workspace.display()))?;
     std::env::set_current_dir(&workspace)?;
 
-    // LLM client — genai auto-detects provider from model name
-    // (e.g. "gpt-5.4-mini" → OpenAI, "deepseek-chat" → DeepSeek, "aliyun::qwen-plus" → Aliyun)
-    // Set provider-specific API key in env: OPENAI_API_KEY, DEEPSEEK_API_KEY, ALIYUN_API_KEY, etc.
-    let model = cli.model
-        .or_else(|| std::env::var("LLM_MODEL").ok())
-        .unwrap_or_else(|| "gpt-5.4-mini".to_string());
-    // Build LLM provider from env vars + CLI model override.
-    // LlmAdapter is gone; use phi_agent::create_provider() with LlmConfig.
-    // Resolve API key from LLM_API_KEY or OPENAI_API_KEY.
-    let api_key = std::env::var("LLM_API_KEY")
-        .or_else(|_| std::env::var("OPENAI_API_KEY"))
-        .context("Set LLM_API_KEY (or OPENAI_API_KEY) in .env or environment")?;
-    let base_url = std::env::var("LLM_BASE_URL")
-        .context("Set LLM_BASE_URL in .env or environment")?;
+    // Load model configuration: CLI > JSON file
+    let mut model_config = if let Some(config_path) = &cli.config {
+        // CLI --config flag specified
+        let path = PathBuf::from(config_path);
+        config::ModelConfig::from_file(&path)
+            .context("Failed to load config file")?
+    } else {
+        match config::ModelConfig::from_default_location() {
+            Ok(Some(config)) => {
+                tracing::info!("loaded model config from JSON file");
+                config
+            }
+            Ok(None) => {
+                return Err(anyhow::anyhow!(
+                    "No config file found. Create ~/.phimint/config.json with your model configuration.\n\
+                     See config.json.example for format."
+                ));
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!("Failed to load config: {}", e));
+            }
+        }
+    };
+
+    // Apply CLI overrides
+    if let Some(ref model) = cli.model {
+        model_config.main = config::TierConfig::Simple(model.clone());
+    }
+    if let Some(ref lite) = cli.lite_model {
+        model_config.lite = Some(config::TierConfig::Simple(lite.clone()));
+    }
+    if let Some(ref advanced) = cli.advanced_model {
+        model_config.advanced = Some(config::TierConfig::Simple(advanced.clone()));
+    }
+    if let Some(ref url) = cli.base_url {
+        model_config.base_url = Some(url.clone());
+    }
+    if let Some(ref key) = cli.api_key {
+        model_config.api_key = Some(key.clone());
+    }
+    if let Some(ref proto) = cli.protocol {
+        model_config.protocol = Some(proto.clone());
+    }
+
+    // Validate config
+    model_config.validate()?;
+
+    // Create main provider
+    let (main_model, main_url, main_key, main_proto) = model_config.tier_config("main").unwrap();
     let llm_config = phi_agent::llm_trait::config::LlmConfig {
-        protocol: std::env::var("LLM_PROTOCOL")
-            .ok()
-            .and_then(|s| s.parse::<phi_agent::llm_trait::Protocol>().ok()),
-        api_key,
-        model,
-        base_url,
+        protocol: if main_proto.is_empty() {
+            None
+        } else {
+            main_proto.parse::<phi_agent::llm_trait::Protocol>().ok()
+        },
+        api_key: main_key,
+        model: main_model,
+        base_url: main_url,
         options: {
             let mut opts = std::collections::HashMap::new();
             opts.insert("max_tokens".to_string(), serde_json::json!("24576"));  // 24K output
@@ -121,6 +180,12 @@ async fn main() -> Result<()> {
     let llm_client: Arc<dyn phi_agent::llm_trait::LlmProvider> =
         phi_agent::create_provider(&llm_config)
             .context("Failed to create LLM provider")?;
+
+    // Model store and router for multi-model support
+    let model_store = Arc::new(tokio::sync::Mutex::new(
+        model_store::ModelStore::new(model_config, llm_client.clone())
+    ));
+    let router = Arc::new(router::PhimintRouter::new());
 
     // Approval is two layers (see approval.rs): a policy (the gate) + a handler
     // (the decision). In `ask` mode the handler enqueues requests for the TUI
@@ -155,7 +220,7 @@ async fn main() -> Result<()> {
     };
 
     // `deny` 模式只读（写工具全被拒），强制 verify 闸门无意义，故关闭。
-    let (agent, skill_resolver, skill_telemetry) = agent::build(
+    let (agent, skill_resolver, skill_telemetry, bg_registry) = agent::build(
         llm_client,
         approval,
         policy,
@@ -181,7 +246,7 @@ async fn main() -> Result<()> {
     let show_banner = cli.banner != "off";
     let version = env!("CARGO_PKG_VERSION");
 
-    ui::run_tui(agent, skill_resolver, skill_telemetry, session, session_ctx, workspace, approval_rx, scheme, show_banner, version).await
+    ui::run_tui(agent, skill_resolver, skill_telemetry, bg_registry, session, session_ctx, workspace, approval_rx, scheme, show_banner, version, model_store, router).await
 }
 
 /// Base directory for all phimint session data (~/.phimint).

@@ -13,6 +13,7 @@ use phi_agent::{
 };
 
 use code_intel::lsp::{ClientInfo, LspManager, LspServerSpec};
+use phi_kernel_tools::background_shell::{BackgroundTaskRegistry, TaskOutputTool, TaskCancelTool};
 use phi_kernel_tools::context_rotation::{HistoryStore, NotesStore, create_history_tools, create_notes_tools};
 use crate::skills::{SkillResolver, SkillTelemetry, SkillTool, render_catalog};
 use crate::tools::diagnostics::DiagnosticsTool;
@@ -31,7 +32,9 @@ Your default personality and tone is concise, direct, and friendly. You communic
 - `repo_map` — get the codebase layout. No argument returns a directory skeleton; pass a workspace-relative `path` for per-file symbols (classes, methods, fields).
 - `search_content` — search file contents with ripgrep (regex).
 - `read_file` / `write_file` / `edit_file` / `list_files` — inspect and modify files (workspace-relative paths). For files under 300 lines, read the entire file at once without offset/limit. Only use pagination for very large files (over 500 lines).
-- `execute_command` — run shell commands (build/test/lint). Runs inside a sandbox; destructive ops require user confirmation.
+- `execute_command` — run shell commands (build/test/lint). Runs inside a sandbox; destructive ops require user confirmation. Add `background: true` to run in background (returns task_id immediately).
+- `task_output` — check or wait for a background task's result. Use `wait: true` to block until completion.
+- `task_cancel` — terminate a running background task by task_id.
 - `diagnostics` — pull LSP errors/warnings (fast, no recompile). Use after editing for a quick check.
 - `update_plan` — structured checklist for complex tasks (3+ steps); skip for simple requests.
 
@@ -89,7 +92,15 @@ Sub-agents are READ-ONLY (read/search/report, no writes or mutating commands). Y
 - If the user asks a question while sub-agents run, answer it first; coordination continues afterwards.
 - When you have a plan with multiple steps, process them in parallel by spawning one agent per step when possible.
 
-When done, briefly report what you changed."#;
+When done, briefly report what you changed.
+## Background tasks
+Long-running commands (build, test, install) should use `background: true` to avoid blocking.
+After starting a background task, you can edit files or run other commands while it runs.
+Use `task_output` with `wait: true` when you need the results.
+
+Important: background tasks do NOT notify you on completion. You must actively
+call `task_output(wait: true)` to collect results before reporting success to the user.
+NEVER assume a background task succeeded without checking its output."#;
 
 /// Appended to system prompt when token-budget context management is enabled.
 const TOKEN_BUDGET_PROMPT_SUFFIX: &str = r#"
@@ -172,13 +183,17 @@ pub fn build(
     model: String,
     skill_dirs: Vec<PathBuf>,
     token_budget_opts: Option<TokenBudgetOptions>,
-) -> Result<(PhiAgent, Arc<SkillResolver>, Arc<SkillTelemetry>)> {
+) -> Result<(PhiAgent, Arc<SkillResolver>, Arc<SkillTelemetry>, Arc<BackgroundTaskRegistry>)> {
     // Skills catalog (skill-injection design D1): the resolver must exist
     // BEFORE the builder — the catalog joins the system prompt at build time,
     // not after the agent is constructed. Wrapped in Arc so the `skill` tool
     // and the TUI's `/` path share one instance.
     let skill_resolver = Arc::new(SkillResolver::from_dirs(&skill_dirs));
     let skill_telemetry = Arc::new(SkillTelemetry::new());
+
+    // Background task registry: shared between LocalShellTool, TaskOutputTool,
+    // TaskCancelTool, and the TUI tick loop.
+    let bg_registry = BackgroundTaskRegistry::new(4); // max 4 concurrent bg tasks
     if !skill_resolver.is_empty() {
         tracing::info!(
             count = skill_resolver.len(),
@@ -314,7 +329,9 @@ pub fn build(
         // hundred lines; the system prompt tells the agent to paginate beyond.
         // (Token-budget mode lowers it further — see tool_output_cap above.)
         .max_tool_output_chars(tool_output_cap)
-        .register_tool(LocalShellTool::new(shell_timeout_ms))
+        .register_tool(LocalShellTool::new(shell_timeout_ms).with_registry(bg_registry.clone()))
+        .register_tool(TaskOutputTool::new(bg_registry.clone()))
+        .register_tool(TaskCancelTool::new(bg_registry.clone()))
         .register_tool(RipgrepTool::new(workspace_root.clone()))
         .register_tool(RepoMapTool::new(workspace_root.clone()))
         // skill tool (skill-injection D2): model-initiated skill body loader.
@@ -370,6 +387,8 @@ pub fn build(
             "write_file".to_string(),
             "edit_file".to_string(),
             "execute_command".to_string(),
+            "task_output".to_string(),
+            "task_cancel".to_string(),
         ],
         // Children do narrow slices; cap their reasoning depth so a reasoning-heavy
         // model (deepseek-v4-pro) can't "think" itself into a runaway on long
@@ -462,7 +481,7 @@ pub fn build(
         ..PhiAgentConfig::default()
     })?;
 
-    Ok((agent, skill_resolver, skill_telemetry))
+    Ok((agent, skill_resolver, skill_telemetry, bg_registry))
 }
 
 #[cfg(test)]
@@ -676,7 +695,7 @@ mod prompt_guard_tests {
         });
         let workspace = tempfile::tempdir().unwrap();
         let (approval, policy) = crate::approval::build_approval("auto");
-        let (agent, _resolver, _telemetry) = super::build(
+        let (agent, _resolver, _telemetry, _bg_registry) = super::build(
             provider.clone() as Arc<dyn LlmProvider>,
             approval,
             policy,
@@ -825,6 +844,71 @@ mod prompt_guard_tests {
         assert!(
             !SYSTEM_PROMPT.contains("## Available Skills"),
             "SYSTEM_PROMPT must not contain agent-works' '## Available Skills' heading"
+        );
+    }
+
+    // ── Background task prompt guards ──
+
+    #[test]
+    fn prompt_has_task_output_description() {
+        assert!(
+            SYSTEM_PROMPT.contains("task_output"),
+            "system prompt must mention task_output tool"
+        );
+        assert!(
+            SYSTEM_PROMPT.contains("wait: true"),
+            "system prompt must describe wait: true usage"
+        );
+    }
+
+    #[test]
+    fn prompt_has_task_cancel_description() {
+        assert!(
+            SYSTEM_PROMPT.contains("task_cancel"),
+            "system prompt must mention task_cancel tool"
+        );
+    }
+
+    #[test]
+    fn prompt_has_background_tasks_section() {
+        assert!(
+            SYSTEM_PROMPT.contains("## Background tasks"),
+            "system prompt must have a ## Background tasks section"
+        );
+    }
+
+    #[test]
+    fn prompt_has_background_true_keyword() {
+        assert!(
+            SYSTEM_PROMPT.contains("background: true"),
+            "system prompt must mention background: true"
+        );
+    }
+
+    #[test]
+    fn prompt_warns_no_notification_on_background_completion() {
+        assert!(
+            SYSTEM_PROMPT.contains("do NOT notify you on completion"),
+            "system prompt must warn that background tasks don't notify"
+        );
+        assert!(
+            SYSTEM_PROMPT.contains("NEVER assume a background task succeeded"),
+            "system prompt must ban assuming success without checking output"
+        );
+    }
+
+    #[test]
+    fn child_excluded_tools_include_background_tools() {
+        // Read the source to verify the wiring (compile-time guard is harder;
+        // this is a source-level guard that catches accidental removal).
+        let src = include_str!("agent.rs");
+        assert!(
+            src.contains("\"task_output\""),
+            "child_excluded_tools must include task_output"
+        );
+        assert!(
+            src.contains("\"task_cancel\""),
+            "child_excluded_tools must include task_cancel"
         );
     }
 }

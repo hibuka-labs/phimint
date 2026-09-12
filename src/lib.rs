@@ -7,8 +7,11 @@
 pub mod agent;
 pub mod approval;
 pub mod banner;
+pub mod config;
 pub mod context_rotation;
 pub mod gate;
+pub mod model_store;
+pub mod router;
 pub mod skills;
 pub mod tools;
 pub mod ui;

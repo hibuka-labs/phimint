@@ -422,24 +422,14 @@ impl App {
                             });
                     }
                     _ => {
-                        // Root agent: just flush and set idle.  The actual
+                        // Root agent: just flush and settle. The actual
                         // outcome message ("✅ done" / "⏳ waiting" / "❌ error")
                         // is rendered by TurnDone / TurnError after run_turn
-                        // returns. With sub-agents still running the panel stays
-                        // alive — the fan-in batch injection continues the work.
-                        self.status = AgentStatus::Idle;
+                        // returns. With sub-agents or background tasks still
+                        // running the panel stays alive — the fan-in batch
+                        // injection / background wake continues the work.
                         self.running = false;
-                        if self.sub_agents.values().any(|s| s.status == SubAgentStatus::Running) {
-                            self.status = AgentStatus::Waiting {
-                                running: self.sub_agents.values()
-                                    .filter(|s| s.status == SubAgentStatus::Running).count(),
-                            };
-                        } else {
-                            self.sub_agents.clear();
-                            self.sub_agent_transcripts.clear();
-                            self.child_streams.clear();
-                            self.activity_since = None;
-                        }
+                        self.settle_status_from_inflight();
                         tracing::info!(
                             follow_bottom = self.viewport.follow_bottom,
                             scroll_offset = self.viewport.scroll_offset,
@@ -479,12 +469,11 @@ impl App {
                             text: "⏹ cancelled".to_string(),
                             kind: LineKind::Cancelled,
                         });
-                        self.status = AgentStatus::Idle;
                         self.running = false;
-                        self.activity_since = None;
-                        self.sub_agents.clear();
-                        self.sub_agent_transcripts.clear();
-                        self.child_streams.clear();
+                        // Cancelling the turn does not cancel in-flight work:
+                        // background shell tasks keep running, so they still
+                        // gate the status (Waiting) and the later wake.
+                        self.settle_status_from_inflight();
                         tracing::info!(
                             follow_bottom = self.viewport.follow_bottom,
                             scroll_offset = self.viewport.scroll_offset,

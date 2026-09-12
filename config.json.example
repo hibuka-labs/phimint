@@ -1,0 +1,31 @@
+// phimint model configuration
+// Supports JSON5: comments (// or /* */), trailing commas, single quotes
+
+{
+  // API configuration
+  "base_url": "https://api.openai.com/v1",
+  "api_key": "sk-xxx",
+  "protocol": "openai",  // optional, auto-inferred from model name
+
+  // Model tiers
+  "main": "gpt-5.4-mini",
+  "lite": "gpt-4o-mini",
+  "advanced": "o1-preview",
+
+  // Example: different provider for advanced
+  // "advanced": {
+  //   "model": "claude-opus-4",
+  //   "base_url": "https://api.anthropic.com",
+  //   "api_key": "sk-ant",
+  //   "protocol": "anthropic"
+  // },
+
+  // Custom scene routing (optional)
+  // "scene_tiers": {
+  //   "main_chat": "main",
+  //   "sub_agent": "lite",
+  //   "architecture": "advanced",
+  //   "review": "lite",
+  //   "compression": "lite"
+  // },
+}
