@@ -87,12 +87,13 @@ struct Cli {
     /// Work-room token budget for context windows (tokens of conversation
     /// space ABOVE the fixed window base). Window rotation + history/notes
     /// tools replace LLM summarization; this is now the default mode. Bare
-    /// `--token-budget` or omitting the flag uses the default (160K).
+    /// `--token-budget` or omitting the flag uses the default (210K,
+    /// aligned with Codex's ~256K context window × 90% minus base overhead).
     #[arg(
         long,
         num_args(0..=1),
-        default_missing_value = "160000",
-        default_value = "160000"
+        default_missing_value = "210000",
+        default_value = "210000"
     )]
     token_budget: usize,
 

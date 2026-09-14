@@ -6,10 +6,10 @@ use std::sync::Arc;
 use anyhow::Result;
 use phi_agent::{
     ApprovalHandler, ChildPermissionMode, ControlConfig, DefaultGuard, DefaultGuardConfig,
-    LocalShellTool, MaxTurnsNudgeConfig, MaxTurnsNudgeMiddleware, MultiAgentConfig, PhiAgent,
-    PhiAgentConfig, ReasoningEffort, ReasoningOnlyAction, TokenBudgetConfig, TokenBudgetCore,
-    ToolPolicy,
-    base_agent_builder_no_compression, base_agent_builder_with_excludes,
+    LocalShellTool, MaxTurnsNudgeConfig, MaxTurnsNudgeMiddleware, MemoryConfig, MultiAgentConfig,
+    PhiAgent, PhiAgentConfig, ReasoningEffort, ReasoningOnlyAction, TokenBudgetConfig,
+    TokenBudgetCore, ToolPolicy, base_agent_builder_no_compression,
+    base_agent_builder_with_excludes,
 };
 
 use code_intel::lsp::{ClientInfo, LspManager, LspServerSpec};
@@ -322,6 +322,16 @@ pub fn build(
         .disable_skill_prompt_injection()
         // Inject CLAUDE.md (user-level + project-level) into system prompt
         .agent_instructions_paths(agent_instructions_paths)
+        // Persistent auto-memory (Phase 9c): Claude Code compatible storage at
+        // `~/.claude/projects/<slug>/memory/` (slug = this workspace path), so
+        // phimint and Claude Code share one memory directory. At build time the
+        // framework registers the four `memory_*` tools and appends the
+        // MEMORY.md index snapshot + tool guidance after the CLAUDE.md section.
+        // A missing directory is fine: the index renders as an empty-index
+        // placeholder and the first `memory_write` creates it. Memory tools are
+        // registered on the parent only — they never join `business_tools`, so
+        // the read-only sub-agent gate needs no extra exclusion entries.
+        .memory_config(MemoryConfig::claude_compatible(&workspace_root))
         // base_agent_builder caps tool output at 4000 chars and REJECTS (rather
         // than truncates) anything larger. That is too small to read a normal
         // source file — read_file's own default limit is 2000 *lines*, so a
@@ -493,7 +503,7 @@ mod prompt_guard_tests {
     //! result. These assertions fail if the fan-in semantics drift out of the
     //! live text.
 
-    use super::{SYSTEM_PROMPT, compose_system_prompt};
+    use super::{MemoryConfig, SYSTEM_PROMPT, compose_system_prompt};
     use crate::skills::SkillResolver;
 
     #[test]
@@ -687,20 +697,31 @@ mod prompt_guard_tests {
         tmp.join("skills")
     }
 
-    /// Build a real agent via `build()` and run one turn against the
-    /// capturing mock, returning every system prompt the LLM received.
+    /// Build a real agent via `build()` against a self-managed workspace and
+    /// run one turn against the capturing mock, returning every system prompt
+    /// the LLM received.
     async fn system_prompts_received(skill_dirs: Vec<std::path::PathBuf>) -> Vec<String> {
+        let workspace = tempfile::tempdir().unwrap();
+        system_prompts_received_in(workspace.path(), skill_dirs).await
+    }
+
+    /// Same as [`system_prompts_received`] but with a caller-owned workspace —
+    /// needed when an assertion must reference the exact workspace the agent
+    /// was built against (e.g. the memory root slug, Phase 9c).
+    async fn system_prompts_received_in(
+        workspace: &std::path::Path,
+        skill_dirs: Vec<std::path::PathBuf>,
+    ) -> Vec<String> {
         let provider = Arc::new(CapturingMockProvider {
             system_prompts: Mutex::new(Vec::new()),
         });
-        let workspace = tempfile::tempdir().unwrap();
         let (approval, policy) = crate::approval::build_approval("auto");
         let (agent, _resolver, _telemetry, _bg_registry) = super::build(
             provider.clone() as Arc<dyn LlmProvider>,
             approval,
             policy,
             1_000,
-            workspace.path().to_path_buf(),
+            workspace.to_path_buf(),
             true,
             1024,
             "low",
@@ -909,6 +930,62 @@ mod prompt_guard_tests {
         assert!(
             src.contains("\"task_cancel\""),
             "child_excluded_tools must include task_cancel"
+        );
+    }
+
+    // ── Phase 9c memory wiring guards ──
+
+    #[test]
+    fn system_prompt_base_has_no_memory_section() {
+        // The memory section is appended by the FRAMEWORK at build time
+        // (apply_memory_config, after the CLAUDE.md injection) — it must never
+        // be baked into the base constant, or the skills-catalog guards above
+        // and the no-skills byte-identical baseline would gain a second moving
+        // part.
+        assert!(
+            !SYSTEM_PROMPT.contains("## Memory"),
+            "SYSTEM_PROMPT must not inline the memory section; the framework \
+             appends it when memory_config is wired"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn built_agent_receives_memory_prompt_for_its_workspace() {
+        // Wiring guard: with memory_config wired in build(), the live request
+        // must carry the memory section anchored to THIS workspace's
+        // Claude-Code-compatible root (~/.claude/projects/<slug>/memory/).
+        // apply_memory_config registers the four memory_* tools and injects
+        // the prompt in ONE code path — the section being present transitively
+        // proves the tools are registered.
+        //
+        // Regression (9c acceptance): the tmp workspace has no memory
+        // directory and no CLAUDE.md — startup must stay graceful, with the
+        // empty-index placeholder instead of an error.
+        let tmp = tempfile::tempdir().unwrap();
+        let expected_root = MemoryConfig::claude_compatible(tmp.path())
+            .memory_root
+            .display()
+            .to_string();
+        let prompts =
+            system_prompts_received_in(tmp.path(), vec![tmp.path().join("skills")]).await;
+
+        assert!(
+            prompts.iter().any(|p| {
+                p.starts_with(SYSTEM_PROMPT)
+                    && p.contains("## Memory")
+                    && p.contains("memory_write")
+                    && p.contains(&expected_root)
+            }),
+            "the live prompt must carry base prompt + memory section naming \
+             this workspace's memory root {expected_root}; got {} request(s)",
+            prompts.len()
+        );
+        // Empty-index placeholder proves the no-memory-directory regression:
+        // startup renders the friendly placeholder, never a failure.
+        assert!(
+            prompts.iter().any(|p| p.contains("no memories yet")),
+            "with no memory directory the prompt must contain the empty-index \
+             placeholder (graceful first-use startup)"
         );
     }
 }
