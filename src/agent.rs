@@ -752,7 +752,12 @@ mod prompt_guard_tests {
         assert!(prompt[SYSTEM_PROMPT.len()..].contains("## Skills"), "{prompt}");
         assert!(prompt.contains("- catalog-skill: guard fixture skill\n"), "{prompt}");
         assert!(prompt.contains("### How to use skills"), "{prompt}");
-        assert!(prompt.contains("Do not carry skills across turns unless re-mentioned"), "{prompt}");
+        assert!(
+            prompt.contains(
+                "Skills the user activated with a slash command remain in effect for the whole session"
+            ),
+            "{prompt}"
+        );
     }
 
     #[test]
@@ -781,6 +786,84 @@ mod prompt_guard_tests {
             }),
             "the live request must carry base prompt + catalog; got {} request(s)",
             prompts.len()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn session_scope_bake_reaches_live_prompt() {
+        // Skill-lifetime v3 wiring guard: activating a session-scope skill
+        // must change what the LLM sees — the request AFTER the bake carries
+        // the Active Skills section, the request before it does not. Mirrors
+        // agent_loop's Session branch (activate → compose → set_system_prompt
+        // → run the raw command) against the real runtime.
+        let tmp = tempfile::tempdir().unwrap();
+        let skill_dir = fixture_skill_dir(tmp.path());
+        let workspace = tempfile::tempdir().unwrap();
+
+        let provider = Arc::new(CapturingMockProvider {
+            system_prompts: Mutex::new(Vec::new()),
+        });
+        let (approval, policy) = crate::approval::build_approval("auto");
+        let (agent, resolver, _telemetry, _bg_registry) = super::build(
+            provider.clone() as Arc<dyn LlmProvider>,
+            approval,
+            policy,
+            1_000,
+            workspace.path().to_path_buf(),
+            true,
+            1024,
+            "low",
+            "mock-model".to_string(),
+            vec![skill_dir],
+            None,
+        )
+        .unwrap();
+        let session = agent.create_session().await;
+        agent.run_turn(session.clone(), "warmup", |_ev| Ok(())).await.unwrap();
+
+        // The pristine build-time prompt (catalog + CLAUDE.md + memory index)
+        // — exactly what agent_loop captures once before any bake. Baking
+        // must APPEND to this, never recompose from the resolver.
+        let bake_base = agent
+            .system_prompt()
+            .await
+            .expect("phimint build always sets a system prompt");
+
+        // Session-branch dispatch: activate, re-bake, run the raw command.
+        let input = "/catalog-skill".to_string();
+        let r = resolver.resolve_with_meta(&input).expect("fixture mismatch");
+        assert_eq!(r.scope, crate::skills::SkillScope::Session);
+        let active = vec![crate::skills::ActiveSkillEntry {
+            name: r.name.clone(),
+            body: r.body.clone(),
+        }];
+        agent
+            .set_system_prompt(
+                &session,
+                crate::skills::append_active_skills(&bake_base, &active),
+            )
+            .await
+            .unwrap();
+        agent.run_turn(session, &input, |_ev| Ok(())).await.unwrap();
+
+        let prompts = provider.system_prompts.lock().unwrap().clone();
+        assert_eq!(prompts.len(), 2, "two turns → two requests");
+        assert!(
+            !prompts[0].contains("## Active Skills"),
+            "pre-bake request must not carry the section: {}",
+            prompts[0]
+        );
+        // starts_with(bake_base) proves the bake preserved EVERYTHING the
+        // builder injected (catalog, CLAUDE.md, memory index) — recomposing
+        // from the resolver would strip them and fail here.
+        assert!(
+            prompts[1].starts_with(&bake_base),
+            "post-bake prompt must extend the pristine build-time prompt verbatim"
+        );
+        assert!(
+            prompts[1].contains("## Active Skills") && prompts[1].contains("fixture body"),
+            "post-bake request must carry the baked section: {}",
+            prompts[1]
         );
     }
 
