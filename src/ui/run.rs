@@ -21,7 +21,10 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use phi_agent::{ChildResultEvent, PhiAgent, RunOutcome, RuntimeEvent, SessionContext, SessionId, save_turn_log};
+use phi_agent::{
+    ChatMessage, ChildResultEvent, PhiAgent, RunOutcome, RuntimeEvent, SessionContext, SessionId,
+    persist_window_messages, read_session_title, save_turn_log,
+};
 use phi_kernel_tools::background_shell::BackgroundTaskRegistry;
 use ratatui::{Terminal, backend::CrosstermBackend};
 use tokio::sync::mpsc;
@@ -30,7 +33,11 @@ use crate::approval::ApprovalItem;
 use crate::banner::ColorScheme;
 use crate::model_store::ModelStore;
 use crate::router::PhimintRouter;
-use crate::skills::{SkillResolver, SkillTelemetry};
+use crate::skills::{
+    ActiveSkillEntry, SkillResolver, SkillScope, SkillTelemetry, append_active_skills,
+    load_active_skills, save_active_skills,
+};
+use crate::title_gen::{generate_session_title, write_pending_title_marker};
 use super::app::{Action, App, TuiEvent};
 use super::child_results::{ChildResultRoute, ChildResultRouter};
 use super::frame_log::{ComposerLog, FrameCapture, PerfLog, PerfRow};
@@ -40,6 +47,14 @@ use super::render;
 enum Cmd {
     Run(String),
     Quit,
+}
+
+/// Outcome of one TUI lifecycle (one session's worth of UI).
+enum TuiOutcome {
+    /// User pressed Ctrl+C / Ctrl+D twice.
+    Quit,
+    /// User selected a different session via `/resume`.
+    SwitchSession(PathBuf),
 }
 
 /// Liveness tick: while a turn or a child wait is in flight, re-render at
@@ -62,6 +77,7 @@ pub async fn run_tui(
     bg_registry: Arc<BackgroundTaskRegistry>,
     session: SessionId,
     session_ctx: SessionContext,
+    base_dir: PathBuf,
     workspace: PathBuf,
     approval_rx: Option<mpsc::UnboundedReceiver<ApprovalItem>>,
     scheme: ColorScheme,
@@ -69,9 +85,48 @@ pub async fn run_tui(
     version: &str,
     model_store: Arc<tokio::sync::Mutex<ModelStore>>,
     router: Arc<PhimintRouter>,
+    resume_messages: Option<Vec<ChatMessage>>,
 ) -> Result<()> {
     let agent = Arc::new(agent);
+
+    // Session state (updated on each /resume switch).
+    let mut session = session;
+    let mut session_ctx = session_ctx;
+    let mut resume_messages = resume_messages;
+
+    // Terminal setup. The guard restores the terminal on any exit path.
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste, EnableMouseCapture)?;
+    // Kitty keyboard protocol: lets crossterm read the Command (Super) modifier
+    // so Cmd+C can be bound to copy. Terminals that don't support it (e.g. the
+    // macOS Terminal.app) ignore this and keep legacy key reporting.
+    execute!(
+        stdout,
+        PushKeyboardEnhancementFlags(
+            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
+        )
+    )?;
+    let _guard = TerminalGuard;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    // Approval channel lives for the whole TUI lifetime (session-independent).
     let mut approval_rx = approval_rx;
+
+    // Whether ANY wheel/trackpad scroll event arrived during this whole run.
+    // Session switches keep it: zero scrolls across a full session in Apple
+    // Terminal is the fingerprint of "Allow Mouse Reporting" being off in
+    // that window, reported at exit (see wheel_dead_notice).
+    let mut saw_scroll = false;
+
+    // ── Outer loop: each iteration = one session's TUI lifecycle ──
+    loop {
+    // Force a clean redraw after picker or session switch.
+    terminal.clear()?;
+
+    let session_dir = session_ctx.session_dir.clone();
     let log_path = session_ctx.log_path().display().to_string();
     let frames_path = session_ctx.session_dir.join("frames.txt");
     let perf_path = session_ctx.session_dir.join("perf.log");
@@ -84,7 +139,9 @@ pub async fn run_tui(
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<Cmd>();
 
     // 在 skill_resolver 移入 agent_loop 前提取 (name, description) 摘要列表
-    let skill_summaries = skill_resolver.skill_summaries();
+    let mut skill_summaries = skill_resolver.skill_summaries();
+    // 内置命令：/resume（不是 skill，但通过同一个 / 弹窗触发）
+    skill_summaries.push(("resume".into(), "Switch to another session".into()));
 
     // Start the child-result watcher (Phase 2): monitors the mailbox and
     // delivers each finished child's result as a ChildResultEvent. The loop
@@ -115,25 +172,18 @@ pub async fn run_tui(
 
     let agent_task = tokio::spawn(agent_loop(
         agent.clone(),
-        skill_resolver,
-        skill_telemetry,
-        session,
+        skill_resolver.clone(),
+        skill_telemetry.clone(),
+        session.clone(),
         session_ctx,
         event_tx.clone(),
         cmd_rx,
-        model_store,
-        router,
+        model_store.clone(),
+        router.clone(),
     ));
 
-    // Persistent event bridge: subscribe to the runtime's event bus ONCE for
-    // the whole TUI lifetime. The per-run callback only exists inside
-    // `run_turn`, so in the fan-in model — where the parent ends its turn
-    // while sub-agents keep working for minutes — nobody drained the bus
-    // between turns and every child event was lost (the task panel showed
-    // frozen sub-agents, session 20260903_b7dbf2c1). With this task the UI
-    // receives root and child events regardless of turn lifecycle; the turn
-    // callback now only collects events for persistence. This is the single
-    // source of `TuiEvent::Runtime` — no double delivery.
+    // Persistent event bridge: subscribe to the runtime's event bus each
+    // session. The spawned task dies when event_tx is dropped (session ends).
     {
         let mut bus_rx = agent.runtime().subscribe_runtime_events();
         let bus_tx = event_tx.clone();
@@ -153,24 +203,6 @@ pub async fn run_tui(
             }
         });
     }
-
-    // Terminal setup. The guard restores the terminal on any exit path.
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste, EnableMouseCapture)?;
-    // Kitty keyboard protocol: lets crossterm read the Command (Super) modifier
-    // so Cmd+C can be bound to copy. Terminals that don't support it (e.g. the
-    // macOS Terminal.app) ignore this and keep legacy key reporting.
-    execute!(
-        stdout,
-        PushKeyboardEnhancementFlags(
-            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                | KeyboardEnhancementFlags::REPORT_ALTERNATE_KEYS
-        )
-    )?;
-    let _guard = TerminalGuard;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
 
     let mut app = App::new();
     app.set_scheme(scheme);
@@ -198,10 +230,35 @@ pub async fn run_tui(
         app.push_system(&format!("! {notice}"));
     }
 
+    // Replay historical messages into the transcript so the user sees the
+    // previous conversation (not just a blank screen) after --resume.
+    if let Some(messages) = &resume_messages {
+        replay_messages_to_transcript(&mut app, messages);
+        if !messages.is_empty() {
+            // Digest goes AFTER the replay block: the viewport follows the
+            // bottom, so this lands on the visible last screen — right
+            // where the user is looking, telling them the history above is
+            // browsable with PgUp (half a page per press).
+            let title = read_session_title(&session_dir);
+            app.push_system(&resume_digest_line(messages, title));
+        }
+    }
+
+    // Terminal.app forwards wheel/trackpad events to the app only while
+    // View → Allow Mouse Reporting is checked for the window; when off, the
+    // swipe is swallowed by the terminal and scrolling silently dies. Give
+    // Apple Terminal users the menu path plus the keyboard fallback
+    // (fn+Up/Down = PgUp/PgDn) up front.
+    if let Some(notice) = terminal_scroll_notice(std::env::var("TERM_PROGRAM").ok().as_deref()) {
+        app.push_system(&notice);
+    }
+
     // Track window rotations for TUI notification.
     let mut last_reset_count: usize = 0;
     // Announce the futility brake at most once.
     let mut brake_announced = false;
+    // Track user messages for title generation at the 10-message threshold.
+    let mut user_msg_count: usize = 0;
 
     // Session logs (frame capture, perf timing, composer state) each own their
     // file handle + dedup/throttle state; see frame_log.rs.
@@ -214,7 +271,6 @@ pub async fn run_tui(
     // Last real render time — drives the UI_TICK liveness redraw.
     let mut last_draw = Instant::now();
 
-    let mut quit = false;
     // Child-result delivery (fan-in redesign). The watcher coordinates: a
     // Progress event is display-only, a Batch event wakes the parent. The
     // router decides per event — inject immediately when the agent is idle,
@@ -223,7 +279,8 @@ pub async fn run_tui(
     // logic lives in `child_results` (unit-tested); this loop must stay free
     // of timing policy.
     let mut child_results = ChildResultRouter::new();
-    while !quit {
+    let mut outcome: Option<TuiOutcome> = None;
+    while outcome.is_none() {
         let loop_start = Instant::now();
 
         // Drain any events queued since the last frame into state.
@@ -356,7 +413,37 @@ pub async fn run_tui(
                     if let Some(action) = app.handle_key(key.code, key.modifiers) {
                         match action {
                             Action::Submit(text) => {
+                                // Intercept built-in commands before sending to agent.
+                                if text.trim() == "/resume" {
+                                    let base = session_dir.parent().unwrap().parent().unwrap();
+                                    let picked = super::picker::show_picker_from_tui(
+                                        base,
+                                        Some(&session_dir.file_name().unwrap().to_string_lossy()),
+                                    )?;
+                                    if let Some(picked_dir) = picked {
+                                        outcome = Some(TuiOutcome::SwitchSession(picked_dir));
+                                    }
+                                    // Don't send to agent, don't count as user message.
+                                    break;
+                                }
                                 let _ = cmd_tx.send(Cmd::Run(text));
+                                user_msg_count += 1;
+                                if user_msg_count == 10 {
+                                    // Fire-and-forget: generate and persist title via lite model.
+                                    let provider = {
+                                        let mut store = model_store.lock().await;
+                                        store.get_or_create_provider("lite").ok()
+                                    };
+                                    if let Some(p) = provider {
+                                        let msgs = agent.runtime().get_messages(&session).await.unwrap_or_default();
+                                        let dir = session_dir.clone();
+                                        tokio::spawn(async move {
+                                            if let Err(e) = generate_session_title(p, &msgs, &dir).await {
+                                                tracing::warn!(error = %e, "failed to generate session title");
+                                            }
+                                        });
+                                    }
+                                }
                             }
                             Action::Approve(decision) => app.approve_front(decision),
                             Action::CopyLastReply => {
@@ -382,7 +469,7 @@ pub async fn run_tui(
                             Action::Quit => {
                                 agent.cancel();
                                 let _ = cmd_tx.send(Cmd::Quit);
-                                quit = true;
+                                outcome = Some(TuiOutcome::Quit);
                             }
                         }
                     }
@@ -390,11 +477,11 @@ pub async fn run_tui(
                 Event::Mouse(MouseEvent {
                     kind: MouseEventKind::ScrollUp,
                     ..
-                }) => { has_scroll = true; if app.scroll_up() { dirty = true; } }
+                }) => { has_scroll = true; saw_scroll = true; if app.scroll_wheel_up() { dirty = true; } }
                 Event::Mouse(MouseEvent {
                     kind: MouseEventKind::ScrollDown,
                     ..
-                }) => { has_scroll = true; if app.scroll_down() { dirty = true; } }
+                }) => { has_scroll = true; saw_scroll = true; if app.scroll_wheel_down() { dirty = true; } }
                 Event::Mouse(MouseEvent {
                     kind,
                     column,
@@ -485,20 +572,69 @@ pub async fn run_tui(
         dirty = false;
     }
 
+    // ── End of inner event loop ──
+
     // Ensure the agent task is told to stop and has a chance to finish.
     let _ = cmd_tx.send(Cmd::Quit);
     let _ = agent_task.await;
 
+    tracing::info!("tui: agent task joined, flushing logs");
     let _ = frames.flush();
     let _ = perf_log.flush();
     let _ = composer_log.flush();
 
-    // Shutdown background task registry: cancel all running tasks and
-    // SIGKILL all process groups. Must be explicit — executor tasks hold
-    // Arc<Registry> so Drop won't fire.
-    bg_registry.shutdown();
+    tracing::info!("tui: logs flushed, entering outcome match");
+    match outcome.unwrap_or(TuiOutcome::Quit) {
+        TuiOutcome::Quit => {
+            // Write a pending-title marker on exit.  The title will be generated
+            // asynchronously on next startup — zero blocking here.
+            if user_msg_count < 10 && read_session_title(&session_dir).is_none() {
+                let sessions_dir = session_dir.parent().unwrap();
+                write_pending_title_marker(sessions_dir, &session_dir);
+            }
 
-    Ok(())
+            // Shutdown background task registry: cancel all running tasks and
+            // SIGKILL all process groups. Must be explicit — executor tasks hold
+            // Arc<Registry> so Drop won't fire.
+            tracing::info!("tui: quit arm, shutting down bg registry");
+            bg_registry.shutdown();
+            tracing::info!("tui: bg registry shut down, dropping terminal guard");
+
+            // Restore the terminal BEFORE printing so the diagnostic lands in
+            // the normal screen, visible above the next shell prompt.
+            drop(_guard);
+            tracing::info!("tui: guard dropped, evaluating wheel diagnostic");
+            if let Some(notice) = wheel_dead_notice(
+                std::env::var("TERM_PROGRAM").ok().as_deref(),
+                saw_scroll,
+                app.viewport.rendered_total > app.viewport.viewport_height,
+            ) {
+                tracing::info!("wheel diagnostic: printing to restored terminal");
+                println!("{}", notice);
+            } else {
+                tracing::info!(saw_scroll, "wheel diagnostic: not fired");
+            }
+            tracing::info!("tui: quit complete");
+
+            return Ok(());
+        }
+        TuiOutcome::SwitchSession(picked_dir) => {
+            match agent.switch_to_session(&picked_dir, &base_dir).await {
+                Ok((new_id, messages, new_ctx)) => {
+                    session = new_id;
+                    session_ctx = new_ctx;
+                    resume_messages = Some(messages);
+                    continue; // Re-enter outer loop: fresh App + channels + agent_loop
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "session switch failed, shutting down");
+                    bg_registry.shutdown();
+                    return Ok(());
+                }
+            }
+        }
+    }
+    } // end outer loop
 }
 
 /// Copy `text` to the clipboard (if available), surfacing a status-bar notice.
@@ -540,6 +676,26 @@ async fn agent_loop(
         agent.config.model.clone(),
     );
 
+    // Session-scope skills (skill-lifetime v3): reload the active list and
+    // re-bake it into the system prompt. Covers both process resume (fresh
+    // agent, restored history) and session switches (fresh agent_loop).
+    //
+    // The bake base is the PRISTINE build-time prompt captured once from the
+    // runtime config — that string already carries everything the builder
+    // injected (catalog, token-budget suffix, CLAUDE.md, memory index).
+    // Recomposing from the resolver here would strip those sections.
+    let bake_base: String = agent
+        .system_prompt()
+        .await
+        .unwrap_or_else(|| crate::agent::compose_system_prompt(&skill_resolver));
+    let mut active_skills = load_active_skills(&session_ctx.session_dir);
+    if !active_skills.is_empty() {
+        let prompt = append_active_skills(&bake_base, &active_skills);
+        if let Err(e) = agent.set_system_prompt(&session, prompt).await {
+            tracing::warn!(error = %e, "failed to re-bake active skills on resume");
+        }
+    }
+
     while let Some(cmd) = cmd_rx.recv().await {
         match cmd {
             Cmd::Quit => {
@@ -562,20 +718,25 @@ async fn agent_loop(
                 turn_number += 1;
                 let turn_events: std::sync::Arc<std::sync::Mutex<Vec<RuntimeEvent>>> = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
 
-                // 7b: `/skill-name args` → 解析为 skill body 再提交给 agent
-                // If the input was a skill slash command, record it for telemetry.
+                // Skill routing (skill-lifetime v3): resolve the slash command,
+                // then dispatch by the skill's declared scope. Session-scope
+                // (the default) bakes the body into the system prompt for the
+                // rest of the session; turn-scope rides the v2 ephemeral path;
+                // plain input passes through untouched.
                 let original_input = input.clone();
-                let resolved_input = skill_resolver.resolve(&input).unwrap_or(input);
-                if resolved_input != original_input {
-                    // resolve() transformed the input → it was a slash skill.
-                    // Extract skill name (first word after the slash).
-                    let skill_name = original_input
-                        .strip_prefix('/')
-                        .and_then(|s| s.split_whitespace().next())
-                        .unwrap_or("unknown");
-                    skill_telemetry.record_slash(skill_name);
+                let resolved = skill_resolver.resolve_with_meta(&input);
+                if let Some(r) = &resolved {
+                    // Canonical name straight from SKILL.md — no string parse.
+                    skill_telemetry.record_slash(&r.name);
                 }
-                let turn_input = resolved_input;
+                // Session-scope turns submit the RAW command: `$ARGUMENTS`
+                // reach the model through it, and the body is already baked
+                // into the system prompt below.
+                let turn_input = match &resolved {
+                    None => original_input.clone(),
+                    Some(r) if r.scope == SkillScope::Turn => r.body.clone(),
+                    Some(_) => original_input.clone(),
+                };
 
                 // Pre-turn telemetry: snapshot slash events BEFORE run_turn so
                 // the on_turn_end hook (which fires inside run_turn) sees them.
@@ -592,20 +753,100 @@ async fn agent_loop(
                 }
 
                 let turn_events_clone = turn_events.clone();
-                let result = agent
-                    .run_turn(session.clone(), &turn_input, move |ev| {
-                        // Persistence only — the UI is fed by the persistent
-                        // bus subscription (see the bridge in run_tui). Sending
-                        // here too would double-deliver every event.
-                        turn_events_clone.lock().unwrap().push(ev);
-                        Ok(())
-                    })
-                    .await;
+                let scope = resolved.as_ref().map(|r| r.scope);
+                // Turn-scope skills inject the resolved body as an *ephemeral*
+                // user message: the LLM sees it for this turn only, then the
+                // engine strips it from memory and persistence at turn end.
+                // The turn leaves NO trace in history — neither body nor
+                // command (v2-pinned behavior; resume replay shows this
+                // turn's answer without a user line). The raw command lives
+                // only in the turn log below.
+                let result = match scope {
+                    Some(SkillScope::Turn) => {
+                        agent
+                            .run_turn_ephemeral_input(session.clone(), &turn_input, move |ev| {
+                                // Persistence only — the UI is fed by the persistent
+                                // bus subscription (see the bridge in run_tui). Sending
+                                // here too would double-deliver every event.
+                                turn_events_clone.lock().unwrap().push(ev);
+                                Ok(())
+                            })
+                            .await
+                    }
+                    scope => {
+                        if let Some(SkillScope::Session) = scope {
+                            // Activate (or refresh) in the session's active list,
+                            // re-bake the prompt, and persist for resume.
+                            let r = resolved.as_ref().expect("Session scope implies resolved");
+                            let entry =
+                                ActiveSkillEntry { name: r.name.clone(), body: r.body.clone() };
+                            if let Some(existing) =
+                                active_skills.iter_mut().find(|e| e.name == entry.name)
+                            {
+                                // Re-trigger: refresh the $ARGUMENTS substitution.
+                                existing.body = entry.body;
+                            } else {
+                                active_skills.push(entry);
+                            }
+                            // Re-bake from the pristine build-time prompt
+                            // (`bake_base`): append-only, so re-triggers stay
+                            // idempotent and builder-injected sections
+                            // (CLAUDE.md / memory / token-budget) survive.
+                            let prompt = append_active_skills(&bake_base, &active_skills);
+                            let prompt_len = prompt.len();
+                            if let Err(e) = agent.set_system_prompt(&session, prompt).await {
+                                tracing::warn!(
+                                    error = %e,
+                                    "failed to bake active skills into system prompt"
+                                );
+                                let _ = event_tx.send(TuiEvent::TurnError(format!(
+                                    "! skill `{}` could not be activated (prompt bake failed): {e}",
+                                    r.name
+                                )));
+                            }
+                            if let Err(e) =
+                                save_active_skills(&session_ctx.session_dir, &active_skills)
+                            {
+                                tracing::warn!(error = %e, "failed to persist active skills");
+                                let _ = event_tx.send(TuiEvent::TurnError(format!(
+                                    "! skill `{}` active now but will NOT survive resume (persist failed): {e}",
+                                    r.name
+                                )));
+                            }
+                            // Budget note (spec, known limitation): the token-budget
+                            // core estimated its base overhead from the prompt at
+                            // build time; baking a body shifts actual usage by this
+                            // much. The 10% buffer absorbs typical skill bodies.
+                            tracing::info!(
+                                skill = %r.name,
+                                active = active_skills.len(),
+                                baked_chars = prompt_len,
+                                "session-scope skill baked into system prompt"
+                            );
+                        }
+                        agent
+                            .run_turn(session.clone(), &turn_input, move |ev| {
+                                turn_events_clone.lock().unwrap().push(ev);
+                                Ok(())
+                            })
+                            .await
+                    }
+                };
 
                 // Persist regardless of success (matches the REPL behavior).
+                // The log records the original command, never the skill body.
                 let turn_events_vec = turn_events.lock().unwrap().clone();
-                if let Err(e) = save_turn_log(&session_ctx, turn_number, &turn_events_vec, &turn_input) {
+                if let Err(e) =
+                    save_turn_log(&session_ctx, turn_number, &turn_events_vec, &original_input)
+                {
                     tracing::warn!(error = %e, "failed to save turn log");
+                }
+
+                // Snapshot current window messages for resume support.
+                if let Ok(msgs) = agent.runtime().get_messages(&session).await {
+                    if let Err(e) = persist_window_messages(&session_ctx.session_dir, &msgs) {
+                        tracing::warn!(error = %e, "failed to persist window messages");
+                    }
                 }
 
                 // Post-turn telemetry: model-triggered skill events (recorded by
@@ -730,6 +971,205 @@ impl Drop for TerminalGuard {
             PopKeyboardEnhancementFlags,
             LeaveAlternateScreen
         );
+    }
+}
+
+/// One-line startup notice for Apple Terminal users. Terminal.app forwards
+/// wheel/trackpad events to the app only while View → Allow Mouse Reporting
+/// is checked for that window (the macOS default is ON — an unchecked window
+/// is almost always a prior ⌘R/“refresh” toggle). When it is off, the swipe
+/// is swallowed by the terminal itself and scrolling silently dies.
+/// `term_program` is the value of `$TERM_PROGRAM`; only `Apple_Terminal`
+/// gets the notice.
+fn terminal_scroll_notice(term_program: Option<&str>) -> Option<String> {
+    if term_program != Some("Apple_Terminal") {
+        return None;
+    }
+    Some(
+        "提示：触控板/滚轮滚动需勾选菜单「显示 > 允许鼠标上报」；若不能滚，可用 fn+Up/fn+Down 翻页历史".to_string(),
+    )
+}
+
+/// Exit-time diagnostic. Printed to the restored terminal when an entire run
+/// in Apple Terminal never received a single wheel event even though the
+/// transcript was taller than one screen — the exact fingerprint of Allow
+/// Mouse Reporting being off in that window. Turns the previously silent
+/// failure into an actionable message right after the session ends.
+fn wheel_dead_notice(term_program: Option<&str>, saw_scroll: bool, scrollable: bool) -> Option<String> {
+    if term_program != Some("Apple_Terminal") || saw_scroll || !scrollable {
+        return None;
+    }
+    Some(
+        "提示：本次运行未收到任何滚轮事件。若触控板滚动历史无反应，请勾选菜单「显示 > 允许鼠标上报」后重试；fn+Up/fn+Down 随时可用".to_string(),
+    )
+}
+
+/// One-line digest pushed after the replayed history. The resume viewport
+/// lands on the tail of the conversation, so without this the user has no
+/// signal that the full history is loaded (or that PgUp reaches it).
+fn resume_digest_line(messages: &[ChatMessage], title: Option<String>) -> String {
+    let turns = messages
+        .iter()
+        .filter(|m| matches!(m, ChatMessage::User { ephemeral: false, .. }))
+        .count();
+    let label = title.map(|t| format!("「{t}」")).unwrap_or_default();
+    format!(
+        "↩ 已恢复会话{label}：共 {turns} 轮对话、{} 条消息，PgUp 向上翻阅历史，发送消息继续对话",
+        messages.len()
+    )
+}
+
+/// Replay historical `ChatMessage`s into the TUI transcript so the user sees
+/// the previous conversation after `--resume`.
+fn replay_messages_to_transcript(app: &mut super::app::App, messages: &[ChatMessage]) {
+    use phi_tui::lines::{LineKind, OutputLine};
+
+    app.push_system("── resumed conversation ──");
+
+    for msg in messages {
+        match msg {
+            ChatMessage::User { content, .. } => {
+                app.transcript.push_user(content);
+            }
+            ChatMessage::Assistant { content, tool_calls, .. } => {
+                // Push text content (if any).
+                if let Some(text) = content {
+                    if !text.is_empty() {
+                        let wrapped = phi_tui::wrap::wrap(text, app.transcript.wrap_width());
+                        for (i, line) in wrapped.into_iter().enumerate() {
+                            app.transcript.push(OutputLine {
+                                text: line,
+                                kind: LineKind::Normal,
+                                spans: None,
+                                original: if i == 0 { Some(text.clone()) } else { None },
+                                detail: None,
+                            });
+                        }
+                    }
+                }
+                // Push tool call markers.
+                if let Some(tcs) = tool_calls {
+                    for tc in tcs {
+                        app.transcript.push(OutputLine {
+                            text: format!("⚙ {}", tc.name),
+                            kind: LineKind::Tool,
+                            spans: None,
+                            original: None,
+                            detail: None,
+                        });
+                    }
+                }
+            }
+            ChatMessage::Tool { name, content, .. } => {
+                let label = name.as_deref().unwrap_or("tool");
+                let preview = content.lines().next().unwrap_or(content);
+                let display = if preview.len() > 120 {
+                    format!("↻ {}: {}...", label, &preview[..120])
+                } else {
+                    format!("↻ {}: {}", label, preview)
+                };
+                app.transcript.push(OutputLine {
+                    text: display,
+                    kind: LineKind::ToolResult,
+                    spans: None,
+                    original: None,
+                    detail: None,
+                });
+            }
+            _ => {} // System / Custom — already filtered, skip.
+        }
+    }
+
+    app.push_system("── end of resumed conversation ──");
+}
+
+#[cfg(test)]
+mod resume_digest_tests {
+    use super::*;
+
+    fn user(text: &str) -> ChatMessage {
+        ChatMessage::user(text)
+    }
+
+    fn assistant(text: &str) -> ChatMessage {
+        ChatMessage::Assistant {
+            content: Some(text.into()),
+            reasoning_content: None,
+            thinking_signature: None,
+            tool_calls: None,
+        }
+    }
+
+    #[test]
+    fn digest_counts_turns_and_messages_with_title() {
+        let msgs = vec![
+            user("你好"),
+            assistant("你好！"),
+            ChatMessage::Tool {
+                tool_call_id: "tc1".into(),
+                name: Some("read".into()),
+                content: "x".into(),
+            },
+            user("继续"),
+            assistant("好的"),
+        ];
+        let line = resume_digest_line(&msgs, Some("探究工程".into()));
+        assert!(line.contains("已恢复会话「探究工程」"), "{line}");
+        assert!(line.contains("共 2 轮对话"), "{line}");
+        assert!(line.contains("5 条消息"), "{line}");
+        assert!(line.contains("PgUp"), "{line}");
+    }
+
+    #[test]
+    fn digest_omits_title_when_absent() {
+        let msgs = vec![user("hi"), assistant("hello")];
+        let line = resume_digest_line(&msgs, None);
+        assert!(!line.contains("「"), "{line}");
+        assert!(line.contains("共 1 轮对话、2 条消息"), "{line}");
+    }
+
+    /// Ephemeral user messages (skill bodies) never reach the persisted
+    /// history, but if one ever did leak into a restored list it must not
+    /// inflate the turn count the user is told about.
+    #[test]
+    fn digest_does_not_count_ephemeral_as_turn() {
+        let msgs = vec![
+            ChatMessage::user_ephemeral("skill body"),
+            assistant("ok"),
+        ];
+        let line = resume_digest_line(&msgs, None);
+        assert!(line.contains("共 0 轮对话、2 条消息"), "{line}");
+    }
+
+    /// Terminal.app needs View → Allow Mouse Reporting before wheel events
+    /// reach the app; users get an actionable notice instead of a dead
+    /// trackpad. Other terminals (iTerm2, Ghostty, ...) are untouched.
+    #[test]
+    fn scroll_notice_targets_apple_terminal_only() {
+        let notice = terminal_scroll_notice(Some("Apple_Terminal")).expect("notice expected");
+        assert!(notice.contains("允许鼠标上报"), "{notice}");
+        assert!(notice.contains("fn+Up"), "{notice}");
+        assert_eq!(terminal_scroll_notice(Some("iTerm.app")), None);
+        assert_eq!(terminal_scroll_notice(Some("ghostty")), None);
+        assert_eq!(terminal_scroll_notice(None), None);
+    }
+
+    /// The exit diagnostic fires only for the full failure fingerprint in
+    /// Apple Terminal: zero wheel events all run, and there was more history
+    /// than one screen. Any wheel event, another terminal, or a short
+    /// transcript keeps the exit output clean.
+    #[test]
+    fn wheel_dead_notice_needs_apple_terminal_zero_scroll_and_history() {
+        let notice = wheel_dead_notice(Some("Apple_Terminal"), false, true).expect("notice expected");
+        assert!(notice.contains("未收到任何滚轮事件"), "{notice}");
+        assert!(notice.contains("允许鼠标上报"), "{notice}");
+        // Saw a wheel event: reporting works, stay quiet.
+        assert_eq!(wheel_dead_notice(Some("Apple_Terminal"), true, true), None);
+        // Nothing to scroll: the message would be noise.
+        assert_eq!(wheel_dead_notice(Some("Apple_Terminal"), false, false), None);
+        // Other terminals handle wheel natively or via their own settings.
+        assert_eq!(wheel_dead_notice(Some("iTerm.app"), false, true), None);
+        assert_eq!(wheel_dead_notice(None, false, true), None);
     }
 }
 
@@ -869,5 +1309,239 @@ mod model_command_tests {
         let (model_store, router) = setup();
         let response = handle_model_command("  /model   gpt-4-turbo  ", &model_store, &router);
         assert_eq!(response, Some("Main model set to: gpt-4-turbo".to_string()));
+    }
+}
+
+#[cfg(test)]
+mod skill_turn_log_tests {
+    use super::*;
+    use crate::skills::{refresh_catalog, render_catalog};
+    use phi_agent::resolve_session;
+
+    /// Fixture with one session-scope skill (frontmatter default) and one
+    /// turn-scope skill (`scope: turn`).
+    fn fixture_skill_dir(tmp: &std::path::Path) -> std::path::PathBuf {
+        let session_dir = tmp.join("skills").join("catalog-skill");
+        std::fs::create_dir_all(&session_dir).unwrap();
+        std::fs::write(
+            session_dir.join("SKILL.md"),
+            "---\nname: catalog-skill\ndescription: guard fixture skill\n\
+             user-invocable: true\n---\n\nEPHEMERAL-FIXTURE-BODY skill instructions for: $ARGUMENTS",
+        )
+        .unwrap();
+        let turn_dir = tmp.join("skills").join("oneshot-skill");
+        std::fs::create_dir_all(&turn_dir).unwrap();
+        std::fs::write(
+            turn_dir.join("SKILL.md"),
+            "---\nname: oneshot-skill\ndescription: one-shot fixture skill\n\
+             user-invocable: true\nscope: turn\n---\n\nONESHOT-FIXTURE-BODY instructions",
+        )
+        .unwrap();
+        tmp.join("skills")
+    }
+
+    /// Spec §Verification (skill-lifetime v3): a session-scope skill turn
+    /// (frontmatter default) submits the RAW command — `$ARGUMENTS` reach the
+    /// model through it — while the active list gains the entry and the
+    /// composed prompt gains the Active Skills section. `turn_NNN.jsonl`'s
+    /// `user_input` stays the raw command, never the body.
+    #[test]
+    fn session_scope_turn_keeps_raw_command_and_activates_skill() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skill_dir = fixture_skill_dir(tmp.path());
+        let resolver = SkillResolver::from_dirs(&[skill_dir]);
+        let session_ctx = resolve_session(Some("skill-session-activate"), tmp.path()).unwrap();
+
+        // agent_loop wiring: resolve → dispatch by scope.
+        let input = "/catalog-skill fix the parser".to_string();
+        let original_input = input.clone();
+        let resolved = resolver.resolve_with_meta(&input);
+        let turn_input = match &resolved {
+            None => original_input.clone(),
+            Some(r) if r.scope == SkillScope::Turn => r.body.clone(),
+            Some(_) => original_input.clone(),
+        };
+
+        let r = resolved.expect("slash command must resolve (fixture mismatch)");
+        assert_eq!(r.scope, SkillScope::Session, "frontmatter default is session");
+        assert_eq!(
+            turn_input, original_input,
+            "session-scope turn must submit the raw command, not the body"
+        );
+        assert!(
+            !turn_input.contains("EPHEMERAL-FIXTURE-BODY"),
+            "raw command must not leak the body"
+        );
+
+        // Activation side effects: entry in the list, section in the prompt,
+        // persisted for resume.
+        let mut active: Vec<ActiveSkillEntry> = Vec::new();
+        let entry = ActiveSkillEntry { name: r.name.clone(), body: r.body.clone() };
+        active.push(entry);
+        let base = crate::agent::compose_system_prompt(&resolver);
+        let prompt = append_active_skills(&base, &active);
+        assert!(prompt.starts_with(&base), "base prompt must be preserved verbatim");
+        assert!(
+            prompt.contains("## Active Skills") && prompt.contains("EPHEMERAL-FIXTURE-BODY"),
+            "composed prompt must contain the baked section"
+        );
+        save_active_skills(&session_ctx.session_dir, &active).unwrap();
+        assert_eq!(
+            load_active_skills(&session_ctx.session_dir),
+            active,
+            "persisted list must round-trip"
+        );
+
+        save_turn_log(&session_ctx, 1, &[], &original_input).unwrap();
+        let log = std::fs::read_to_string(session_ctx.turn_path(1)).unwrap();
+        let meta: serde_json::Value =
+            serde_json::from_str(log.lines().next().unwrap()).unwrap();
+        assert_eq!(
+            meta["user_input"], "/catalog-skill fix the parser",
+            "turn JSONL user_input must be the raw command"
+        );
+        assert!(
+            !log.contains("EPHEMERAL-FIXTURE-BODY"),
+            "turn JSONL must never contain the skill body: {log}"
+        );
+    }
+
+    /// Turn-scope skills (`scope: turn`) keep the v2 ephemeral contract: the
+    /// resolved body is what gets submitted (as ephemeral input), and the
+    /// active list is untouched.
+    #[test]
+    fn turn_scope_turn_submits_body_and_skips_activation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skill_dir = fixture_skill_dir(tmp.path());
+        let resolver = SkillResolver::from_dirs(&[skill_dir]);
+
+        let input = "/oneshot-skill".to_string();
+        let original_input = input.clone();
+        let resolved = resolver.resolve_with_meta(&input);
+        let turn_input = match &resolved {
+            None => original_input.clone(),
+            Some(r) if r.scope == SkillScope::Turn => r.body.clone(),
+            Some(_) => original_input.clone(),
+        };
+
+        let r = resolved.expect("slash command must resolve (fixture mismatch)");
+        assert_eq!(r.scope, SkillScope::Turn, "scope: turn must parse");
+        assert_eq!(
+            turn_input, r.body,
+            "turn-scope turn must submit the resolved body (ephemeral path)"
+        );
+        // No activation: the dispatcher's Session branch never runs for Turn.
+        assert!(
+            !turn_input.is_empty() && turn_input != original_input,
+            "body must differ from the raw command (fixture mismatch)"
+        );
+    }
+
+    /// Non-skill turns behave exactly as before: no resolve transform, no
+    /// ephemeral dispatch, no activation, log records the verbatim input.
+    #[test]
+    fn turn_log_records_plain_input_unchanged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let session_ctx = resolve_session(Some("skill-ephemeral-plain"), tmp.path()).unwrap();
+
+        let input = "fix the flaky test in app.rs".to_string();
+        let original_input = input.clone();
+        let resolver = SkillResolver::from_dirs(&[tmp.path().join("nonexistent")]);
+        let resolved = resolver.resolve_with_meta(&input);
+        let turn_input = match &resolved {
+            None => original_input.clone(),
+            Some(r) if r.scope == SkillScope::Turn => r.body.clone(),
+            Some(_) => original_input.clone(),
+        };
+
+        assert!(resolved.is_none(), "plain input must not resolve to a skill");
+        assert_eq!(
+            turn_input, original_input,
+            "plain input must pass through untouched"
+        );
+
+        save_turn_log(&session_ctx, 1, &[], &original_input).unwrap();
+        let log = std::fs::read_to_string(session_ctx.turn_path(1)).unwrap();
+        let meta: serde_json::Value =
+            serde_json::from_str(log.lines().next().unwrap()).unwrap();
+        assert_eq!(meta["user_input"], "fix the flaky test in app.rs");
+    }
+
+    /// Verification #3: re-triggering a session-scope skill (with different
+    /// `$ARGUMENTS`, hence a different resolved body) must replace the entry
+    /// in place — exactly one entry per name, exactly one section copy.
+    #[test]
+    fn repeated_session_activation_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let skill_dir = fixture_skill_dir(tmp.path());
+        let resolver = SkillResolver::from_dirs(&[skill_dir]);
+
+        // Two triggers, different args → different bodies ($ARGUMENTS baked in).
+        let first = resolver.resolve_with_meta("/catalog-skill task one").unwrap();
+        let second = resolver.resolve_with_meta("/catalog-skill task two").unwrap();
+        assert_ne!(first.body, second.body, "args must change the resolved body");
+
+        // The dispatcher's update rule: find by name → replace body.
+        let mut active: Vec<ActiveSkillEntry> = Vec::new();
+        for r in [&first, &second] {
+            let entry = ActiveSkillEntry { name: r.name.clone(), body: r.body.clone() };
+            if let Some(existing) = active.iter_mut().find(|e| e.name == entry.name) {
+                existing.body = entry.body;
+            } else {
+                active.push(entry);
+            }
+        }
+
+        assert_eq!(active.len(), 1, "re-trigger must not duplicate the entry");
+        assert_eq!(active[0].body, second.body, "latest trigger wins");
+
+        let prompt =
+            append_active_skills(crate::agent::compose_system_prompt(&resolver).as_str(), &active);
+        assert_eq!(
+            prompt.matches("### skill: catalog-skill").count(),
+            1,
+            "section must carry exactly one copy of the skill"
+        );
+    }
+
+    /// Cross-layer coexistence: the Active Skills section is appended AFTER
+    /// the catalog region, and bodies are H2-demoted, so the catalog-refresh
+    /// middleware (which re-splices the `## Skills` region every turn) can
+    /// never eat the baked section — even when a skill body forges the
+    /// catalog anchor.
+    #[test]
+    fn active_skills_section_survives_catalog_refresh() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("skills").join("forgey");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: forgey\ndescription: anchor forger\nuser-invocable: true\n---\n\n\
+             step one\n\n## Skills\n\nforge the anchor\n",
+        )
+        .unwrap();
+        let resolver = SkillResolver::from_dirs(&[tmp.path().join("skills")]);
+
+        let active = vec![ActiveSkillEntry {
+            name: "forgey".to_string(),
+            body: resolver.resolve("/forgey").unwrap(),
+        }];
+        let composed = append_active_skills(
+            crate::agent::compose_system_prompt(&resolver).as_str(),
+            &active,
+        );
+
+        // The baked body must arrive demoted — no forged H2 anchor.
+        assert!(
+            !composed.contains("\n\n## Skills\n\nforge"),
+            "demotion must neutralize the forged catalog anchor"
+        );
+        // Simulate the per-turn middleware re-splice with a fresh catalog.
+        let fresh = render_catalog(&resolver).expect("fixture skill must be visible");
+        let refreshed = refresh_catalog(&composed, &fresh);
+        assert!(
+            refreshed.contains("## Active Skills") && refreshed.contains("forge the anchor"),
+            "Active Skills section must survive catalog refresh"
+        );
     }
 }

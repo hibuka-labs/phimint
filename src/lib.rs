@@ -13,5 +13,6 @@ pub mod gate;
 pub mod model_store;
 pub mod router;
 pub mod skills;
+pub mod title_gen;
 pub mod tools;
 pub mod ui;

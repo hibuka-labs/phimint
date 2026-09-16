@@ -33,9 +33,6 @@ pub use phi_tui::selection::{
     ContextMenu, Selection, CONTEXT_MENU_H, CONTEXT_MENU_W, context_menu_pos,
 };
 
-/// Lines a PageUp/PageDown scrolls the output by.
-const SCROLL_STEP: usize = 1;
-
 /// The phase of a running turn, driven by the event stream (§9.6 state machine).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Phase {
@@ -111,6 +108,11 @@ pub struct SubAgentState {
 /// (stale) last tool event to `writing...`. Chosen above typical inter-tool
 /// gaps so it never flashes during an active tool loop.
 pub(crate) const CHILD_WRITING_HINT_AFTER: Duration = Duration::from_secs(20);
+
+/// Lines per wheel tick. 1 is the finest step the terminal's line grid
+/// allows — a trackpad swipe is a stream of ticks, so it composes into the
+/// smoothest possible motion; PgUp/PgDn stay the fast path for history.
+pub(crate) const WHEEL_STEP: usize = 1;
 
 /// Whether the panel should show `writing...` for this sub-agent: it is
 /// Running, its last tool call has finished (or none yet), and the tool feed
@@ -619,9 +621,13 @@ impl App {
             return None;
         };
 
+        // Capture old prefix BEFORE handle_key modifies it (same pattern as handle_mention_key)
+        let old_prefix = s.prefix().to_string();
+
         match s.handle_key(code) {
             CompleterAction::Cancelled => {
-                let to_delete = 1 + s.prefix().chars().count();
+                // Delete "/" + old_prefix from composer
+                let to_delete = 1 + old_prefix.chars().count();
                 self.slash = None;
                 for _ in 0..to_delete {
                     self.composer.backspace();
@@ -629,7 +635,8 @@ impl App {
                 None
             }
             CompleterAction::Selected((name, _)) => {
-                let to_delete = 1 + s.prefix().chars().count();
+                // Delete "/" + old_prefix from composer, insert selected command
+                let to_delete = 1 + old_prefix.chars().count();
                 self.slash = None;
                 for _ in 0..to_delete {
                     self.composer.backspace();
@@ -637,7 +644,18 @@ impl App {
                 self.composer.insert_str(&format!("/{name} "));
                 None
             }
-            CompleterAction::Continue => None,
+            CompleterAction::Continue => {
+                // Sync composer with completer prefix (composer is source of truth for display)
+                let new_prefix = s.prefix().to_string();
+                if new_prefix != old_prefix {
+                    // Prefix changed (char typed or backspace): replace in composer
+                    for _ in 0..old_prefix.chars().count() {
+                        self.composer.backspace();
+                    }
+                    self.composer.insert_str(&new_prefix);
+                }
+                None
+            }
             CompleterAction::Unhandled(_) => None,
         }
     }
@@ -658,14 +676,34 @@ impl App {
         }
     }
 
-    /// Scroll up by `SCROLL_STEP` lines. Returns `true` if the viewport moved.
+    /// Scroll up by half a screen (one PageUp press). Returns `true` if the
+    /// viewport moved.
     pub(crate) fn scroll_up(&mut self) -> bool {
-        self.viewport.scroll_up(SCROLL_STEP)
+        self.viewport.scroll_up(self.viewport.page_step())
     }
 
-    /// Scroll down by `SCROLL_STEP` lines. Returns `true` if the viewport moved.
+    /// Scroll down by half a screen (one PageDown press). Returns `true` if
+    /// the viewport moved.
     pub(crate) fn scroll_down(&mut self) -> bool {
-        self.viewport.scroll_down(SCROLL_STEP)
+        self.viewport.scroll_down(self.viewport.page_step())
+    }
+
+    /// Snap back to the newest lines (re-enter follow-bottom). Used on
+    /// submit so the reply streams into view.
+    pub(crate) fn scroll_to_bottom(&mut self) {
+        self.viewport.scroll_to_bottom();
+    }
+
+    /// Scroll up by a few lines (one wheel tick). A trackpad swipe delivers
+    /// a rapid stream of wheel events, so a small step composes into smooth
+    /// motion; the half-page step stays reserved for PgUp/PgDn presses.
+    pub(crate) fn scroll_wheel_up(&mut self) -> bool {
+        self.viewport.scroll_up(WHEEL_STEP)
+    }
+
+    /// Scroll down by a few lines (one wheel tick).
+    pub(crate) fn scroll_wheel_down(&mut self) -> bool {
+        self.viewport.scroll_down(WHEEL_STEP)
     }
 
     /// True while a turn or a child wait is in flight — gates the event loop's
@@ -706,7 +744,7 @@ impl App {
                 if let Some(n) = &self.notice {
                     n.clone()
                 } else {
-                    "Idle - Enter send | Shift+Enter newline | Ctrl+Y copy | PgUp/PgDn scroll | Ctrl+C quit".to_string()
+                    "Idle - Enter send | Shift+Enter newline | Ctrl+Y copy | 滚轮/fn+Up/Down scroll | Ctrl+C quit".to_string()
                 }
             }
             AgentStatus::Waiting { running, bg } => match (*running, *bg) {

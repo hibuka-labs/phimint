@@ -178,8 +178,11 @@ impl App {
                     self.push_user(&text);
                     self.transcript.clear_plan();
                     self.running = true;
-                    self.viewport.follow_bottom = true;
-                    self.viewport.scroll_offset = 0;
+                    // Follow the conversation: the user just committed to a
+                    // turn, so the reply must stream into view. If they were
+                    // scrolled up reading history, this is the moment their
+                    // reading position ends.
+                    self.scroll_to_bottom();
                     self.status = AgentStatus::Running {
                         phase: Phase::Thinking,
                     };

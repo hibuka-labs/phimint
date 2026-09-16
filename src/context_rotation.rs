@@ -24,8 +24,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use async_trait::async_trait;
 
 use phi_agent::{
-    ContextCompaction, SessionId, TokenBudgetAction, TokenBudgetCore, estimate_messages_tokens,
-    ChatMessage,
+    ChatMessage, ContextCompaction, SessionId, TokenBudgetAction, TokenBudgetCore, clear_messages_jsonl,
+    estimate_messages_tokens,
 };
 
 use phi_kernel_tools::context_rotation::{HistoryStore, NotesStore, read_thread_hint, extract_ledger};
@@ -161,6 +161,13 @@ impl ContextCompaction for TokenBudgetCompactor {
                         message_count = messages.len(),
                         "archived window messages to history"
                     );
+                    // Archive succeeded — clear messages.jsonl so that a
+                    // future resume does not re-inject the already-archived
+                    // window (the history tool can retrieve it).
+                    let session_dir = self.base_dir.join("sessions").join(&self.session_id);
+                    if let Err(e) = clear_messages_jsonl(&session_dir) {
+                        tracing::warn!(error = %e, "failed to clear messages.jsonl after archive");
+                    }
                 }
 
                 // 2. The model's own handoff note, if it wrote one.

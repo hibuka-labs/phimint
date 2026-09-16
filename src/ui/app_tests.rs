@@ -250,6 +250,71 @@ fn submit_requires_nonempty_and_not_running() {
     assert_eq!(app.handle_key(KeyCode::Enter, KeyModifiers::NONE), None);
 }
 
+/// Regression (user report 2026-09-16, round 3): after resuming, the user
+/// reads the history scrolled up; on submit the reply must stream into
+/// view, not land below the fold ("输入后没有回应" was the reply being
+/// rendered off-screen while the viewport stayed pinned at the head).
+#[test]
+fn submit_scrolls_back_to_bottom_so_reply_is_visible() {
+    let mut app = App::new();
+    for i in 0..100 {
+        app.push_system(&format!("history line {i}"));
+    }
+    // Scroll up into the history (as after reading a resumed conversation).
+    assert!(app.scroll_up());
+    assert!(!app.viewport.follow_bottom, "precondition: scrolled up");
+
+    let action = submit(&mut app, "好的");
+    assert!(matches!(action, Action::Submit(_)));
+
+    // Submit re-enters follow-bottom: the newest lines (the user echo now,
+    // the reply as it streams) are what's on screen.
+    assert!(app.viewport.follow_bottom, "submit must follow the bottom");
+    assert!(!app.viewport.pin_top);
+    let total = app.transcript.len();
+    assert_eq!(
+        app.viewport.window_range(total, 40),
+        total.saturating_sub(40)..total,
+        "the reply lands on screen, not below the fold"
+    );
+}
+
+/// One PageUp/PageDown press moves half a screen, not one line: a resumed
+/// conversation runs to hundreds of lines, and 1-line paging made the
+/// history effectively unnavigable ("只显示第一屏").
+#[test]
+fn pagedown_pages_half_a_screen() {
+    let mut app = App::new();
+    for i in 0..200 {
+        app.push_system(&format!("history line {i}"));
+    }
+    let total = app.transcript.len();
+    assert!(total > 60, "precondition: enough content to page (got {total})");
+    // Emulate a rendered frame so the viewport knows its geometry.
+    app.viewport.viewport_height = 40;
+    app.viewport.rendered_total = total;
+    assert_eq!(app.viewport.page_step(), 20, "half of the 40-row viewport");
+
+    // Fresh boot follows the bottom: PgDn there is a no-op.
+    assert!(!app.scroll_down(), "already at the bottom: no movement");
+
+    // One PgUp press leaves follow-bottom and jumps a full half-screen.
+    assert!(app.scroll_up());
+    assert!(!app.viewport.follow_bottom);
+    let range = app.viewport.window_range(total, 40);
+    assert_eq!(range.start, total - 40 - 20, "one PgUp = half a screen");
+
+    // PgDn walks back down and re-enters follow at the bottom.
+    assert!(app.scroll_down());
+    assert!(app.viewport.follow_bottom);
+    assert_eq!(
+        app.viewport.window_range(total, 40),
+        total.saturating_sub(40)..total,
+        "back at the newest lines"
+    );
+}
+
+
 #[test]
 fn submit_echoes_user_message() {
     let mut app = App::new();
@@ -442,7 +507,7 @@ fn scroll_up_steps_from_bottom_not_noop() {
     }
     app.scroll_up();
     assert!(!app.viewport.follow_bottom);
-    assert_eq!(app.viewport.scroll_offset, SCROLL_STEP);
+    assert_eq!(app.viewport.scroll_offset, app.viewport.page_step());
 }
 
 #[test]
@@ -451,15 +516,47 @@ fn scroll_down_reenters_follow_bottom() {
     for i in 0..100 {
         app.transcript.push(OutputLine { spans: None, original: None, text: format!("line {i}"), kind: LineKind::Normal, detail: None });
     }
+    let step = app.viewport.page_step();
     app.scroll_up();
     app.scroll_up();
-    assert_eq!(app.viewport.scroll_offset, 2 * SCROLL_STEP);
+    assert_eq!(app.viewport.scroll_offset, 2 * step);
     app.scroll_down();
-    assert_eq!(app.viewport.scroll_offset, SCROLL_STEP);
-    app.viewport.scroll_offset = SCROLL_STEP;
+    assert_eq!(app.viewport.scroll_offset, step);
+    app.viewport.scroll_offset = step;
     app.scroll_down();
     assert!(app.viewport.follow_bottom);
     assert_eq!(app.viewport.scroll_offset, 0);
+}
+
+#[test]
+fn wheel_step_is_small_so_a_swipe_composes_smoothly() {
+    let mut app = App::new();
+    for i in 0..100 {
+        app.transcript.push(OutputLine { spans: None, original: None, text: format!("line {i}"), kind: LineKind::Normal, detail: None });
+    }
+    // A few wheel ticks walk a few lines each — not half a screen per tick.
+    app.scroll_wheel_up();
+    app.scroll_wheel_up();
+    assert!(!app.viewport.follow_bottom);
+    assert_eq!(app.viewport.scroll_offset, 2 * WHEEL_STEP);
+    // Wheeling back down re-enters follow-bottom exactly at the tail.
+    for _ in 0..=WHEEL_STEP {
+        app.scroll_wheel_down();
+    }
+    assert!(app.viewport.follow_bottom);
+    assert_eq!(app.viewport.scroll_offset, 0);
+}
+
+#[test]
+fn keyboard_page_step_stays_half_screen_despite_wheel_step() {
+    let mut app = App::new();
+    for i in 0..100 {
+        app.transcript.push(OutputLine { spans: None, original: None, text: format!("line {i}"), kind: LineKind::Normal, detail: None });
+    }
+    app.viewport.set_visible(1000, 40); // a real render: 40-row pane
+    app.scroll_up();
+    assert_eq!(app.viewport.scroll_offset, app.viewport.page_step());
+    assert!(app.viewport.page_step() > WHEEL_STEP);
 }
 
 fn pending_approval(app: &mut App) {
@@ -1246,10 +1343,59 @@ fn slash_filters_by_prefix() {
 
     let s = app.slash().unwrap();
     let names: Vec<&str> = s.entries().iter().map(|(n, _)| n.as_str()).collect();
-    assert!(names.contains(&"commit"));
+    // "commit" starts with 'c' → kept
+    assert!(names.contains(&"commit"), "commit should match prefix 'c'");
+    // "requesting-code-review" has 'c' but does NOT start with 'c' → filtered out
+    assert!(!names.contains(&"requesting-code-review"), "requesting-code-review should not match prefix 'c'");
+    // "review" does not start with 'c' → filtered out
+    assert!(!names.contains(&"review"), "review should not match prefix 'c'");
+    // Only "commit" remains
+    assert_eq!(names.len(), 1, "only 'commit' should match prefix 'c'");
+}
+
+#[test]
+fn slash_filters_progressively() {
+    let mut app = app_with_skills();
+    app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+    // All 3 visible initially
+    assert_eq!(app.slash().unwrap().entries().len(), 3);
+
+    // Type 'r' → "requesting-code-review" and "review" start with 'r'
+    app.handle_key(KeyCode::Char('r'), KeyModifiers::NONE);
+    let names: Vec<&str> = app.slash().unwrap().entries().iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names.len(), 2, "'r' should match 2 skills");
     assert!(names.contains(&"requesting-code-review"));
-    // "review" does not contain 'c' → filtered out
-    assert!(!names.contains(&"review"));
+    assert!(names.contains(&"review"));
+
+    // Type 'e' → "review" starts with "re", "requesting-code-review" starts with "re"
+    app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
+    let names: Vec<&str> = app.slash().unwrap().entries().iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names.len(), 2, "'re' should still match 2 skills");
+
+    // Type 'v' → only "review" starts with "rev"
+    app.handle_key(KeyCode::Char('v'), KeyModifiers::NONE);
+    let names: Vec<&str> = app.slash().unwrap().entries().iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names.len(), 1, "'rev' should match only 'review'");
+    assert!(names.contains(&"review"));
+
+    // Composer should show "/rev"
+    assert_eq!(app.composer.text(), "/rev");
+}
+
+#[test]
+fn slash_backspace_widens_filter() {
+    let mut app = app_with_skills();
+    app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+    app.handle_key(KeyCode::Char('r'), KeyModifiers::NONE);
+    app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
+    app.handle_key(KeyCode::Char('v'), KeyModifiers::NONE);
+    assert_eq!(app.slash().unwrap().entries().len(), 1); // only "review"
+
+    // Backspace → "re" → both "review" and "requesting-code-review" match again
+    app.handle_key(KeyCode::Backspace, KeyModifiers::NONE);
+    let names: Vec<&str> = app.slash().unwrap().entries().iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names.len(), 2, "backspace to 're' should widen filter");
+    assert_eq!(app.composer.text(), "/re");
 }
 
 #[test]

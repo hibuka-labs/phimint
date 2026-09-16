@@ -4,14 +4,14 @@
 //! stays in the bar while output scrolls above it).
 
 // Modules live in the lib crate (src/lib.rs) so tests/ can exercise them.
-use phimint::{agent, approval, banner, config, model_store, router, skills, ui};
+use phimint::{agent, approval, banner, config, model_store, router, skills, title_gen, ui};
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use phi_agent::{SessionContext, resolve_session};
+use phi_agent::{SessionContext, load_session_messages, resolve_session};
 
 #[derive(Parser)]
 #[command(name = "phimint", version, about = "AI coding agent built on phi-agent")]
@@ -58,8 +58,13 @@ struct Cli {
 
     /// Session ID (defaults to PHI_SESSION_ID env, else auto-generated).
     /// Reuse the same ID across runs to append turns to the same log directory.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "resume")]
     session: Option<String>,
+
+    /// Resume a previous session. Shows an interactive picker to choose from
+    /// recent sessions. Conflicts with --session.
+    #[arg(long)]
+    resume: bool,
 
     /// Log level for the session.log file (debug/info/warn/error)
     #[arg(long, default_value = "info")]
@@ -204,11 +209,41 @@ async fn main() -> Result<()> {
     // human-readable tracing log is `session.log`, and each turn's structured
     // event stream (tool calls, text deltas, …) is `turn_NNN.jsonl`.
     let base_dir = sessions_base_dir();
-    let session_ctx = resolve_session(cli.session.as_deref(), &base_dir)?;
-    init_logging(&session_ctx, &cli.log_level).await?;
 
     // Cleanup expired session data (history, notes, sessions) at startup.
     cleanup_expired_data(&base_dir, cli.session_retention_days);
+
+    // Process any pending title generation marker from a previous exit.
+    // Runs in the main tokio runtime — the LLM provider is healthy here.
+    {
+        let pending_provider = {
+            let mut store = model_store.lock().await;
+            store.get_or_create_provider("lite").ok()
+        };
+        if let Some(p) = pending_provider {
+            let sessions_dir = base_dir.join("sessions");
+            if let Err(e) = title_gen::process_pending_title(p, &sessions_dir).await {
+                tracing::warn!(error = %e, "failed to process pending title");
+            }
+        }
+    }
+
+    // Resolve session: --resume shows a picker; otherwise normal resolve.
+    // Session is resolved BEFORE agent::build so that token_budget_opts
+    // (which needs session_id for history/notes stores) is available.
+    let session_ctx = if cli.resume {
+        let picked_dir = ui::picker::show_picker(&base_dir, None)?
+            .context("No session selected")?;
+        let picked_id = picked_dir
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        // resolve_session acquires the lock and refreshes last_active_at.
+        resolve_session(Some(&picked_id), &base_dir)?
+    } else {
+        resolve_session(cli.session.as_deref(), &base_dir)?
+    };
+    init_logging(&session_ctx, &cli.log_level).await?;
 
     // Token-budget context management is always on (window rotation +
     // history/notes tools instead of LLM summarization). `--token-budget`
@@ -234,7 +269,20 @@ async fn main() -> Result<()> {
         skills::default_skill_dirs(),
         Some(token_budget_opts),
     )?;
-    let session = agent.create_session().await;
+
+    // Create or resume the runtime session.
+    let (session, resume_messages) = if cli.resume {
+        let messages = load_session_messages(&session_ctx.session_dir)
+            .context("Failed to load session messages")?;
+        let replay = messages.clone(); // kept for TUI transcript replay
+        let session = agent
+            .resume_session(messages)
+            .await
+            .context("Failed to resume session")?;
+        (session, Some(replay))
+    } else {
+        (agent.create_session().await, None)
+    };
 
     // Detect terminal color scheme for the startup banner palette.
     // `--color-scheme` flag takes priority; `auto` reads `$COLORFGBG` (set by
@@ -247,7 +295,7 @@ async fn main() -> Result<()> {
     let show_banner = cli.banner != "off";
     let version = env!("CARGO_PKG_VERSION");
 
-    ui::run_tui(agent, skill_resolver, skill_telemetry, bg_registry, session, session_ctx, workspace, approval_rx, scheme, show_banner, version, model_store, router).await
+    ui::run_tui(agent, skill_resolver, skill_telemetry, bg_registry, session, session_ctx, base_dir, workspace, approval_rx, scheme, show_banner, version, model_store, router, resume_messages).await
 }
 
 /// Base directory for all phimint session data (~/.phimint).
