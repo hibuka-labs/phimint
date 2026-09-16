@@ -11,3 +11,6 @@
 
 # local docs (not tracked)
 docs/
+
+# local phimint data dir (sessions/logs created by in-repo runs)
+.phimint/
