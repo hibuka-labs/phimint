@@ -169,7 +169,7 @@ async fn call_llm_for_title(
     };
     
     // Remove any quotes or special characters that might have been added
-    let title = title.trim_matches(|c: char| c == '"' || c == ''' || c == '「' || c == '」');
+    let title = title.trim_matches(|c: char| c == '"' || c == '\'' || c == '「' || c == '」');
     
     Ok(title.to_string())
 }
