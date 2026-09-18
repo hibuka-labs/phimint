@@ -12,11 +12,13 @@ path = "src/main.rs"
 [dependencies]
 # The framework (library) we build on. `shell` enables the local_shell tool;
 # `multi-agent` enables the spawn/send/wait/close sub-agent tools; `skill`
-# enables the /skill slash command (PromptSkill). The facade re-exports
+# enables the /skill slash command (PromptSkill); `memory` enables persistent
+# auto-memory (the four memory_* tools + MEMORY.md index injection, Phase 9c).
+# The facade re-exports
 # everything else the product needs (llm_trait, create_provider, guard,
 # max_turns_nudge, registry snapshots, fan-in router) — no direct deps on
 # agent-base / agent-works / phi-kernel-tools / llm-unified.
-phi-agent = { path = "../phi-agent", features = ["shell", "multi-agent", "skill"] }
+phi-agent = { path = "../phi-agent", features = ["shell", "multi-agent", "skill", "memory"] }
 # Context rotation tools (notes, history, handoff) — the I/O layer.
 phi-kernel-tools = { path = "../phi-kernel-tools", features = ["context", "shell"] }
 # Chat-style TUI components (lines/transcript/stream/markdown/completion/…),
@@ -37,6 +39,8 @@ serde_json = "1"
 clap = { version = "4", features = ["derive", "env"] }
 dirs = "5"
 thiserror = "2"
+fs2 = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
 
 # UI: ratatui for the TUI, crossterm as its backend + raw-mode key/paste input.
 ratatui = "0.30"

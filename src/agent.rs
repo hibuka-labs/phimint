@@ -7,7 +7,8 @@ use anyhow::Result;
 use phi_agent::{
     ApprovalHandler, ChildPermissionMode, ControlConfig, DefaultGuard, DefaultGuardConfig,
     LocalShellTool, MaxTurnsNudgeConfig, MaxTurnsNudgeMiddleware, MemoryConfig, MultiAgentConfig,
-    PhiAgent, PhiAgentConfig, ReasoningEffort, ReasoningOnlyAction, TokenBudgetConfig,
+    PhiAgent, PhiAgentConfig, ReasoningEffort, ReasoningOnlyAction, RepeatToolLimitConfig,
+    RepeatToolLimitMiddleware, TokenBudgetConfig,
     TokenBudgetCore, ToolPolicy, base_agent_builder_no_compression,
     base_agent_builder_with_excludes,
 };
@@ -98,9 +99,19 @@ Long-running commands (build, test, install) should use `background: true` to av
 After starting a background task, you can edit files or run other commands while it runs.
 Use `task_output` with `wait: true` when you need the results.
 
-Important: background tasks do NOT notify you on completion. You must actively
-call `task_output(wait: true)` to collect results before reporting success to the user.
-NEVER assume a background task succeeded without checking its output."#;
+Background tasks notify you when all tasks finish — the system starts a synthetic
+turn so you can fetch each result. If the synthetic turn hasn't arrived yet, call
+`task_output(wait: true)` to block until output is available.
+NEVER assume a background task succeeded without checking its output.
+
+## Waiting for async work — protocol comparison
+
+| Kind | Wait method | Polling |
+|---|---|---|
+| Sub-agents | End your turn. Reports are pushed to you automatically on the next turn. | **NEVER poll** — repeated `list_agents` burns tokens. |
+| Background tasks | Wait for the synthetic notification turn, or call `task_output(wait: true)`. | Do NOT poll in a loop — use `wait: true` once. |
+
+These two work types use **opposite** delivery mechanisms — do not confuse them."#;
 
 /// Appended to system prompt when token-budget context management is enabled.
 const TOKEN_BUDGET_PROMPT_SUFFIX: &str = r#"
@@ -458,6 +469,13 @@ pub fn build(
             Summarize what was accomplished and any remaining tasks."
             .to_string(),
     }));
+
+    // Repeat-tool limit: break poll loops — repeated identical tool calls.
+    // Nudge at 5 identical calls (per fingerprint, cumulative per run);
+    // hard-block at 10 (discards pending calls, forces text-only summary).
+    builder = builder.middleware(RepeatToolLimitMiddleware::new(
+        RepeatToolLimitConfig::default(),
+    ));
 
     // Phase 6a: forced-verify gate. When the agent edits files and then tries to
     // report "done" without running `verify`, this middleware suppresses that
@@ -990,10 +1008,14 @@ mod prompt_guard_tests {
     }
 
     #[test]
-    fn prompt_warns_no_notification_on_background_completion() {
+    fn prompt_explains_background_notification_semantics() {
+        // bg_wake actually pushes a synthetic turn; the prompt now
+        // accurately reflects this (session 20260914_50cf809d found the
+        // old "do NOT notify" wording contradicted the mechanism and
+        // contributed to the protocol confusion with sub-agents).
         assert!(
-            SYSTEM_PROMPT.contains("do NOT notify you on completion"),
-            "system prompt must warn that background tasks don't notify"
+            SYSTEM_PROMPT.contains("Background tasks notify you when all tasks finish"),
+            "system prompt must accurately describe bg_wake notification"
         );
         assert!(
             SYSTEM_PROMPT.contains("NEVER assume a background task succeeded"),
