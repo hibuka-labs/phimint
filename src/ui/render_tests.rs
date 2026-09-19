@@ -93,6 +93,7 @@ fn draw_with_pending_approval_popup() {
             action_key: None,
             risk_level: phi_agent::RiskLevel::Destructive,
             raw: None,
+            source: None,
         },
         decision_tx: tx,
     });
@@ -112,6 +113,7 @@ fn snapshot_text_captures_layout_and_popup() {
             action_key: None,
             risk_level: phi_agent::RiskLevel::Sensitive,
             raw: None,
+            source: None,
         },
         decision_tx: tx,
     });
@@ -120,6 +122,55 @@ fn snapshot_text_captures_layout_and_popup() {
     assert!(text.contains("approval"), "popup title missing:\n{text}");
     assert!(text.contains("do a thing"), "composer content missing:\n{text}");
     assert!(text.contains('\n'), "snapshot should be multi-line:\n{text}");
+}
+
+#[test]
+fn approval_popup_shows_sub_agent_source() {
+    let mut app = App::new();
+    let (tx, _rx) = tokio::sync::oneshot::channel();
+    app.approval_queue.push_back(crate::approval::ApprovalItem {
+        request: phi_agent::ApprovalRequest {
+            title: "write_file".into(),
+            message: "Write file: src/lib.rs".into(),
+            action_key: None,
+            risk_level: phi_agent::RiskLevel::Sensitive,
+            raw: None,
+            source: Some("root/coder-1".into()),
+        },
+        decision_tx: tx,
+    });
+    let text = snapshot_text(&mut app, 80, 24);
+    assert!(
+        text.contains("root/coder-1"),
+        "popup must name the requesting sub-agent:\n{text}"
+    );
+    assert!(
+        text.contains("sub-agent"),
+        "popup must label the source as a sub-agent:\n{text}"
+    );
+}
+
+#[test]
+fn approval_popup_without_source_renders_unchanged() {
+    let mut app = App::new();
+    let (tx, _rx) = tokio::sync::oneshot::channel();
+    app.approval_queue.push_back(crate::approval::ApprovalItem {
+        request: phi_agent::ApprovalRequest {
+            title: "write_file".into(),
+            message: "Write file: src/lib.rs".into(),
+            action_key: None,
+            risk_level: phi_agent::RiskLevel::Sensitive,
+            raw: None,
+            source: None,
+        },
+        decision_tx: tx,
+    });
+    let text = snapshot_text(&mut app, 80, 24);
+    assert!(
+        !text.contains("sub-agent"),
+        "no source → no sub-agent label (主 agent 渲染与现状一致):\n{text}"
+    );
+    assert!(text.contains("Write file: src/lib.rs"));
 }
 
 #[test]

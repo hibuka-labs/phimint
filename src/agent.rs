@@ -83,8 +83,9 @@ For longer tasks requiring many tool calls, provide concise progress updates (1-
 Your final message should read naturally, like an update from a concise teammate. Be concise and factual — no filler or conversational commentary. Use present tense and active voice. When referencing files, include the path so the user can click to open.
 
 ## Multi-agent (tasks with clearly independent parts)
-Sub-agents are READ-ONLY (read/search/report, no writes or mutating commands). You perform all edits.
+Sub-agents are read-only investigators by default (read/search/report). When a task must edit files or run mutating commands, request write capability for that spawn (`tools: "write"`, or a preset like "coder"/"tester") — in ask mode the user confirms each sub-agent write, and the popup names the requesting sub-agent.
 - Prefer multiple sub-agents to parallelize your work. Time is a constraint so parallelism resolves the task faster.
+- When spawning write-capable sub-agents, partition tasks by DISJOINT FILE SETS — never let two sub-agents modify the same file. The write gate enforces this mechanically: a second sub-agent touching a held file fails with `file locked by <agent>`; when a child reports that error, re-partition the work yourself.
 - **Results are pushed to you automatically**: when every sub-agent has finished, all their full reports arrive together as one message and a new turn starts. There is no wait tool and you never need to poll. A `done` status means the report is held by the runtime — it is NOT lost and NOT a delivery failure; it is injected the instant your turn ends.
 - **To wait, simply end your turn**: after spawning sub-agents, end your reply with a brief progress note and stop. Ending the turn is the ONLY way to receive their reports. Do NOT "use the waiting time" to investigate the topics you delegated — that duplicates the work you just paid sub-agents to do. End the turn FIRST, then continue your own work when the results arrive.
 - NEVER call `list_agents` to check progress or wait. Polling burns tokens, does not make sub-agents finish faster, and repeated snapshots tell you nothing new. Their reports come to you whether you watch or not.
@@ -168,6 +169,55 @@ pub struct TokenBudgetOptions {
     pub base_dir: PathBuf,
     /// Session ID.
     pub session_id: String,
+}
+
+/// 子 agent 多代理配置的唯一构造点（build 与测试共用）。
+///
+/// D0（放开节奏）：写子 agent 只在审批模式开放——`has_policy == true`
+/// 即 ask/deny（二者都携带 policy）；auto（无 policy）子 agent 暂保持
+/// 只读，手动验收稳定后把调用点改成 `true` 翻开（Task 11，一行）。
+///
+/// D3.1：`child_read_only` 显式关掉——nudge 交给框架的 per-child 计算
+/// 规则（写子 agent 不再被灌输只读纪律；只读子 agent 由解析后的排除集
+/// 条件兜住 nudge）。
+///
+/// eng-review 发现1：`notes.write_file` / `notes.append_to_file` 是变更
+/// 工具且在 business_tools 里，必须显式排除（子 agent 不得污染父会话
+/// notes）。`history.*` 只读，不排除。
+fn child_multi_agent_config(has_policy: bool) -> MultiAgentConfig {
+    MultiAgentConfig {
+        // 子 agent 权限跟随审批模式（codex 式委托在 agent-works）：
+        // auto（无 policy）→ 子 agent 全权；ask/deny → 受限 + 审批上抛。
+        child_permission_mode: if has_policy {
+            ChildPermissionMode::None
+        } else {
+            ChildPermissionMode::Full
+        },
+        // D0：ask/deny 开放写子 agent；auto 保持只读直到验收。
+        allow_child_write: has_policy,
+        // 子 agent 是默认只读的调查者（read/search/report）。硬门是这张
+        // 排除表；写能力 = write_tools 成员豁免表内条目（框架规则），
+        // 所以表里只需列"任何子 agent 都不该拿"的工具。
+        child_excluded_tools: vec![
+            "write_file".to_string(),
+            "edit_file".to_string(),
+            "execute_command".to_string(),
+            "task_output".to_string(),
+            "task_cancel".to_string(),
+            "notes.write_file".to_string(),
+            "notes.append_to_file".to_string(),
+        ],
+        // 子 agent 做窄切片；压低推理深度防跑飞（deepseek-v4-pro 教训）。
+        child_reasoning_effort: Some(ReasoningEffort::Low),
+        // D3.1：全员 nudge 关闭，交给 per-child 计算规则。
+        child_read_only: false,
+        // Hang guard（§9.2）：卡死子 agent 10 分钟硬停 + Error 推给父。
+        control: ControlConfig {
+            task_timeout: Some(std::time::Duration::from_secs(10 * 60)),
+            ..ControlConfig::default()
+        },
+        ..MultiAgentConfig::default()
+    }
 }
 
 /// Build a phimint agent bound to `workspace_root`.
@@ -389,44 +439,9 @@ pub fn build(
         workspace_root.clone(),
     ));
 
-    // Child permission follows the approval mode (codex-style delegation lives in
-    // agent-works). `auto` (no policy) → children full-permission; `ask`/`deny`
-    // (a policy is present) → children restricted, routing approval decisions up
-    // to the parent's handler instead of hard-denying locally.
-    let child_permission_mode = if policy.is_some() {
-        ChildPermissionMode::None
-    } else {
-        ChildPermissionMode::Full
-    };
-    builder = builder.with_multi_agent(MultiAgentConfig {
-        child_permission_mode,
-        // Sub-agents are READ-ONLY investigators (they read/search/report;
-        // the main agent writes everything). The hard gate is here —
-        // excluding the three mutating tools a child must never hold — while the
-        // framework only *suggests* read-only via `child_read_only` (below).
-        child_excluded_tools: vec![
-            "write_file".to_string(),
-            "edit_file".to_string(),
-            "execute_command".to_string(),
-            "task_output".to_string(),
-            "task_cancel".to_string(),
-        ],
-        // Children do narrow slices; cap their reasoning depth so a reasoning-heavy
-        // model (deepseek-v4-pro) can't "think" itself into a runaway on long
-        // multi-agent contexts.
-        child_reasoning_effort: Some(ReasoningEffort::Low),
-        // Redundant with the default, but explicit: children get the framework's
-        // read-only nudge on top of the hard gate above.
-        child_read_only: true,
-        // Hang guard (§9.2): a child stuck on one task is hard-stopped after
-        // 10 min and an Error result is pushed to the parent — without this,
-        // a hung child would never wake the push-based parent.
-        control: ControlConfig {
-            task_timeout: Some(std::time::Duration::from_secs(10 * 60)),
-            ..ControlConfig::default()
-        },
-        ..MultiAgentConfig::default()
-    });
+    // 子 agent 配置唯一构造点（ask-only 条件形态见函数文档；Task 11 验收后
+    // 把参数改 true 翻开 auto）。
+    builder = builder.with_multi_agent(child_multi_agent_config(policy.is_some()));
 
     // A policy is what makes approval meaningful (see approval.rs). Only `ask`
     // and `deny` modes carry one; `auto` leaves it unset, so every call is
@@ -1092,5 +1107,116 @@ mod prompt_guard_tests {
             "with no memory directory the prompt must contain the empty-index \
              placeholder (graceful first-use startup)"
         );
+    }
+
+    use phi_agent::{ChildToolCapability, resolve_capability};
+
+    /// T9（外部声音发现4）：并行写子 agent 的任务分界指引必须常驻。
+    #[test]
+    fn system_prompt_demands_disjoint_file_sets_for_parallel_writers() {
+        assert!(
+            SYSTEM_PROMPT.contains("DISJOINT FILE SETS"),
+            "父 prompt 必须要求按文件不相交分派并行写任务"
+        );
+        assert!(
+            SYSTEM_PROMPT.contains("file locked by"),
+            "父 prompt 必须解释写门指名错误及其处置（重新分界）"
+        );
+    }
+
+    /// 默认只读 + 显式 opt-in 的新表述替换旧的"全员只读"断言。
+    #[test]
+    fn system_prompt_states_default_read_only_with_opt_in_write() {
+        assert!(
+            SYSTEM_PROMPT.contains("read-only investigators by default"),
+            "子 agent 默认只读的新表述必须存在"
+        );
+        assert!(
+            SYSTEM_PROMPT.contains("tools: \"write\""),
+            "父 prompt 必须告诉父 agent 如何为单个 spawn 请求写能力"
+        );
+    }
+
+    /// T8：子 agent 配置唯一构造点（build共用）。
+    #[test]
+    fn child_config_wiring_ask_only_and_notes_excluded() {
+        let ask = super::child_multi_agent_config(true);
+        assert!(ask.allow_child_write, "D0: ask/deny（有 policy）开放写子 agent");
+        assert_eq!(
+            ask.child_permission_mode,
+            phi_agent::ChildPermissionMode::None,
+            "审批模式子 agent 走委托链"
+        );
+        let auto = super::child_multi_agent_config(false);
+        assert!(!auto.allow_child_write, "D0: auto 保持只读，验收后翻常量");
+        // D3.1：nudge 交给计算规则，phimint 显式关掉全员 nudge。
+        assert!(!ask.child_read_only);
+        assert!(!auto.child_read_only);
+        // eng-review 发现1：变更型 notes 工具必须排除（子 agent 不得污染父会话 notes）。
+        for t in ["notes.write_file", "notes.append_to_file"] {
+            assert!(
+                ask.child_excluded_tools.iter().any(|e| e == t),
+                "{t} must be in child_excluded_tools"
+            );
+        }
+    }
+
+    /// CRITICAL 回归（设计文档 §5/§8）：默认 spawn（无 tools 参数 →
+    /// read_only）解析后的排除集覆盖**所有**写工具（含 notes.*）——
+    /// 钉死 /review 等只读子 agent 场景的行为不变式。
+    #[test]
+    fn critical_default_spawn_children_get_no_write_tools() {
+        let write_tools = ["write_file", "edit_file", "execute_command"];
+        let mutating = [
+            "write_file",
+            "edit_file",
+            "execute_command",
+            "notes.write_file",
+            "notes.append_to_file",
+        ];
+        for cfg in [
+            super::child_multi_agent_config(true),
+            super::child_multi_agent_config(false),
+        ] {
+            for cap in [None, Some(ChildToolCapability::ReadOnly)] {
+                let res = resolve_capability(
+                    cap.as_ref(),
+                    cfg.control.autonomy,
+                    cfg.allow_child_write,
+                    &cfg.child_excluded_tools,
+                    &cfg.control.write_tools,
+                );
+                for t in mutating {
+                    assert!(
+                        res.excluded_tools.contains(t),
+                        "{t} must stay excluded for default spawn (cap={cap:?})"
+                    );
+                }
+                // 防御：write_tools 默认值确为三件套（若框架改默认，此断言提醒复核）。
+                for t in write_tools {
+                    assert!(cfg.control.write_tools.iter().any(|w| w == t));
+                }
+            }
+        }
+    }
+
+    /// 写子 agent 面（D0 ask 模式）：write 请求下写工具被豁免、可注册。
+    #[test]
+    fn ask_mode_write_request_exempts_write_tools() {
+        let cfg = super::child_multi_agent_config(true);
+        let res = resolve_capability(
+            Some(&ChildToolCapability::Write),
+            cfg.control.autonomy,
+            cfg.allow_child_write,
+            &cfg.child_excluded_tools,
+            &cfg.control.write_tools,
+        );
+        for t in ["write_file", "edit_file", "execute_command"] {
+            assert!(!res.excluded_tools.contains(t), "write 子 agent 需 {t}");
+        }
+        // 豁免面只有 write_tools 成员——notes.* 不在 write_tools，依旧排除。
+        assert!(res.excluded_tools.contains("notes.write_file"));
+        assert!(res.excluded_tools.contains("task_output"));
+        assert!(res.degraded_reason.is_none());
     }
 }

@@ -174,6 +174,7 @@ impl ToolPolicy for ApprovalPolicy {
                     action_key: Some(format!("{tool_name}:{path}")),
                     risk_level: RiskLevel::Sensitive,
                     raw: Some(args.clone()),
+                    source: None,
                 })
             }
 
@@ -188,6 +189,7 @@ impl ToolPolicy for ApprovalPolicy {
                         action_key: Some(command_action_key(command)),
                         risk_level: level,
                         raw: Some(args.clone()),
+                        source: None,
                     }),
                 }
             }
@@ -541,6 +543,7 @@ mod tests {
                         action_key: None,
                         risk_level: RiskLevel::Sensitive,
                         raw: None,
+                        source: None,
                     },
                     cancel,
                 )

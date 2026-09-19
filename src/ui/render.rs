@@ -617,16 +617,24 @@ fn render_approval_popup(f: &mut Frame, app: &App) {
             Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
-        Line::from(Span::styled(
-            request.title.clone(),
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
-        Line::from(Span::styled(
-            format!("Risk: {risk}"),
-            Style::default().fg(risk_color),
-        )),
-        Line::from(""),
     ];
+    // D4：来源标识——子 agent 发起时标注（独立行），主 agent 保持现状。
+    if let Some(source) = &request.source {
+        lines.push(Line::from(Span::styled(
+            format!("requested by sub-agent [{source}]"),
+            Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(""));
+    }
+    lines.push(Line::from(Span::styled(
+        request.title.clone(),
+        Style::default().add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::from(Span::styled(
+        format!("Risk: {risk}"),
+        Style::default().fg(risk_color),
+    )));
+    lines.push(Line::from(""));
     for raw in request.message.split('\n') {
         lines.push(Line::from(raw.to_string()));
     }

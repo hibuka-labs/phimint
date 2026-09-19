@@ -568,6 +568,7 @@ fn pending_approval(app: &mut App) {
             action_key: None,
             risk_level: phi_agent::RiskLevel::Sensitive,
             raw: None,
+            source: None,
         },
         decision_tx: tx,
     });
@@ -616,6 +617,7 @@ fn approve_front_pops_and_sends() {
             action_key: None,
             risk_level: phi_agent::RiskLevel::Safe,
             raw: None,
+            source: None,
         },
         decision_tx: tx,
     });
@@ -636,6 +638,7 @@ fn awaiting_approval_sets_status() {
             action_key: None,
             risk_level: phi_agent::RiskLevel::Sensitive,
             raw: None,
+            source: None,
         },
         agent_id: None,
         trace_id: None,
