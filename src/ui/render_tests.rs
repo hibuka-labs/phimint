@@ -1,7 +1,8 @@
 //! Tests for ratatui frame rendering.
 
 use super::*;
-use crate::ui::app::{AgentStatus, App, Phase, SubAgentState, SubAgentStatus, TuiEvent};
+use crate::ui::app::{AgentStatus, App, BackgroundTaskEntry, Phase, SubAgentState, SubAgentStatus, TuiEvent};
+use phi_kernel_tools::background_shell::BackgroundTaskStatus;
 use phi_tui::lines::{LineKind, OutputLine};
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use phi_agent::{RuntimeEvent, SessionId};
@@ -247,6 +248,51 @@ fn snapshot_omits_strip_when_no_sub_agents() {
     let mut app = App::new();
     let text = snapshot_text(&mut app, 80, 24);
     assert!(!text.contains("* ["), "strip should be absent:\n{text}");
+}
+
+#[test]
+fn task_panel_lists_only_sub_agents() {
+    // Panel discipline (2026-09-19): background shell tasks stay out of the
+    // task panel — they live as transcript tool-call records + the status-bar
+    // counter. A running bg task next to a sub-agent must not add a row, a
+    // count, or width to the panel; and a bg-only app must show no panel.
+    let mut app = App::new();
+    app.sub_agents.insert("root/a".to_string(), SubAgentState {
+        name: "a".to_string(),
+        status: SubAgentStatus::Running,
+        files: Vec::new(),
+        started_at: std::time::Instant::now(),
+        completed_at: None,
+        last_tool_at: std::time::Instant::now(),
+        events: Vec::new(),
+    });
+    app.background_tasks.insert("bg_aaaa1111".to_string(), BackgroundTaskEntry {
+        id: "bg_aaaa1111".to_string(),
+        command: "cargo test".to_string(),
+        status: BackgroundTaskStatus::Running,
+        started_at: std::time::Instant::now(),
+        finished_at: None,
+        reported: false,
+    });
+    assert!(app.should_show_task_panel(), "sub-agent opens the panel");
+    let text = snapshot_text(&mut app, 100, 40);
+    assert!(text.contains("Tasks (1)"), "panel counts sub-agents only:\n{text}");
+    assert!(
+        !text.contains("bg_aaaa1111"),
+        "bg task must not appear in the panel:\n{text}"
+    );
+
+    // Bg-only: no panel at all (transcript + status bar carry the facts).
+    let mut app = App::new();
+    app.background_tasks.insert("bg_aaaa1111".to_string(), BackgroundTaskEntry {
+        id: "bg_aaaa1111".to_string(),
+        command: "cargo test".to_string(),
+        status: BackgroundTaskStatus::Running,
+        started_at: std::time::Instant::now(),
+        finished_at: None,
+        reported: false,
+    });
+    assert!(!app.should_show_task_panel(), "bg task alone must not open the panel");
 }
 
 #[test]

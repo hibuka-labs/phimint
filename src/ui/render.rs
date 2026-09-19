@@ -18,7 +18,6 @@ use crate::ui::app::{
     AgentStatus, App, CONTEXT_MENU_H, CONTEXT_MENU_W, FocusTarget, SubAgentStatus, context_menu_pos,
     is_writing_hint,
 };
-use phi_kernel_tools::background_shell::BackgroundTaskStatus;
 use phi_tui::lines::LineKind;
 use phi_tui::markdown::{line_plain_text, render_markdown};
 use phi_tui::wrap::wrap;
@@ -53,7 +52,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Constraint::Min(3),                  // output (transcript)
     ];
     if has_task_panel {
-        let task_count = app.sub_agents.len() + app.background_tasks.len();
+        let task_count = app.sub_agents.len();
         constraints.push(Constraint::Length(task_count as u16 + 2)); // task panel
     }
     constraints.push(Constraint::Length(composer_height)); // composer
@@ -475,7 +474,7 @@ fn ellipsize(s: &str, max: usize) -> String {
 
 /// Render the task panel showing sub-agents and their status.
 fn render_task_panel(f: &mut Frame, app: &App, area: Rect) {
-    let total = app.sub_agents.len() + app.background_tasks.len();
+    let total = app.sub_agents.len();
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -491,7 +490,6 @@ fn render_task_panel(f: &mut Frame, app: &App, area: Rect) {
         .sub_agents
         .values()
         .map(|s| s.name.chars().count())
-        .chain(app.background_tasks.values().map(|t| t.id.chars().count()))
         .max()
         .unwrap_or(0)
         .clamp(8, 16);
@@ -559,44 +557,10 @@ fn render_task_panel(f: &mut Frame, app: &App, area: Rect) {
         lines.push(Line::from(spans));
     }
 
-    // ── Background shell tasks ──
-    let sub_count = app.sub_agents.len();
-    for (i, (_id, task)) in app.background_tasks.iter().enumerate() {
-        let idx = sub_count + i;
-        let is_selected = matches!(&app.task_panel.focus, FocusTarget::TaskList(j) if *j == idx);
-        let marker = if is_selected { ">" } else { " " };
-        let (status_icon, status_color) = match &task.status {
-            BackgroundTaskStatus::Running => ("o", Color::Cyan),
-            BackgroundTaskStatus::Done => ("+", Color::Green),
-            BackgroundTaskStatus::TimedOut => ("T", Color::Yellow),
-            BackgroundTaskStatus::Cancelled => ("x", Color::DarkGray),
-            BackgroundTaskStatus::Error(_) => ("!", Color::Red),
-        };
-        let time = format_time(match task.finished_at {
-            Some(at) => at.duration_since(task.started_at),
-            None => task.started_at.elapsed(),
-        });
-        let activity = if task.status == BackgroundTaskStatus::Running {
-            (ellipsize(&task.command, act_w), Color::Reset)
-        } else {
-            (ellipsize(&task.command, act_w), Color::DarkGray)
-        };
-        let bg_color = if is_selected {
-            Color::DarkGray
-        } else {
-            Color::Reset
-        };
-
-        let spans = vec![
-            Span::styled(format!("{marker} "), Style::default().bg(bg_color)),
-            Span::styled(format!("{status_icon} "), Style::default().fg(status_color).bg(bg_color)),
-            Span::styled(format!("{:<name_w$}", ellipsize(&task.id, name_w)), Style::default().bg(bg_color)),
-            Span::styled(format!("{:<act_w$}", activity.0), Style::default().fg(activity.1).bg(bg_color)),
-            Span::styled(format!("{:<files_w$}", ""), Style::default().fg(Color::DarkGray).bg(bg_color)),
-            Span::styled(format!("│ {:>5}", time), Style::default().fg(Color::DarkGray).bg(bg_color)),
-        ];
-        lines.push(Line::from(spans));
-    }
+    // Background shell tasks are NOT panel rows (2026-09-19): they render as
+    // transcript tool-call records (launch line carries `background: true`,
+    // completion via the bg-wake turn) plus the status-bar counter. The
+    // panel's only switchable views were ever the sub-agents.
 
     f.render_widget(Paragraph::new(lines), inner);
 }

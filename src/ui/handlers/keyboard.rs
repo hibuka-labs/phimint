@@ -218,8 +218,9 @@ impl App {
                             return None;
                         }
                         FocusTarget::Input => {
-                            // Move focus to task list (select last item)
-                            let total = self.sub_agents.len() + self.background_tasks.len();
+                            // Move focus to task list (select last item). The
+                            // panel lists sub-agents only.
+                            let total = self.sub_agents.len();
                             if total > 0 {
                                 self.task_panel.focus = FocusTarget::TaskList(total - 1);
                                 return None;
@@ -235,7 +236,8 @@ impl App {
                 if self.should_show_task_panel() {
                     match &self.task_panel.focus {
                         FocusTarget::TaskList(index) => {
-                            let total = self.sub_agents.len() + self.background_tasks.len();
+                            // The panel lists sub-agents only.
+                            let total = self.sub_agents.len();
                             if *index + 1 < total {
                                 self.task_panel.focus = FocusTarget::TaskList(index + 1);
                             } else {

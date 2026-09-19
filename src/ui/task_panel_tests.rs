@@ -939,8 +939,13 @@ fn background_task_reap_after_3_seconds() {
 }
 
 #[test]
-fn background_task_panel_disappears_after_3_seconds() {
-    // Test the complete lifecycle: panel appears, task completes, panel disappears after 3s.
+fn background_task_never_enters_task_panel() {
+    // Panel discipline (2026-09-19): background shell tasks render as plain
+    // tool-call records in the transcript (launch line carries
+    // `background: true`, completion arrives via the bg-wake turn) plus the
+    // status-bar counter — the task panel lists sub-agents only. The map
+    // still tracks tasks (waiting counts, wake dedup, ctrl+c cancel), and
+    // the 3s reap still cleans it up.
 
     let registry = BackgroundTaskRegistry::new(4);
     let mut app = App::new();
@@ -953,30 +958,21 @@ fn background_task_panel_disappears_after_3_seconds() {
     let cancel_token = tokio_util::sync::CancellationToken::new();
     let task_id = registry.register("sleep 5", None, cancel_token, None).unwrap();
 
-    // Reconcile: panel should appear
+    // Reconcile: the map tracks the task, but the panel stays hidden.
     app.reconcile_background_tasks();
-    assert!(app.should_show_task_panel(), "panel should appear with running task");
     assert_eq!(app.background_tasks.len(), 1);
+    assert!(!app.should_show_task_panel(), "bg task alone must NOT open the panel");
 
-    // Finish the task
+    // Finish the task: still no panel (a Done bg task has never earned one).
     registry.update_status(&task_id, BackgroundTaskStatus::Done);
-
-    // Reconcile: panel should still appear (task is Done but < 3s ago)
     app.reconcile_background_tasks();
-    assert!(app.should_show_task_panel(), "panel should appear with done task (< 3s)");
+    assert!(!app.should_show_task_panel(), "done bg task must NOT open the panel");
 
-    // Panel should still appear on next reconcile (still < 3s)
-    app.reconcile_background_tasks();
-    assert!(app.should_show_task_panel(), "panel should still appear (< 3s)");
-
-    // Simulate time passing (backdate finished_at by 4 seconds)
+    // The reap still sweeps the map 3s after completion.
     app.background_tasks.get_mut(&task_id).unwrap().finished_at =
         Some(Instant::now() - Duration::from_secs(4));
-
-    // Reconcile: panel should DISAPPEAR (task done > 3s ago)
     app.reconcile_background_tasks();
-    assert!(!app.should_show_task_panel(), "panel should disappear after task done > 3s");
-    assert_eq!(app.background_tasks.len(), 0);
+    assert_eq!(app.background_tasks.len(), 0, "reap still works");
 }
 
 #[test]

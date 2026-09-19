@@ -108,10 +108,14 @@ impl App {
         }
     }
 
-    /// Whether the task panel should be shown (has active sub-agents or
-    /// background tasks).
+    /// Whether the task panel should be shown: sub-agents only. Background
+    /// shell tasks render as transcript tool-call records (launch line with
+    /// `background: true`, completion via the bg-wake turn) plus the
+    /// status-bar counter — a static command string never earned a row, and
+    /// the rows weren't switchable views anyway (`render_output` only
+    /// indexes `sub_agents`).
     pub fn should_show_task_panel(&self) -> bool {
-        !self.sub_agents.is_empty() || !self.background_tasks.is_empty()
+        !self.sub_agents.is_empty()
     }
 
     /// Poll the background task registry for status updates (called every tick).
@@ -301,8 +305,9 @@ impl App {
             removed = true;
         }
 
-        // Reset focus if it's now out of bounds
-        let total = self.sub_agents.len() + self.background_tasks.len();
+        // Reset focus if it's now out of bounds. The panel lists sub-agents
+        // only — background tasks are not focusable rows.
+        let total = self.sub_agents.len();
         if let FocusTarget::TaskList(index) = &self.task_panel.focus {
             if *index >= total {
                 self.task_panel.focus = if total == 0 {
