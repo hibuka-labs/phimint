@@ -85,7 +85,7 @@ Your final message should read naturally, like an update from a concise teammate
 ## Multi-agent (tasks with clearly independent parts)
 Sub-agents are read-only investigators by default (read/search/report). When a task must edit files or run mutating commands, request write capability for that spawn (`tools: "write"`, or a preset like "coder"/"tester") — in ask mode the user confirms each sub-agent write, and the popup names the requesting sub-agent.
 - Prefer multiple sub-agents to parallelize your work. Time is a constraint so parallelism resolves the task faster.
-- When spawning write-capable sub-agents, partition tasks by DISJOINT FILE SETS — never let two sub-agents modify the same file. The write gate enforces this mechanically: a second sub-agent touching a held file fails with `file locked by <agent>`; when a child reports that error, re-partition the work yourself.
+- When spawning write-capable sub-agents, partition tasks by DISJOINT FILE SETS — never let two sub-agents modify the same file. State in each write-capable child's task text that file modifications must use `write_file`/`edit_file` — shell redirection (`echo >`, `sed -i`, `tee`) bypasses the gate and silently breaks the partition discipline. The write gate enforces this mechanically: a second sub-agent touching a held file fails with `file locked by <agent>`; when a child reports that error, re-partition the work yourself. If the holder has already finished (its spawn echo may say it recycled a finished agent), retrying the write through `write_file` works — the lock is released when the holder's task ends. Never route a retry through `execute_command` (shell redirection/writes) to dodge the lock: it bypasses the gate, silently corrupts the disjoint-file-set discipline, and the "conflict" you are working around is real information about a partitioning mistake.
 - **Results are pushed to you automatically**: when every sub-agent has finished, all their full reports arrive together as one message and a new turn starts. There is no wait tool and you never need to poll. A `done` status means the report is held by the runtime — it is NOT lost and NOT a delivery failure; it is injected the instant your turn ends.
 - **To wait, simply end your turn**: after spawning sub-agents, end your reply with a brief progress note and stop. Ending the turn is the ONLY way to receive their reports. Do NOT "use the waiting time" to investigate the topics you delegated — that duplicates the work you just paid sub-agents to do. End the turn FIRST, then continue your own work when the results arrive.
 - NEVER call `list_agents` to check progress or wait. Polling burns tokens, does not make sub-agents finish faster, and repeated snapshots tell you nothing new. Their reports come to you whether you watch or not.
@@ -173,9 +173,16 @@ pub struct TokenBudgetOptions {
 
 /// 子 agent 多代理配置的唯一构造点（build 与测试共用）。
 ///
-/// D0（放开节奏）：写子 agent 只在审批模式开放——`has_policy == true`
-/// 即 ask/deny（二者都携带 policy）；auto（无 policy）子 agent 暂保持
-/// 只读，手动验收稳定后把调用点改成 `true` 翻开（Task 11，一行）。
+/// D0 (fully opened after the 2026-09-20 acceptance run, T11): both modes
+/// allow `tools: "write"` children. `has_policy` now only picks the
+/// **permission mode**, no longer the write switch:
+/// ask/deny (policy present) → child writes go through the codex-style
+/// approval delegation; auto (no policy) → children write with full
+/// permission, matching the auto-mode parent's own approval-free behavior
+/// (do NOT flip the call-site argument instead — that would push auto into
+/// None mode too, and auto has no approval chain to delegate to). Default
+/// spawns (no tools argument) stay read-only in both modes, pinned by
+/// `critical_default_spawn_children_get_no_write_tools`.
 ///
 /// D3.1：`child_read_only` 显式关掉——nudge 交给框架的 per-child 计算
 /// 规则（写子 agent 不再被灌输只读纪律；只读子 agent 由解析后的排除集
@@ -193,8 +200,11 @@ fn child_multi_agent_config(has_policy: bool) -> MultiAgentConfig {
         } else {
             ChildPermissionMode::Full
         },
-        // D0：ask/deny 开放写子 agent；auto 保持只读直到验收。
-        allow_child_write: has_policy,
+        // D0 (T11, opened after the 2026-09-20 acceptance run): write
+        // children enabled in both modes — ask delegates approvals
+        // (verified on-device), auto writes with full permission
+        // (consistent with its parent).
+        allow_child_write: true,
         // 子 agent 是默认只读的调查者（read/search/report）。硬门是这张
         // 排除表；写能力 = write_tools 成员豁免表内条目（框架规则），
         // 所以表里只需列"任何子 agent 都不该拿"的工具。
@@ -439,8 +449,9 @@ pub fn build(
         workspace_root.clone(),
     ));
 
-    // 子 agent 配置唯一构造点（ask-only 条件形态见函数文档；Task 11 验收后
-    // 把参数改 true 翻开 auto）。
+    // Single construction point for the child multi-agent config (the
+    // argument now only picks the permission mode; the write switch is
+    // fully open since T11 — see the function docs).
     builder = builder.with_multi_agent(child_multi_agent_config(policy.is_some()));
 
     // A policy is what makes approval meaningful (see approval.rs). Only `ask`
@@ -1137,18 +1148,28 @@ mod prompt_guard_tests {
         );
     }
 
-    /// T8：子 agent 配置唯一构造点（build共用）。
+    /// T8+T11: single construction point of the child config (shared with
+    /// build). Since T11 the write switch is open in both modes; the
+    /// argument only picks the permission mode.
     #[test]
-    fn child_config_wiring_ask_only_and_notes_excluded() {
+    fn child_config_wiring_write_open_and_notes_excluded() {
         let ask = super::child_multi_agent_config(true);
-        assert!(ask.allow_child_write, "D0: ask/deny（有 policy）开放写子 agent");
+        assert!(ask.allow_child_write, "D0: ask/deny (with policy) allows write children");
         assert_eq!(
             ask.child_permission_mode,
             phi_agent::ChildPermissionMode::None,
-            "审批模式子 agent 走委托链"
+            "approval-mode children go through the delegation chain"
         );
         let auto = super::child_multi_agent_config(false);
-        assert!(!auto.allow_child_write, "D0: auto 保持只读，验收后翻常量");
+        assert!(
+            auto.allow_child_write,
+            "T11 (2026-09-20 acceptance run): auto also allows write children"
+        );
+        assert_eq!(
+            auto.child_permission_mode,
+            phi_agent::ChildPermissionMode::Full,
+            "auto has no approval chain; children must keep Full permission (never None mode)"
+        );
         // D3.1：nudge 交给计算规则，phimint 显式关掉全员 nudge。
         assert!(!ask.child_read_only);
         assert!(!auto.child_read_only);
@@ -1217,6 +1238,26 @@ mod prompt_guard_tests {
         // 豁免面只有 write_tools 成员——notes.* 不在 write_tools，依旧排除。
         assert!(res.excluded_tools.contains("notes.write_file"));
         assert!(res.excluded_tools.contains("task_output"));
+        assert!(res.degraded_reason.is_none());
+    }
+
+    /// Write-child surface (T11 auto mode): a write request exempts the
+    /// write tools here too — auto's write switch opened with the
+    /// acceptance run, permission mode stays Full (see the
+    /// child_config_wiring test).
+    #[test]
+    fn auto_mode_write_request_exempts_write_tools() {
+        let cfg = super::child_multi_agent_config(false);
+        let res = resolve_capability(
+            Some(&ChildToolCapability::Write),
+            cfg.control.autonomy,
+            cfg.allow_child_write,
+            &cfg.child_excluded_tools,
+            &cfg.control.write_tools,
+        );
+        for t in ["write_file", "edit_file", "execute_command"] {
+            assert!(!res.excluded_tools.contains(t), "auto write child needs {t}");
+        }
         assert!(res.degraded_reason.is_none());
     }
 }
