@@ -179,6 +179,8 @@ pub enum TuiEvent {
     TurnError(String),
     /// A turn completed (safety net in case `RunFinished` was never seen).
     TurnDone,
+    /// An update check found a new version.
+    UpdateAvailable { version: String, download_url: String },
 }
 
 #[derive(Debug)]
@@ -244,6 +246,9 @@ pub struct App {
     pub(crate) live_progress: Option<String>,
     /// Transient status-bar notice (e.g. "📋 copied …"), cleared on the next key.
     pub(crate) notice: Option<String>,
+    /// Persistent upgrade hint (e.g. "⬆ phimint 0.2.0 available — type /upgrade").
+    /// Survives keypresses; cleared on /upgrade or when already up-to-date.
+    pub(crate) upgrade_hint: Option<String>,
     /// When the current Running/Waiting stretch began — drives the spinner and
     /// the elapsed readout in the status bar. `None` while Idle. The event loop
     /// has no other clock source: with zero events it never redraws, so a
@@ -289,6 +294,7 @@ impl App {
             child_streams: BTreeMap::new(),
             live_progress: None,
             notice: None,
+            upgrade_hint: None,
             activity_since: None,
             background_registry: None,
             background_tasks: BTreeMap::new(),
@@ -381,6 +387,10 @@ impl App {
             TuiEvent::TurnDone => {
                 self.flush_pending();
                 self.settle_after_turn(true);
+            }
+            TuiEvent::UpdateAvailable { version, .. } => {
+                self.upgrade_hint = Some(format!("⬆ phimint {version} available - type /upgrade"));
+                tracing::info!(version = %version, "upgrade available");
             }
         }
     }
@@ -741,7 +751,9 @@ impl App {
     pub fn status_line(&self) -> String {
         match &self.status {
             AgentStatus::Idle => {
-                if let Some(n) = &self.notice {
+                if let Some(u) = &self.upgrade_hint {
+                    u.clone()
+                } else if let Some(n) = &self.notice {
                     n.clone()
                 } else {
                     "Idle - Enter send | Shift+Enter newline | Ctrl+Y copy | 滚轮/fn+Up/Down scroll | Ctrl+C quit".to_string()

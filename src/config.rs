@@ -116,6 +116,51 @@ pub struct ModelConfig {
     /// Scene-to-tier mapping overrides (optional)
     #[serde(default)]
     pub scene_tiers: Option<HashMap<String, String>>,
+
+    /// Update checker configuration (optional, defaults apply if absent).
+    #[serde(default)]
+    pub update: UpdateConfig,
+}
+
+/// Configuration for the update checker.
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdateConfig {
+    /// Manifest endpoint URLs (tried in order, 3s timeout each).
+    /// Each is a full URL to a manifest JSON file.
+    #[serde(default = "default_endpoints")]
+    pub endpoints: Vec<String>,
+
+    /// Release channel: "stable" or "beta".
+    #[serde(default = "default_channel")]
+    pub channel: String,
+
+    /// Whether to check for updates on startup.
+    #[serde(default = "default_auto_check")]
+    pub auto_check: bool,
+}
+
+impl Default for UpdateConfig {
+    fn default() -> Self {
+        Self {
+            endpoints: default_endpoints(),
+            channel: default_channel(),
+            auto_check: default_auto_check(),
+        }
+    }
+}
+
+fn default_endpoints() -> Vec<String> {
+    vec![
+        "https://github.com/hibuka-labs/phimint/releases/latest/download/manifest.json".to_string(),
+    ]
+}
+
+fn default_channel() -> String {
+    "stable".to_string()
+}
+
+fn default_auto_check() -> bool {
+    true
 }
 
 impl ModelConfig {
@@ -373,6 +418,7 @@ mod tests {
             lite: None,
             advanced: None,
             scene_tiers: None,
+            update: UpdateConfig::default(),
         };
         assert!(config.validate().is_err());
     }

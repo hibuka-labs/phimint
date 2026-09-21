@@ -106,6 +106,10 @@ struct Cli {
     /// Expired data is cleaned up at startup.
     #[arg(long, default_value_t = 7)]
     session_retention_days: i64,
+
+    /// Skip the automatic update check on startup.
+    #[arg(long)]
+    no_update_check: bool,
 }
 
 #[tokio::main]
@@ -186,6 +190,9 @@ async fn main() -> Result<()> {
     let llm_client: Arc<dyn phi_agent::llm_trait::LlmProvider> =
         phi_agent::create_provider(&llm_config)
             .context("Failed to create LLM provider")?;
+
+    // Extract update config before model_config is moved into the store.
+    let update_config = model_config.update.clone();
 
     // Model store and router for multi-model support
     let model_store = Arc::new(tokio::sync::Mutex::new(
@@ -295,7 +302,7 @@ async fn main() -> Result<()> {
     let show_banner = cli.banner != "off";
     let version = env!("CARGO_PKG_VERSION");
 
-    ui::run_tui(agent, skill_resolver, skill_telemetry, bg_registry, session, session_ctx, base_dir, workspace, approval_rx, scheme, show_banner, version, model_store, router, resume_messages).await
+    ui::run_tui(agent, skill_resolver, skill_telemetry, bg_registry, session, session_ctx, base_dir, workspace, approval_rx, scheme, show_banner, version, model_store, router, resume_messages, update_config, cli.no_update_check).await
 }
 
 /// Base directory for all phimint session data (~/.phimint).

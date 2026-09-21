@@ -86,6 +86,8 @@ pub async fn run_tui(
     model_store: Arc<tokio::sync::Mutex<ModelStore>>,
     router: Arc<PhimintRouter>,
     resume_messages: Option<Vec<ChatMessage>>,
+    update_config: crate::config::UpdateConfig,
+    no_update_check: bool,
 ) -> Result<()> {
     let agent = Arc::new(agent);
 
@@ -142,6 +144,36 @@ pub async fn run_tui(
     let mut skill_summaries = skill_resolver.skill_summaries();
     // 内置命令：/resume（不是 skill，但通过同一个 / 弹窗触发）
     skill_summaries.push(("resume".into(), "Switch to another session".into()));
+    // 内置命令：/upgrade（本地 UI 命令，不经过 LLM）
+    skill_summaries.push(("upgrade".into(), "Check for phimint updates".into()));
+
+    // Spawn background update check (if enabled).
+    // Sends TuiEvent::UpdateAvailable if a newer version is found.
+    // Single attempt, 3s timeout per endpoint, silent on failure.
+    let current_version = version.to_string();
+    if !no_update_check && update_config.auto_check {
+        let update_tx = event_tx.clone();
+        let endpoints = update_config.endpoints.clone();
+        let ver = current_version.clone();
+        tokio::spawn(async move {
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(3))
+                .build()
+                .unwrap_or_default();
+            let state = crate::update::state::load();
+            match crate::update::checker::check(&client, &endpoints, &state, &ver).await {
+                Ok(Some(crate::update::checker::CheckResult::UpgradeAvailable {
+                    version, download_url, ..
+                })) => {
+                    let _ = update_tx.send(TuiEvent::UpdateAvailable { version, download_url });
+                }
+                Ok(Some(crate::update::checker::CheckResult::UpToDate)) | Ok(None) => {}
+                Err(e) => {
+                    tracing::debug!(error = %e, "update check failed (silent)");
+                }
+            }
+        });
+    }
 
     // Start the child-result watcher (Phase 2): monitors the mailbox and
     // delivers each finished child's result as a ChildResultEvent. The loop
@@ -424,6 +456,36 @@ pub async fn run_tui(
                                         outcome = Some(TuiOutcome::SwitchSession(picked_dir));
                                     }
                                     // Don't send to agent, don't count as user message.
+                                    break;
+                                }
+                                // /upgrade: manual update check + display result.
+                                if text.trim() == "/upgrade" {
+                                    let current_ver = current_version.clone();
+                                    let endpoints = update_config.endpoints.clone();
+                                    let update_tx = event_tx.clone();
+                                    tokio::spawn(async move {
+                                        let client = reqwest::Client::builder()
+                                            .timeout(std::time::Duration::from_secs(3))
+                                            .build()
+                                            .unwrap_or_default();
+                                        let state = crate::update::state::load();
+                                        match crate::update::checker::check(&client, &endpoints, &state, &current_ver).await {
+                                            Ok(Some(crate::update::checker::CheckResult::UpgradeAvailable {
+                                                version, download_url, ..
+                                            })) => {
+                                                let _ = update_tx.send(TuiEvent::UpdateAvailable {
+                                                    version: version.clone(),
+                                                    download_url: download_url.clone(),
+                                                });
+                                            }
+                                            Ok(Some(crate::update::checker::CheckResult::UpToDate)) | Ok(None) => {
+                                                // Already up to date — nothing to show
+                                            }
+                                            Err(e) => {
+                                                tracing::warn!(error = %e, "manual update check failed");
+                                            }
+                                        }
+                                    });
                                     break;
                                 }
                                 let _ = cmd_tx.send(Cmd::Run(text));
@@ -1190,6 +1252,7 @@ mod model_command_tests {
             lite: Some(crate::config::TierConfig::Simple("gpt-3.5-turbo".to_string())),
             advanced: Some(crate::config::TierConfig::Simple("gpt-4-turbo".to_string())),
             scene_tiers: None,
+            update: Default::default(),
         };
 
         // Create a mock provider for testing

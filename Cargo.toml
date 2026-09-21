@@ -42,6 +42,11 @@ thiserror = "2"
 fs2 = "0.4"
 chrono = { version = "0.4", features = ["serde"] }
 
+# Update module: manifest fetch, semver compare (Phase 2: minisign verify)
+reqwest = { version = "0.13", features = ["json", "stream"] }
+semver = "1"
+minisign-verify = "0.2"
+
 # UI: ratatui for the TUI, crossterm as its backend + raw-mode key/paste input.
 ratatui = "0.30"
 crossterm = "0.28"

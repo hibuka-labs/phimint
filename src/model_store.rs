@@ -176,6 +176,7 @@ mod tests {
             lite: Some(TierConfig::Simple("mimo-v2.5".to_string())),
             advanced: None,
             scene_tiers: None,
+            update: Default::default(),
         }
     }
 
