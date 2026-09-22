@@ -906,7 +906,7 @@ fn background_task_reap_after_3_seconds() {
 
     // Register a background task
     let cancel_token = tokio_util::sync::CancellationToken::new();
-    let task_id = registry.register("echo test", None, cancel_token, None).unwrap();
+    let task_id = registry.register("echo test", None, cancel_token, None, 120_000).unwrap();
 
     // First reconcile: task should appear in app.background_tasks
     let changed = app.reconcile_background_tasks();
@@ -956,7 +956,7 @@ fn background_task_never_enters_task_panel() {
 
     // Register a background task
     let cancel_token = tokio_util::sync::CancellationToken::new();
-    let task_id = registry.register("sleep 5", None, cancel_token, None).unwrap();
+    let task_id = registry.register("sleep 5", None, cancel_token, None, 120_000).unwrap();
 
     // Reconcile: the map tracks the task, but the panel stays hidden.
     app.reconcile_background_tasks();
@@ -991,7 +991,7 @@ fn reaped_task_is_not_readded_by_later_reconciles() {
     app.set_background_registry(registry.clone());
 
     let cancel_token = tokio_util::sync::CancellationToken::new();
-    let task_id = registry.register("sleep 30", None, cancel_token, None).unwrap();
+    let task_id = registry.register("sleep 30", None, cancel_token, None, 120_000).unwrap();
 
     // Task appears, then finishes; panel reflects Done with the registry's
     // finished_at.
@@ -1027,7 +1027,7 @@ fn stale_finished_snapshot_never_seen_is_not_inserted() {
     app.set_background_registry(registry.clone());
 
     let cancel_token = tokio_util::sync::CancellationToken::new();
-    let task_id = registry.register("echo late", None, cancel_token, None).unwrap();
+    let task_id = registry.register("echo late", None, cancel_token, None, 120_000).unwrap();
     registry.update_status(&task_id, BackgroundTaskStatus::Done);
     std::thread::sleep(Duration::from_millis(3100));
 

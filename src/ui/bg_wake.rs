@@ -10,13 +10,18 @@
 //! Delivery policy (mirrors the child fan-in router, same bug class):
 //!
 //! - **Hold** while the agent is mid-turn (`agent_running`), while sub-agents
-//!   are still running, or while any background task is still running. An
-//!   injection must never land mid-turn — held injections are exactly the
-//!   fan-in injection bug (results not injected → hang). Holding also gives
-//!   free batching: tasks finishing close together are reported in one wake.
-//! - **Batch semantics** like the child watcher: the wake fires when *all*
-//!   background tasks are terminal, listing every not-yet-reported outcome
-//!   (done / timed out / error) in one synthetic run.
+//!   are still running, or while any *bounded* background job is still
+//!   running (`timeout_ms > 0`). An injection must never land mid-turn —
+//!   held injections are exactly the fan-in injection bug (results not
+//!   injected → hang). Holding also gives free batching: tasks finishing
+//!   close together are reported in one wake. Indefinite daemons
+//!   (`timeout_ms == 0`) deliberately do NOT hold the wake — a server never
+//!   "finishes", so waiting on it would swallow the reports of jobs that did
+//!   (the hold bug this line replaces).
+//! - **Batch semantics** like the child watcher: the wake fires once every
+//!   *bounded* job is terminal, listing every not-yet-reported outcome
+//!   (done / timed out / error) in one synthetic run. A daemon joins a
+//!   listing only when it itself reaches a terminal state.
 //! - **Cancelled is not wake-worthy**: a user-initiated Ctrl+C cancel is
 //!   already surfaced by the status-bar notice; waking the agent to narrate
 //!   it would burn a turn the user never asked for. Done/TimedOut/Error are
@@ -55,18 +60,18 @@ impl App {
     /// Consume the background-task wake, if one is due.
     ///
     /// Returns `Some((transcript_notice, synthetic_input))` when every
-    /// background task is terminal, nothing else is in flight (agent idle,
-    /// no sub-agents), and at least one wake-worthy outcome has not been
-    /// reported yet. Marks the reported flag before returning so a task can
-    /// never be reported twice; returns `None` otherwise (the caller just
-    /// retries on the next tick).
+    /// *bounded* job is terminal (daemons are ignored — they never finish on
+    /// their own), nothing else is in flight (agent idle, no sub-agents), and
+    /// at least one wake-worthy outcome has not been reported yet. Marks the
+    /// reported flag before returning so a task can never be reported twice;
+    /// returns `None` otherwise (the caller just retries on the next tick).
     pub(crate) fn take_bg_wake(&mut self, agent_running: bool) -> Option<(String, String)> {
         // Hold: an injection must never land mid-turn, and a wake while
-        // sub-agents or other tasks are still running would race the fan-in
-        // batch and split the report across turns.
+        // sub-agents or bounded jobs are still running would race the fan-in
+        // batch and split the report across turns. Daemons don't hold.
         if agent_running
             || self.running_sub_agents() > 0
-            || self.running_bg_tasks() > 0
+            || self.bg_running_split().0 > 0
         {
             return None;
         }
@@ -131,7 +136,7 @@ fn compose_wake(items: &[WakeItem]) -> (String, String) {
         .collect::<Vec<_>>()
         .join("\n");
     let input = format!(
-        "[系统通知] 你启动的后台任务已全部结束（{n} 个）：\n{listing}\n\n\
+        "[系统通知] 你启动的以下后台任务已结束（{n} 个）：\n{listing}\n\n\
          请逐个调用 task_output(task_id) 获取完整输出（任务已结束，wait=false 即可），\
          汇总后向用户汇报结果。不要重新运行这些命令。"
     );
@@ -139,16 +144,19 @@ fn compose_wake(items: &[WakeItem]) -> (String, String) {
 }
 
 /// Test-only seam: build a panel entry directly (the registry path needs a
-/// live `BackgroundTaskRegistry` + tokio runtime).
+/// live `BackgroundTaskRegistry` + tokio runtime). `timeout_ms == 0` builds a
+/// daemon entry; anything else is a bounded job.
 #[cfg(test)]
 pub(crate) fn mock_bg_entry(
     id: &str,
     command: &str,
     status: BackgroundTaskStatus,
+    timeout_ms: u64,
 ) -> super::app::BackgroundTaskEntry {
     super::app::BackgroundTaskEntry {
         id: id.to_string(),
         command: command.to_string(),
+        timeout_ms,
         status,
         started_at: std::time::Instant::now(),
         finished_at: None,

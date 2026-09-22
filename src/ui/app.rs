@@ -65,6 +65,10 @@ pub enum SubAgentStatus {
 pub struct BackgroundTaskEntry {
     pub id: String,
     pub command: String,
+    /// Per-call timeout fuse in ms — mirrors the registry's snapshot. The
+    /// sole classifier for [`Self::is_indefinite`]: `0` means the task was
+    /// launched daemon-style (no fuse), not that a fuse is pending.
+    pub timeout_ms: u64,
     pub status: BackgroundTaskStatus,
     pub started_at: Instant,
     pub finished_at: Option<Instant>,
@@ -73,6 +77,17 @@ pub struct BackgroundTaskEntry {
     /// the agent at most once — a later wake (new tasks spawned after the
     /// report turn) lists only the not-yet-reported ones.
     pub reported: bool,
+}
+
+impl BackgroundTaskEntry {
+    /// Daemon-style task (`timeout_ms == 0`): a server/watcher that runs until
+    /// it dies. Not "work in flight" — there is nothing to wait on and no
+    /// completion to promise. Its exit is still the interesting event (a died
+    /// server must be reported), so it stays wake-worthy; it just never holds
+    /// the user in a fake "waiting" state.
+    pub(crate) fn is_indefinite(&self) -> bool {
+        self.timeout_ms == 0
+    }
 }
 
 /// A tool call event from a sub-agent (for detail display).
@@ -395,16 +410,19 @@ impl App {
         }
     }
 
-    /// Common end-of-turn settlement. If sub-agents or background tasks are
-    /// still running the task is NOT done — enter the `Waiting` state (with
-    /// both counts) and keep the task panel alive (the fan-in batch injection
-    /// or the background wake starts the next turn automatically). Otherwise
-    /// show the done marker (unless an error line was already pushed) and
-    /// clear the panel.
+    /// Common end-of-turn settlement. If sub-agents or *bounded* background
+    /// jobs are still running the task is NOT done — enter the `Waiting` state
+    /// and keep the bookkeeping alive (the fan-in batch injection or the
+    /// background wake starts the next turn automatically). Indefinite daemons
+    /// never hold the wait: "the server is up" is steady state, not pending
+    /// work, and promising a completion report for it would be a lie (the
+    /// confusion this caused is session 20260922_6d262d0f).
     fn settle_after_turn(&mut self, show_done_marker: bool) {
+        let (_, daemons) = self.bg_running_split();
         if self.settle_status_from_inflight() {
-            if let AgentStatus::Waiting { running, bg } = &self.status {
-                let text = match (*running, *bg) {
+            if let AgentStatus::Waiting { running, .. } = &self.status {
+                let (bounded, _) = self.bg_running_split();
+                let mut text = match (*running, bounded) {
                     (r, 0) => {
                         format!("... 等待子 agent 返回（{r} 个运行中），结果将自动注入")
                     }
@@ -415,6 +433,9 @@ impl App {
                         "... 等待子 agent（{r} 个）+ 后台任务（{b} 个）完成，结果将自动注入"
                     ),
                 };
+                if daemons > 0 {
+                    text.push_str(&format!("（另有 {daemons} 个后台服务长驻运行中）"));
+                }
                 self.transcript.push(OutputLine { spans: None, original: None,
                     detail: None,
                     text,
@@ -428,24 +449,34 @@ impl App {
                 kind: LineKind::Done,
             });
         }
+        // Daemon-only settlement: the agent IS done — say so plainly, then
+        // note the service without any "waiting" framing.
+        if daemons > 0 && matches!(self.status, AgentStatus::Idle) {
+            self.transcript.push(OutputLine { spans: None, original: None,
+                detail: None,
+                text: format!("🟢 后台服务 {daemons} 个运行中（长驻；异常退出时会自动通知）"),
+                kind: LineKind::System,
+            });
+        }
         self.running = false;
     }
 
     /// Settle the status enum from in-flight work — the single source of
-    /// truth for "can the agent rest?". Sub-agents and/or background shell
-    /// tasks still running → `Waiting { running, bg }` (returns `true`).
-    /// Nothing in flight → `Idle`, spinner clock stopped, panel bookkeeping
-    /// cleared (returns `false`).
+    /// truth for "can the agent rest?". Sub-agents and/or *bounded* background
+    /// jobs still running → `Waiting { running, bg }` (returns `true`; `bg`
+    /// counts every running background task, daemons included, so the counter
+    /// never under-reports). Only indefinite daemons (or nothing) → `Idle`:
+    /// a server left running is the product working as intended.
     ///
     /// Every turn-end path (TurnDone/TurnError settlement, root `RunFinished`,
-    /// root `RunCancelled`) must go through this so a running background task
-    /// can never be dropped on the floor as `Idle` — the user would see
-    /// "done" while the task is still working.
+    /// root `RunCancelled`) must go through this so a running bounded job can
+    /// never be dropped on the floor as `Idle` — the user would see "done"
+    /// while the task is still working.
     pub(crate) fn settle_status_from_inflight(&mut self) -> bool {
         let running = self.running_sub_agents();
-        let bg = self.running_bg_tasks();
-        if running > 0 || bg > 0 {
-            self.status = AgentStatus::Waiting { running, bg };
+        let (bounded, daemons) = self.bg_running_split();
+        if running > 0 || bounded > 0 {
+            self.status = AgentStatus::Waiting { running, bg: bounded + daemons };
             true
         } else {
             self.status = AgentStatus::Idle;
@@ -748,34 +779,52 @@ impl App {
     }
 
     /// The status-bar text for the current state (§9.6).
+    ///
+    /// Wording follows the bounded/daemon split: bounded jobs carry a
+    /// completion promise (auto-report when done), daemons are merely counted
+    /// as running services — the two must never share a "waiting for
+    /// completion" promise.
     pub fn status_line(&self) -> String {
         match &self.status {
             AgentStatus::Idle => {
-                if let Some(u) = &self.upgrade_hint {
+                let base = if let Some(u) = &self.upgrade_hint {
                     u.clone()
                 } else if let Some(n) = &self.notice {
                     n.clone()
                 } else {
                     "Idle - Enter send | Shift+Enter newline | Ctrl+Y copy | 滚轮/fn+Up/Down scroll | Ctrl+C quit".to_string()
+                };
+                let (_, daemons) = self.bg_running_split();
+                if daemons > 0 {
+                    format!("{base}（后台服务 {daemons} 个）")
+                } else {
+                    base
                 }
             }
-            AgentStatus::Waiting { running, bg } => match (*running, *bg) {
-                (_, 0) => format!(
-                    "{} 等待子 agent 返回（{running} 个运行中）...{} 结果到达后自动继续",
-                    self.spinner_char(),
-                    self.elapsed_suffix()
-                ),
-                (0, _) => format!(
-                    "{} 等待后台任务（{bg} 个运行中）...{} 完成后自动汇报结果",
-                    self.spinner_char(),
-                    self.elapsed_suffix()
-                ),
-                (_, _) => format!(
-                    "{} 等待子 agent（{running} 个）+ 后台任务（{bg} 个）...{} 完成后自动继续",
-                    self.spinner_char(),
-                    self.elapsed_suffix()
-                ),
-            },
+            AgentStatus::Waiting { running, .. } => {
+                let (bounded, daemons) = self.bg_running_split();
+                let mut line = match (*running, bounded) {
+                    (_, 0) => format!(
+                        "{} 等待子 agent 返回（{running} 个运行中）...{} 结果到达后自动继续",
+                        self.spinner_char(),
+                        self.elapsed_suffix()
+                    ),
+                    (0, _) => format!(
+                        "{} 等待后台任务（{bounded} 个运行中）...{} 完成后自动汇报结果",
+                        self.spinner_char(),
+                        self.elapsed_suffix()
+                    ),
+                    (_, _) => format!(
+                        "{} 等待子 agent（{running} 个）+ 后台任务（{bounded} 个）...{} 完成后自动继续",
+                        self.spinner_char(),
+                        self.elapsed_suffix()
+                    ),
+                };
+                if daemons > 0 {
+                    line.push_str(&format!("（另有 {daemons} 个后台服务）"));
+                }
+                line
+            }
             AgentStatus::Running { phase } => match phase {
                 Phase::Thinking => {
                     format!("{} thinking...{} (Ctrl+C cancel)", self.spinner_char(), self.elapsed_suffix())

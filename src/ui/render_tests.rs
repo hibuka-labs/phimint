@@ -269,6 +269,7 @@ fn task_panel_lists_only_sub_agents() {
     app.background_tasks.insert("bg_aaaa1111".to_string(), BackgroundTaskEntry {
         id: "bg_aaaa1111".to_string(),
         command: "cargo test".to_string(),
+        timeout_ms: 120_000,
         status: BackgroundTaskStatus::Running,
         started_at: std::time::Instant::now(),
         finished_at: None,
@@ -287,6 +288,7 @@ fn task_panel_lists_only_sub_agents() {
     app.background_tasks.insert("bg_aaaa1111".to_string(), BackgroundTaskEntry {
         id: "bg_aaaa1111".to_string(),
         command: "cargo test".to_string(),
+        timeout_ms: 120_000,
         status: BackgroundTaskStatus::Running,
         started_at: std::time::Instant::now(),
         finished_at: None,

@@ -9,10 +9,15 @@ use phi_kernel_tools::background_shell::BackgroundTaskStatus;
 use super::super::app::{AgentStatus, App, SubAgentState, SubAgentStatus};
 use super::{mock_bg_entry, status_desc};
 
-/// Insert a background entry straight into the panel (bypasses the registry;
-/// `reconcile_background_tasks` owns the registry path).
+/// Insert a bounded background job (`timeout_ms > 0`) straight into the panel
+/// (bypasses the registry; `reconcile_background_tasks` owns the registry path).
 fn insert_bg(app: &mut App, id: &str, command: &str, status: BackgroundTaskStatus) {
-    app.background_tasks.insert(id.to_string(), mock_bg_entry(id, command, status));
+    app.background_tasks.insert(id.to_string(), mock_bg_entry(id, command, status, 120_000));
+}
+
+/// Insert a daemon-style entry (`timeout_ms == 0`): runs until it dies.
+fn insert_daemon(app: &mut App, id: &str, command: &str, status: BackgroundTaskStatus) {
+    app.background_tasks.insert(id.to_string(), mock_bg_entry(id, command, status, 0));
 }
 
 fn running_child(app: &mut App, path: &str) {
@@ -62,6 +67,41 @@ fn wake_holds_while_any_bg_task_is_running() {
     let (_, input) = app.take_bg_wake(false).expect("all terminal → wake");
     assert!(input.contains("bg_aaaa1111"));
     assert!(input.contains("bg_bbbb2222"));
+}
+
+#[test]
+fn daemon_running_does_not_hold_the_wake() {
+    // Regression (session 20260922_6d262d0f): a daemon (`timeout_ms: 0`,
+    // e.g. `mvn spring-boot:run`) never reaches a terminal state, so a hold
+    // on "every task terminal" swallowed the report of a finished bounded
+    // job forever.
+    let mut app = App::new();
+    insert_bg(&mut app, "bg_aaaa1111", "cargo test", BackgroundTaskStatus::Done);
+    insert_daemon(&mut app, "bg_daemon01", "mvn spring-boot:run", BackgroundTaskStatus::Running);
+    let (_, input) = app.take_bg_wake(false).expect("daemon must not swallow the report");
+    assert!(input.contains("bg_aaaa1111"));
+    assert!(!input.contains("bg_daemon01"), "a still-running daemon is not an outcome");
+    assert!(input.contains("以下后台任务已结束"), "no 'all finished' claim: {input}");
+    assert!(!input.contains("全部结束"), "a daemon may still be running");
+}
+
+#[test]
+fn daemon_death_wakes_on_its_own() {
+    // A dead server is exactly the outcome the agent must investigate.
+    let mut app = App::new();
+    insert_daemon(&mut app, "bg_daemon01", "mvn spring-boot:run", BackgroundTaskStatus::Error("exited".into()));
+    let (_, input) = app.take_bg_wake(false).expect("dead daemon wakes");
+    assert!(input.contains("bg_daemon01"));
+}
+
+#[test]
+fn bounded_job_still_holds_a_daemon_death() {
+    // Batch discipline is unchanged for bounded work: with a job in flight
+    // the wake waits — even for a daemon that already died — one report.
+    let mut app = App::new();
+    insert_daemon(&mut app, "bg_daemon01", "mvn spring-boot:run", BackgroundTaskStatus::Done);
+    insert_bg(&mut app, "bg_bbbb2222", "slow job", BackgroundTaskStatus::Running);
+    assert!(app.take_bg_wake(false).is_none(), "bounded job still in flight");
 }
 
 #[test]

@@ -31,11 +31,24 @@ impl App {
         self.sub_agents.values().filter(|s| s.status == SubAgentStatus::Running).count()
     }
 
-    /// Number of tracked background shell tasks still `Running`.
-    pub(crate) fn running_bg_tasks(&self) -> usize {
-        self.background_tasks.values()
-            .filter(|t| t.status == BackgroundTaskStatus::Running)
-            .count()
+    /// Running background tasks split by deadline: `(bounded, daemons)`.
+    /// Bounded (`timeout_ms > 0`) are jobs the agent waits on and reports;
+    /// daemons (`timeout_ms == 0`) are servers that run until they die and
+    /// must never hold a "waiting" state (see `BackgroundTaskEntry::is_indefinite`).
+    pub(crate) fn bg_running_split(&self) -> (usize, usize) {
+        let mut bounded = 0usize;
+        let mut daemons = 0usize;
+        for t in self.background_tasks.values() {
+            if t.status != BackgroundTaskStatus::Running {
+                continue;
+            }
+            if t.is_indefinite() {
+                daemons += 1;
+            } else {
+                bounded += 1;
+            }
+        }
+        (bounded, daemons)
     }
 
     /// A sub-agent finished (watcher Progress event): mark it done in the task
@@ -63,14 +76,17 @@ impl App {
     }
 
     /// While `Waiting`, recompute both in-flight counts from the panel
-    /// (sub-agents + background tasks); drop to `Idle` only when nothing is
-    /// left (the fan-in batch injection / background wake follows).
+    /// (sub-agents + background tasks); drop to `Idle` only when nothing
+    /// *waitable* is left (the fan-in batch injection / background wake
+    /// follows). Daemons don't keep the wait alive — only bounded jobs do.
     fn refresh_waiting_count(&mut self) {
         if let AgentStatus::Waiting { .. } = self.status {
             let n = self.running_sub_agents();
-            let b = self.running_bg_tasks();
-            self.status = if n > 0 || b > 0 {
-                AgentStatus::Waiting { running: n, bg: b }
+            let (bounded, daemons) = self.bg_running_split();
+            self.status = if n > 0 || bounded > 0 {
+                // `bg` stays "all running" so the counter never under-reports;
+                // the wait itself is justified by bounded jobs only.
+                AgentStatus::Waiting { running: n, bg: bounded + daemons }
             } else {
                 AgentStatus::Idle
             };
@@ -159,6 +175,7 @@ impl App {
             entry.or_insert_with(|| BackgroundTaskEntry {
                 id: snap.id.clone(),
                 command: snap.command.clone(),
+                timeout_ms: snap.timeout_ms,
                 status: BackgroundTaskStatus::Running,
                 started_at: snap.started_at,
                 finished_at: None,

@@ -1615,9 +1615,19 @@ fn waiting_status_line_mentions_running_count() {
 // ── Background-task waiting state (turn ends while bg tasks run) ────────────
 
 fn running_bg_task(app: &mut App, id: &str, command: &str) {
+    running_bg_task_with_timeout(app, id, command, 120_000);
+}
+
+/// Daemon-style entry (`timeout_ms == 0`): a server left running on purpose.
+fn running_daemon_task(app: &mut App, id: &str, command: &str) {
+    running_bg_task_with_timeout(app, id, command, 0);
+}
+
+fn running_bg_task_with_timeout(app: &mut App, id: &str, command: &str, timeout_ms: u64) {
     app.background_tasks.insert(id.to_string(), BackgroundTaskEntry {
         id: id.to_string(),
         command: command.to_string(),
+        timeout_ms,
         status: BackgroundTaskStatus::Running,
         started_at: std::time::Instant::now(),
         finished_at: None,
@@ -1672,11 +1682,67 @@ fn bg_task_finishing_while_waiting_updates_count() {
     let registry = BackgroundTaskRegistry::new(4);
     app.set_background_registry(registry.clone());
     let token = tokio_util::sync::CancellationToken::new();
-    let id = registry.register("cargo test", None, token, None).unwrap();
+    let id = registry.register("cargo test", None, token, None, 120_000).unwrap();
     assert!(app.reconcile_background_tasks(), "new task is a change");
     assert!(matches!(app.status, AgentStatus::Waiting { running: 0, bg: 1 }));
 
     registry.finish(&id, Some(0));
     assert!(app.reconcile_background_tasks(), "status flip is a change");
     assert_eq!(app.status, AgentStatus::Idle, "last bg task done → idle");
+}
+
+#[test]
+fn daemon_only_settle_is_done_plus_service_note_not_waiting() {
+    // Session 20260922_6d262d0f: the turn ended with a `mvn spring-boot:run`
+    // daemon (`timeout_ms: 0`) up, and the TUI promised an automatic report
+    // for a process that never completes. A daemon is steady state: settle
+    // as done and note the service, never "waiting".
+    let mut app = App::new();
+    app.running = true;
+    running_daemon_task(&mut app, "bg_daemon01", "mvn spring-boot:run");
+
+    app.handle_event(TuiEvent::Runtime(run_finished(None)));
+    app.handle_event(TuiEvent::TurnDone);
+
+    assert_eq!(app.status, AgentStatus::Idle, "daemon alone = the agent can rest");
+    let texts: Vec<&str> = app.transcript.output.iter().map(|l| l.text.as_str()).collect();
+    assert!(texts.iter().any(|t| *t == "✅ done"), "work is done: {texts:?}");
+    assert!(
+        texts.iter().any(|t| t.contains("后台服务") && t.contains('1')),
+        "service noted: {texts:?}"
+    );
+    assert!(!texts.iter().any(|t| t.contains("等待")), "nothing to wait for: {texts:?}");
+    let line = app.status_line();
+    assert!(line.contains("后台服务"), "status bar keeps the service visible: {line}");
+    assert!(!line.contains("等待"), "status bar must not wait: {line}");
+}
+
+#[test]
+fn mixed_bounded_and_daemon_settle_waits_only_for_the_bounded() {
+    let mut app = App::new();
+    app.running = true;
+    running_bg_task(&mut app, "bg_aaaa1111", "cargo test");
+    running_daemon_task(&mut app, "bg_daemon01", "mvn spring-boot:run");
+
+    app.handle_event(TuiEvent::Runtime(run_finished(None)));
+    app.handle_event(TuiEvent::TurnDone);
+
+    assert!(matches!(app.status, AgentStatus::Waiting { running: 0, bg: 2 }),
+        "counter still covers everything running");
+    let texts: Vec<&str> = app.transcript.output.iter().map(|l| l.text.as_str()).collect();
+    let wait = texts.iter().find(|t| t.contains("等待后台任务")).expect("waiting line");
+    assert!(wait.contains("1 个运行中"), "count = bounded only: {wait}");
+    assert!(wait.contains("后台服务"), "daemon still listed: {wait}");
+    let line = app.status_line();
+    assert!(line.contains("等待后台任务") && line.contains("后台服务"), "{line}");
+}
+
+#[test]
+fn idle_status_line_lists_daemons_without_waiting() {
+    let mut app = App::new();
+    running_daemon_task(&mut app, "bg_daemon01", "mvn spring-boot:run");
+    app.status = AgentStatus::Idle;
+    let line = app.status_line();
+    assert!(line.starts_with("Idle"), "{line}");
+    assert!(line.contains("后台服务 1 个"), "{line}");
 }
