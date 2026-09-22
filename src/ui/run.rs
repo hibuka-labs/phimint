@@ -88,6 +88,7 @@ pub async fn run_tui(
     resume_messages: Option<Vec<ChatMessage>>,
     update_config: crate::config::UpdateConfig,
     no_update_check: bool,
+    log_sinks: log_core::SinkHandle,
 ) -> Result<()> {
     let agent = Arc::new(agent);
 
@@ -683,6 +684,25 @@ pub async fn run_tui(
         TuiOutcome::SwitchSession(picked_dir) => {
             match agent.switch_to_session(&picked_dir, &base_dir).await {
                 Ok((new_id, messages, new_ctx)) => {
+                    // Re-point the tracing file sink so logs follow the data
+                    // directory. Without this, logs keep streaming into the
+                    // launch session's dir while messages/turn logs/metrics go
+                    // to the resumed session's dir (2026-09-22 bfef1017 vs
+                    // 317d95e1 split — forensics had to correlate two dirs).
+                    if new_ctx.log_path().display().to_string() != log_path {
+                        match log_core::FileSink::new(new_ctx.log_path()).await {
+                            Ok(sink) => {
+                                log_sinks.replace_sinks(vec![Box::new(sink)]).await;
+                                tracing::info!(
+                                    path = %new_ctx.log_path().display(),
+                                    "logging re-pointed to resumed session directory"
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!(error = %e, "failed to re-point logging after session switch; logs stay in the launch directory");
+                            }
+                        }
+                    }
                     session = new_id;
                     session_ctx = new_ctx;
                     resume_messages = Some(messages);

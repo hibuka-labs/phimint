@@ -481,6 +481,10 @@ pub fn build(
         // Letting an occasional unverified answer through is far cheaper than
         // blocking correct behavior — the next turn self-corrects.
         judge_fail_open: true,
+        // Production sessions (2026-09-22, d84374ca/bfef1017) show the judge
+        // model routinely exceeds the 10s default — every session ended with
+        // "judge timeout after 10s" and a permanently ineffective judge.
+        judge_timeout_secs: 20,
         ..DefaultGuardConfig::default()
     };
     // Wire the judge's LLM client — `new()` leaves it None, making the judge

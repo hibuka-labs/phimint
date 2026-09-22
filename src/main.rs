@@ -250,7 +250,7 @@ async fn main() -> Result<()> {
     } else {
         resolve_session(cli.session.as_deref(), &base_dir)?
     };
-    init_logging(&session_ctx, &cli.log_level).await?;
+    let log_sinks = init_logging(&session_ctx, &cli.log_level).await?;
 
     // Token-budget context management is always on (window rotation +
     // history/notes tools instead of LLM summarization). `--token-budget`
@@ -302,7 +302,7 @@ async fn main() -> Result<()> {
     let show_banner = cli.banner != "off";
     let version = env!("CARGO_PKG_VERSION");
 
-    ui::run_tui(agent, skill_resolver, skill_telemetry, bg_registry, session, session_ctx, base_dir, workspace, approval_rx, scheme, show_banner, version, model_store, router, resume_messages, update_config, cli.no_update_check).await
+    ui::run_tui(agent, skill_resolver, skill_telemetry, bg_registry, session, session_ctx, base_dir, workspace, approval_rx, scheme, show_banner, version, model_store, router, resume_messages, update_config, cli.no_update_check, log_sinks).await
 }
 
 /// Base directory for all phimint session data (~/.phimint).
@@ -374,7 +374,11 @@ fn cleanup_expired_data(base_dir: &PathBuf, retention_days: i64) {
 /// fed by `tracing` records from the framework internals (LLM calls, tool
 /// execution, turn lifecycle). The structured event stream is persisted
 /// separately by `save_turn_log` after each turn.
-async fn init_logging(session_ctx: &SessionContext, log_level: &str) -> Result<()> {
+///
+/// Returns a `SinkHandle` so an in-TUI `/resume` can re-point the file sink at
+/// the resumed session's directory (the global subscriber itself can only be
+/// initialized once per process).
+async fn init_logging(session_ctx: &SessionContext, log_level: &str) -> Result<log_core::SinkHandle> {
     use log_core::{LogCoreLayer, LogLevel};
     use tracing_subscriber::prelude::*;
 
@@ -388,6 +392,7 @@ async fn init_logging(session_ctx: &SessionContext, log_level: &str) -> Result<(
     };
 
     let layer = LogCoreLayer::file(session_log_path.to_str().unwrap_or("phimint.log"), level).await?;
+    let sink_handle = layer.sink_handle();
 
     tracing_subscriber::registry()
         .with(
@@ -399,5 +404,5 @@ async fn init_logging(session_ctx: &SessionContext, log_level: &str) -> Result<(
 
     tracing::info!(path = %session_log_path.display(), "logging initialized");
 
-    Ok(())
+    Ok(sink_handle)
 }
