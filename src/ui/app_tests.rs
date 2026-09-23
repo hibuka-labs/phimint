@@ -1297,6 +1297,26 @@ fn esc_on_bare_at_removes_trigger() {
 }
 
 #[test]
+fn enter_on_directory_focuses_the_directory_row() {
+    let mut app = App::new();
+    let root = mention_scratch("dir-focus");
+    std::fs::create_dir_all(root.join("sub")).unwrap();
+    std::fs::write(root.join("sub/a.rs"), "x").unwrap();
+    std::fs::write(root.join("top.txt"), "x").unwrap();
+    app.set_workspace_root(root.clone());
+
+    app.handle_key(KeyCode::Char('@'), KeyModifiers::NONE);
+    // Arrow onto `sub` — the first real entry, right after the synthetic row.
+    app.handle_key(KeyCode::Down, KeyModifiers::NONE);
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+    let m = app.mention().expect("picker stays open on a directory");
+    assert_eq!(m.prefix(), "sub/");
+    assert_eq!(m.selected_index(), 0, "focus is on the entered directory (synthetic row)");
+    assert!(m.entries()[0].synthetic);
+    assert_eq!(app.composer.text(), "@sub/");
+}
+
+#[test]
 fn backspace_with_empty_prefix_cancels_mention() {
     let mut app = App::new();
     let root = mention_scratch("bsp");
