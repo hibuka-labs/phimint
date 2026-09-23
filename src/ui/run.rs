@@ -318,8 +318,18 @@ pub async fn run_tui(
 
         // Drain any events queued since the last frame into state.
         while let Ok(ev) = event_rx.try_recv() {
+            // Thought deltas only feed the thinking panel, which animates on
+            // the 250 ms UI_TICK — redrawing per delta bought nothing but a
+            // wall of churn; ≤4 fps reads calmer. Prose deltas still redraw
+            // at event rate.
+            let thought_only = matches!(
+                &ev,
+                super::app::TuiEvent::Runtime(RuntimeEvent::ThoughtDelta { .. })
+            );
             app.handle_event(ev);
-            dirty = true;
+            if !thought_only {
+                dirty = true;
+            }
         }
 
         // Check for window rotation after turn ends.

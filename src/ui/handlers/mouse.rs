@@ -65,9 +65,9 @@ impl App {
         let row = (y - ay) as usize;
         let committed = self.transcript.len();
 
-        // Use visual_to_output mapping when available (after render), otherwise
+        // Use the visual map when available (after render), otherwise
         // fall back to direct output indices (for tests or before first render).
-        if self.visual_to_output.is_empty() {
+        if self.visual_map.is_empty() {
             // Fallback: no markdown expansion, output lines map 1:1 to visual lines.
             let tail = self.streaming_tail_lines().map(|(l, _)| l.len()).unwrap_or(0);
             let window = self.viewport.window_range(committed + tail, ah as usize);
@@ -86,26 +86,26 @@ impl App {
         let total = self.viewport.rendered_total;
         let window = self.viewport.window_range(total, ah as usize);
         let visual_idx = window.start + row;
-        let out_idx = self.visual_to_output.get(visual_idx).copied();
+        let out_idx = self.visual_map.output_at(visual_idx);
         tracing::debug!(
             x, y, row, total, committed,
             window_start = window.start, window_end = window.end,
             visual_idx, out_idx,
-            mapping_len = self.visual_to_output.len(),
+            mapping_len = self.visual_map.len(),
             "line_index_at"
         );
-        if visual_idx < window.end && visual_idx < self.visual_to_output.len() {
-            let mapped = self.visual_to_output[visual_idx];
-            if mapped < committed {
-                return Some(visual_idx); // return visual index, not output index
-            }
+        if visual_idx < window.end
+            && let Some(mapped) = self.visual_map.output_at(visual_idx)
+            && mapped < committed
+        {
+            return Some(visual_idx); // return visual index, not output index
         }
         None
     }
 
     /// True when visual line `i` falls inside the active selection.
     pub fn is_selected(&self, i: usize) -> bool {
-        let total = if self.visual_to_output.is_empty() {
+        let total = if self.visual_map.is_empty() {
             self.transcript.len()
         } else {
             self.viewport.rendered_total
@@ -114,12 +114,12 @@ impl App {
     }
 
     /// The selected lines joined as plain text (what-you-see-is-what-you-copy).
-    /// Uses `visual_lines_text` so the copy matches exactly what the user
-    /// selected visually, not the full raw `output` block.
+    /// Uses the visual map's row texts so the copy matches exactly what the
+    /// user selected visually, not the full raw `output` block.
     pub fn selection_text(&self) -> String {
         let fallback: Vec<&str> = self.transcript.output.iter().map(|l| l.text.as_str()).collect();
         self.selection_state
-            .text(&fallback, &self.visual_lines_text)
+            .text(&fallback, self.visual_map.texts())
     }
 
     /// Clear the active transcript selection.

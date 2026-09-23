@@ -156,6 +156,13 @@ impl App {
             // Ctrl+Y copies the last reply (vim-yank convention); plain 'y'
             // still falls through to `Char(c)` and types a literal 'y'.
             Char('y') if ctrl => Some(Action::CopyLastReply),
+            // Ctrl+O toggles committed thought blocks between the collapsed
+            // one-line summary and the full dim text (global, render-time
+            // decision). Key events already mark the loop dirty.
+            Char('o') if ctrl => {
+                self.show_thoughts = !self.show_thoughts;
+                None
+            }
             Esc => {
                 // No menu is open here (handled above); clear a selection if
                 // present, else clear the composer.

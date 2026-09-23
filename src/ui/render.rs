@@ -18,12 +18,24 @@ use crate::ui::app::{
     AgentStatus, App, CONTEXT_MENU_H, CONTEXT_MENU_W, FocusTarget, SubAgentStatus, context_menu_pos,
     is_writing_hint,
 };
+use crate::ui::task_panel::ThinkingPanelState;
 use phi_tui::lines::LineKind;
 use phi_tui::markdown::{line_plain_text, render_markdown};
 use phi_tui::wrap::wrap;
 
 /// Max composer rows shown (its box grows with the buffer up to this).
 const MAX_COMPOSER_ROWS: usize = 8;
+
+/// Thinking panel total height (border 2 + 6 content lines).
+const THINKING_PANEL_H: u16 = 8;
+/// History rows that must survive below the top of the output pane for the
+/// panel to show — thinking must never occlude the whole transcript.
+const MIN_PANEL_HISTORY_ROWS: u16 = 2;
+/// Below this terminal height the thinking panel hides entirely. Belt and
+/// suspenders: at current composer bounds the fit guard already hides it
+/// (term < 14 ⇒ output < 10), but a future composer/layout change must not
+/// resurrect the squeeze this guard exists for.
+const MIN_PANEL_TERM_H: u16 = 12;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
     // Output area has no border — use the full terminal width for wrapping.
@@ -107,42 +119,28 @@ fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
         None => (app.transcript.output.as_slice(), false),
     };
 
-    // Streaming tail: for Normal (AI prose), render the full pending_text
-    // through markdown so the user sees styled output during streaming.
-    // For other kinds (Thought), fall back to pre-wrapped tail_lines.
-    // A focused child shows ITS live tail — the whole point of following a
-    // sub-agent is watching it work (e.g. the long silent report-writing
-    // stretch that has no tool-call boundary to flush at).
-    let (tail_raw, tail_lines_fallback): (Option<(String, LineKind)>, Vec<String>) =
-        if is_sub_agent {
-            let id = focused_agent.as_deref().expect("is_sub_agent implies focus");
-            (
-                app.child_stream_tail_raw(id),
-                app.child_stream_tail_lines(id)
-                    .map(|(lines, _)| lines)
-                    .unwrap_or_default(),
-            )
-        } else {
-            (
-                app.streaming_tail_raw()
-                    .map(|(raw, kind)| (raw.to_string(), kind)),
-                app.streaming_tail_lines()
-                    .map(|(lines, _)| lines.to_vec())
-                    .unwrap_or_default(),
-            )
-        };
+    // Streaming tail: only pending PROSE still renders inline (markdown, as
+    // before). A pending THOUGHT lives in the thinking panel inline at the
+    // flow tail (8 placeholder rows — see the panel block below) — the old
+    // full-tail inline render was the wall of scrolling dim text that panel
+    // replaces. A focused child shows ITS live tail — the whole point of
+    // following a sub-agent is watching it work (e.g. the long silent
+    // report-writing stretch with no tool-call boundary).
+    let tail_raw: Option<(String, LineKind)> = if is_sub_agent {
+        let id = focused_agent.as_deref().expect("is_sub_agent implies focus");
+        app.child_stream_tail_raw(id)
+    } else {
+        app.streaming_tail_raw()
+            .map(|(raw, kind)| (raw.to_string(), kind))
+    };
 
     let committed = transcript.len();
 
     // Pre-render committed lines and streaming tail into a flat vec.
     let mut lines: Vec<Line> = Vec::with_capacity(committed + 32);
-    // Build mapping from visual line index → originating output index.
-    // Used by `line_index_at` so mouse selection works on markdown-expanded
-    // content.  Tail lines (no output index) map to `usize::MAX`.
-    let mut visual_to_output: Vec<usize> = Vec::with_capacity(committed + 32);
-    // Plain text for each visual line (parallel to visual_to_output).
-    // Used by `selection_text` so copy returns visually-selected lines.
-    let mut visual_lines_text: Vec<String> = Vec::with_capacity(committed + 32);
+    // Row bookkeeping (visual row -> output index + plain text for copy) in
+    // one aligned map; tail/panel rows are unselectable. See `phi_tui::visual`.
+    let mut visual_map = phi_tui::visual::VisualMap::with_capacity(committed + 32);
 
     // --- committed output ---
     let mut vis_idx: usize = 0; // running visual line counter
@@ -154,15 +152,14 @@ fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
         // Diff detail: render the invocation line, then expand the diff block.
         if let Some(ref detail) = line.detail {
             match detail {
-                phi_tui::lines::ToolDetail::Diff { path, hunks } => {
+                phi_tui::lines::LineDetail::Diff { path, hunks } => {
                     // Invocation line (same as non-diff tool lines)
                     let base = style_for(kind);
                     let mut styled = span_line(&line.text, spans, base, app.scheme());
                     if app.is_selected(vis_idx) {
                         apply_bg(&mut styled, Color::DarkGray);
                     }
-                    visual_lines_text.push(line_plain_text(&styled));
-                    visual_to_output.push(i);
+                    visual_map.push_mapped(i, line_plain_text(&styled));
                     lines.push(styled);
                     vis_idx += 1;
 
@@ -175,8 +172,7 @@ fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
                     if app.is_selected(vis_idx) {
                         apply_bg(&mut header_line, Color::DarkGray);
                     }
-                    visual_lines_text.push(header_text);
-                    visual_to_output.push(i);
+                    visual_map.push_mapped(i, header_text);
                     lines.push(header_line);
                     vis_idx += 1;
 
@@ -201,8 +197,7 @@ fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
                         if app.is_selected(vis_idx) {
                             apply_bg(&mut hunk_line, Color::DarkGray);
                         }
-                        visual_lines_text.push(hunk_text);
-                        visual_to_output.push(i);
+                        visual_map.push_mapped(i, hunk_text);
                         lines.push(hunk_line);
                         vis_idx += 1;
 
@@ -239,14 +234,49 @@ fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
                                 if app.is_selected(vis_idx) {
                                     apply_bg(&mut styled, Color::DarkGray);
                                 }
-                                visual_lines_text.push(display);
-                                visual_to_output.push(i);
+                                visual_map.push_mapped(i, display);
                                 lines.push(styled);
                                 vis_idx += 1;
                             }
                         }
                     }
                     continue; // skip the normal rendering path below
+                }
+                phi_tui::lines::LineDetail::Thought { raw, line_count, char_count } => {
+                    // Folded by default (one summary line); Ctrl+O expands to
+                    // the full text re-wrapped at the current width. Folding
+                    // is a render-time decision — the line always carries the
+                    // full text in `detail.raw`.
+                    if !app.show_thoughts {
+                        // ASCII `>`, not `▸`: U+25B8 is East_Asian_Width=Ambiguous,
+                        // the same double-width-in-CJK-fonts drift class the
+                        // `CJK_WIDTH_UNSAFE` guard bans (session 20260908).
+                        let summary = format!(
+                            "> thinking - {line_count} 行 - ~{} tok",
+                            fmt_k(*char_count / 3)
+                        );
+                        let mut styled =
+                            Line::from(Span::styled(summary.clone(), style_for(LineKind::Thought)));
+                        if app.is_selected(vis_idx) {
+                            apply_bg(&mut styled, Color::DarkGray);
+                        }
+                        visual_map.push_mapped(i, summary);
+                        lines.push(styled);
+                        vis_idx += 1;
+                        continue;
+                    }
+                    let width = app.transcript.wrap_width();
+                    let base = style_for(LineKind::Thought);
+                    for wline in wrap(raw, width) {
+                        let mut styled = Line::from(Span::styled(wline.clone(), base));
+                        if app.is_selected(vis_idx) {
+                            apply_bg(&mut styled, Color::DarkGray);
+                        }
+                        visual_map.push_mapped(i, wline);
+                        lines.push(styled);
+                        vis_idx += 1;
+                    }
+                    continue;
                 }
             }
         }
@@ -257,8 +287,7 @@ fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
                 if app.is_selected(vis_idx) {
                     apply_bg(&mut md_line, Color::DarkGray);
                 }
-                visual_lines_text.push(line_plain_text(&md_line));
-                visual_to_output.push(i);
+                visual_map.push_mapped(i, line_plain_text(&md_line));
                 lines.push(md_line);
                 vis_idx += 1;
             }
@@ -268,45 +297,121 @@ fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
             if app.is_selected(vis_idx) {
                 apply_bg(&mut styled, Color::DarkGray);
             }
-            visual_lines_text.push(line_plain_text(&styled));
-            visual_to_output.push(i);
+            visual_map.push_mapped(i, line_plain_text(&styled));
             lines.push(styled);
             vis_idx += 1;
         }
     }
 
-    // --- streaming tail ---
-    if let Some((raw, kind)) = &tail_raw {
-        if *kind == LineKind::Normal {
-            let md_lines = render_markdown(raw);
-            for md_line in md_lines {
-                visual_lines_text.push(line_plain_text(&md_line));
-                visual_to_output.push(usize::MAX); // sentinel: no output index
-                lines.push(md_line);
-            }
-        } else {
-            // Thought / other kinds: use pre-wrapped lines.
-            for text in tail_lines_fallback.iter() {
-                let base = style_for(*kind);
-                let styled = span_line(text, &[], base, app.scheme());
-                visual_lines_text.push(text.clone());
-                visual_to_output.push(usize::MAX);
-                lines.push(styled);
-            }
+    // --- streaming tail (prose only) ---
+    if let Some((raw, LineKind::Normal)) = &tail_raw {
+        let md_lines = render_markdown(raw);
+        for md_line in md_lines {
+            visual_map.push_unselectable(line_plain_text(&md_line));
+            lines.push(md_line);
         }
     }
 
+    // In-flight thinking: two presentations behind Ctrl+O (`show_thoughts`),
+    // one toggle flipping both live thinking AND history thoughts together.
+    // Loose (on): stream every wrapped row of the thought straight into the
+    // flow — print as it thinks, no box (the pre-panel behavior) — history
+    // thoughts expand alongside. Children carry `[{agent}] ` on the first
+    // row (loose has no panel title to name the author); the prefix is the
+    // same one `flush_thought` bakes into `detail.raw`, so the commit seam
+    // does not drop it. Boxed (off, default): fixed-height TailPanel on
+    // placeholder rows at the flow tail (where thinking happens), so scroll
+    // accounting treats it like content — reviewing history scrolls it away
+    // with everything else and follow-bottom brings it back. The bordered
+    // widget is overlaid only when the whole box fits inside the visible
+    // window; a box cut by the window edge is left blank (it is one unit,
+    // not clip-able rows). Terminal/fit guards are boxed-only — loose rows
+    // are ordinary content and nothing squeezes. Panel body stays
+    // UNPREFIXED (its title names the agent).
+    let panel: Option<ThinkingPanelState> = if app.show_thoughts {
+        if let Some(state) = app.thinking_panel_state() {
+            let base = style_for(LineKind::Thought);
+            let agent_prefix = state
+                .agent
+                .as_ref()
+                .map(|a| format!("[{a}] "))
+                .unwrap_or_default();
+            for (n, row) in state.lines.iter().enumerate() {
+                // Attribution rides the first row only (tool-line convention).
+                // Re-wrap just that row so the prefix cannot overflow the pane.
+                let rows: Vec<String> = if n == 0 && !agent_prefix.is_empty() {
+                    wrap(&format!("{agent_prefix}{row}"), app.transcript.wrap_width())
+                } else {
+                    vec![row.clone()]
+                };
+                for r in rows {
+                    visual_map.push_unselectable(r.clone());
+                    lines.push(Line::from(Span::styled(r, base)));
+                }
+            }
+        }
+        None
+    } else {
+        app.thinking_panel_state().filter(|_| {
+            f.area().height >= MIN_PANEL_TERM_H
+                && height >= (THINKING_PANEL_H + MIN_PANEL_HISTORY_ROWS) as usize
+        })
+    };
+    let panel_flow_start = lines.len();
+    if panel.is_some() {
+        for _ in 0..THINKING_PANEL_H {
+            visual_map.push_unselectable(String::new());
+            lines.push(Line::default());
+        }
+    }
+
+    // Scroll anchor: the output line currently at the window top (previous
+    // frame's map) plus how far the head sits INSIDE that line's visual block.
+    // `phi_tui::visual` owns the arithmetic: expanded thinking wraps one
+    // OutputLine into dozens of rows, and the head routinely lands mid-block,
+    // so resolving to the block's first row would fling the view a whole
+    // block upward and undo every one-row scroll-down (session 20260923:
+    // "can't scroll to the bottom after Ctrl+O"). Unselectable tail rows and
+    // the first frame fall back to index-holding inside `set_visible_anchored`.
+    let anchor = {
+        let prev_total = app.visual_map.len();
+        let prev_height = app.viewport.viewport_height.max(1);
+        let prev_window = app.viewport.window_range(prev_total, prev_height);
+        app.visual_map.anchor_at(prev_window.start)
+    };
+
     // Visible window respecting scroll_offset and follow_bottom.
     let total = lines.len();
-    app.visual_to_output = visual_to_output;
-    app.visual_lines_text = visual_lines_text;
-    app.viewport.set_visible(total, height);
+    let preferred_head = anchor.and_then(|a| visual_map.resolve_anchor(a));
+    app.visual_map = visual_map;
+    app.viewport.set_visible_anchored(total, height, preferred_head);
     let window = app.viewport.window_range(total, height);
+
+    // The panel's screen rect = where its placeholder rows land in the window.
+    let panel_rect = if panel.is_some()
+        && window.start <= panel_flow_start
+        && panel_flow_start + THINKING_PANEL_H as usize <= window.end
+    {
+        Some(Rect {
+            x: area.x,
+            y: area.y + (panel_flow_start - window.start) as u16,
+            width: area.width,
+            height: THINKING_PANEL_H,
+        })
+    } else {
+        None
+    };
+
     let visible: Vec<Line> = lines[window].to_vec();
 
     // No border/title — the transcript flows freely (Claude Code style); the
     // composer's own box is the visual boundary between output and input.
     f.render_widget(Paragraph::new(visible), area);
+
+    if let (Some(rect), Some(state)) = (panel_rect, &panel) {
+        f.render_widget(Clear, rect);
+        render_thinking_panel(f, app, rect, &state.lines, state.agent.as_deref(), state.chars);
+    }
 }
 
 fn render_composer(f: &mut Frame, app: &App, area: Rect) {
@@ -819,6 +924,52 @@ fn risk_label(level: &RiskLevel) -> (&'static str, Color) {
         RiskLevel::Safe => ("Safe", Color::Green),
         RiskLevel::Sensitive => ("Sensitive", Color::Yellow),
         RiskLevel::Destructive => ("Destructive", Color::Red),
+    }
+}
+
+/// The live thinking panel: bordered, internally scrolling (last lines of the
+/// pending thought), title carries spinner / agent / elapsed / token estimate.
+fn render_thinking_panel(
+    f: &mut Frame,
+    app: &App,
+    area: Rect,
+    lines: &[String],
+    agent: Option<&str>,
+    chars: usize,
+) {
+    let dim = Style::default().fg(Color::DarkGray);
+    let spinner = app.spinner_char();
+    // Per-stream timer (`""` = root, matching the agent_id routing key).
+    let key = agent.unwrap_or("");
+    let elapsed = app
+        .thinking_since
+        .get(key)
+        .map_or(0, |t| t.elapsed().as_secs() + 1);
+    let mut title = vec![Span::styled(format!("{spinner} thinking"), dim)];
+    if let Some(id) = agent {
+        title.push(Span::styled(format!(" - {id}"), dim));
+    }
+    title.push(Span::styled(
+        format!(" - {} - ~{} tok", App::fmt_elapsed(elapsed), fmt_k(chars / 3)),
+        dim,
+    ));
+    f.render_widget(
+        phi_tui::tail_panel::TailPanel {
+            title: Line::from(title),
+            lines,
+            line_style: style_for(LineKind::Thought),
+            border_style: dim,
+        },
+        area,
+    );
+}
+
+/// `950` → "950"; `12000` → "12.0k". Cosmetic counts in titles/summaries.
+fn fmt_k(n: usize) -> String {
+    if n < 1000 {
+        n.to_string()
+    } else {
+        format!("{:.1}k", n as f64 / 1000.0)
     }
 }
 

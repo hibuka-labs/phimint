@@ -15,13 +15,13 @@ use std::time::Instant;
 
 use crate::banner::BannerStyle;
 use crate::ui::app::{App, AgentStatus, Phase, SubAgentStatus, ToolEvent};
-use phi_tui::lines::{DiffHunk, LineKind, OutputLine, ToolDetail};
+use phi_tui::lines::{DiffHunk, LineKind, OutputLine, LineDetail};
 use phi_tui::diff::{diff_to_hunks, diff_to_hunks_indexed};
 use phi_tui::wrap::{one_line, wrap};
 
-/// Build a `ToolDetail::Diff` from a file tool's `args_json`, or `None` if
+/// Build a `LineDetail::Diff` from a file tool's `args_json`, or `None` if
 /// the tool is not a file-edit tool or parsing fails.
-fn build_tool_detail(tool_name: &str, args_json: &str) -> Option<ToolDetail> {
+fn build_tool_detail(tool_name: &str, args_json: &str) -> Option<LineDetail> {
     let args: serde_json::Value = match serde_json::from_str(args_json) {
         Ok(v) => v,
         Err(e) => {
@@ -46,7 +46,7 @@ fn build_tool_detail(tool_name: &str, args_json: &str) -> Option<ToolDetail> {
             if all_hunks.is_empty() {
                 return None;
             }
-            Some(ToolDetail::Diff { path, hunks: all_hunks })
+            Some(LineDetail::Diff { path, hunks: all_hunks })
         }
         "write_file" => {
             let content = match args.get("content").and_then(|v| v.as_str()) {
@@ -60,7 +60,7 @@ fn build_tool_detail(tool_name: &str, args_json: &str) -> Option<ToolDetail> {
             if hunks.is_empty() {
                 return None;
             }
-            Some(ToolDetail::Diff { path, hunks })
+            Some(LineDetail::Diff { path, hunks })
         }
         _ => None,
     }
@@ -129,16 +129,35 @@ impl App {
                     // 20260904_3eeb5610). Flushed lines land in the child's
                     // own transcript; visibility = task panel, not the main view.
                     Some(id) => {
+                        let had_thought = self
+                            .child_streams
+                            .get(id)
+                            .is_some_and(|s| s.has_pending_thought());
                         let flushed = self.push_child_text(id, &text);
                         self.sub_agent_transcripts
                             .entry(id.to_string())
                             .or_default()
                             .extend(flushed);
+                        // push_text implicitly flushes a pending thought first
+                        // (StreamState-internal, invisible to flush_pending) —
+                        // retire this stream's panel timer so the elapsed
+                        // readout doesn't outlive its segment.
+                        if had_thought {
+                            self.thinking_since.remove(id);
+                        }
                     }
                     None => {
+                        let had_thought = self.stream.has_pending_thought();
                         let flushed = self.stream.push_text(&text, agent_id.as_deref());
                         for line in flushed {
                             self.transcript.push(line);
+                        }
+                        // push_text implicitly flushes a pending thought first
+                        // (StreamState-internal, invisible to flush_pending) —
+                        // retire this stream's panel timer so the elapsed
+                        // readout doesn't outlive its segment.
+                        if had_thought {
+                            self.thinking_since.remove("");
                         }
                     }
                 }
@@ -149,16 +168,39 @@ impl App {
                 let child = agent_id.as_deref().filter(|id| !id.is_empty());
                 match child {
                     Some(id) => {
+                        let was = self
+                            .child_streams
+                            .get(id)
+                            .is_some_and(|s| s.has_pending_thought());
                         let flushed = self.push_child_thought(id, &text);
+                        // push_thought implicitly flushes the previous segment on a
+                        // kind/agent flip — that starts a NEW segment, so re-arm the
+                        // timer even when `was`, or elapsed overstates the new
+                        // segment's age.
+                        let flushed_thought = flushed
+                            .iter()
+                            .any(|l| l.kind == phi_tui::lines::LineKind::Thought);
                         self.sub_agent_transcripts
                             .entry(id.to_string())
                             .or_default()
                             .extend(flushed);
+                        if !was || flushed_thought {
+                            self.thinking_since.insert(id.to_string(), Instant::now());
+                        }
                     }
                     None => {
+                        let was = self.stream.has_pending_thought();
                         let flushed = self.stream.push_thought(&text, agent_id.as_deref());
+                        // Same implicit-flush re-arm as the child arm (e.g. a root
+                        // thought arriving under a different `agent_id` tag).
+                        let flushed_thought = flushed
+                            .iter()
+                            .any(|l| l.kind == phi_tui::lines::LineKind::Thought);
                         for line in flushed {
                             self.transcript.push(line);
+                        }
+                        if !was || flushed_thought {
+                            self.thinking_since.insert(String::new(), Instant::now());
                         }
                     }
                 }
@@ -299,7 +341,7 @@ impl App {
                             .collect();
                         // Find the most recent Diff in the transcript for this tool call
                         for line in self.transcript.output.iter_mut().rev() {
-                            if let Some(ToolDetail::Diff { hunks, .. }) = &mut line.detail {
+                            if let Some(LineDetail::Diff { hunks, .. }) = &mut line.detail {
                                 for hunk in hunks.iter_mut() {
                                     if let Some(&base) = offsets.get(hunk.edit_index) {
                                         if base > 0 {

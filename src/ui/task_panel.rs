@@ -25,6 +25,15 @@ use super::app::{AgentStatus, App, BackgroundTaskEntry, FocusTarget, SubAgentSta
 /// two thresholds can never drift apart.
 const BACKGROUND_REAP_AFTER: Duration = Duration::from_secs(3);
 
+/// Live state for the thinking panel of the focused agent: pre-wrapped tail
+/// lines (unprefixed — the panel title owns agent attribution), the agent id
+/// when a child, and the pending thought's char count (token estimate).
+pub(crate) struct ThinkingPanelState {
+    pub(crate) lines: Vec<String>,
+    pub(crate) agent: Option<String>,
+    pub(crate) chars: usize,
+}
+
 impl App {
     /// Number of tracked sub-agents still `Running`.
     pub(crate) fn running_sub_agents(&self) -> usize {
@@ -319,6 +328,7 @@ impl App {
             self.sub_agents.remove(&id);
             self.sub_agent_transcripts.remove(&id);
             self.child_streams.remove(&id);
+            self.thinking_since.remove(&id);
             removed = true;
         }
 
@@ -371,6 +381,10 @@ impl App {
                 "flush_pending: view state"
             );
         }
+        // Root flush ⇒ the root segment is over. Other streams' timers are
+        // keyed separately and survive structural events that only flush the
+        // root (fixes: child B's timer used to die on child A's RunFinished).
+        self.thinking_since.remove("");
     }
 
     // ── Per-child streaming ───────────────────────────────────────────────
@@ -399,7 +413,11 @@ impl App {
     /// pending stream content.
     pub(crate) fn flush_child_stream(&mut self, id: &str) -> Vec<OutputLine<BannerStyle>> {
         match self.child_streams.get_mut(id) {
-            Some(st) => st.flush(),
+            Some(st) => {
+                let lines = st.flush();
+                self.thinking_since.remove(id);
+                lines
+            }
             None => Vec::new(),
         }
     }
@@ -422,6 +440,46 @@ impl App {
             *first = format!("[{id}] {first}");
         }
         Some((lines, kind))
+    }
+
+    /// Live state for the thinking panel of the **focused** agent. `None` when
+    /// the focused stream has no pending THOUGHT — only thought tails panel;
+    /// pending prose keeps streaming inline. Root looks at `stream`, a focused
+    /// child at its `child_streams` entry. Body lines are UNPREFIXED: the panel
+    /// title already names the agent (`thinking - <id>`), and the `[<id>] `
+    /// prefix is only for stream lines that land in the shared transcript.
+    pub(crate) fn thinking_panel_state(&self) -> Option<ThinkingPanelState> {
+        match &self.task_panel.focus {
+            FocusTarget::Input => {
+                if !self.stream.has_pending_thought() {
+                    return None;
+                }
+                let (lines, _) = self.stream.tail_lines()?;
+                let chars = self
+                    .stream
+                    .tail_raw()
+                    .map_or(0, |(raw, _)| raw.chars().count());
+                Some(ThinkingPanelState {
+                    lines: lines.to_vec(),
+                    agent: None,
+                    chars,
+                })
+            }
+            FocusTarget::TaskList(index) => {
+                let id = self.sub_agents.keys().nth(*index).cloned()?;
+                let stream = self.child_streams.get(&id)?;
+                let (lines, kind) = stream.tail_lines()?;
+                if kind != LineKind::Thought {
+                    return None;
+                }
+                let chars = stream.tail_raw().map_or(0, |(raw, _)| raw.chars().count());
+                Some(ThinkingPanelState {
+                    lines: lines.to_vec(),
+                    agent: Some(id),
+                    chars,
+                })
+            }
+        }
     }
 }
 

@@ -6,7 +6,7 @@
 //! This is the same event stream the `print_event` REPL renderer consumed, so
 //! nothing in the framework needed to change for the TUI to exist.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -23,6 +23,7 @@ use phi_tui::completer::{MentionCompleter, SlashCompleter, CompleterAction};
 use phi_tui::selection::SelectionState;
 use phi_tui::stream::StreamState;
 use phi_tui::transcript::{Transcript, DEFAULT_WRAP_WIDTH};
+use phi_tui::visual::VisualMap;
 use phi_tui::viewport::Viewport;
 use phi_tui::wrap::wrap;
 
@@ -236,15 +237,11 @@ pub struct App {
     /// Output pane rect `(x, y, w, h)` in cells, refreshed each draw so mouse
     /// events can be hit-tested against the transcript.
     pub(crate) output_area: Option<(u16, u16, u16, u16)>,
-    /// Mapping from visual line index (after markdown expansion) to the
-    /// originating `output` line index.  Built by `render_output` each frame;
-    /// used by `line_index_at` so mouse selection works correctly on
-    /// markdown-expanded content.
-    pub(crate) visual_to_output: Vec<usize>,
-    /// Plain text for each visual line (parallel to `visual_to_output`).
-    /// Built by `render_output`; used by `selection_text` so copy returns
-    /// the visually-selected lines rather than the full raw `output` block.
-    pub(crate) visual_lines_text: Vec<String>,
+    /// Visual-row map for the current frame (visual row -> output index +
+    /// plain-text twin), rebuilt by `render_output` each frame. Feeds mouse
+    /// hit-testing (`line_index_at`), copy (`selection_text`) and the
+    /// block-aware scroll anchor (`phi_tui::visual`).
+    pub(crate) visual_map: VisualMap,
     /// Live streaming tail state (pending text/thought + incremental wrap cache).
     /// Root-agent deltas only — see `child_streams` for why children are separate.
     pub(crate) stream: StreamState<BannerStyle>,
@@ -271,6 +268,16 @@ pub struct App {
     /// 20260904_e6612477 "卡一会"). The ~250 ms tick re-renders while this is
     /// set, keeping spinner/elapsed alive through event-less stretches.
     pub(crate) activity_since: Option<Instant>,
+    /// Fold state for committed thought blocks: `false` = collapsed summary
+    /// lines, `true` = full text inline. Global toggle (Ctrl+O); folding is a
+    /// render-time decision — `OutputLine` always carries the full text.
+    /// Consumed by the thought-fold renderer (render.rs).
+    pub(crate) show_thoughts: bool,
+    /// When each stream's current pending thought segment began, keyed by
+    /// agent path (`""` = the root stream, matching the `agent_id` routing
+    /// convention). A segment's first delta inserts, its owning flush
+    /// removes; drives the thinking panel's elapsed readout.
+    pub(crate) thinking_since: HashMap<String, Instant>,
     /// Background task registry (injected from agent::build).
     pub(crate) background_registry: Option<Arc<BackgroundTaskRegistry>>,
     /// Background shell tasks displayed in the task panel.
@@ -303,14 +310,15 @@ impl App {
             workspace_root: PathBuf::new(),
             scheme: ColorScheme::Dark,
             output_area: None,
-            visual_to_output: Vec::new(),
-            visual_lines_text: Vec::new(),
+            visual_map: VisualMap::new(),
             stream: StreamState::new(DEFAULT_WRAP_WIDTH),
             child_streams: BTreeMap::new(),
             live_progress: None,
             notice: None,
             upgrade_hint: None,
             activity_since: None,
+            show_thoughts: false,
+            thinking_since: HashMap::new(),
             background_registry: None,
             background_tasks: BTreeMap::new(),
         }
@@ -484,6 +492,7 @@ impl App {
             self.sub_agents.clear();
             self.sub_agent_transcripts.clear();
             self.child_streams.clear();
+            self.thinking_since.clear();
             false
         }
     }
@@ -762,18 +771,21 @@ impl App {
         FRAMES[(ms / 120) as usize % FRAMES.len()]
     }
 
+    /// `9s` / `10m37s` — shared by the status-bar suffix and the thinking
+    /// panel title so a long stretch reads the same in both places.
+    pub(crate) fn fmt_elapsed(secs: u64) -> String {
+        if secs < 60 {
+            format!("{secs}s")
+        } else {
+            format!("{}m{:02}s", secs / 60, secs % 60)
+        }
+    }
+
     /// ` · 42s`-style elapsed readout for the active stretch (empty when idle).
     /// Rounded up so a just-started stretch doesn't read as "0s".
     fn elapsed_suffix(&self) -> String {
         match self.activity_since {
-            Some(t) => {
-                let s = t.elapsed().as_secs() + 1;
-                if s < 60 {
-                    format!(" - {s}s")
-                } else {
-                    format!(" - {}m{:02}s", s / 60, s % 60)
-                }
-            }
+            Some(t) => format!(" - {}", Self::fmt_elapsed(t.elapsed().as_secs() + 1)),
             None => String::new(),
         }
     }
