@@ -1254,15 +1254,43 @@ fn typing_name_then_arrow_selects_file() {
 }
 
 #[test]
-fn esc_cancels_mention_removing_at_and_prefix() {
+fn esc_with_typed_prefix_keeps_text_and_closes() {
     let mut app = App::new();
-    let root = mention_scratch("esc");
+    let root = mention_scratch("esc-keep");
     app.set_workspace_root(root.clone());
 
     app.handle_key(KeyCode::Char('@'), KeyModifiers::NONE);
     for c in "src".chars() {
         app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
     }
+    app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+    assert!(app.mention().is_none());
+    assert_eq!(app.composer.text(), "@src", "Esc closes the picker but keeps the typed text");
+}
+
+#[test]
+fn esc_after_dir_navigation_keeps_text() {
+    let mut app = App::new();
+    let root = mention_scratch("esc-dir");
+    std::fs::create_dir_all(root.join("sub")).unwrap();
+    std::fs::write(root.join("sub/a.rs"), "x").unwrap();
+    app.set_workspace_root(root.clone());
+
+    app.handle_key(KeyCode::Char('@'), KeyModifiers::NONE);
+    app.handle_key(KeyCode::Down, KeyModifiers::NONE);
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE); // descend into sub/
+    app.handle_key(KeyCode::Esc, KeyModifiers::NONE); // close the picker
+    assert!(app.mention().is_none());
+    assert_eq!(app.composer.text(), "@sub/", "Esc keeps the typed @path in the composer");
+}
+
+#[test]
+fn esc_on_bare_at_removes_trigger() {
+    let mut app = App::new();
+    let root = mention_scratch("esc-bare");
+    app.set_workspace_root(root.clone());
+
+    app.handle_key(KeyCode::Char('@'), KeyModifiers::NONE);
     app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
     assert!(app.mention().is_none());
     assert_eq!(app.composer.text(), "");

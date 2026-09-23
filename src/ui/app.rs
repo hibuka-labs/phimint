@@ -595,10 +595,17 @@ impl App {
 
         match m.handle_key(code) {
             CompleterAction::Cancelled => {
-                let to_delete = 1 + old_prefix.chars().count();
                 self.mention = None;
-                for _ in 0..to_delete {
-                    self.composer.backspace();
+                // Esc with a typed prefix: the text is already visible in the
+                // composer, so closing the picker must not wipe it. Only a
+                // bare `@` (nothing typed yet) or backspacing out removes the
+                // trigger from the input.
+                let keep_text = matches!(code, KeyCode::Esc) && !old_prefix.is_empty();
+                if !keep_text {
+                    let to_delete = 1 + old_prefix.chars().count();
+                    for _ in 0..to_delete {
+                        self.composer.backspace();
+                    }
                 }
                 None
             }
