@@ -1138,6 +1138,31 @@ fn slash_lines_pads_the_name_column_in_display_columns() {
 }
 
 #[test]
+fn slash_lines_fit_a_band_narrower_than_the_name_column() {
+    let mut app = App::new();
+    app.set_skill_summaries(vec![("review".into(), "a description".into())]);
+    app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+
+    let s = app.slash().expect("picker open");
+    // A 20-column band is narrower than GUTTER_W + NAME_W + GAP_W (28). The
+    // fixed 24-col name column built a 28-col row that `Paragraph` then
+    // hard-clipped. Reachable via `ui.popup.width: 20`.
+    let rows = slash_lines(s, 20);
+    let text: String = rows[0].spans.iter().map(|sp| sp.content.as_ref()).collect();
+    assert!(
+        unicode_width::UnicodeWidthStr::width(text.as_str()) <= 18,
+        "row overflows a 20-col band: {text:?}"
+    );
+    // And a degenerate 3-column band must not go negative either.
+    let tiny = slash_lines(s, 3);
+    let tiny_text: String = tiny[0].spans.iter().map(|sp| sp.content.as_ref()).collect();
+    assert!(
+        unicode_width::UnicodeWidthStr::width(tiny_text.as_str()) <= 1,
+        "row overflows a 3-col band: {tiny_text:?}"
+    );
+}
+
+#[test]
 fn slash_lines_keeps_the_selected_row_two_tone() {
     let mut app = App::new();
     app.set_skill_summaries(vec![
@@ -1282,4 +1307,35 @@ fn framed_band_elides_rows_to_the_content_width() {
         unicode_width::UnicodeWidthStr::width(inner) <= 28,
         "row wider than the 28-col content area: {inner:?}\n{text}"
     );
+}
+
+// ── Task panel column accounting ─────────────────────────────────────────────
+// The name / activity / files cells must be laid out in terminal columns. They
+// used to mix three accountings — `chars().count()`, `format!("{:<w$}")` (chars)
+// and `result.len()` (bytes) — and the bytes one slices mid-char.
+
+#[test]
+fn format_files_truncates_cjk_names_without_panicking() {
+    // A basename over 20 bytes hit `&result[..max_width - 3]`, which is a byte
+    // slice and panics mid-char ("byte index N is not a char boundary; it is
+    // inside <a multi-byte char>"). That panic ran inside `render`, so it took
+    // the whole TUI down.
+    let files = vec!["测试文件名称很长的文件名.rs".to_string()];
+    let out = format_files(&files, 20);
+    assert!(out.ends_with("..."), "expected an elision: {out:?}");
+    assert!(
+        unicode_width::UnicodeWidthStr::width(out.as_str()) <= 20,
+        "output wider than its column: {out:?}"
+    );
+}
+
+#[test]
+fn format_files_lists_up_to_two_basenames() {
+    // Basenames only, joined by ", ", with "..." marking a longer list.
+    let two = format_files(&["src/a.rs".into(), "src/b.rs".into()], 20);
+    assert_eq!(two, "a.rs, b.rs");
+    let three = format_files(&["a.rs".into(), "b.rs".into(), "c.rs".into()], 40);
+    assert_eq!(three, "a.rs, b.rs...");
+    // Short names pass through untouched.
+    assert_eq!(format_files(&[], 20), "");
 }

@@ -23,7 +23,7 @@ use phi_tui::completer::{MentionCompleter, SlashCompleter};
 use phi_tui::lines::LineKind;
 use phi_tui::markdown::{line_plain_text, render_markdown};
 use phi_tui::popup_list::{band_width, GUTTER_W, PopupList};
-use phi_tui::wrap::{elide, Elide, wrap};
+use phi_tui::wrap::{elide, pad_cols, Elide, wrap};
 
 /// Max composer rows shown (its box grows with the buffer up to this).
 const MAX_COMPOSER_ROWS: usize = 8;
@@ -548,12 +548,13 @@ fn format_files(files: &[String], max_width: usize) -> String {
         result.push_str(name);
         count += 1;
     }
-    // Truncate if too long
-    if result.len() > max_width {
-        format!("{}...", &result[..max_width.saturating_sub(3)])
-    } else {
-        result
-    }
+    // Truncate to the column budget. `&result[..n]` is a BYTE slice and panics
+    // mid-char on a multi-byte basename ("end byte index N is not a char
+    // boundary; it is inside <a multi-byte char>") -- and since this runs
+    // inside `render`, that panic took the whole TUI down. `elide` budgets by
+    // display columns, is char-boundary safe, and is a no-op when the text
+    // already fits.
+    elide(&result, max_width, Elide::Head)
 }
 
 /// Format elapsed time as seconds.
@@ -563,19 +564,6 @@ fn format_time(elapsed: std::time::Duration) -> String {
         format!("{secs}s")
     } else {
         format!("{}m{}s", secs / 60, secs % 60)
-    }
-}
-
-/// Char-safe truncation to exactly `max` chars, ellipsis-terminated.
-/// ASCII `...` instead of `…`: CJK fonts render `…` double-width while the
-/// layout counts it single-width, and the accumulated drift pushes the
-/// composer off-screen (session 20260908_a9f7a846).
-fn ellipsize(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let head: String = s.chars().take(max.saturating_sub(3)).collect();
-        format!("{head}...")
     }
 }
 
@@ -590,13 +578,15 @@ fn render_task_panel(f: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    // Column widths adapt to content: the longest name sets the name column
-    // (capped — `analyze-deepseek-harness` must not shove later columns out
-    // of alignment), and the activity column takes whatever width is left.
+    // Column widths adapt to content in DISPLAY COLUMNS: the longest name sets
+    // the name column (capped — `analyze-deepseek-harness` must not shove later
+    // columns out of alignment), and the activity column takes whatever width
+    // is left. Measuring and padding by char count instead pushes every later
+    // column right for a CJK name (1 char = 2 columns) and breaks alignment.
     let name_w = app
         .sub_agents
         .values()
-        .map(|s| s.name.chars().count())
+        .map(|s| UnicodeWidthStr::width(s.name.as_str()))
         .max()
         .unwrap_or(0)
         .clamp(8, 16);
@@ -626,7 +616,7 @@ fn render_task_panel(f: &mut Frame, app: &App, area: Rect) {
         // calls (the long silent report-writing stretch has no tool events).
         let activity = if act_w > 6 {
             if is_writing_hint(state, Instant::now()) {
-                (ellipsize("writing...", act_w), Color::DarkGray)
+                (elide("writing...", act_w, Elide::Head), Color::DarkGray)
             } else {
                 state
                     .events
@@ -637,7 +627,10 @@ fn render_task_panel(f: &mut Frame, app: &App, area: Rect) {
                         } else {
                             (">", Color::Reset)
                         };
-                        (ellipsize(&format!("{mark} {}", e.tool_name), act_w), color)
+                        (
+                            elide(&format!("{mark} {}", e.tool_name), act_w, Elide::Head),
+                            color,
+                        )
                     })
                     .unwrap_or((String::new(), Color::Reset))
             }
@@ -650,15 +643,17 @@ fn render_task_panel(f: &mut Frame, app: &App, area: Rect) {
             Color::Reset
         };
 
+        // Every cell is elided to its column then padded OUT to it, in display
+        // columns: `format!("{:<w$}")` pads by chars and would overshoot.
         let spans = vec![
             Span::styled(format!("{marker} "), Style::default().bg(bg_color)),
             Span::styled(format!("{status_icon} "), Style::default().fg(status_color).bg(bg_color)),
-            Span::styled(format!("{:<name_w$}", ellipsize(&state.name, name_w)), Style::default().bg(bg_color)),
             Span::styled(
-                format!("{:<act_w$}", activity.0),
-                Style::default().fg(activity.1).bg(bg_color),
+                pad_cols(&elide(&state.name, name_w, Elide::Head), name_w),
+                Style::default().bg(bg_color),
             ),
-            Span::styled(format!("{:<files_w$}", files), Style::default().fg(Color::DarkGray).bg(bg_color)),
+            Span::styled(pad_cols(&activity.0, act_w), Style::default().fg(activity.1).bg(bg_color)),
+            Span::styled(pad_cols(&files, files_w), Style::default().fg(Color::DarkGray).bg(bg_color)),
             Span::styled(format!("│ {:>5}", time), Style::default().fg(Color::DarkGray).bg(bg_color)),
         ];
         lines.push(Line::from(spans));
@@ -793,17 +788,21 @@ fn slash_lines(s: &SlashCompleter, width: usize) -> Vec<Line<'static>> {
         .iter()
         .enumerate()
         .map(|(i, (name, desc))| {
-            let name = elide(name, NAME_W, Elide::Tail { sep: None });
-            // Pad in display columns, not chars: `elide` budgets by terminal
-            // columns, so `{name:<NAME_W$}` would overshoot for a multi-byte
-            // name (CJK frontmatter `name:`) and push the description out of
-            // the band.
-            let pad = NAME_W.saturating_sub(UnicodeWidthStr::width(name.as_str()));
-            let budget = width.saturating_sub(GUTTER_W + NAME_W + GAP_W);
+            // Fit the fixed columns inside the band. A band narrower than
+            // GUTTER_W + NAME_W + GAP_W would otherwise build a row wider than
+            // the band and have `Paragraph` hard-clip the tail — reachable now
+            // that `ui.popup.width` accepts any column count. Shrinking the
+            // name column first keeps the row exactly `width` wide at any size.
+            let avail = width.saturating_sub(GUTTER_W);
+            let name_w = NAME_W.min(avail);
+            let gap_w = GAP_W.min(avail.saturating_sub(name_w));
+            let budget = avail.saturating_sub(name_w + gap_w);
+
+            let name = elide(name, name_w, Elide::Tail { sep: None });
             let desc_fg = if i == selected { Color::Gray } else { Color::DarkGray };
             Line::from(vec![
-                Span::styled(format!("{name}{}", " ".repeat(pad)), Style::default().fg(Color::White)),
-                Span::raw(" ".repeat(GAP_W)),
+                Span::styled(pad_cols(&name, name_w), Style::default().fg(Color::White)),
+                Span::raw(" ".repeat(gap_w)),
                 Span::styled(elide(desc, budget, Elide::Head), Style::default().fg(desc_fg)),
             ])
         })

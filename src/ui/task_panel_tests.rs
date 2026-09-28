@@ -592,6 +592,46 @@ fn panel_columns_align_with_long_names() {
     assert_eq!(cols[0], cols[1], "time column must align, got:\n{snap}");
 }
 
+#[test]
+fn panel_columns_align_across_cjk_and_ascii_names() {
+    let mut app = App::new();
+    // 11 CJK chars = 22 display columns, so it hits the 16-column name cap and
+    // must be elided by width. Laid out by char count, one CJK char counts as
+    // one cell while occupying two, and every later column slides right.
+    insert_agent_with_event(
+        &mut app,
+        "root/analyze",
+        "分析设计文档的实现方案",
+        "read_file",
+        false,
+    );
+    insert_agent_with_event(&mut app, "root/pi", "pi", "read_file", false);
+
+    let snap = crate::ui::render::snapshot_text(&mut app, 100, 30);
+    // Both rows' `│` (the time column) must sit on the same DISPLAY column.
+    // Comparing char indices would hide the misalignment, so measure the width
+    // of the prefix before `│` instead.
+    // `│` #0 is the panel's own left border (which would make every row look
+    // aligned); `│` #1 is the time column separator inside the row.
+    let cols: Vec<usize> = snap
+        .lines()
+        .filter(|l| l.contains("read_file"))
+        .filter_map(|l| {
+            let cell = l.split('│').nth(1)?;
+            Some(1 + unicode_width::UnicodeWidthStr::width(cell))
+        })
+        .collect();
+    assert_eq!(cols.len(), 2, "both panel rows expected, got:\n{snap}");
+    assert!(
+        cols.iter().all(|&c| c > 1),
+        "measured the border, not the time column: {cols:?}\n{snap}"
+    );
+    assert_eq!(
+        cols[0], cols[1],
+        "time column must align in display columns, got:\n{snap}"
+    );
+}
+
 // ── Visibility Guarantees (session 20260903 fan-in) ──────────────────────────
 // The root turn ends while children still run (the fan-in norm), so between
 // turns child events keep flowing through the persistent bus subscription.
