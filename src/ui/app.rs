@@ -19,6 +19,7 @@ use crate::approval::ApprovalItem;
 use crate::banner::{BannerRow, BannerStyle, ColorScheme};
 use phi_tui::input::Composer;
 use phi_tui::lines::{LineKind, OutputLine};
+use phi_tui::popup_list::PopupStyle;
 use phi_tui::completer::{MentionCompleter, SlashCompleter, CompleterAction};
 use phi_tui::selection::SelectionState;
 use phi_tui::stream::StreamState;
@@ -227,6 +228,8 @@ pub struct App {
     pub(crate) mention: Option<MentionCompleter>,
     /// `/` skill picker, open while the user is choosing a skill.
     pub(crate) slash: Option<SlashCompleter>,
+    /// Band style for the `@`/`/` pickers (wired from `ui.popup` config).
+    pub(crate) popup_style: PopupStyle,
     /// Loaded skill summaries (name, description) from `SkillResolver`, powering the `/` picker.
     pub(crate) skill_summaries: Vec<(String, String)>,
     /// The workspace root — in-workspace paths render relative to it.
@@ -306,6 +309,7 @@ impl App {
             quit_hint_at: None,
             mention: None,
             slash: None,
+            popup_style: PopupStyle::default(),
             skill_summaries: Vec::new(),
             workspace_root: PathBuf::new(),
             scheme: ColorScheme::Dark,
@@ -355,6 +359,16 @@ impl App {
     /// Set the terminal color scheme (called once at TUI start).
     pub fn set_scheme(&mut self, scheme: ColorScheme) {
         self.scheme = scheme;
+    }
+
+    /// Set the `@`/`/` popup band style (startup wiring from config).
+    pub fn set_popup_style(&mut self, style: PopupStyle) {
+        self.popup_style = style;
+    }
+
+    /// The `@`/`/` popup band style.
+    pub fn popup_style(&self) -> PopupStyle {
+        self.popup_style
     }
 
     /// Update the output wrap width to match the terminal's content area.

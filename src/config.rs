@@ -41,6 +41,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use phi_tui::popup_list::{PopupStyle, WidthSpec};
 use serde::Deserialize;
 
 /// Tier configuration - can be a simple model name or full config.
@@ -120,6 +121,99 @@ pub struct ModelConfig {
     /// Update checker configuration (optional, defaults apply if absent).
     #[serde(default)]
     pub update: UpdateConfig,
+
+    /// UI configuration (optional, defaults apply if absent).
+    #[serde(default)]
+    pub ui: UiConfig,
+}
+
+/// UI configuration. Currently only the completion popup band.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct UiConfig {
+    #[serde(default)]
+    pub popup: PopupConfig,
+}
+
+/// `ui.popup` — the `@`/`/` popup band. Missing fields take the widget defaults.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PopupConfig {
+    /// Draw a rounded border around the band.
+    #[serde(default)]
+    pub frame: bool,
+    /// `"fill"` (match the composer width) or a column count.
+    #[serde(default)]
+    pub width: WidthConfig,
+    /// Maximum rows shown.
+    #[serde(default = "default_popup_height")]
+    pub height: u16,
+    /// Draw the dim rule under the rows.
+    #[serde(default = "default_true")]
+    pub separator: bool,
+}
+
+fn default_popup_height() -> u16 {
+    PopupStyle::default().height
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for PopupConfig {
+    fn default() -> Self {
+        Self {
+            frame: false,
+            width: WidthConfig::default(),
+            height: default_popup_height(),
+            separator: true,
+        }
+    }
+}
+
+/// `"fill"` or a column count.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum WidthConfig {
+    Fill(String),
+    Fixed(u16),
+}
+
+impl Default for WidthConfig {
+    fn default() -> Self {
+        Self::Fill("fill".to_string())
+    }
+}
+
+impl PopupConfig {
+    /// Convert to the widget style, validating `width` and `height`.
+    pub fn to_style(&self) -> Result<PopupStyle, ConfigError> {
+        let width = match &self.width {
+            WidthConfig::Fixed(n) => WidthSpec::Fixed(*n),
+            WidthConfig::Fill(s) if s == "fill" => WidthSpec::Fill,
+            WidthConfig::Fill(other) => {
+                return Err(ConfigError::ParseError(format!(
+                    "ui.popup.width must be \"fill\" or a column count, got {other:?}"
+                )));
+            }
+        };
+        // Reject rather than clamp, matching `width` above: `height: 0` means
+        // "show no rows", which leaves the band as bare chrome (an empty border
+        // box when `frame` is on). Silently reinterpreting it hides the mistake;
+        // the widget floors its content at one row anyway, so this only makes
+        // the config surface honest.
+        if self.height == 0 {
+            return Err(ConfigError::ParseError(
+                "ui.popup.height must be at least 1, got 0".to_string(),
+            ));
+        }
+        Ok(PopupStyle {
+            frame: self.frame,
+            width,
+            height: self.height,
+            separator: self.separator,
+            ..PopupStyle::default()
+        })
+    }
 }
 
 /// Configuration for the update checker.
@@ -419,7 +513,52 @@ mod tests {
             advanced: None,
             scene_tiers: None,
             update: UpdateConfig::default(),
+            ui: Default::default(),
         };
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn ui_popup_defaults_to_the_widget_default_style() {
+        let cfg: ModelConfig = json5::from_str(r#"{"main": "gpt-4"}"#).unwrap();
+        assert_eq!(
+            cfg.ui.popup.to_style().unwrap(),
+            phi_tui::popup_list::PopupStyle::default()
+        );
+    }
+
+    #[test]
+    fn ui_popup_parses_fill_and_fixed_width() {
+        let fill: ModelConfig =
+            json5::from_str(r#"{"main":"gpt-4","ui":{"popup":{"width":"fill","height":5}}}"#).unwrap();
+        let style = fill.ui.popup.to_style().unwrap();
+        assert_eq!(style.width, phi_tui::popup_list::WidthSpec::Fill);
+        assert_eq!(style.height, 5);
+
+        let fixed: ModelConfig =
+            json5::from_str(r#"{"main":"gpt-4","ui":{"popup":{"width":64,"frame":true,"separator":false}}}"#)
+                .unwrap();
+        let style = fixed.ui.popup.to_style().unwrap();
+        assert_eq!(style.width, phi_tui::popup_list::WidthSpec::Fixed(64));
+        assert!(style.frame);
+        assert!(!style.separator);
+    }
+
+    #[test]
+    fn ui_popup_rejects_unknown_width_string() {
+        let cfg: ModelConfig =
+            json5::from_str(r#"{"main":"gpt-4","ui":{"popup":{"width":"wide"}}}"#).unwrap();
+        assert!(cfg.ui.popup.to_style().is_err());
+    }
+
+    #[test]
+    fn ui_popup_rejects_zero_height() {
+        let cfg: ModelConfig =
+            json5::from_str(r#"{"main":"gpt-4","ui":{"popup":{"width":"fill","height":0}}}"#).unwrap();
+        let err = cfg.ui.popup.to_style().unwrap_err();
+        assert!(
+            err.to_string().contains("ui.popup.height must be at least 1"),
+            "unhelpful error: {err}"
+        );
     }
 }

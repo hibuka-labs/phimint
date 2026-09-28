@@ -194,6 +194,12 @@ async fn main() -> Result<()> {
     // Extract update config before model_config is moved into the store.
     let update_config = model_config.update.clone();
 
+    let popup_style = model_config
+        .ui
+        .popup
+        .to_style()
+        .context("invalid ui.popup config")?;
+
     // Model store and router for multi-model support
     let model_store = Arc::new(tokio::sync::Mutex::new(
         model_store::ModelStore::new(model_config, llm_client.clone())
@@ -302,7 +308,7 @@ async fn main() -> Result<()> {
     let show_banner = cli.banner != "off";
     let version = env!("CARGO_PKG_VERSION");
 
-    ui::run_tui(agent, skill_resolver, skill_telemetry, bg_registry, session, session_ctx, base_dir, workspace, approval_rx, scheme, show_banner, version, model_store, router, resume_messages, update_config, cli.no_update_check, log_sinks).await
+    ui::run_tui(agent, skill_resolver, skill_telemetry, bg_registry, session, session_ctx, base_dir, workspace, approval_rx, scheme, popup_style, show_banner, version, model_store, router, resume_messages, update_config, cli.no_update_check, log_sinks).await
 }
 
 /// Base directory for all phimint session data (~/.phimint).

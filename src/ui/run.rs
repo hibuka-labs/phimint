@@ -81,6 +81,7 @@ pub async fn run_tui(
     workspace: PathBuf,
     approval_rx: Option<mpsc::UnboundedReceiver<ApprovalItem>>,
     scheme: ColorScheme,
+    popup_style: phi_tui::popup_list::PopupStyle,
     show_banner: bool,
     version: &str,
     model_store: Arc<tokio::sync::Mutex<ModelStore>>,
@@ -239,6 +240,7 @@ pub async fn run_tui(
 
     let mut app = App::new();
     app.set_scheme(scheme);
+    app.set_popup_style(popup_style);
     app.set_workspace_root(workspace.clone());
     app.set_skill_summaries(skill_summaries);
     app.set_background_registry(bg_registry.clone());
@@ -1283,6 +1285,7 @@ mod model_command_tests {
             advanced: Some(crate::config::TierConfig::Simple("gpt-4-turbo".to_string())),
             scene_tiers: None,
             update: Default::default(),
+            ui: Default::default(),
         };
 
         // Create a mock provider for testing

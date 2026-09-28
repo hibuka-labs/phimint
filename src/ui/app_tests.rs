@@ -1923,3 +1923,15 @@ fn child_thought_text_thought_rearms_timer() {
     let second = *app.thinking_since.get("root/a").expect("child timer re-armed");
     assert!(second > first, "new segment must get a fresh timer");
 }
+
+#[test]
+fn popup_style_defaults_to_frameless_and_is_settable() {
+    use phi_tui::popup_list::{PopupStyle, WidthSpec};
+    let mut app = App::new();
+    assert!(!app.popup_style().frame, "default popup style must be frameless");
+    assert_eq!(app.popup_style().width, WidthSpec::Fill);
+
+    app.set_popup_style(PopupStyle::framed(64, 9));
+    assert!(app.popup_style().frame);
+    assert_eq!(app.popup_style().width, WidthSpec::Fixed(64));
+}

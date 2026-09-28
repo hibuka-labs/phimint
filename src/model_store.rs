@@ -177,6 +177,7 @@ mod tests {
             advanced: None,
             scene_tiers: None,
             update: Default::default(),
+            ui: Default::default(),
         }
     }
 

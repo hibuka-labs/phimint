@@ -19,9 +19,11 @@ use crate::ui::app::{
     is_writing_hint,
 };
 use crate::ui::task_panel::ThinkingPanelState;
+use phi_tui::completer::{MentionCompleter, SlashCompleter};
 use phi_tui::lines::LineKind;
 use phi_tui::markdown::{line_plain_text, render_markdown};
-use phi_tui::wrap::wrap;
+use phi_tui::popup_list::{band_width, GUTTER_W, PopupList};
+use phi_tui::wrap::{elide, Elide, wrap};
 
 /// Max composer rows shown (its box grows with the buffer up to this).
 const MAX_COMPOSER_ROWS: usize = 8;
@@ -755,148 +757,107 @@ fn render_context_menu(f: &mut Frame, app: &App) {
     f.render_widget(Paragraph::new(lines).block(block), rect);
 }
 
-/// The `@` mention popup (Phase 10): anchored above the composer, listing the
-/// current directory's entries with the highlighted row reverse-video'd. A
-/// scrolling window keeps the selection visible in large directories.
+/// Rows for the `@` popup: kind marker + name, elided to the band width.
+/// `width` is the row-content column count
+/// (`PopupStyle::content_width(band_width(…))`), not the outer band.
+fn mention_lines(m: &MentionCompleter, width: usize) -> Vec<Line<'static>> {
+    m.entries()
+        .iter()
+        .map(|e| {
+            let marker = if e.synthetic {
+                "» "
+            } else if e.is_dir {
+                "📁 "
+            } else {
+                "📄 "
+            };
+            let budget = width.saturating_sub(GUTTER_W + UnicodeWidthStr::width(marker));
+            let text = elide(&e.name, budget, Elide::Tail { sep: Some('/') });
+            Line::from(Span::raw(format!("{marker}{text}")))
+        })
+        .collect()
+}
+
+/// Rows for the `/` popup: name column + dim description, elided to the band
+/// width (`Head` for the description: it reads front-to-back).
+///
+/// The row is deliberately two-tone on the selected line as well: the widget's
+/// `highlight` carries only the background + emphasis, so both foregrounds stay
+/// the product's call. The description steps `DarkGray` → `Gray` when selected
+/// so it survives the highlight's `bg(DarkGray)` instead of vanishing into it.
+fn slash_lines(s: &SlashCompleter, width: usize) -> Vec<Line<'static>> {
+    const NAME_W: usize = 24;
+    const GAP_W: usize = 2;
+    let selected = s.selected_index();
+    s.entries()
+        .iter()
+        .enumerate()
+        .map(|(i, (name, desc))| {
+            let name = elide(name, NAME_W, Elide::Tail { sep: None });
+            // Pad in display columns, not chars: `elide` budgets by terminal
+            // columns, so `{name:<NAME_W$}` would overshoot for a multi-byte
+            // name (CJK frontmatter `name:`) and push the description out of
+            // the band.
+            let pad = NAME_W.saturating_sub(UnicodeWidthStr::width(name.as_str()));
+            let budget = width.saturating_sub(GUTTER_W + NAME_W + GAP_W);
+            let desc_fg = if i == selected { Color::Gray } else { Color::DarkGray };
+            Line::from(vec![
+                Span::styled(format!("{name}{}", " ".repeat(pad)), Style::default().fg(Color::White)),
+                Span::raw(" ".repeat(GAP_W)),
+                Span::styled(elide(desc, budget, Elide::Head), Style::default().fg(desc_fg)),
+            ])
+        })
+        .collect()
+}
+
+/// The `@` mention popup: the product's rows rendered by the popup-list widget.
 fn render_mention_popup(f: &mut Frame, app: &App, composer: Rect) {
     let Some(m) = app.mention() else {
         return;
     };
-
-    const WIDTH: u16 = 64;
-    const LIST_HEIGHT: usize = 9;
-
-    // Scroll the entry window so the highlighted row stays on screen.
-    let total = m.entries().len();
-    let start = if total <= LIST_HEIGHT {
-        0
-    } else if m.selected_index() < LIST_HEIGHT / 2 {
-        0
-    } else {
-        (m.selected_index() - LIST_HEIGHT / 2).min(total - LIST_HEIGHT)
-    };
-    let end = (start + LIST_HEIGHT).min(total);
-
-    let mut lines: Vec<Line> = Vec::new();
-    lines.push(Line::from(Span::styled(
-        format!("@{}", m.prefix()),
-        Style::default().fg(Color::Cyan),
-    )));
-    lines.push(Line::from(Span::styled(
-        "──────────────────────────",
-        Style::default().fg(Color::DarkGray),
-    )));
-    for (i, e) in m.entries()[start..end].iter().enumerate() {
-        let idx = start + i;
-        let marker = if e.synthetic {
-            "» "
-        } else if e.is_dir {
-            "📁 "
-        } else {
-            "📄 "
-        };
-        let style = if idx == m.selected_index() {
-            Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default()
-        };
-        lines.push(Line::from(Span::styled(
-            format!("{marker}{}", e.name),
-            style,
-        )));
+    let style = app.popup_style();
+    // Budget the rows against the content width, not the band: a framed band
+    // spends 2 columns on its border, and `Paragraph` would hard-clip those.
+    let width = style.content_width(band_width(composer, f.area(), &style.width)) as usize;
+    PopupList {
+        rows: mention_lines(m, width),
+        selected: m.selected_index(),
+        style,
+        title: None,
     }
-
-    let width = WIDTH.min(f.area().width.saturating_sub(2));
-    let height = (lines.len() as u16 + 2).min(f.area().height.saturating_sub(2));
-    let x = composer.x.min(f.area().width.saturating_sub(width));
-    let y = composer.y.saturating_sub(height).max(1);
-    let rect = Rect::new(x, y, width, height);
-    f.render_widget(Clear, rect);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .title("mention");
-    f.render_widget(Paragraph::new(lines).block(block), rect);
+    .render_at(f, composer);
 }
 
-/// The `/` skill picker popup: anchored above the composer, listing matching
-/// skill names with the highlighted row reverse-video'd.
+/// The `/` skill popup: the product's rows rendered by the popup-list widget.
 fn render_slash_popup(f: &mut Frame, app: &App, composer: Rect) {
     let Some(s) = app.slash() else {
         return;
     };
-
-    const WIDTH: u16 = 72;
-    const LIST_HEIGHT: usize = 12;
-
-    let total = s.entries().len();
-    let start = if total <= LIST_HEIGHT {
-        0
-    } else if s.selected_index() < LIST_HEIGHT / 2 {
-        0
-    } else {
-        (s.selected_index() - LIST_HEIGHT / 2).min(total - LIST_HEIGHT)
-    };
-    let end = (start + LIST_HEIGHT).min(total);
-
-    let mut lines: Vec<Line> = Vec::new();
-    lines.push(Line::from(Span::styled(
-        format!("/{}", s.prefix()),
-        Style::default().fg(Color::Cyan),
-    )));
-    lines.push(Line::from(Span::styled(
-        "────────────────────────────────────────────────",
-        Style::default().fg(Color::DarkGray),
-    )));
-
-    if s.entries().is_empty() {
-        lines.push(Line::from(Span::styled(
-            "  no matching skills",
+    let style = app.popup_style();
+    // Budget the rows against the content width, not the band: a framed band
+    // spends 2 columns on its border, and `Paragraph` would hard-clip those.
+    let width = style.content_width(band_width(composer, f.area(), &style.width)) as usize;
+    let mut rows = slash_lines(s, width);
+    // An empty result is not a choice: show it as plain dim text that is never
+    // highlighted. The widget already supplies the 2-column gutter, so the row
+    // carries no padding of its own. `usize::MAX` never equals `window.start +
+    // n`, so no row can be marked selected.
+    let selected = if rows.is_empty() {
+        rows.push(Line::from(Span::styled(
+            "no matching skills",
             Style::default().fg(Color::DarkGray),
         )));
+        usize::MAX
     } else {
-        for (i, (name, desc)) in s.entries()[start..end].iter().enumerate() {
-            let idx = start + i;
-            let (name_style, desc_style) = if idx == s.selected_index() {
-                (
-                    Style::default().bg(Color::DarkGray).fg(Color::White).add_modifier(Modifier::BOLD),
-                    Style::default().bg(Color::DarkGray).fg(Color::Gray),
-                )
-            } else {
-                (
-                    Style::default().fg(Color::White),
-                    Style::default().fg(Color::DarkGray),
-                )
-            };
-            // 截断描述，避免超出弹窗宽度。按字符而非字节（byte 切片会在
-            // CJK 中间断开直接 panic）；ASCII "..." 而非 "…"（CJK 字体双宽）。
-            let max_desc = 40usize;
-            let short_desc = if desc.chars().count() > max_desc {
-                let head: String = desc.chars().take(max_desc - 3).collect();
-                format!("{head}...")
-            } else {
-                desc.clone()
-            };
-            lines.push(Line::from(vec![
-                Span::styled(format!("  {name:<24}"), name_style),
-                Span::styled(short_desc, desc_style),
-            ]));
-        }
+        s.selected_index()
+    };
+    PopupList {
+        rows,
+        selected,
+        style,
+        title: None,
     }
-
-    let width = WIDTH.min(f.area().width.saturating_sub(2));
-    let height = (lines.len() as u16 + 2).min(f.area().height.saturating_sub(2));
-    let x = composer.x.min(f.area().width.saturating_sub(width));
-    let y = composer.y.saturating_sub(height).max(1);
-    let rect = Rect::new(x, y, width, height);
-    f.render_widget(Clear, rect);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .title("skills");
-    f.render_widget(Paragraph::new(lines).block(block), rect);
+    .render_at(f, composer);
 }
 
 /// A centered rectangle occupying `percent_x`/`percent_y` of `area`.
