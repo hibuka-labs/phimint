@@ -171,7 +171,7 @@ pub struct TokenBudgetOptions {
     pub session_id: String,
 }
 
-/// 子 agent 多代理配置的唯一构造点（build 与测试共用）。
+/// The single construction point for a sub-agent's multi-agent config (shared by build and tests).
 ///
 /// D0 (fully opened after the 2026-09-20 acceptance run, T11): both modes
 /// allow `tools: "write"` children. `has_policy` now only picks the
@@ -184,17 +184,17 @@ pub struct TokenBudgetOptions {
 /// spawns (no tools argument) stay read-only in both modes, pinned by
 /// `critical_default_spawn_children_get_no_write_tools`.
 ///
-/// D3.1：`child_read_only` 显式关掉——nudge 交给框架的 per-child 计算
-/// 规则（写子 agent 不再被灌输只读纪律；只读子 agent 由解析后的排除集
-/// 条件兜住 nudge）。
+/// D3.1: `child_read_only` is explicitly off -- the nudge is left to the
+/// framework's per-child rule (write sub-agents are no longer fed read-only
+/// discipline; read-only ones are nudged via the resolved exclusion set).
 ///
-/// eng-review 发现1：`notes.write_file` / `notes.append_to_file` 是变更
-/// 工具且在 business_tools 里，必须显式排除（子 agent 不得污染父会话
-/// notes）。`history.*` 只读，不排除。
+/// eng-review finding 1: `notes.write_file` / `notes.append_to_file` are
+/// mutating tools in business_tools and must be excluded explicitly (a
+/// sub-agent must not pollute parent notes). `history.*` is read-only: kept.
 fn child_multi_agent_config(has_policy: bool) -> MultiAgentConfig {
     MultiAgentConfig {
-        // 子 agent 权限跟随审批模式（codex 式委托在 agent-works）：
-        // auto（无 policy）→ 子 agent 全权；ask/deny → 受限 + 审批上抛。
+                // Sub-agent permission follows the approval mode (codex-style
+                // delegation lives in agent-works): auto (no policy) grants full; ask/deny restrict and escalate.
         child_permission_mode: if has_policy {
             ChildPermissionMode::None
         } else {
@@ -205,9 +205,9 @@ fn child_multi_agent_config(has_policy: bool) -> MultiAgentConfig {
         // (verified on-device), auto writes with full permission
         // (consistent with its parent).
         allow_child_write: true,
-        // 子 agent 是默认只读的调查者（read/search/report）。硬门是这张
-        // 排除表；写能力 = write_tools 成员豁免表内条目（框架规则），
-        // 所以表里只需列"任何子 agent 都不该拿"的工具。
+                // Sub-agents are read-only investigators by default (read/search/report).
+                // The hard gate is this exclusion table; write capability means write_tools
+                // members are exempted from it (framework rule), so the table only lists tools no sub-agent should get.
         child_excluded_tools: vec![
             "write_file".to_string(),
             "edit_file".to_string(),
@@ -217,11 +217,11 @@ fn child_multi_agent_config(has_policy: bool) -> MultiAgentConfig {
             "notes.write_file".to_string(),
             "notes.append_to_file".to_string(),
         ],
-        // 子 agent 做窄切片；压低推理深度防跑飞（deepseek-v4-pro 教训）。
+                // Sub-agents get a narrow slice; reasoning depth is capped to stop them running away (the deepseek-v4-pro lesson).
         child_reasoning_effort: Some(ReasoningEffort::Low),
-        // D3.1：全员 nudge 关闭，交给 per-child 计算规则。
+                // D3.1: the global nudge is off; the per-child rule owns it.
         child_read_only: false,
-        // Hang guard（§9.2）：卡死子 agent 10 分钟硬停 + Error 推给父。
+                // Hang guard (S9.2): a stuck sub-agent is hard-stopped after 10 minutes and its Error is pushed to the parent.
         control: ControlConfig {
             task_timeout: Some(std::time::Duration::from_secs(10 * 60)),
             ..ControlConfig::default()
@@ -388,8 +388,8 @@ pub fn build(
     let mut builder = builder
         .system_prompt(system_prompt)
         .approval_handler(approval)
-        // phimint 已在 compose_system_prompt 中自行注入 skill catalog——
-        // 禁止 agent-works 的 LazySkillPrompter 再追加一份 "## Available Skills"。
+                // phimint already injects the skill catalog in compose_system_prompt --
+                // agent-works' LazySkillPrompter must not append a second "## Available Skills".
         .disable_skill_prompt_injection()
         // Inject CLAUDE.md (user-level + project-level) into system prompt
         .agent_instructions_paths(agent_instructions_paths)
@@ -1126,7 +1126,7 @@ mod prompt_guard_tests {
 
     use phi_agent::{ChildToolCapability, resolve_capability};
 
-    /// T9（外部声音发现4）：并行写子 agent 的任务分界指引必须常驻。
+        /// T9 (outside voice finding 4): the task-boundary guidance for parallel write sub-agents must stay resident.
     #[test]
     fn system_prompt_demands_disjoint_file_sets_for_parallel_writers() {
         assert!(
@@ -1139,7 +1139,7 @@ mod prompt_guard_tests {
         );
     }
 
-    /// 默认只读 + 显式 opt-in 的新表述替换旧的"全员只读"断言。
+        /// The "read-only by default, explicit opt-in" wording replaces the old blanket read-only assertion.
     #[test]
     fn system_prompt_states_default_read_only_with_opt_in_write() {
         assert!(
@@ -1174,10 +1174,10 @@ mod prompt_guard_tests {
             phi_agent::ChildPermissionMode::Full,
             "auto has no approval chain; children must keep Full permission (never None mode)"
         );
-        // D3.1：nudge 交给计算规则，phimint 显式关掉全员 nudge。
+                // D3.1: the computation rule owns the nudge; phimint turns the global nudge off explicitly.
         assert!(!ask.child_read_only);
         assert!(!auto.child_read_only);
-        // eng-review 发现1：变更型 notes 工具必须排除（子 agent 不得污染父会话 notes）。
+                // eng-review finding 1: mutating notes tools must be excluded (a sub-agent must not pollute parent notes).
         for t in ["notes.write_file", "notes.append_to_file"] {
             assert!(
                 ask.child_excluded_tools.iter().any(|e| e == t),
@@ -1186,9 +1186,9 @@ mod prompt_guard_tests {
         }
     }
 
-    /// CRITICAL 回归（设计文档 §5/§8）：默认 spawn（无 tools 参数 →
-    /// read_only）解析后的排除集覆盖**所有**写工具（含 notes.*）——
-    /// 钉死 /review 等只读子 agent 场景的行为不变式。
+        /// CRITICAL regression (design S5/S8): a default spawn (no `tools` arg ->
+        /// read_only) must have a resolved exclusion set covering **all** write tools
+        /// (notes.* included) -- this pins the behaviour for read-only scenarios like /review.
     #[test]
     fn critical_default_spawn_children_get_no_write_tools() {
         let write_tools = ["write_file", "edit_file", "execute_command"];
@@ -1217,7 +1217,7 @@ mod prompt_guard_tests {
                         "{t} must stay excluded for default spawn (cap={cap:?})"
                     );
                 }
-                // 防御：write_tools 默认值确为三件套（若框架改默认，此断言提醒复核）。
+                                // Defensive: write_tools really is the default trio (this assertion flags a framework default change for review).
                 for t in write_tools {
                     assert!(cfg.control.write_tools.iter().any(|w| w == t));
                 }
@@ -1225,7 +1225,7 @@ mod prompt_guard_tests {
         }
     }
 
-    /// 写子 agent 面（D0 ask 模式）：write 请求下写工具被豁免、可注册。
+        /// The write sub-agent surface (D0, ask mode): under a write request the write tools are exempt and registerable.
     #[test]
     fn ask_mode_write_request_exempts_write_tools() {
         let cfg = super::child_multi_agent_config(true);
@@ -1239,7 +1239,7 @@ mod prompt_guard_tests {
         for t in ["write_file", "edit_file", "execute_command"] {
             assert!(!res.excluded_tools.contains(t), "write 子 agent 需 {t}");
         }
-        // 豁免面只有 write_tools 成员——notes.* 不在 write_tools，依旧排除。
+                // Only write_tools members are exempt -- notes.* is not in write_tools, so it stays excluded.
         assert!(res.excluded_tools.contains("notes.write_file"));
         assert!(res.excluded_tools.contains("task_output"));
         assert!(res.degraded_reason.is_none());

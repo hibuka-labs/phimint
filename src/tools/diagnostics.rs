@@ -1,11 +1,11 @@
-//! Diagnostics 工具：拉取 LSP 诊断缓存（多 server）。thin `phi_agent::Tool`
-//! shell——核心（文件收集 / 摘要格式化 / LSP 客户端与路由）在 `code-intel`。
+//! The diagnostics tool: pulls the LSP diagnostic cache (multi-server). A thin
+//! `phi_agent::Tool` shell -- the core (file collection, summary formatting, LSP client and routing) lives in `code-intel`.
 //!
-//! 与 `verify` 互补：`verify` 跑编译命令拿权威错误摘要，`diagnostics` 读各语言 LSP
-//! server 的 `publishDiagnostics` 缓存，边写边报错（design §8.4）。两者都输出
-//! `file:line:col  code  message` 摘要，agent 无需读原始编译输出。文件按语言路由
-//! 到对应 server（rust-analyzer / typescript-language-server / clangd），没有 server
-//! 的语言降级到 `verify`。
+//! Complements `verify`: `verify` runs a build command for the authoritative
+//! error summary, while `diagnostics` reads each language server's
+//! `publishDiagnostics` cache and reports errors as you write (design S8.4).
+//! Both emit `file:line:col  code  message` summaries, so the agent never has to
+//! read raw build output. Files route to their language's server (rust-analyzer / typescript-language-server / clangd); no server means fall back to `verify`.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -18,12 +18,12 @@ use code_intel::lsp::{LspClient, LspManager};
 use phi_agent::{AgentResult, Content, Tool, ToolContext, ToolMetadata};
 use serde_json::{Value, json};
 
-/// 等 LSP server 握手完成的上限（冷启动 ~1-2s，超时兜底）。
+/// Upper bound on waiting for an LSP server handshake (cold start is ~1-2 s; this is the fallback).
 const STARTUP_TIMEOUT_MS: u64 = 15_000;
-/// 同步后给 server 跑 save-time 检查（如 rust-analyzer checkOnSave）的沉降时间。
+/// Settle time after sync, letting save-time checks (rust-analyzer's checkOnSave) run.
 const SETTLE_MS: u64 = 2_000;
 
-/// 拉取当前 LSP 诊断的工具（pull 式，多 server）。
+/// The tool that pulls current LSP diagnostics (pull-style, multi-server).
 pub struct DiagnosticsTool {
     manager: Arc<LspManager>,
     workspace_root: PathBuf,
@@ -79,14 +79,14 @@ impl Tool for DiagnosticsTool {
             .filter(|s| !s.is_empty())
             .map(String::from);
 
-        // 1) 收集源码文件，按语言路由到对应 server 并 sync（阻塞 I/O → spawn_blocking）。
+                // 1) Collect source files, route them by language to their server and sync (blocking I/O -> spawn_blocking).
         let manager = self.manager.clone();
         let root = self.workspace_root.clone();
         let files_result = {
             let root = root.clone();
             tokio::task::spawn_blocking(move || {
                 let (files, scope) = collect_code_files(&root, path.as_deref())?;
-                // 用到的 server（按 Arc 指针去重，供后续 health/snapshot）。
+                                // The servers in use (deduped by Arc pointer, for the later health/snapshot).
                 let mut clients: Vec<Arc<LspClient>> = Vec::new();
                 let mut synced = 0usize;
                 for f in &files {
@@ -131,7 +131,7 @@ impl Tool for DiagnosticsTool {
 
         tracing::info!(files = synced, "diagnostics: synced files to LSP servers");
 
-        // 2) 等各 server 握手完成；任一失败则明确报告而非空说「无诊断」。
+                // 2) Wait for every handshake; any failure is reported explicitly rather than claiming "no diagnostics".
         wait_ready(&clients).await;
         if let Some(e) = first_health_error(&clients) {
             return Ok(vec![Content::text(format!(
@@ -139,10 +139,10 @@ impl Tool for DiagnosticsTool {
             ))]);
         }
 
-        // 3) 沉降：给 save-time 检查时间跑 check + publish。
+                // 3) Settle: give save-time checks time to run check + publish.
         tokio::time::sleep(Duration::from_millis(SETTLE_MS)).await;
 
-        // 4) 合并各 server 快照 + 按范围过滤 + 格式化。
+                // 4) Merge the per-server snapshots, filter by range, format.
         let snapshot: Vec<_> = clients.iter().flat_map(|c| c.snapshot()).collect();
         let filtered: Vec<_> = match &scope {
             Some(sp) => snapshot
@@ -156,7 +156,7 @@ impl Tool for DiagnosticsTool {
     }
 }
 
-/// 等所有 server 握手完成（任一启动失败或超时则提前返回，不空等）。
+/// Wait for every server handshake (returns early on any startup failure or timeout rather than waiting pointlessly).
 async fn wait_ready(clients: &[Arc<LspClient>]) {
     let deadline = tokio::time::Instant::now() + Duration::from_millis(STARTUP_TIMEOUT_MS);
     loop {
@@ -173,7 +173,7 @@ async fn wait_ready(clients: &[Arc<LspClient>]) {
     }
 }
 
-/// 第一个 health 错误（所有 server 就绪则为 None）。
+/// The first health error, or `None` when every server is ready.
 fn first_health_error(clients: &[Arc<LspClient>]) -> Option<String> {
     clients.iter().find_map(|c| c.health().err())
 }
@@ -196,8 +196,8 @@ mod tests {
             .join("\n")
     }
 
-    /// 空路由表（无任何 server）的 manager：`client_for` 恒为 None，
-    /// 惰性启动保证不会拉起真实 LSP 进程。
+        /// A manager with an empty routing table (no servers): `client_for` is always
+        /// `None`, and lazy startup guarantees no real LSP process is ever spawned.
     fn manager(root: &std::path::Path) -> Arc<LspManager> {
         Arc::new(LspManager::new(
             root.to_path_buf(),

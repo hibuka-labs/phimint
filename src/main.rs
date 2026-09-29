@@ -268,7 +268,7 @@ async fn main() -> Result<()> {
         session_id: session_ctx.session_id.clone(),
     };
 
-    // `deny` 模式只读（写工具全被拒），强制 verify 闸门无意义，故关闭。
+        // `deny` mode is read-only (all write tools rejected), so the enforced verify gate is pointless and off.
     let (agent, skill_resolver, skill_telemetry, bg_registry) = agent::build(
         llm_client,
         approval,

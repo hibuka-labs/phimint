@@ -684,7 +684,7 @@ fn render_approval_popup(f: &mut Frame, app: &App) {
         )),
         Line::from(""),
     ];
-    // D4：来源标识——子 agent 发起时标注（独立行），主 agent 保持现状。
+    // D4 source marker: a sub-agent's request is tagged on its own line; the main agent is unchanged.
     if let Some(source) = &request.source {
         lines.push(Line::from(Span::styled(
             format!("requested by sub-agent [{source}]"),

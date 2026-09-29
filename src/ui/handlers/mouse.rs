@@ -12,8 +12,8 @@ impl App {
     /// Handle a mouse event at `(x, y)` (terminal cells) against a terminal of
     /// `(area_w, area_h)` cells: left-press anchors a selection, left-drag
     /// extends it, right-press opens the copy menu. While the copy menu is
-    /// open, a click inside its popup activates that item — "拷贝" copies the
-    /// selection, "取消" closes — and returns `Action::CopySelection` for the
+    /// open, a click inside its popup activates that item: the copy row copies
+    /// the selection, the dismiss row closes, and `Action::CopySelection` is returned for the
     /// caller to run (mirrors the keyboard Enter path).
     pub(crate) fn handle_mouse(
         &mut self,

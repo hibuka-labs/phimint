@@ -179,7 +179,7 @@ fn picker_loop(
 
 /// Format a `SystemTime` for display with relative time.
 ///
-/// Shows "刚刚" / "N分钟前" / "N小时前" / "N天前" / "YYYY-MM-DD HH:MM".
+/// Recent times use a relative form (see the arms below for the exact wording); older ones fall back to `YYYY-MM-DD HH:MM`.
 fn format_date(time: SystemTime) -> String {
     let duration = match SystemTime::now().duration_since(time) {
         Ok(d) => d,

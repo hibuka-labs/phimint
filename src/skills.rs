@@ -4,7 +4,7 @@
 //! surgery, `skill` tool, per-turn refresh middleware, telemetry) lives in
 //! agent-works' `skill` module and arrives through phi-agent's re-exports.
 //! This module keeps only phimint's own policy: which directories phimint
-//! scans by default. ops-agent/db-agent 各自提供自己的目录列表即可。
+//! scans by default. ops-agent/db-agent just supply their own directory lists.
 
 use std::path::PathBuf;
 
@@ -101,11 +101,11 @@ pub(crate) fn save_active_skills(
     std::fs::rename(&tmp, &path)
 }
 
-/// phimint 默认扫描的 skill 目录（应用策略：家族 `.claude/` 目录约定）。
+/// Skill directories phimint scans by default (policy: the family `.claude/` convention).
 ///
-/// 用户级低优先级、项目级高优先级——同名覆盖由 `SkillResolver::from_dirs`
-/// 的扫描顺序保证（后扫描者优先）。将来的配置化（`.claude/phimint.toml`
-/// `[skills] dirs`）在这里替换实现即可，调用点不变。
+/// User-level is lower priority, project-level higher -- same-name overrides
+/// fall out of `SkillResolver::from_dirs`'s scan order (later wins). Future
+/// configuration (`.claude/phimint.toml` `[skills] dirs`) swaps in here; callers unchanged.
 pub fn default_skill_dirs() -> Vec<PathBuf> {
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
