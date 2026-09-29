@@ -274,6 +274,8 @@ fn task_panel_lists_only_sub_agents() {
         started_at: std::time::Instant::now(),
         finished_at: None,
         reported: false,
+        output_tail: String::new(),
+        consumed: false,
     });
     assert!(app.should_show_task_panel(), "sub-agent opens the panel");
     let text = snapshot_text(&mut app, 100, 40);
@@ -293,6 +295,8 @@ fn task_panel_lists_only_sub_agents() {
         started_at: std::time::Instant::now(),
         finished_at: None,
         reported: false,
+        output_tail: String::new(),
+        consumed: false,
     });
     assert!(!app.should_show_task_panel(), "bg task alone must not open the panel");
 }
@@ -596,7 +600,7 @@ fn committed_thought_folds_and_expands() {
         kind: LineKind::Thought,
     });
     let text = snapshot_text(&mut app, 80, 24);
-    // Full summary: marker + line count + estimate (spec: 摘要文案含行数与估算 tok).
+    // Full summary: marker + line count + estimate (spec: the summary carries a line count and an estimated tok count).
     assert!(
         text.contains("> thinking - 5 行 - ~16 tok"),
         "summary missing:\n{text}"

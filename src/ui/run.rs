@@ -61,7 +61,7 @@ enum TuiOutcome {
 /// least this often even with zero events, so the spinner/elapsed readout in
 /// the status bar advance through silent stretches (a long LLM call emits no
 /// events — the old purely event-driven loop froze the whole screen for its
-/// full duration, session 20260904_e6612477 "卡一会"). Tick-only redraws are
+/// full duration, session 20260904_e6612477, "frozen for a while"). Tick-only redraws are
 /// NOT captured to frames.txt — an animated status bar would otherwise defeat
 /// the flipbook's content dedup (~4 frames/s of nothing but spinner motion).
 const UI_TICK: Duration = Duration::from_millis(250);
@@ -142,11 +142,11 @@ pub async fn run_tui(
     let (event_tx, mut event_rx) = mpsc::unbounded_channel::<TuiEvent>();
     let (cmd_tx, cmd_rx) = mpsc::unbounded_channel::<Cmd>();
 
-    // 在 skill_resolver 移入 agent_loop 前提取 (name, description) 摘要列表
+    // Extract the (name, description) summary list before skill_resolver moves into agent_loop
     let mut skill_summaries = skill_resolver.skill_summaries();
-    // 内置命令：/resume（不是 skill，但通过同一个 / 弹窗触发）
+    // Built-in command: /resume (not a skill, but triggered through the same / popup)
     skill_summaries.push(("resume".into(), "Switch to another session".into()));
-    // 内置命令：/upgrade（本地 UI 命令，不经过 LLM）
+    // Built-in command: /upgrade (a local UI command, never reaches the LLM)
     skill_summaries.push(("upgrade".into(), "Check for phimint updates".into()));
 
     // Spawn background update check (if enabled).
@@ -380,7 +380,9 @@ pub async fn run_tui(
                         // before the synthetic run starts.
                         app.mark_all_sub_agents_finished();
                         app.push_system(&notice);
-                        let _ = cmd_tx.send(Cmd::Run(input));
+                        if cmd_tx.send(Cmd::Run(input)).is_ok() {
+                            app.running = true;
+                        }
                     }
                 }
                 dirty = true;
@@ -396,7 +398,9 @@ pub async fn run_tui(
                 tracing::info!("tui: flush_when_idle -> injecting batch");
                 app.mark_all_sub_agents_finished();
                 app.push_system(&notice);
-                let _ = cmd_tx.send(Cmd::Run(input));
+                if cmd_tx.send(Cmd::Run(input)).is_ok() {
+                    app.running = true;
+                }
                 dirty = true;
             }
         }
@@ -409,10 +413,12 @@ pub async fn run_tui(
         // agent is mid-turn / children run / other tasks run, Cancelled
         // suppressed, report-once) live in `bg_wake::take_bg_wake`; this loop
         // only executes the side effects.
-        if let Some((notice, input)) = app.take_bg_wake(app.running) {
+        if let Some((notice, input)) = app.take_bg_wake() {
             tracing::info!("tui: bg_wake -> injecting background task report");
             app.push_system(&notice);
-            let _ = cmd_tx.send(Cmd::Run(input));
+            if cmd_tx.send(Cmd::Run(input)).is_ok() {
+                app.running = true;
+            }
             dirty = true;
         }
 
@@ -501,7 +507,13 @@ pub async fn run_tui(
                                     });
                                     break;
                                 }
-                                let _ = cmd_tx.send(Cmd::Run(text));
+                                if cmd_tx.send(Cmd::Run(text)).is_ok() {
+                                    // Root turn queued. Synthetic turns set the
+                                    // same flag at their send sites — `running`
+                                    // means "a turn is in flight or queued", and
+                                    // it is cleared only by settle_after_turn.
+                                    app.running = true;
+                                }
                                 user_msg_count += 1;
                                 if user_msg_count == 10 {
                                     // Fire-and-forget: generate and persist title via lite model.
@@ -893,7 +905,9 @@ async fn agent_loop(
                                     error = %e,
                                     "failed to bake active skills into system prompt"
                                 );
-                                let _ = event_tx.send(TuiEvent::TurnError(format!(
+                                // Mid-turn warning: the run continues, so this
+                                // must not settle the turn (TurnError does).
+                                let _ = event_tx.send(TuiEvent::Warning(format!(
                                     "! skill `{}` could not be activated (prompt bake failed): {e}",
                                     r.name
                                 )));
@@ -902,7 +916,7 @@ async fn agent_loop(
                                 save_active_skills(&session_ctx.session_dir, &active_skills)
                             {
                                 tracing::warn!(error = %e, "failed to persist active skills");
-                                let _ = event_tx.send(TuiEvent::TurnError(format!(
+                                let _ = event_tx.send(TuiEvent::Warning(format!(
                                     "! skill `{}` active now but will NOT survive resume (persist failed): {e}",
                                     r.name
                                 )));

@@ -184,7 +184,9 @@ impl App {
                     // agent's reply, so the record keeps the human turn too.
                     self.push_user(&text);
                     self.transcript.clear_plan();
-                    self.running = true;
+                    // `running` is set at the Cmd::Run send site in run.rs —
+                    // a submit intercepted before the send (/resume, /upgrade)
+                    // must not leave the composer locked.
                     // Follow the conversation: the user just committed to a
                     // turn, so the reply must stream into view. If they were
                     // scrolled up reading history, this is the moment their

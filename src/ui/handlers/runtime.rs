@@ -470,7 +470,9 @@ impl App {
                         // returns. With sub-agents or background tasks still
                         // running the panel stays alive — the fan-in batch
                         // injection / background wake continues the work.
-                        self.running = false;
+                        // `running` is NOT cleared here: settle_after_turn
+                        // (TurnDone/TurnError) is the sole clearer, so a late
+                        // engine event can never un-flag the next turn.
                         self.settle_status_from_inflight();
                         tracing::info!(
                             follow_bottom = self.viewport.follow_bottom,
@@ -511,7 +513,8 @@ impl App {
                             text: "⏹ cancelled".to_string(),
                             kind: LineKind::Cancelled,
                         });
-                        self.running = false;
+                        // `running` clears via the turn's terminal event
+                        // (settle_after_turn) — see the RunFinished note.
                         // Cancelling the turn does not cancel in-flight work:
                         // background shell tasks keep running, so they still
                         // gate the status (Waiting) and the later wake.

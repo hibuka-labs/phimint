@@ -184,8 +184,13 @@ fn run_finished_from_sub_agent_does_not_end_turn() {
     // Sub-agent finish must not flip the top-level status to Idle.
     assert!(app.running);
     app.handle_event(TuiEvent::Runtime(run_finished(None)));
-    assert!(!app.running);
+    // The root run is over, but `running` is cleared only by the turn
+    // settling (TurnDone/TurnError) — never by a late RunFinished, which
+    // would unlock the composer while the next turn is already queued.
+    assert!(app.running, "only settle_after_turn clears the flag");
     assert_eq!(app.status, AgentStatus::Idle);
+    app.handle_event(TuiEvent::TurnDone);
+    assert!(!app.running, "settling the turn clears the flag");
 }
 
 #[test]
@@ -240,19 +245,22 @@ fn submit_requires_nonempty_and_not_running() {
     app.composer.clear();
     assert_eq!(app.handle_key(KeyCode::Enter, KeyModifiers::NONE), None);
 
-    // Non-empty → Submit + running.
+    // Non-empty → Submit. The `running` flag is raised by the *send* side
+    // (run.rs, right after `Cmd::Run` is queued), not by key handling — so
+    // intercepted submits (/resume, /upgrade) can never leave the composer
+    // locked with the flag up and no run in flight.
     let action = submit(&mut app, "do a thing");
     assert_eq!(action, Action::Submit("do a thing".to_string()));
-    assert!(app.running);
 
-    // Already running → Enter ignored.
+    // Already running → Enter ignored (the send side raised the flag).
+    app.running = true;
     app.composer.insert_str("second");
     assert_eq!(app.handle_key(KeyCode::Enter, KeyModifiers::NONE), None);
 }
 
 /// Regression (user report 2026-09-16, round 3): after resuming, the user
 /// reads the history scrolled up; on submit the reply must stream into
-/// view, not land below the fold ("输入后没有回应" was the reply being
+/// view, not land below the fold ("no response after typing" was the reply being
 /// rendered off-screen while the viewport stayed pinned at the head).
 #[test]
 fn submit_scrolls_back_to_bottom_so_reply_is_visible() {
@@ -281,7 +289,7 @@ fn submit_scrolls_back_to_bottom_so_reply_is_visible() {
 
 /// One PageUp/PageDown press moves half a screen, not one line: a resumed
 /// conversation runs to hundreds of lines, and 1-line paging made the
-/// history effectively unnavigable ("只显示第一屏").
+/// history effectively unnavigable ("only the first screen shows").
 #[test]
 fn pagedown_pages_half_a_screen() {
     let mut app = App::new();
@@ -1108,14 +1116,14 @@ fn clicking_menu_copy_item_copies_and_closes() {
     app.transcript.push(OutputLine { spans: None, original: None, text: "x".into(), kind: LineKind::Normal, detail: None });
     app.output_area = Some((0, 0, 10, 10));
     app.selection_state.selection = Some(Selection { anchor: 0, head: 0 });
-    // Open the menu at (0,0): 12×4 box, items at rows y+1 ("拷贝") and y+2
-    // ("取消").
+    // Open the menu at (0,0): a 12x4 box whose items sit at rows y+1 (copy)
+    // and y+2 (dismiss).
     assert_eq!(
         app.handle_mouse(MouseEventKind::Down(MouseButton::Right), 0, 0, 20, 20),
         None
     );
     assert!(app.selection_state.context_menu.is_some());
-    // Left-click the "拷贝" row → copy, menu closes, selection preserved.
+    // Left-click the copy row -> copy, menu closes, selection preserved.
     assert_eq!(
         app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 1, 1, 20, 20),
         Some(Action::CopySelection)
@@ -1131,7 +1139,7 @@ fn clicking_menu_cancel_item_closes_without_copy() {
     app.output_area = Some((0, 0, 10, 10));
     app.selection_state.selection = Some(Selection { anchor: 0, head: 0 });
     app.handle_mouse(MouseEventKind::Down(MouseButton::Right), 0, 0, 20, 20);
-    // "取消" is the second item, row y+2. It closes the menu but keeps the
+    // The dismiss item is second, at row y+2. It closes the menu but keeps the
     // selection.
     assert_eq!(
         app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 1, 2, 20, 20),
@@ -1361,7 +1369,7 @@ fn paste_routes_to_mention_prefix_when_open() {
 
 fn app_with_skills() -> App {
     let mut app = App::new();
-    // 排序后: commit(0), requesting-code-review(1), review(2)
+    // After sorting: commit(0), requesting-code-review(1), review(2)
     app.set_skill_summaries(vec![
         ("commit".into(), "Generate a commit message".into()),
         ("requesting-code-review".into(), "Request a code review".into()),
@@ -1453,7 +1461,7 @@ fn slash_backspace_widens_filter() {
 fn slash_enter_confirms_selection() {
     let mut app = app_with_skills();
     app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
-    // 默认选中第一个（排序后是 "commit"）
+    // The first entry is selected by default ("commit" after sorting)
     app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
     assert!(app.slash().is_none(), "picker should close after Enter");
     assert_eq!(app.composer.text(), "/commit ", "should insert /name + space");
@@ -1482,7 +1490,7 @@ fn slash_arrow_keys_navigate() {
     app.handle_key(KeyCode::Down, KeyModifiers::NONE);
     assert_eq!(app.slash().unwrap().selected_index(), 2);
 
-    // 已在末尾，Down 不动
+    // Already at the end: Down does nothing
     app.handle_key(KeyCode::Down, KeyModifiers::NONE);
     assert_eq!(app.slash().unwrap().selected_index(), 2);
 
@@ -1680,6 +1688,8 @@ fn running_bg_task_with_timeout(app: &mut App, id: &str, command: &str, timeout_
         started_at: std::time::Instant::now(),
         finished_at: None,
         reported: false,
+        output_tail: String::new(),
+        consumed: false,
     });
 }
 

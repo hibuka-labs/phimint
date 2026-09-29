@@ -972,9 +972,16 @@ fn background_task_reap_after_3_seconds() {
     app.background_tasks.get_mut(&task_id).unwrap().finished_at =
         Some(Instant::now() - Duration::from_secs(4));
 
-    // Reconcile: task should be reaped now (done > 3s ago)
+    // An unreported outcome still owes the agent a wake (issue #29) — the
+    // display reap must not eat it yet (see `may_reap`).
     let changed = app.reconcile_background_tasks();
-    assert!(changed, "reconcile should reap task (done > 3s)");
+    assert!(!changed, "unreported outcome is kept for the wake");
+    assert_eq!(app.background_tasks.len(), 1, "unreported task must not be reaped");
+
+    // Once the wake has taken it, the 3s window applies again.
+    app.background_tasks.get_mut(&task_id).unwrap().reported = true;
+    let changed = app.reconcile_background_tasks();
+    assert!(changed, "reconcile should reap the reported task (done > 3s)");
     assert_eq!(app.background_tasks.len(), 0, "task should be reaped");
 }
 
@@ -1008,9 +1015,14 @@ fn background_task_never_enters_task_panel() {
     app.reconcile_background_tasks();
     assert!(!app.should_show_task_panel(), "done bg task must NOT open the panel");
 
-    // The reap still sweeps the map 3s after completion.
-    app.background_tasks.get_mut(&task_id).unwrap().finished_at =
-        Some(Instant::now() - Duration::from_secs(4));
+    // The reap still sweeps the map 3s after completion — once the wake has
+    // taken the outcome (`reported`, issue #29: `may_reap` keeps unreported
+    // outcomes for the wake).
+    {
+        let task = app.background_tasks.get_mut(&task_id).unwrap();
+        task.reported = true;
+        task.finished_at = Some(Instant::now() - Duration::from_secs(4));
+    }
     app.reconcile_background_tasks();
     assert_eq!(app.background_tasks.len(), 0, "reap still works");
 }
@@ -1039,6 +1051,10 @@ fn reaped_task_is_not_readded_by_later_reconciles() {
     registry.update_status(&task_id, BackgroundTaskStatus::Done);
     assert!(app.reconcile_background_tasks(), "reconcile detects the status change");
     assert_eq!(app.background_tasks[&task_id].status, BackgroundTaskStatus::Done);
+
+    // The wake takes the outcome before the display window closes — the reap
+    // below is only reachable for reported entries (`may_reap`, issue #29).
+    app.background_tasks.get_mut(&task_id).unwrap().reported = true;
 
     // Past the 3s display window: this reconcile reaps the task …
     std::thread::sleep(Duration::from_millis(3100));
@@ -1077,4 +1093,43 @@ fn stale_finished_snapshot_never_seen_is_not_inserted() {
     );
     assert!(app.background_tasks.is_empty());
     assert!(!app.should_show_task_panel());
+}
+
+#[test]
+fn unreported_outcome_survives_reconcile_until_the_wake_reports_it() {
+    // Issue #29, the "reap races ahead" half: the 3s display reap used to eat
+    // an unreported outcome — in the same reconcile pass that flipped the
+    // batch to Idle (`refresh_waiting_count` in the upsert loop), a sibling
+    // finished ≥3s earlier was deleted by the reap below, and the upsert
+    // guard made the loss permanent: the wake never listed it. The reap/stale
+    // sweeps now only drop entries that no longer owe a report (`may_reap`).
+    let registry = BackgroundTaskRegistry::new(4);
+    let mut app = App::new();
+    app.set_background_registry(registry.clone());
+
+    let cancel_token = tokio_util::sync::CancellationToken::new();
+    let task_id = registry.register("echo quiet", None, cancel_token, None, 120_000).unwrap();
+    registry.update_status(&task_id, BackgroundTaskStatus::Done);
+
+    // Observed once (finished_at taken from the snapshot), then aged past
+    // the display window — root idle, so the reap is armed.
+    assert!(app.reconcile_background_tasks(), "first reconcile observes the task");
+    app.background_tasks.get_mut(&task_id).unwrap().finished_at =
+        Some(Instant::now() - Duration::from_secs(4));
+    app.status = AgentStatus::Idle;
+
+    app.reconcile_background_tasks();
+    assert!(
+        app.background_tasks.contains_key(&task_id),
+        "unreported outcome must survive the reap"
+    );
+
+    // The debt is paid by the report, not by the clock: the wake still lists
+    // it even though it is past the display window.
+    let (_, input) = app.take_bg_wake().expect("wake must still report it");
+    assert!(input.contains(&task_id), "wake lists the surviving task: {input}");
+
+    // Reported → the next reconcile reaps it as usual.
+    app.reconcile_background_tasks();
+    assert!(app.background_tasks.is_empty(), "reported task is reaped");
 }

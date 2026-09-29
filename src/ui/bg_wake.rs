@@ -30,19 +30,29 @@
 //!   run is handed to the loop, and every task is reported at most once — a
 //!   later wake (tasks spawned during the report turn) lists only the new
 //!   outcomes.
+//! - **Freshness is the wake's own concern**: `take_bg_wake` reconciles the
+//!   panel map from the registry before deciding (issue #29: the loop used to
+//!   check the wake *before* the reconcile tick, so a just-finished task
+//!   missed the first wake and arrived alone a full report-turn later).
+//! - **The wake is self-sufficient**: each listing carries the task's output
+//!   tail (≤2KB, UTF-8-safe). The registry entry may already be gone
+//!   (consume-based GC after a `task_output` fetch, or the 30-min fallback) —
+//!   the agent can still report from the tail (issue #35).
 //!
 //! The decision logic lives here (unit-tested); `run.rs` only executes the
 //! side effects (`push_system`, `Cmd::Run`) and stays free of timing policy.
 
-use phi_kernel_tools::background_shell::BackgroundTaskStatus;
+use phi_kernel_tools::background_shell::{BackgroundTaskStatus, tail_utf8};
 
-use super::app::App;
+use super::app::{App, BackgroundTaskEntry};
 
 /// One wake-worthy outcome, flattened for composition.
 struct WakeItem {
     id: String,
     command: String,
     status: BackgroundTaskStatus,
+    output_tail: String,
+    consumed: bool,
 }
 
 /// Whether a terminal task outcome should wake the agent. `Cancelled` is
@@ -56,20 +66,44 @@ fn is_wake_worthy(status: &BackgroundTaskStatus) -> bool {
     )
 }
 
+/// Whether the panel map may drop this entry yet (display lifecycle).
+///
+/// An unreported wake-worthy outcome owes the agent a report — the 3s
+/// display reap and the registry-stale cleanup must never eat that debt
+/// (issue #29: a sibling finished ≥3s earlier used to be reaped in the same
+/// reconcile pass that flipped the batch to Idle, and the upsert guard made
+/// the loss permanent). `reported` tasks and non-wake-worthy ones
+/// (`Cancelled`, still running) carry no debt and are droppable.
+pub(crate) fn may_reap(entry: &BackgroundTaskEntry) -> bool {
+    entry.reported || !is_wake_worthy(&entry.status)
+}
+
 impl App {
     /// Consume the background-task wake, if one is due.
     ///
+    /// Reconciles the panel map from the registry first, so a task that just
+    /// went terminal is always part of the *first* wake after its finish —
+    /// batching is decided on fresh state, never on a tick-lagged cache.
+    ///
     /// Returns `Some((transcript_notice, synthetic_input))` when every
     /// *bounded* job is terminal (daemons are ignored — they never finish on
-    /// their own), nothing else is in flight (agent idle, no sub-agents), and
-    /// at least one wake-worthy outcome has not been reported yet. Marks the
-    /// reported flag before returning so a task can never be reported twice;
-    /// returns `None` otherwise (the caller just retries on the next tick).
-    pub(crate) fn take_bg_wake(&mut self, agent_running: bool) -> Option<(String, String)> {
-        // Hold: an injection must never land mid-turn, and a wake while
-        // sub-agents or bounded jobs are still running would race the fan-in
-        // batch and split the report across turns. Daemons don't hold.
-        if agent_running
+    /// their own), nothing is in flight (no root turn queued or running, no
+    /// sub-agents), and at least one wake-worthy outcome has not been
+    /// reported yet. Marks the reported flag before returning so a task can
+    /// never be reported twice; returns `None` otherwise (the caller just
+    /// retries on the next tick).
+    pub(crate) fn take_bg_wake(&mut self) -> Option<(String, String)> {
+        // Freshness first — even when held, so the map stops lagging.
+        let _ = self.reconcile_background_tasks();
+
+        // Hold: an injection must never land mid-turn — including synthetic
+        // turns (issue #29: `running` used to be set only on keyboard submit,
+        // so wakes composed mid-run and queued behind the in-flight run,
+        // arriving alone minutes later). Also hold while sub-agents or
+        // bounded jobs run, to race neither the fan-in batch. Daemons
+        // (`timeout_ms == 0`) don't hold.
+        if self.running
+            || matches!(self.status, super::app::AgentStatus::Running { .. })
             || self.running_sub_agents() > 0
             || self.bg_running_split().0 > 0
         {
@@ -82,6 +116,8 @@ impl App {
                 id: t.id.clone(),
                 command: t.command.clone(),
                 status: t.status.clone(),
+                output_tail: t.output_tail.clone(),
+                consumed: t.consumed,
             })
             .collect();
         if ready.is_empty() {
@@ -101,6 +137,10 @@ impl App {
     }
 }
 
+/// Cap for a raw error string embedded in the wake listing (AC: the wake is
+/// bounded — an error message must not balloon the synthetic turn).
+const MAX_ERROR_DESC: usize = 200;
+
 /// Status suffix for the wake listing: what the agent will learn without
 /// calling `task_output` (so it can prioritize a failed task first).
 fn status_desc(status: &BackgroundTaskStatus) -> String {
@@ -108,7 +148,15 @@ fn status_desc(status: &BackgroundTaskStatus) -> String {
         BackgroundTaskStatus::Done => "已完成".to_string(),
         BackgroundTaskStatus::TimedOut => "超时".to_string(),
         BackgroundTaskStatus::Cancelled => "已取消".to_string(),
-        BackgroundTaskStatus::Error(e) => format!("出错：{e}"),
+        BackgroundTaskStatus::Error(e) => {
+            let trimmed = e.trim();
+            if trimmed.chars().count() <= MAX_ERROR_DESC {
+                format!("出错：{trimmed}")
+            } else {
+                let head: String = trimmed.chars().take(MAX_ERROR_DESC).collect();
+                format!("出错：{head}…")
+            }
+        }
         BackgroundTaskStatus::Running => "运行中".to_string(),
     }
 }
@@ -126,19 +174,51 @@ fn short_command(command: &str) -> String {
     }
 }
 
+/// Per-task output tail budget inside one wake (issue #35 AC3). Also the
+/// capture cap when the panel snapshots a task's tail at terminal time.
+pub(crate) const MAX_TAIL_PER_TASK: usize = 2 * 1024;
+/// Total tail budget across one wake; when the batch is wide, the per-task
+/// share shrinks so the synthetic turn stays bounded.
+pub(crate) const MAX_TAIL_PER_WAKE: usize = 8 * 1024;
+
 /// Notification + synthetic input for one background wake.
+///
+/// Each listing carries its task's output tail (UTF-8-safe, ≤2KB/task and
+/// ≤8KB/wake) so the agent can report even when `task_output` can no longer
+/// fetch the entry (consumed by an earlier fetch, or GC'd past the fallback
+/// TTL). Consumed tasks say so — the tail *is* the report source there.
 fn compose_wake(items: &[WakeItem]) -> (String, String) {
     let n = items.len();
-    let notice = format!("{n} 个后台任务已结束，唤醒 agent 获取输出");
+    let notice = format!("{n} 个后台任务已结束，唤醒 agent 汇报结果");
+    let per_task = MAX_TAIL_PER_TASK.min(MAX_TAIL_PER_WAKE / n.max(1));
     let listing = items
         .iter()
-        .map(|t| format!("- {}：`{}`（{}）", t.id, short_command(&t.command), status_desc(&t.status)))
+        .map(|t| {
+            let head = format!(
+                "- {}：`{}`（{}）",
+                t.id,
+                short_command(&t.command),
+                status_desc(&t.status)
+            );
+            let tail = tail_utf8(&t.output_tail, per_task);
+            let consumed_note = if t.consumed {
+                "（输出此前已被 task_output 取走）"
+            } else {
+                ""
+            };
+            if tail.is_empty() {
+                format!("{head}\n  （无输出{consumed_note}）")
+            } else {
+                format!("{head}\n  输出 tail{consumed_note}：\n----\n{tail}\n----")
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n");
     let input = format!(
         "[系统通知] 你启动的以下后台任务已结束（{n} 个）：\n{listing}\n\n\
-         请逐个调用 task_output(task_id) 获取完整输出（任务已结束，wait=false 即可），\
-         汇总后向用户汇报结果。不要重新运行这些命令。"
+         请优先根据上方输出 tail 汇总后向用户汇报结果；如需完整输出可逐个调用 \
+         task_output(task_id)（任务已结束，wait=false 即可；若已回收会返回 \
+         not_found，以 tail 为准）。不要重新运行这些命令。"
     );
     (notice, input)
 }
@@ -161,6 +241,8 @@ pub(crate) fn mock_bg_entry(
         started_at: std::time::Instant::now(),
         finished_at: None,
         reported: false,
+        output_tail: String::new(),
+        consumed: false,
     }
 }
 

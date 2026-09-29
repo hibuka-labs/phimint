@@ -79,6 +79,15 @@ pub struct BackgroundTaskEntry {
     /// the agent at most once — a later wake (new tasks spawned after the
     /// report turn) lists only the not-yet-reported ones.
     pub reported: bool,
+    /// Last ≤2KB of stdout+stderr, captured once when the terminal state is
+    /// first observed. The wake is self-sufficient with it: even if the
+    /// registry entry is later GC'd (consume-based), the agent can still
+    /// report from this tail.
+    pub output_tail: String,
+    /// Whether `task_output` already returned this task's terminal output.
+    /// Consumed tasks' registry entries are GC-eligible immediately; the wake
+    /// still reports them (from `output_tail`), it just won't ask for a fetch.
+    pub consumed: bool,
 }
 
 impl BackgroundTaskEntry {
@@ -193,7 +202,14 @@ pub enum TuiEvent {
     /// child runtime events.
     Lifecycle(std::sync::Arc<RegistrySnapshot>),
     /// A turn ended with an error (surfaced as a red output line).
+    ///
+    /// Terminal: settles the turn and clears [`App::running`].
     TurnError(String),
+    /// A mid-turn warning (surfaced as a red output line) that does NOT end
+    /// the turn — e.g. a skill-bake failure while the run continues. Unlike
+    /// [`TuiEvent::TurnError`] it never settles, so it cannot trick the UI
+    /// into believing the turn finished early.
+    Warning(String),
     /// A turn completed (safety net in case `RunFinished` was never seen).
     TurnDone,
     /// An update check found a new version.
@@ -206,7 +222,11 @@ pub struct App {
     pub transcript: Transcript<BannerStyle>,
     pub composer: Composer,
     pub status: AgentStatus,
-    /// True while a turn is running (gates submitting another task).
+    /// True while a root turn is in flight or queued (gates submitting
+    /// another task). Set at every `Cmd::Run` send site — synthetic turns
+    /// (background wake / child fan-in) included — and cleared only by
+    /// [`App::settle_after_turn`] (i.e. exactly one TurnDone/TurnError per
+    /// turn), so a late engine event can never clear the next turn's flag.
     pub running: bool,
     /// Scrollable output viewport (offset + follow-bottom + rendered size).
     pub viewport: Viewport,
@@ -251,7 +271,7 @@ pub struct App {
     /// Per-child streaming accumulators. Child deltas never touch the shared
     /// `stream`: that buffer's pending tail renders as the main view's live
     /// tail, so a child streaming for minutes flooded it at ~10 events/sec
-    /// (session 20260904_3eeb5610 "一直在刷"). Per-child buffers also stop two
+    /// (session 20260904_3eeb5610, "kept redrawing"). Per-child buffers also stop two
     /// interleaved children from chopping each other's pending text into
     /// fragments on every agent switch. Flushed lines land in
     /// `sub_agent_transcripts` (the child's focus view).
@@ -268,7 +288,7 @@ pub struct App {
     /// the elapsed readout in the status bar. `None` while Idle. The event loop
     /// has no other clock source: with zero events it never redraws, so a
     /// silent LLM call used to freeze the whole screen (session
-    /// 20260904_e6612477 "卡一会"). The ~250 ms tick re-renders while this is
+    /// 20260904_e6612477, "frozen for a while"). The ~250 ms tick re-renders while this is
     /// set, keeping spinner/elapsed alive through event-less stretches.
     pub(crate) activity_since: Option<Instant>,
     /// Fold state for committed thought blocks: `false` = collapsed summary
@@ -409,16 +429,12 @@ impl App {
             TuiEvent::Runtime(ev) => self.handle_runtime(ev),
             TuiEvent::TurnError(msg) => {
                 self.flush_pending();
-                let err_text = format!("❌ {msg}");
-                for (i, line) in wrap(&err_text, self.transcript.wrap_width()).into_iter().enumerate() {
-                    self.transcript.push(OutputLine { spans: None,
-                        original: if i == 0 { Some(err_text.clone()) } else { None },
-                        detail: None,
-                        text: line,
-                        kind: LineKind::Error,
-                    });
-                }
+                self.push_error_line(&msg);
                 self.settle_after_turn(false);
+            }
+            TuiEvent::Warning(msg) => {
+                self.flush_pending();
+                self.push_error_line(&msg);
             }
             TuiEvent::Lifecycle(snap) => self.apply_lifecycle_snapshot(&snap),
             TuiEvent::TurnDone => {
@@ -429,6 +445,19 @@ impl App {
                 self.upgrade_hint = Some(format!("⬆ phimint {version} available - type /upgrade"));
                 tracing::info!(version = %version, "upgrade available");
             }
+        }
+    }
+
+    /// Red ❌ line for turn errors and mid-turn warnings (wrapped).
+    fn push_error_line(&mut self, msg: &str) {
+        let err_text = format!("❌ {msg}");
+        for (i, line) in wrap(&err_text, self.transcript.wrap_width()).into_iter().enumerate() {
+            self.transcript.push(OutputLine { spans: None,
+                original: if i == 0 { Some(err_text.clone()) } else { None },
+                detail: None,
+                text: line,
+                kind: LineKind::Error,
+            });
         }
     }
 

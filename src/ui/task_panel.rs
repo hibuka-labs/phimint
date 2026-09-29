@@ -18,6 +18,7 @@ use phi_tui::transcript::DEFAULT_WRAP_WIDTH;
 use crate::banner::BannerStyle;
 
 use super::app::{AgentStatus, App, BackgroundTaskEntry, FocusTarget, SubAgentState, SubAgentStatus};
+use super::bg_wake::{MAX_TAIL_PER_TASK, may_reap};
 
 /// How long a completed background task stays visible in the panel before
 /// auto-reap. Shared by the reaper and the reconcile upsert guard (which
@@ -149,12 +150,20 @@ impl App {
     /// Also GCs completed tasks older than 3 seconds when the root is Idle.
     /// Returns `true` if any state changed (caller sets `dirty`).
     pub(crate) fn reconcile_background_tasks(&mut self) -> bool {
-        let Some(registry) = &self.background_registry else {
+        // Owned clone: the sweep below (`gc`) must not hold a borrow of
+        // `*self` across the `&mut self` calls in the upsert loop.
+        let Some(registry) = self.background_registry.clone() else {
             return false;
         };
 
-        let gc_ttl = Duration::from_secs(300); // 5 min GC for registry cleanup
-        let snapshots = registry.snapshot_all(gc_ttl);
+        // Consume-based GC with a 30-min fallback TTL (issue #35): entries
+        // are swept once `task_output` has taken their output, or 30 min
+        // after finish — whichever comes first. Never the old 5-min clock
+        // that raced the wake's delivery.
+        let gc_ttl = Duration::from_secs(1800);
+        // Pure read first — `gc` runs *after* the upsert loop below, so a
+        // terminal state is always observed before it can be swept away.
+        let snapshots = registry.snapshot_all();
         let mut changed = false;
 
         // Upsert from snapshots
@@ -189,14 +198,27 @@ impl App {
                 started_at: snap.started_at,
                 finished_at: None,
                 reported: false,
+                output_tail: String::new(),
+                consumed: false,
             });
 
             let task = self.background_tasks.get_mut(&snap.id).unwrap();
+            // Consumption flips independently of status (task_output fetch).
+            if task.consumed != snap.consumed {
+                task.consumed = snap.consumed;
+                changed = true;
+            }
             if task.status != snap.status {
                 task.status = snap.status.clone();
                 // Use the snapshot's finished_at instead of Instant::now()
                 // to preserve the real completion time across reap-reconcile cycles.
                 task.finished_at = snap.finished_at;
+                if snap.status != BackgroundTaskStatus::Running {
+                    // First terminal observation: snapshot the output tail so
+                    // the wake can report even after the registry entry is
+                    // GC'd (consume-based) — one capture, not per tick.
+                    task.output_tail = snap.output_tail(MAX_TAIL_PER_TASK);
+                }
                 changed = true;
                 // A background task just started or (more importantly) ended:
                 // while `Waiting` the status-bar counts must follow, and the
@@ -208,10 +230,16 @@ impl App {
             }
         }
 
-        // Remove entries that were GC'd from the registry
-        let stale_ids: Vec<String> = self.background_tasks.keys()
-            .filter(|id| !live_ids.contains(*id))
-            .cloned()
+        // GC only after every snapshot above has been observed.
+        registry.gc(gc_ttl);
+
+        // Remove entries that were GC'd from the registry — but never one
+        // that still owes the agent a wake report (see `may_reap`). The
+        // registry's consume-GC can drop an entry whose outcome has not been
+        // reported yet; the map keeps it until the wake delivers.
+        let stale_ids: Vec<String> = self.background_tasks.iter()
+            .filter(|(id, t)| !live_ids.contains(*id) && may_reap(t))
+            .map(|(id, _)| id.clone())
             .collect();
         for id in stale_ids {
             self.background_tasks.remove(&id);
@@ -231,6 +259,7 @@ impl App {
                 .filter(|(_, t)| {
                     t.status != BackgroundTaskStatus::Running
                         && t.finished_at.map_or(false, |at| now.duration_since(at) >= BACKGROUND_REAP_AFTER)
+                        && may_reap(t)
                 })
                 .map(|(id, _)| id.clone())
                 .collect();
