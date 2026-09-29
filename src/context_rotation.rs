@@ -24,8 +24,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use async_trait::async_trait;
 
 use phi_agent::{
-    ChatMessage, ContextCompaction, SessionId, TokenBudgetAction, TokenBudgetCore, clear_messages_jsonl,
-    estimate_messages_tokens,
+    ChatMessage, CompactionKind, CompactionOutcome, ContextCompaction, SessionId, TokenBudgetAction,
+    TokenBudgetCore, clear_messages_jsonl, estimate_messages_tokens,
 };
 
 use phi_kernel_tools::context_rotation::{HistoryStore, NotesStore, read_thread_hint, extract_ledger};
@@ -115,6 +115,25 @@ impl TokenBudgetCompactor {
     pub fn reset_count(&self) -> usize {
         self.reset_count.load(Ordering::Relaxed)
     }
+
+    /// Append a nudge at the END, right after the latest tool result —
+    /// that is where the model's attention is. Prepending buries the nudge
+    /// at position 0, thousands of tokens before the work in progress, and
+    /// the model ignores it (session 20260908_2ecc530a: 14 fallbacks sent,
+    /// 0 handoffs written). Prior messages pass through untouched.
+    fn append_nudge(
+        messages: &[ChatMessage],
+        nudge: ChatMessage,
+        kind: CompactionKind,
+    ) -> CompactionOutcome {
+        let mut result = Vec::with_capacity(messages.len() + 1);
+        result.extend_from_slice(messages);
+        result.push(nudge);
+        CompactionOutcome {
+            kind,
+            messages: result,
+        }
+    }
 }
 
 #[async_trait]
@@ -123,21 +142,16 @@ impl ContextCompaction for TokenBudgetCompactor {
         &self,
         _session_id: &SessionId,
         messages: &[ChatMessage],
-    ) -> Option<Vec<ChatMessage>> {
+    ) -> Option<CompactionOutcome> {
         let total_tokens = estimate_messages_tokens(messages);
         match self.core.evaluate(total_tokens) {
             TokenBudgetAction::None => None,
 
-            TokenBudgetAction::Reminder(msg) | TokenBudgetAction::Fallback(msg) => {
-                // Append at the END, right after the latest tool result —
-                // that is where the model's attention is. Prepending buries
-                // the nudge at position 0, thousands of tokens before the
-                // work in progress, and the model ignores it (session
-                // 20260908_2ecc530a: 14 fallbacks sent, 0 handoffs written).
-                let mut result = Vec::with_capacity(messages.len() + 1);
-                result.extend_from_slice(messages);
-                result.push(msg);
-                Some(result)
+            TokenBudgetAction::Reminder(msg) => {
+                Some(Self::append_nudge(messages, msg, CompactionKind::Reminder))
+            }
+            TokenBudgetAction::Fallback(msg) => {
+                Some(Self::append_nudge(messages, msg, CompactionKind::Fallback))
             }
 
             TokenBudgetAction::Reset {
@@ -218,7 +232,10 @@ impl ContextCompaction for TokenBudgetCompactor {
                     new_message_count = new_messages.len(),
                     "window reset complete"
                 );
-                Some(new_messages)
+                Some(CompactionOutcome {
+                    kind: CompactionKind::Reset,
+                    messages: new_messages,
+                })
             }
         }
     }
@@ -264,11 +281,11 @@ mod tests {
 
     /// Synchronous wrapper for compact in tests (no actual async I/O needed).
     trait CompactSync {
-        fn compact_sync(&self, messages: &[ChatMessage]) -> Option<Vec<ChatMessage>>;
+        fn compact_sync(&self, messages: &[ChatMessage]) -> Option<CompactionOutcome>;
     }
 
     impl CompactSync for TokenBudgetCompactor {
-        fn compact_sync(&self, messages: &[ChatMessage]) -> Option<Vec<ChatMessage>> {
+        fn compact_sync(&self, messages: &[ChatMessage]) -> Option<CompactionOutcome> {
             let rt = tokio::runtime::Runtime::new().unwrap();
             let sid = SessionId {
                 id: 1,
@@ -319,12 +336,15 @@ mod tests {
 
         // One-turn hold: the first crossing asks for the handoff...
         let hold = shell.compact_sync(&msgs).expect("fallback must fire");
-        match hold.last().unwrap() {
+        assert_eq!(hold.kind, CompactionKind::Fallback);
+        match hold.messages.last().unwrap() {
             ChatMessage::System { content, .. } => assert!(content.contains("closing")),
             _ => panic!("expected fallback message appended at the END"),
         }
         // ...the next check rotates: archive + fresh window.
         let result = shell.compact_sync(&msgs).expect("reset must fire");
+        assert_eq!(result.kind, CompactionKind::Reset);
+        let result = result.messages;
         // Fresh window: system prompt + window info + user trail + guidance + seed
         assert_eq!(result.len(), 5);
         assert!(matches!(&result[0], ChatMessage::System { content, ephemeral: false }
@@ -362,6 +382,8 @@ mod tests {
 
         assert!(shell.compact_sync(&msgs).is_some()); // fallback hold
         let result = shell.compact_sync(&msgs).expect("reset must fire");
+        assert_eq!(result.kind, CompactionKind::Reset);
+        let result = result.messages;
         // sys + window_info + thread_hint + user trail + guidance + seed
         assert_eq!(result.len(), 6, "expected 6 messages");
         match &result[2] {
@@ -389,6 +411,61 @@ mod tests {
         assert_eq!(shell.reset_count(), 0);
     }
 
+    /// Issue #33: the outcome must carry the action kind so agent-base can
+    /// log a nudge append as an append, not as a compaction. One assertion
+    /// per phase; the append case also pins the byte-identical passthrough
+    /// (same inputs → prior messages untouched). Band positions derive from
+    /// the *effective* config — `TokenBudgetCore::new` may clamp the room to
+    /// the viability floor, so hard-coded token counts would miss the bands.
+    #[test]
+    fn outcome_kind_tracks_action_phase() {
+        // Phase 1 — within the reminder band: Reminder; the prior history
+        // passes through byte-identical, exactly one message appended.
+        let tmp = TempDir::new().unwrap();
+        let shell = shell_with(small_core(), &tmp);
+        let cfg = shell.core().config();
+        let near = work_msgs(
+            shell.core(),
+            cfg.work_budget - cfg.reminder_threshold + 20,
+        );
+        let input = near.clone();
+        let outcome = shell.compact_sync(&near).expect("reminder must fire");
+        assert_eq!(outcome.kind, CompactionKind::Reminder);
+        assert_eq!(outcome.messages.len(), input.len() + 1);
+        for (a, b) in outcome.messages.iter().zip(input.iter()) {
+            assert_eq!(
+                serde_json::to_string(a).unwrap(),
+                serde_json::to_string(b).unwrap(),
+                "a nudge append must leave prior messages byte-identical"
+            );
+        }
+
+        // Phase 2 — budget exhausted, inside the fallback buffer (fresh
+        // shell: a reminder already sent short-circuits to None).
+        let tmp = TempDir::new().unwrap();
+        let shell = shell_with(small_core(), &tmp);
+        let cfg = shell.core().config();
+        let over = work_msgs(
+            shell.core(),
+            cfg.work_budget + cfg.fallback_buffer / 2,
+        );
+        let outcome = shell.compact_sync(&over).expect("fallback must fire");
+        assert_eq!(outcome.kind, CompactionKind::Fallback);
+        assert_eq!(outcome.messages.len(), over.len() + 1);
+
+        // Phase 3 — buffer exhausted too: one-turn hold, then the rotation.
+        let tmp = TempDir::new().unwrap();
+        let core = small_core();
+        let reset_point = core.hard_limit() - core.base_overhead();
+        let shell = shell_with(core, &tmp);
+        let out = work_msgs(shell.core(), reset_point);
+        let hold = shell.compact_sync(&out).expect("hold must fire");
+        assert_eq!(hold.kind, CompactionKind::Fallback);
+        let rotated = shell.compact_sync(&out).expect("reset must fire");
+        assert_eq!(rotated.kind, CompactionKind::Reset);
+        assert_eq!(shell.reset_count(), 1);
+    }
+
     #[test]
     fn reset_injects_ledger_and_mirrors_it_to_notes() {
         let tmp = TempDir::new().unwrap();
@@ -399,6 +476,8 @@ mod tests {
 
         assert!(shell.compact_sync(&msgs).is_some()); // fallback hold
         let result = shell.compact_sync(&msgs).expect("reset must fire");
+        assert_eq!(result.kind, CompactionKind::Reset);
+        let result = result.messages;
         // sys + window_info + ledger slot + user trail + guidance + seed
         assert_eq!(result.len(), 6);
         match &result[2] {
@@ -435,6 +514,7 @@ mod tests {
 
         assert!(shell.compact_sync(&msgs).is_some()); // fallback hold
         let result = shell.compact_sync(&msgs).expect("reset must fire");
+        let result = result.messages;
         match &result[2] {
             ChatMessage::System { content, .. } => {
                 // The model's semantic hint is preserved, not overwritten,
