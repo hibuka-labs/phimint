@@ -7,9 +7,9 @@
 //! - Plan updates (PlanUpdated)
 //! - Approval requests (AwaitingApproval)
 //! - Run lifecycle (RunFinished, RunCancelled)
-//! - User events (Progress)
+//! - User events (Progress, Notice)
 
-use phi_agent::{PlanStepStatus, UserEvent};
+use phi_agent::{NoticeKind, PlanStepStatus, UserEvent};
 use phi_agent::RuntimeEvent;
 use std::time::Instant;
 
@@ -18,6 +18,17 @@ use crate::ui::app::{App, AgentStatus, Phase, SubAgentStatus, ToolEvent};
 use phi_tui::lines::{DiffHunk, LineKind, OutputLine, LineDetail};
 use phi_tui::diff::{diff_to_hunks, diff_to_hunks_indexed};
 use phi_tui::wrap::{one_line, wrap};
+
+/// Render a notice line: `source: text`, unless `text` already names the
+/// source (the pinned judge message starts with "guard" — design §4 shows
+/// the bare mechanism fact on the red line, so don't double the prefix).
+fn notice_line(source: &str, text: &str) -> String {
+    if text.starts_with(source) {
+        text.to_string()
+    } else {
+        format!("{source}: {text}")
+    }
+}
 
 /// Build a `LineDetail::Diff` from a file tool's `args_json`, or `None` if
 /// the tool is not a file-edit tool or parsing fails.
@@ -536,6 +547,26 @@ impl App {
                 UserEvent::Progress { text } => {
                     self.live_progress = Some(text);
                 }
+                // Engine-mechanism notices (Batch E): guard degradation,
+                // reaper, ... Warning is a persistent red line that must NOT
+                // settle the turn (the run may still be finishing); Progress
+                // rides the status bar like tool progress; Info is a plain
+                // output line.
+                UserEvent::Notice { kind, source, text } => match kind {
+                    NoticeKind::Warning => {
+                        self.flush_pending();
+                        self.push_error_line(&notice_line(&source, &text));
+                    }
+                    NoticeKind::Progress => {
+                        self.live_progress = Some(text);
+                    }
+                    NoticeKind::Info => {
+                        self.flush_pending();
+                        // Gray system line: informational, visually distinct
+                        // from both tool results and errors.
+                        self.transcript.push_system(&notice_line(&source, &text));
+                    }
+                },
                 _ => {}
             },
             _ => {}

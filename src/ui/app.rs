@@ -449,7 +449,7 @@ impl App {
     }
 
     /// Red ❌ line for turn errors and mid-turn warnings (wrapped).
-    fn push_error_line(&mut self, msg: &str) {
+    pub(crate) fn push_error_line(&mut self, msg: &str) {
         let err_text = format!("❌ {msg}");
         for (i, line) in wrap(&err_text, self.transcript.wrap_width()).into_iter().enumerate() {
             self.transcript.push(OutputLine { spans: None,

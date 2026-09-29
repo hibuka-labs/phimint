@@ -1945,3 +1945,122 @@ fn popup_style_defaults_to_frameless_and_is_settable() {
     assert!(app.popup_style().frame);
     assert_eq!(app.popup_style().width, WidthSpec::Fixed(64));
 }
+
+// ── Notice rendering (Batch E, PR4) ─────────────────────────────────────────
+
+fn notice(kind: phi_agent::NoticeKind, source: &str, text: &str) -> RuntimeEvent {
+    RuntimeEvent::UserEvent {
+        session_id: SessionId::new(1),
+        event: UserEvent::Notice {
+            kind,
+            source: source.to_string(),
+            text: text.to_string(),
+        },
+        agent_id: None,
+        trace_id: None,
+    }
+}
+
+#[test]
+fn notice_warning_renders_persistent_error_line() {
+    let mut app = App::new();
+    // Mid-turn precondition: only then is "does not settle the turn"
+    // observable — Idle→Idle proves nothing.
+    app.handle_event(TuiEvent::Runtime(tool_started("execute_command")));
+    assert!(
+        matches!(app.status, AgentStatus::Running { .. }),
+        "precondition: mid-turn"
+    );
+    let lines_before = app.transcript.output.len();
+
+    app.handle_event(TuiEvent::Runtime(notice(
+        phi_agent::NoticeKind::Warning,
+        "guard",
+        "guard judge unparsed — treating as complete",
+    )));
+
+    // Warning lands as a red (Error-kind) transcript line — persistent.
+    assert_eq!(
+        app.transcript.output.len(),
+        lines_before + 1,
+        "exactly one line emitted"
+    );
+    let line = app.transcript.output.last().expect("one line");
+    assert_eq!(line.kind, LineKind::Error, "warning renders as red line");
+    assert!(
+        line.text
+            .contains("guard judge unparsed — treating as complete"),
+        "line carries the mechanism text, got: {}",
+        line.text
+    );
+    // The message already names its source — no "guard: guard …" doubling
+    // (design §4 shows the bare mechanism fact on the red line).
+    assert!(
+        !line.text.contains("guard: guard"),
+        "source must not be doubled, got: {}",
+        line.text
+    );
+    // No turn settlement: the notice must not call settle_after_turn —
+    // status stays Running.
+    assert!(
+        matches!(app.status, AgentStatus::Running { .. }),
+        "warning must not settle the turn, got: {:?}",
+        app.status
+    );
+}
+
+#[test]
+fn notice_progress_updates_live_progress() {
+    let mut app = App::new();
+    // live_progress renders only in the Running/ToolCall phase — same as
+    // tool Progress (existing semantics, see progress_updates_and_clears…).
+    app.handle_event(TuiEvent::Runtime(tool_started("execute_command")));
+    app.handle_event(TuiEvent::Runtime(notice(
+        phi_agent::NoticeKind::Progress,
+        "compactor",
+        "compacting context…",
+    )));
+
+    // Progress is transient status-bar text — same channel as tool progress.
+    let line = app.status_line();
+    assert!(
+        line.contains("compacting context…"),
+        "progress notice surfaces in the status bar, got: {line}"
+    );
+    let lines_after_progress = app.transcript.output.len();
+    // Any further notices/transcript churn must not come from this event:
+    // the notice only feeds the status bar.
+    app.handle_event(TuiEvent::Runtime(notice(
+        phi_agent::NoticeKind::Progress,
+        "compactor",
+        "still compacting…",
+    )));
+    assert_eq!(
+        app.transcript.output.len(),
+        lines_after_progress,
+        "progress must not pollute the transcript"
+    );
+}
+
+#[test]
+fn notice_info_renders_plain_line() {
+    let mut app = App::new();
+    app.handle_event(TuiEvent::Runtime(notice(
+        phi_agent::NoticeKind::Info,
+        "reaper",
+        "reaped 2 background tasks",
+    )));
+
+    assert_eq!(app.transcript.output.len(), 1, "one line emitted");
+    let line = &app.transcript.output[0];
+    assert_eq!(
+        line.kind,
+        LineKind::System,
+        "info renders as gray system line"
+    );
+    assert!(
+        line.text.contains("reaped 2 background tasks"),
+        "got: {}",
+        line.text
+    );
+}
