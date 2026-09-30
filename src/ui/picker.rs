@@ -64,7 +64,10 @@ pub fn show_picker_from_tui(
 /// Show an interactive picker and return the selected session directory.
 ///
 /// Returns `Ok(None)` if the user pressed Esc or the list is empty.
-pub fn show_picker(base_dir: &Path, current_session_id: Option<&str>) -> io::Result<Option<PathBuf>> {
+pub fn show_picker(
+    base_dir: &Path,
+    current_session_id: Option<&str>,
+) -> io::Result<Option<PathBuf>> {
     let entries = phi_agent::list_sessions(base_dir, current_session_id);
 
     if entries.is_empty() {
@@ -114,7 +117,10 @@ fn picker_loop(
                     // Format: "  2026-09-10T14:30  title text"
                     let date = format_date(e.last_active_at);
                     let line = Line::from(vec![
-                        Span::styled(format!("  {}  ", date), Style::default().fg(Color::DarkGray)),
+                        Span::styled(
+                            format!("  {}  ", date),
+                            Style::default().fg(Color::DarkGray),
+                        ),
                         Span::raw(&e.title),
                     ]);
                     ListItem::new(line)
@@ -217,7 +223,11 @@ mod tests {
             "created_at": "2026-09-10T10:00:00Z",
             "last_active_at": "2026-09-10T14:30:00Z"
         });
-        std::fs::write(dir.join("session_meta.json"), serde_json::to_string_pretty(&meta).unwrap()).unwrap();
+        std::fs::write(
+            dir.join("session_meta.json"),
+            serde_json::to_string_pretty(&meta).unwrap(),
+        )
+        .unwrap();
         let msg = serde_json::json!({"User":{"content":first_msg,"images":[]}});
         std::fs::write(dir.join("messages.jsonl"), format!("{}\n", msg)).unwrap();
         dir
@@ -302,7 +312,11 @@ mod tests {
         assert!(format_date(now - Duration::from_secs(10800)).contains("小时前"));
         assert!(format_date(now - Duration::from_secs(10 * 86400)).contains("天前"));
         let formatted = format_date(now - Duration::from_secs(60 * 86400));
-        assert!(formatted.contains("-"), "expected absolute date for old timestamp, got: {}", formatted);
+        assert!(
+            formatted.contains("-"),
+            "expected absolute date for old timestamp, got: {}",
+            formatted
+        );
     }
 
     #[test]

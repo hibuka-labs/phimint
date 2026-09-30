@@ -1,31 +1,39 @@
 //! Tests for ratatui frame rendering.
 
 use super::*;
-use crate::ui::app::{AgentStatus, App, BackgroundTaskEntry, Phase, SubAgentState, SubAgentStatus, TuiEvent};
-use phi_kernel_tools::background_shell::BackgroundTaskStatus;
-use phi_tui::lines::{LineKind, OutputLine};
+use crate::ui::app::{
+    AgentStatus, App, BackgroundTaskEntry, Phase, SubAgentState, SubAgentStatus, TuiEvent,
+};
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use phi_agent::{RuntimeEvent, SessionId};
-use ratatui::backend::TestBackend;
+use phi_kernel_tools::background_shell::BackgroundTaskStatus;
+use phi_tui::lines::{LineKind, OutputLine};
 use ratatui::Terminal;
+use ratatui::backend::TestBackend;
 
 fn populated_app() -> App {
     let mut app = App::new();
     app.push_system("phimint — welcome");
     for i in 0..60 {
-        app.transcript.push(OutputLine { spans: None, original: None,
-                detail: None,
+        app.transcript.push(OutputLine {
+            spans: None,
+            original: None,
+            detail: None,
             text: format!("streamed line {i}"),
             kind: LineKind::Normal,
         });
     }
-    app.transcript.push(OutputLine { spans: None, original: None,
-                detail: None,
+    app.transcript.push(OutputLine {
+        spans: None,
+        original: None,
+        detail: None,
         text: "* [sub/1] read_file {\"path\":\"src/lib.rs\"}".into(),
         kind: LineKind::Tool,
     });
-    app.transcript.push(OutputLine { spans: None, original: None,
-                detail: None,
+    app.transcript.push(OutputLine {
+        spans: None,
+        original: None,
+        detail: None,
         text: "  ⛔ execute_command denied".into(),
         kind: LineKind::Error,
     });
@@ -59,8 +67,10 @@ fn draw_empty_and_scrolled_states() {
     // Scrolled up (not following bottom).
     let mut app = App::new();
     for i in 0..100 {
-        app.transcript.push(OutputLine { spans: None, original: None,
-                detail: None,
+        app.transcript.push(OutputLine {
+            spans: None,
+            original: None,
+            detail: None,
             text: format!("long line {i}"),
             kind: LineKind::Normal,
         });
@@ -121,8 +131,14 @@ fn snapshot_text_captures_layout_and_popup() {
 
     let text = snapshot_text(&mut app, 80, 24);
     assert!(text.contains("approval"), "popup title missing:\n{text}");
-    assert!(text.contains("do a thing"), "composer content missing:\n{text}");
-    assert!(text.contains('\n'), "snapshot should be multi-line:\n{text}");
+    assert!(
+        text.contains("do a thing"),
+        "composer content missing:\n{text}"
+    );
+    assert!(
+        text.contains('\n'),
+        "snapshot should be multi-line:\n{text}"
+    );
 }
 
 #[test]
@@ -178,7 +194,13 @@ fn approval_popup_without_source_renders_unchanged() {
 fn window_range_shifts_by_scroll_offset() {
     let mut app = App::new();
     for i in 0..100 {
-        app.transcript.push(OutputLine { spans: None, original: None, text: format!("line {i}"), kind: LineKind::Normal, detail: None });
+        app.transcript.push(OutputLine {
+            spans: None,
+            original: None,
+            text: format!("line {i}"),
+            kind: LineKind::Normal,
+            detail: None,
+        });
     }
     assert_eq!(app.viewport.window_range(100, 30), 70..100);
     app.viewport.follow_bottom = false;
@@ -214,30 +236,39 @@ fn buffer_to_text_skips_wide_char_continuation() {
         .unwrap();
     let text = buffer_to_text(terminal.backend().buffer());
     assert!(text.contains("你好"), "got: {text:?}");
-    assert!(!text.contains("你 好"), "wide chars should be adjacent, got: {text:?}");
+    assert!(
+        !text.contains("你 好"),
+        "wide chars should be adjacent, got: {text:?}"
+    );
 }
 
 #[test]
 fn snapshot_shows_sub_agent_strip() {
     let mut app = App::new();
-    app.sub_agents.insert("root/a".to_string(), SubAgentState {
-        name: "a".to_string(),
-        status: SubAgentStatus::Running,
-        files: Vec::new(),
-        started_at: std::time::Instant::now(),
-        completed_at: None,
-        last_tool_at: std::time::Instant::now(),
-        events: Vec::new(),
-    });
-    app.sub_agents.insert("root/b".to_string(), SubAgentState {
-        name: "b".to_string(),
-        status: SubAgentStatus::Done,
-        files: Vec::new(),
-        started_at: std::time::Instant::now(),
-        completed_at: Some(std::time::Instant::now()),
-        last_tool_at: std::time::Instant::now(),
-        events: Vec::new(),
-    });
+    app.sub_agents.insert(
+        "root/a".to_string(),
+        SubAgentState {
+            name: "a".to_string(),
+            status: SubAgentStatus::Running,
+            files: Vec::new(),
+            started_at: std::time::Instant::now(),
+            completed_at: None,
+            last_tool_at: std::time::Instant::now(),
+            events: Vec::new(),
+        },
+    );
+    app.sub_agents.insert(
+        "root/b".to_string(),
+        SubAgentState {
+            name: "b".to_string(),
+            status: SubAgentStatus::Done,
+            files: Vec::new(),
+            started_at: std::time::Instant::now(),
+            completed_at: Some(std::time::Instant::now()),
+            last_tool_at: std::time::Instant::now(),
+            events: Vec::new(),
+        },
+    );
     let text = snapshot_text(&mut app, 80, 24);
     assert!(text.contains("* a"), "running marker missing:\n{text}");
     assert!(text.contains("+ b"), "done marker missing:\n{text}");
@@ -257,29 +288,38 @@ fn task_panel_lists_only_sub_agents() {
     // counter. A running bg task next to a sub-agent must not add a row, a
     // count, or width to the panel; and a bg-only app must show no panel.
     let mut app = App::new();
-    app.sub_agents.insert("root/a".to_string(), SubAgentState {
-        name: "a".to_string(),
-        status: SubAgentStatus::Running,
-        files: Vec::new(),
-        started_at: std::time::Instant::now(),
-        completed_at: None,
-        last_tool_at: std::time::Instant::now(),
-        events: Vec::new(),
-    });
-    app.background_tasks.insert("bg_aaaa1111".to_string(), BackgroundTaskEntry {
-        id: "bg_aaaa1111".to_string(),
-        command: "cargo test".to_string(),
-        timeout_ms: 120_000,
-        status: BackgroundTaskStatus::Running,
-        started_at: std::time::Instant::now(),
-        finished_at: None,
-        reported: false,
-        output_tail: String::new(),
-        consumed: false,
-    });
+    app.sub_agents.insert(
+        "root/a".to_string(),
+        SubAgentState {
+            name: "a".to_string(),
+            status: SubAgentStatus::Running,
+            files: Vec::new(),
+            started_at: std::time::Instant::now(),
+            completed_at: None,
+            last_tool_at: std::time::Instant::now(),
+            events: Vec::new(),
+        },
+    );
+    app.background_tasks.insert(
+        "bg_aaaa1111".to_string(),
+        BackgroundTaskEntry {
+            id: "bg_aaaa1111".to_string(),
+            command: "cargo test".to_string(),
+            timeout_ms: 120_000,
+            status: BackgroundTaskStatus::Running,
+            started_at: std::time::Instant::now(),
+            finished_at: None,
+            reported: false,
+            output_tail: String::new(),
+            consumed: false,
+        },
+    );
     assert!(app.should_show_task_panel(), "sub-agent opens the panel");
     let text = snapshot_text(&mut app, 100, 40);
-    assert!(text.contains("Tasks (1)"), "panel counts sub-agents only:\n{text}");
+    assert!(
+        text.contains("Tasks (1)"),
+        "panel counts sub-agents only:\n{text}"
+    );
     assert!(
         !text.contains("bg_aaaa1111"),
         "bg task must not appear in the panel:\n{text}"
@@ -287,18 +327,24 @@ fn task_panel_lists_only_sub_agents() {
 
     // Bg-only: no panel at all (transcript + status bar carry the facts).
     let mut app = App::new();
-    app.background_tasks.insert("bg_aaaa1111".to_string(), BackgroundTaskEntry {
-        id: "bg_aaaa1111".to_string(),
-        command: "cargo test".to_string(),
-        timeout_ms: 120_000,
-        status: BackgroundTaskStatus::Running,
-        started_at: std::time::Instant::now(),
-        finished_at: None,
-        reported: false,
-        output_tail: String::new(),
-        consumed: false,
-    });
-    assert!(!app.should_show_task_panel(), "bg task alone must not open the panel");
+    app.background_tasks.insert(
+        "bg_aaaa1111".to_string(),
+        BackgroundTaskEntry {
+            id: "bg_aaaa1111".to_string(),
+            command: "cargo test".to_string(),
+            timeout_ms: 120_000,
+            status: BackgroundTaskStatus::Running,
+            started_at: std::time::Instant::now(),
+            finished_at: None,
+            reported: false,
+            output_tail: String::new(),
+            consumed: false,
+        },
+    );
+    assert!(
+        !app.should_show_task_panel(),
+        "bg task alone must not open the panel"
+    );
 }
 
 #[test]
@@ -307,8 +353,10 @@ fn draw_with_selection_and_context_menu_does_not_panic() {
     let mut terminal = Terminal::new(backend).unwrap();
     let mut app = App::new();
     for i in 0..20 {
-        app.transcript.push(OutputLine { spans: None, original: None,
-                detail: None,
+        app.transcript.push(OutputLine {
+            spans: None,
+            original: None,
+            detail: None,
             text: format!("line {i}"),
             kind: LineKind::Normal,
         });
@@ -325,10 +373,7 @@ fn draw_with_selection_and_context_menu_does_not_panic() {
 #[test]
 fn draw_and_snapshot_show_mention_popup() {
     let mut app = App::new();
-    let root = std::env::temp_dir().join(format!(
-        "phimint-render-mention-{}",
-        std::process::id()
-    ));
+    let root = std::env::temp_dir().join(format!("phimint-render-mention-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(root.join("main.rs"), "x").unwrap();
@@ -341,9 +386,15 @@ fn draw_and_snapshot_show_mention_popup() {
     // Offscreen draw must not panic, and the snapshot shows the popup.
     let text = snapshot_text(&mut app, 100, 40);
     // No framed box, no redundant `@prefix` header row (the composer shows it).
-    assert!(!text.contains("mention"), "popup title should be gone:\n{text}");
+    assert!(
+        !text.contains("mention"),
+        "popup title should be gone:\n{text}"
+    );
     // Rows are prefixed with the selection gutter; the synthetic row is selected.
-    assert!(text.contains("▸ » m"), "selected synthetic row missing:\n{text}");
+    assert!(
+        text.contains("▸ » m"),
+        "selected synthetic row missing:\n{text}"
+    );
     assert!(text.contains("📄 main.rs"), "file row missing:\n{text}");
     // The band keeps a bottom separator as the boundary against the transcript.
     assert!(text.contains('─'), "separator missing:\n{text}");
@@ -364,9 +415,15 @@ fn draw_and_snapshot_show_slash_popup() {
     app.handle_key(KeyCode::Char('r'), KeyModifiers::NONE);
 
     let text = snapshot_text(&mut app, 100, 40);
-    assert!(!text.contains("skills"), "popup title should be gone:\n{text}");
+    assert!(
+        !text.contains("skills"),
+        "popup title should be gone:\n{text}"
+    );
     // "review" matches the prefix and is the selected first row.
-    assert!(text.contains("▸ review"), "selected skill row missing:\n{text}");
+    assert!(
+        text.contains("▸ review"),
+        "selected skill row missing:\n{text}"
+    );
     assert!(text.contains("Pre-landing"), "description missing:\n{text}");
 }
 
@@ -417,7 +474,10 @@ fn snapshot_shows_diff_block() {
     }));
 
     let text = snapshot_text(&mut app, 100, 40);
-    assert!(text.contains("┌─ src/main.rs"), "diff header missing:\n{text}");
+    assert!(
+        text.contains("┌─ src/main.rs"),
+        "diff header missing:\n{text}"
+    );
     assert!(text.contains("@@"), "hunk header missing:\n{text}");
     assert!(text.contains("println"), "diff content missing:\n{text}");
     // Verify line numbers are present (hunk header has "1,3")
@@ -434,9 +494,9 @@ fn snapshot_shows_diff_block() {
 /// Box drawing (─│╭) and block elements (█) are deliberately NOT listed:
 /// CJK mono fonts keep those single-width (proven in the session above).
 const CJK_WIDTH_UNSAFE: &[char] = &[
-    '⏺', '⏸', '⏳', '✓', '✔', '✗', '✘', '●', '○', '→', '←', '⇒', '⇐',
-    '⟳', '⚠', '❯', '×', '÷', '±', '≤', '≥', '≠', '≈', '≡', '…', '·',
-    '—', '–', '•', '√', '§', '∑', '∏', '∫', '∂', '∇', '∞', '①', '▸',
+    '⏺', '⏸', '⏳', '✓', '✔', '✗', '✘', '●', '○', '→', '←', '⇒', '⇐', '⟳', '⚠', '❯', '×', '÷', '±',
+    '≤', '≥', '≠', '≈', '≡', '…', '·', '—', '–', '•', '√', '§', '∑', '∏', '∫', '∂', '∇', '∞', '①',
+    '▸',
 ];
 
 #[test]
@@ -463,20 +523,33 @@ fn rendered_chrome_stays_cjk_width_safe() {
     // Every status variant's chrome.
     let mut status_texts = Vec::new();
     status_texts.push(app.status_line());
-    app.status = AgentStatus::Running { phase: Phase::Thinking };
+    app.status = AgentStatus::Running {
+        phase: Phase::Thinking,
+    };
     status_texts.push(app.status_line());
-    app.status = AgentStatus::Running { phase: Phase::Streaming };
+    app.status = AgentStatus::Running {
+        phase: Phase::Streaming,
+    };
     status_texts.push(app.status_line());
-    app.status = AgentStatus::Running { phase: Phase::ToolCall { tool: "edit_file".into() } };
+    app.status = AgentStatus::Running {
+        phase: Phase::ToolCall {
+            tool: "edit_file".into(),
+        },
+    };
     status_texts.push(app.status_line());
-    app.status = AgentStatus::Running { phase: Phase::AwaitingApproval };
+    app.status = AgentStatus::Running {
+        phase: Phase::AwaitingApproval,
+    };
     status_texts.push(app.status_line());
     app.status = AgentStatus::Idle;
     status_texts.push(app.status_line());
 
     let text = snapshot_text(&mut app, 100, 30);
     let all = text + &status_texts.join("\n");
-    let offenders: Vec<char> = all.chars().filter(|c| CJK_WIDTH_UNSAFE.contains(c)).collect();
+    let offenders: Vec<char> = all
+        .chars()
+        .filter(|c| CJK_WIDTH_UNSAFE.contains(c))
+        .collect();
     assert!(
         offenders.is_empty(),
         "CJK-double-width glyphs in rendered chrome: {offenders:?}\n{all}"
@@ -498,12 +571,13 @@ fn chrome_sources_stay_cjk_width_safe() {
     ];
     for file in FILES {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(file);
-        let source = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("read {file}: {e}"));
+        let source = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {file}: {e}"));
         for (i, line) in source.lines().enumerate() {
             let code = line.split_once("//").map_or(line, |(code, _)| code);
-            let offenders: Vec<char> =
-                code.chars().filter(|c| CJK_WIDTH_UNSAFE.contains(c)).collect();
+            let offenders: Vec<char> = code
+                .chars()
+                .filter(|c| CJK_WIDTH_UNSAFE.contains(c))
+                .collect();
             assert!(
                 offenders.is_empty(),
                 "{file}:{} renders CJK-double-width glyphs {offenders:?}: {line}",
@@ -605,11 +679,20 @@ fn committed_thought_folds_and_expands() {
         text.contains("> thinking - 5 行 - ~16 tok"),
         "summary missing:\n{text}"
     );
-    assert!(!text.contains("line three"), "raw leaked while folded:\n{text}");
+    assert!(
+        !text.contains("line three"),
+        "raw leaked while folded:\n{text}"
+    );
     app.show_thoughts = true;
     let text = snapshot_text(&mut app, 80, 24);
-    assert!(text.contains("line three"), "expanded text missing:\n{text}");
-    assert!(!text.contains("> thinking"), "summary gone when expanded:\n{text}");
+    assert!(
+        text.contains("line three"),
+        "expanded text missing:\n{text}"
+    );
+    assert!(
+        !text.contains("> thinking"),
+        "summary gone when expanded:\n{text}"
+    );
 }
 
 #[test]
@@ -689,13 +772,22 @@ fn thinking_panel_hidden_when_output_pane_too_short() {
     // 80x12: output pane = 12 - composer(3) - status(1) = 8 rows — the box
     // alone would fill it; the fit guard hides the panel so history survives.
     let text = shot(80, 12);
-    assert!(!text.contains("thinking -"), "panel must hide, not occlude:\n{text}");
+    assert!(
+        !text.contains("thinking -"),
+        "panel must hide, not occlude:\n{text}"
+    );
     // 80x14: output pane = 10 = box(8) + history(2) — exact boundary shows.
     let text = shot(80, 14);
-    assert!(text.contains("thinking -"), "boundary (8+2) must show:\n{text}");
+    assert!(
+        text.contains("thinking -"),
+        "boundary (8+2) must show:\n{text}"
+    );
     // 80x20: output pane = 16 ≥ box(8) + history(2) — panel shows.
     let text = shot(80, 20);
-    assert!(text.contains("thinking -"), "panel should fit with history rows:\n{text}");
+    assert!(
+        text.contains("thinking -"),
+        "panel should fit with history rows:\n{text}"
+    );
 }
 
 #[test]
@@ -753,7 +845,10 @@ fn history_position_holds_when_thought_opens() {
     }
     let before = snapshot_text(&mut app, 80, 24);
     let head = before.lines().next().unwrap_or_default().to_string();
-    assert!(!head.is_empty(), "scrolled history should show content:\n{before}");
+    assert!(
+        !head.is_empty(),
+        "scrolled history should show content:\n{before}"
+    );
     app.handle_event(TuiEvent::Runtime(RuntimeEvent::ThoughtDelta {
         session_id: SessionId::new(1),
         text: "analyze ".repeat(120),
@@ -790,12 +885,18 @@ fn expanded_thought_rewraps_at_current_width() {
     });
     app.show_thoughts = true;
     let text = snapshot_text(&mut app, 80, 24);
-    assert!(text.contains(&"x".repeat(80)), "long line must hard-wrap:\n{text}");
+    assert!(
+        text.contains(&"x".repeat(80)),
+        "long line must hard-wrap:\n{text}"
+    );
     assert!(
         !text.contains(&"x".repeat(200)),
         "un-wrapped 200-char run must not survive:\n{text}"
     );
-    assert!(text.contains("line three"), "content after the long line:\n{text}");
+    assert!(
+        text.contains("line three"),
+        "content after the long line:\n{text}"
+    );
 }
 
 #[test]
@@ -805,7 +906,10 @@ fn history_head_survives_fold_reflow_above_viewport() {
     // CONTENT — holding the raw head index would silently swap in content
     // from above (the tail-only anchoring gap).
     let mut app = App::new();
-    let raw = (0..8).map(|i| format!("thought line {i}")).collect::<Vec<_>>().join("\n");
+    let raw = (0..8)
+        .map(|i| format!("thought line {i}"))
+        .collect::<Vec<_>>()
+        .join("\n");
     app.transcript.push(OutputLine {
         spans: None,
         // Production folded shape (see committed_thought_folds_and_expands).
@@ -835,7 +939,10 @@ fn history_head_survives_fold_reflow_above_viewport() {
         head.contains("filler row"),
         "head must sit below the folded thought:\n{before}"
     );
-    assert!(!before.contains("thought line 7"), "raw hidden while folded");
+    assert!(
+        !before.contains("thought line 7"),
+        "raw hidden while folded"
+    );
 
     app.handle_key(KeyCode::Char('o'), KeyModifiers::CONTROL); // +7 rows above head
 
@@ -905,7 +1012,10 @@ fn one_row_scroll_up_off_bottom_stays_inside_expanded_thought() {
         .strip_prefix("thought line ")
         .and_then(|s| s.parse().ok())
         .unwrap_or_else(|| panic!("bottom head must sit mid-thought:\n{bottom}"));
-    assert!(n >= 1, "bottom head must leave room for one row up:\n{bottom}");
+    assert!(
+        n >= 1,
+        "bottom head must leave room for one row up:\n{bottom}"
+    );
     assert!(
         bottom.contains("filler row 5"),
         "bottom must show the flow tail:\n{bottom}"
@@ -957,10 +1067,16 @@ fn loose_mode_streams_thought_inline_without_box() {
     }));
     app.handle_key(KeyCode::Char('o'), KeyModifiers::CONTROL); // loose
     let text = snapshot_text(&mut app, 80, 24);
-    assert!(text.contains("analyze"), "thought streams into the flow:\n{text}");
+    assert!(
+        text.contains("analyze"),
+        "thought streams into the flow:\n{text}"
+    );
     // Panel absence is anchored on its title row (`thinking -`): the composer
     // is a rounded box too, so the bare `╭` glyph proves nothing here.
-    assert!(!text.contains("thinking -"), "no panel box/title in loose mode:\n{text}");
+    assert!(
+        !text.contains("thinking -"),
+        "no panel box/title in loose mode:\n{text}"
+    );
 }
 
 #[test]
@@ -989,7 +1105,10 @@ fn loose_mode_child_thought_carries_agent_prefix() {
     app.task_panel.focus = FocusTarget::TaskList(0);
     app.handle_key(KeyCode::Char('o'), KeyModifiers::CONTROL); // loose
     let text = snapshot_text(&mut app, 80, 24);
-    assert!(text.contains("[root/searcher]"), "author on the first row:\n{text}");
+    assert!(
+        text.contains("[root/searcher]"),
+        "author on the first row:\n{text}"
+    );
     assert!(text.contains("search"), "thought body streams:\n{text}");
 }
 
@@ -1070,7 +1189,11 @@ fn mention_lines_mark_kinds_and_elide_long_names() {
     let root = std::env::temp_dir().join(format!("phimint-mention-lines-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(root.join("deep/nested/dir")).unwrap();
-    std::fs::write(root.join("deep/nested/dir/a_very_long_test_file_name.rs"), "x").unwrap();
+    std::fs::write(
+        root.join("deep/nested/dir/a_very_long_test_file_name.rs"),
+        "x",
+    )
+    .unwrap();
     app.set_workspace_root(root);
 
     app.handle_key(KeyCode::Char('@'), KeyModifiers::NONE);
@@ -1080,9 +1203,8 @@ fn mention_lines_mark_kinds_and_elide_long_names() {
 
     let m = app.mention().expect("picker open");
     let rows = mention_lines(m, 30);
-    let row_text = |i: usize| -> String {
-        rows[i].spans.iter().map(|s| s.content.as_ref()).collect()
-    };
+    let row_text =
+        |i: usize| -> String { rows[i].spans.iter().map(|s| s.content.as_ref()).collect() };
 
     // Row 0 is the synthetic "use what I typed" row: the typed prefix itself
     // (21 columns) still fits the 26-column budget, so it is left whole.
@@ -1190,7 +1312,11 @@ fn slash_lines_keeps_the_selected_row_two_tone() {
         "selected description must not match the highlight background"
     );
     // Unselected row keeps the plain dim description.
-    assert_eq!(fg(1, 2), Some(Color::DarkGray), "unselected description drifted");
+    assert_eq!(
+        fg(1, 2),
+        Some(Color::DarkGray),
+        "unselected description drifted"
+    );
     assert_eq!(fg(1, 0), Some(Color::White), "unselected name drifted");
 }
 
@@ -1226,12 +1352,14 @@ fn empty_slash_shows_an_unselected_placeholder() {
     for c in "zzz".chars() {
         app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
     }
-    assert!(app.slash().is_some(), "picker must stay open on a dead prefix");
+    assert!(
+        app.slash().is_some(),
+        "picker must stay open on a dead prefix"
+    );
 
     let rows = snapshot_cells(&mut app, 100, 40);
-    let text_of = |r: &[(String, Color, Color)]| -> String {
-        r.iter().map(|(s, _, _)| s.as_str()).collect()
-    };
+    let text_of =
+        |r: &[(String, Color, Color)]| -> String { r.iter().map(|(s, _, _)| s.as_str()).collect() };
     let idx = rows
         .iter()
         .position(|r| text_of(r).contains("no matching skills"))
@@ -1269,13 +1397,20 @@ fn framed_style_draws_a_bordered_band() {
     app.handle_key(KeyCode::Char('m'), KeyModifiers::NONE);
 
     let text = snapshot_text(&mut app, 100, 40);
-    assert!(text.contains('╭') && text.contains('╰'), "border missing:\n{text}");
+    assert!(
+        text.contains('╭') && text.contains('╰'),
+        "border missing:\n{text}"
+    );
     assert!(text.contains("📄 main.rs"), "file row missing:\n{text}");
     // `WidthSpec::Fixed(30)` must actually narrow the band: the top border row
     // is 30 columns (old popup width 64 — this is the assertion that fails
     // before the migration, so the test really pins the injection path).
     let border = text.lines().find(|l| l.contains('╭')).expect("border row");
-    assert_eq!(unicode_width::UnicodeWidthStr::width(border.trim_end()), 30, "band width not applied:\n{text}");
+    assert_eq!(
+        unicode_width::UnicodeWidthStr::width(border.trim_end()),
+        30,
+        "band width not applied:\n{text}"
+    );
 }
 
 #[test]
@@ -1306,7 +1441,10 @@ fn framed_band_elides_rows_to_the_content_width() {
         inner.ends_with(".rs"),
         "filename tail clipped instead of elided: {inner:?}\n{text}"
     );
-    assert!(inner.contains("..."), "expected an elision: {inner:?}\n{text}");
+    assert!(
+        inner.contains("..."),
+        "expected an elision: {inner:?}\n{text}"
+    );
     assert!(
         unicode_width::UnicodeWidthStr::width(inner) <= 28,
         "row wider than the 28-col content area: {inner:?}\n{text}"

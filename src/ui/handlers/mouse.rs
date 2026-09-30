@@ -69,12 +69,21 @@ impl App {
         // fall back to direct output indices (for tests or before first render).
         if self.visual_map.is_empty() {
             // Fallback: no markdown expansion, output lines map 1:1 to visual lines.
-            let tail = self.streaming_tail_lines().map(|(l, _)| l.len()).unwrap_or(0);
+            let tail = self
+                .streaming_tail_lines()
+                .map(|(l, _)| l.len())
+                .unwrap_or(0);
             let window = self.viewport.window_range(committed + tail, ah as usize);
             let idx = window.start + row;
             tracing::debug!(
-                x, y, row, committed, tail,
-                window_start = window.start, window_end = window.end, idx,
+                x,
+                y,
+                row,
+                committed,
+                tail,
+                window_start = window.start,
+                window_end = window.end,
+                idx,
                 "line_index_at (fallback, no mapping)"
             );
             if idx < window.end && idx < committed {
@@ -88,9 +97,15 @@ impl App {
         let visual_idx = window.start + row;
         let out_idx = self.visual_map.output_at(visual_idx);
         tracing::debug!(
-            x, y, row, total, committed,
-            window_start = window.start, window_end = window.end,
-            visual_idx, out_idx,
+            x,
+            y,
+            row,
+            total,
+            committed,
+            window_start = window.start,
+            window_end = window.end,
+            visual_idx,
+            out_idx,
             mapping_len = self.visual_map.len(),
             "line_index_at"
         );
@@ -117,7 +132,12 @@ impl App {
     /// Uses the visual map's row texts so the copy matches exactly what the
     /// user selected visually, not the full raw `output` block.
     pub fn selection_text(&self) -> String {
-        let fallback: Vec<&str> = self.transcript.output.iter().map(|l| l.text.as_str()).collect();
+        let fallback: Vec<&str> = self
+            .transcript
+            .output
+            .iter()
+            .map(|l| l.text.as_str())
+            .collect();
         self.selection_state
             .text(&fallback, self.visual_map.texts())
     }

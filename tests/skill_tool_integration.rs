@@ -11,11 +11,11 @@
 
 use std::sync::{Arc, Mutex};
 
-use phi_agent::llm_trait::{
-    Capabilities, ChatMessage, ChatRequest, ChatResponse, ChatStream, FinishReason,
-    LlmError, LlmProvider, ProviderInfo, StreamChunk, UsageInfo,
-};
 use phi_agent::Content;
+use phi_agent::llm_trait::{
+    Capabilities, ChatMessage, ChatRequest, ChatResponse, ChatStream, FinishReason, LlmError,
+    LlmProvider, ProviderInfo, StreamChunk, UsageInfo,
+};
 
 /// A mock LLM that plays back a scripted sequence of turns.
 ///
@@ -54,7 +54,9 @@ impl LlmProvider for ScriptedProvider {
             .into_iter()
             .map(Ok)
             .collect();
-        Ok(ChatStream::new(Box::pin(futures_util::stream::iter(chunks))))
+        Ok(ChatStream::new(Box::pin(futures_util::stream::iter(
+            chunks,
+        ))))
     }
 
     async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, LlmError> {
@@ -71,11 +73,19 @@ impl LlmProvider for ScriptedProvider {
     }
 
     fn capabilities(&self) -> Capabilities {
-        Capabilities { supports_streaming: true, supports_tools: true, ..Default::default() }
+        Capabilities {
+            supports_streaming: true,
+            supports_tools: true,
+            ..Default::default()
+        }
     }
 
     fn info(&self) -> ProviderInfo {
-        ProviderInfo { name: "mock".to_string(), model: "mock-model".to_string(), version: None }
+        ProviderInfo {
+            name: "mock".to_string(),
+            model: "mock-model".to_string(),
+            version: None,
+        }
     }
 }
 
@@ -86,7 +96,12 @@ impl LlmProvider for ScriptedProvider {
 async fn build_with_skills(
     script: Vec<Vec<StreamChunk>>,
     skills: &[(&str, &str, bool)],
-) -> (Arc<ScriptedProvider>, phi_agent::PhiAgent, phi_agent::SessionId, tempfile::TempDir) {
+) -> (
+    Arc<ScriptedProvider>,
+    phi_agent::PhiAgent,
+    phi_agent::SessionId,
+    tempfile::TempDir,
+) {
     let tmp = tempfile::tempdir().unwrap();
     for (name, body, invocable) in skills {
         let dir = tmp.path().join("skills").join(name);
@@ -150,24 +165,32 @@ async fn model_calls_skill_tool_and_receives_body() {
                         }]
                     }
                 })),
-                StreamChunk::Stop { finish_reason: Some("tool_calls".to_string()) },
+                StreamChunk::Stop {
+                    finish_reason: Some("tool_calls".to_string()),
+                },
             ],
             vec![
                 StreamChunk::Text("I've loaded the code-review skill.".to_string()),
-                StreamChunk::Stop { finish_reason: Some("stop".to_string()) },
+                StreamChunk::Stop {
+                    finish_reason: Some("stop".to_string()),
+                },
             ],
         ],
         &[("code-review", "Review this PR thoroughly.", true)],
     )
     .await;
 
-    let result = agent.run_turn(session, "review this PR", |_ev| Ok(())).await;
+    let result = agent
+        .run_turn(session, "review this PR", |_ev| Ok(()))
+        .await;
     assert!(result.is_ok(), "run_turn must succeed: {:?}", result.err());
 
     // The system prompt must contain the catalog.
     let prompts = provider.system_prompts.lock().unwrap().clone();
     assert!(
-        prompts.iter().any(|p| p.contains("## Skills") && p.contains("- code-review:")),
+        prompts
+            .iter()
+            .any(|p| p.contains("## Skills") && p.contains("- code-review:")),
         "system prompt must contain the skills catalog"
     );
 }
@@ -189,11 +212,15 @@ async fn non_user_invocable_skill_loadable_by_tool() {
                         }]
                     }
                 })),
-                StreamChunk::Stop { finish_reason: Some("tool_calls".to_string()) },
+                StreamChunk::Stop {
+                    finish_reason: Some("tool_calls".to_string()),
+                },
             ],
             vec![
                 StreamChunk::Text("Loaded internal skill.".to_string()),
-                StreamChunk::Stop { finish_reason: Some("stop".to_string()) },
+                StreamChunk::Stop {
+                    finish_reason: Some("stop".to_string()),
+                },
             ],
         ],
         &[("internal", "internal instructions", false)],

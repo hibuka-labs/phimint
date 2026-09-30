@@ -9,14 +9,14 @@
 //! - Run lifecycle (RunFinished, RunCancelled)
 //! - User events (Progress, Notice)
 
-use phi_agent::{NoticeKind, PlanStepStatus, UserEvent};
 use phi_agent::RuntimeEvent;
+use phi_agent::{NoticeKind, PlanStepStatus, UserEvent};
 use std::time::Instant;
 
 use crate::banner::BannerStyle;
-use crate::ui::app::{App, AgentStatus, Phase, SubAgentStatus, ToolEvent};
-use phi_tui::lines::{DiffHunk, LineKind, OutputLine, LineDetail};
+use crate::ui::app::{AgentStatus, App, Phase, SubAgentStatus, ToolEvent};
 use phi_tui::diff::{diff_to_hunks, diff_to_hunks_indexed};
+use phi_tui::lines::{DiffHunk, LineDetail, LineKind, OutputLine};
 use phi_tui::wrap::{one_line, wrap};
 
 /// Render a notice line for the TUI.
@@ -65,7 +65,10 @@ fn build_tool_detail(tool_name: &str, args_json: &str) -> Option<LineDetail> {
             if all_hunks.is_empty() {
                 return None;
             }
-            Some(LineDetail::Diff { path, hunks: all_hunks })
+            Some(LineDetail::Diff {
+                path,
+                hunks: all_hunks,
+            })
         }
         "write_file" => {
             let content = match args.get("content").and_then(|v| v.as_str()) {
@@ -101,7 +104,9 @@ fn spawn_invocation_text(args_json: &str, max_cols: usize, prefix: &str) -> Opti
         .unwrap_or("")
         .trim();
     let budget = max_cols
-        .saturating_sub(2 + prefix.chars().count() + "spawn_agent ".len() + name.chars().count() + 3)
+        .saturating_sub(
+            2 + prefix.chars().count() + "spawn_agent ".len() + name.chars().count() + 3,
+        )
         .max(16);
     let head = one_line(head, budget);
     Some(if head.is_empty() {
@@ -278,8 +283,10 @@ impl App {
                             format!("* {prefix}{tool_name} {args}")
                         }
                     };
-                    let line = OutputLine { spans: None, original: None,
-                detail,
+                    let line = OutputLine {
+                        spans: None,
+                        original: None,
+                        detail,
                         text,
                         kind: LineKind::Tool,
                     };
@@ -313,7 +320,8 @@ impl App {
                 if let Some(id) = agent_id.as_deref() {
                     if let Some(state) = self.sub_agents.get_mut(id) {
                         // Find the last unfinished event and mark it as finished
-                        if let Some(event) = state.events.iter_mut().rev().find(|e| !e.is_finished) {
+                        if let Some(event) = state.events.iter_mut().rev().find(|e| !e.is_finished)
+                        {
                             event.summary = summary.clone();
                             event.is_finished = true;
                         }
@@ -336,7 +344,13 @@ impl App {
                         };
                         (text, LineKind::ToolResult)
                     };
-                    let line = OutputLine { spans: None, original: None, detail: None, text, kind };
+                    let line = OutputLine {
+                        spans: None,
+                        original: None,
+                        detail: None,
+                        text,
+                        kind,
+                    };
                     // Route to the correct transcript
                     if let Some(id) = agent_id.as_deref() {
                         if !id.is_empty() {
@@ -366,15 +380,38 @@ impl App {
                                         if base > 0 {
                                             let off = base - 1; // convert 1-based to offset
                                             for dl in &mut hunk.lines {
-                                                if let Some(ref mut n) = dl.old_line { *n += off; }
-                                                if let Some(ref mut n) = dl.new_line { *n += off; }
+                                                if let Some(ref mut n) = dl.old_line {
+                                                    *n += off;
+                                                }
+                                                if let Some(ref mut n) = dl.new_line {
+                                                    *n += off;
+                                                }
                                             }
                                             // Rebuild header with real line numbers
-                                            let old_start = hunk.lines.iter().find_map(|l| l.old_line).unwrap_or(1);
-                                            let new_start = hunk.lines.iter().find_map(|l| l.new_line).unwrap_or(1);
-                                            let old_count = hunk.lines.iter().filter(|l| l.old_line.is_some()).count();
-                                            let new_count = hunk.lines.iter().filter(|l| l.new_line.is_some()).count();
-                                            hunk.header = format!("@@ -{},{} +{},{} @@", old_start, old_count, new_start, new_count);
+                                            let old_start = hunk
+                                                .lines
+                                                .iter()
+                                                .find_map(|l| l.old_line)
+                                                .unwrap_or(1);
+                                            let new_start = hunk
+                                                .lines
+                                                .iter()
+                                                .find_map(|l| l.new_line)
+                                                .unwrap_or(1);
+                                            let old_count = hunk
+                                                .lines
+                                                .iter()
+                                                .filter(|l| l.old_line.is_some())
+                                                .count();
+                                            let new_count = hunk
+                                                .lines
+                                                .iter()
+                                                .filter(|l| l.new_line.is_some())
+                                                .count();
+                                            hunk.header = format!(
+                                                "@@ -{},{} +{},{} @@",
+                                                old_start, old_count, new_start, new_count
+                                            );
                                         }
                                     }
                                 }
@@ -399,13 +436,22 @@ impl App {
                 // tool (fits one line); objective/explanation wrap with a hanging
                 // indent.
                 let mut block: Vec<OutputLine<BannerStyle>> = Vec::new();
-                for (i, line) in wrap(&objective, self.transcript.wrap_width()).into_iter().enumerate() {
+                for (i, line) in wrap(&objective, self.transcript.wrap_width())
+                    .into_iter()
+                    .enumerate()
+                {
                     let text = if i == 0 {
                         format!("📋 {line}")
                     } else {
                         format!("   {line}")
                     };
-                    block.push(OutputLine { spans: None, original: None, detail: None, text, kind: LineKind::Plan });
+                    block.push(OutputLine {
+                        spans: None,
+                        original: None,
+                        detail: None,
+                        text,
+                        kind: LineKind::Plan,
+                    });
                 }
                 for item in &plan {
                     let marker = match item.status {
@@ -413,8 +459,10 @@ impl App {
                         PlanStepStatus::InProgress => "🔄",
                         PlanStepStatus::Pending => "-",
                     };
-                    block.push(OutputLine { spans: None, original: None,
-                detail: None,
+                    block.push(OutputLine {
+                        spans: None,
+                        original: None,
+                        detail: None,
                         text: format!("   {marker} {}", item.step),
                         kind: LineKind::Plan,
                     });
@@ -422,13 +470,22 @@ impl App {
                 if let Some(exp) = &explanation {
                     let exp = exp.trim();
                     if !exp.is_empty() {
-                        for (i, line) in wrap(exp, self.transcript.wrap_width()).into_iter().enumerate() {
+                        for (i, line) in wrap(exp, self.transcript.wrap_width())
+                            .into_iter()
+                            .enumerate()
+                        {
                             let text = if i == 0 {
                                 format!("   ↳ {line}")
                             } else {
                                 format!("     {line}")
                             };
-                            block.push(OutputLine { spans: None, original: None, detail: None, text, kind: LineKind::Plan });
+                            block.push(OutputLine {
+                                spans: None,
+                                original: None,
+                                detail: None,
+                                text,
+                                kind: LineKind::Plan,
+                            });
                         }
                     }
                 }
@@ -441,13 +498,17 @@ impl App {
                 // Log line for history; the interactive popup (5b) is driven by
                 // the approval queue, which the QueuedApprovalHandler feeds.
                 self.flush_pending();
-                self.transcript.push(OutputLine { spans: None, original: None,
-                detail: None,
+                self.transcript.push(OutputLine {
+                    spans: None,
+                    original: None,
+                    detail: None,
                     text: format!("!! approval: {}", request.title),
                     kind: LineKind::Approval,
                 });
-                self.transcript.push(OutputLine { spans: None, original: None,
-                detail: None,
+                self.transcript.push(OutputLine {
+                    spans: None,
+                    original: None,
+                    detail: None,
                     text: format!("     {}", request.message),
                     kind: LineKind::Approval,
                 });
@@ -476,8 +537,10 @@ impl App {
                         self.sub_agent_transcripts
                             .entry(p.to_string())
                             .or_default()
-                            .push(OutputLine { spans: None, original: None,
-                detail: None,
+                            .push(OutputLine {
+                                spans: None,
+                                original: None,
+                                detail: None,
                                 text: format!("+ [{p}] done"),
                                 kind: LineKind::Done,
                             });
@@ -520,15 +583,19 @@ impl App {
                         self.sub_agent_transcripts
                             .entry(p.to_string())
                             .or_default()
-                            .push(OutputLine { spans: None, original: None,
-                detail: None,
+                            .push(OutputLine {
+                                spans: None,
+                                original: None,
+                                detail: None,
                                 text: format!("+ [{p}] done"),
                                 kind: LineKind::Done,
                             });
                     }
                     _ => {
-                        self.transcript.push(OutputLine { spans: None, original: None,
-                detail: None,
+                        self.transcript.push(OutputLine {
+                            spans: None,
+                            original: None,
+                            detail: None,
                             text: "⏹ cancelled".to_string(),
                             kind: LineKind::Cancelled,
                         });

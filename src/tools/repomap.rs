@@ -144,10 +144,7 @@ mod tests {
         let dir = workspace();
         let tool = RepoMapTool::new(dir.path().to_path_buf());
 
-        let out = tool
-            .call(&json!({"path": "src"}), &ctx())
-            .await
-            .unwrap();
+        let out = tool.call(&json!({"path": "src"}), &ctx()).await.unwrap();
         assert!(text(&out).contains("lib.rs"), "{}", text(&out));
         assert!(text(&out).contains("Widget"), "{}", text(&out));
     }

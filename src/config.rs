@@ -72,15 +72,30 @@ impl TierConfig {
     }
 
     /// Resolve to (model, base_url, api_key, protocol) using defaults.
-    pub fn resolve(&self, default_url: &str, default_key: &str, default_protocol: &str) -> (String, String, String, String) {
+    pub fn resolve(
+        &self,
+        default_url: &str,
+        default_key: &str,
+        default_protocol: &str,
+    ) -> (String, String, String, String) {
         match self {
-            TierConfig::Simple(model) => {
-                (model.clone(), default_url.to_string(), default_key.to_string(), default_protocol.to_string())
-            }
-            TierConfig::Full { model, base_url, api_key, protocol } => {
+            TierConfig::Simple(model) => (
+                model.clone(),
+                default_url.to_string(),
+                default_key.to_string(),
+                default_protocol.to_string(),
+            ),
+            TierConfig::Full {
+                model,
+                base_url,
+                api_key,
+                protocol,
+            } => {
                 let url = base_url.clone().unwrap_or_else(|| default_url.to_string());
                 let key = api_key.clone().unwrap_or_else(|| default_key.to_string());
-                let proto = protocol.clone().unwrap_or_else(|| default_protocol.to_string());
+                let proto = protocol
+                    .clone()
+                    .unwrap_or_else(|| default_protocol.to_string());
                 (model.clone(), url, key, proto)
             }
         }
@@ -283,7 +298,8 @@ impl ModelConfig {
         }
 
         // Check default locations
-        let home = dirs::home_dir().ok_or_else(|| ConfigError::IoError("Home directory not found".to_string()))?;
+        let home = dirs::home_dir()
+            .ok_or_else(|| ConfigError::IoError("Home directory not found".to_string()))?;
 
         let paths = vec![
             home.join(".phimint").join("config.json"),
@@ -331,13 +347,17 @@ impl ModelConfig {
     pub fn validate(&self) -> Result<(), ConfigError> {
         // Validate main tier has a model
         if self.main.model().is_empty() {
-            return Err(ConfigError::ValidationError("main tier model cannot be empty".to_string()));
+            return Err(ConfigError::ValidationError(
+                "main tier model cannot be empty".to_string(),
+            ));
         }
 
         // Validate base_url is set (either at top level or in main tier)
         let (_, url, _, _) = self.tier_config("main").unwrap();
         if url.is_empty() {
-            return Err(ConfigError::ValidationError("base_url must be set at top level or in main tier".to_string()));
+            return Err(ConfigError::ValidationError(
+                "base_url must be set at top level or in main tier".to_string(),
+            ));
         }
 
         Ok(())
@@ -380,7 +400,8 @@ mod tests {
     fn tier_config_simple() {
         let config = TierConfig::Simple("gpt-4".to_string());
         assert_eq!(config.model(), "gpt-4");
-        let (model, url, key, proto) = config.resolve("https://api.openai.com/v1", "sk-xxx", "openai");
+        let (model, url, key, proto) =
+            config.resolve("https://api.openai.com/v1", "sk-xxx", "openai");
         assert_eq!(model, "gpt-4");
         assert_eq!(url, "https://api.openai.com/v1");
         assert_eq!(key, "sk-xxx");
@@ -396,7 +417,8 @@ mod tests {
             protocol: Some("openai".to_string()),
         };
         assert_eq!(config.model(), "deepseek-chat");
-        let (model, url, key, proto) = config.resolve("https://api.openai.com/v1", "sk-xxx", "openai");
+        let (model, url, key, proto) =
+            config.resolve("https://api.openai.com/v1", "sk-xxx", "openai");
         assert_eq!(model, "deepseek-chat");
         assert_eq!(url, "https://api.deepseek.com/v1");
         assert_eq!(key, "sk-deepseek");
@@ -411,7 +433,8 @@ mod tests {
             api_key: None,
             protocol: None,
         };
-        let (model, url, key, proto) = config.resolve("https://api.openai.com/v1", "sk-xxx", "openai");
+        let (model, url, key, proto) =
+            config.resolve("https://api.openai.com/v1", "sk-xxx", "openai");
         assert_eq!(model, "gpt-4");
         assert_eq!(url, "https://api.openai.com/v1");
         assert_eq!(key, "sk-xxx");
@@ -530,14 +553,16 @@ mod tests {
     #[test]
     fn ui_popup_parses_fill_and_fixed_width() {
         let fill: ModelConfig =
-            json5::from_str(r#"{"main":"gpt-4","ui":{"popup":{"width":"fill","height":5}}}"#).unwrap();
+            json5::from_str(r#"{"main":"gpt-4","ui":{"popup":{"width":"fill","height":5}}}"#)
+                .unwrap();
         let style = fill.ui.popup.to_style().unwrap();
         assert_eq!(style.width, phi_tui::popup_list::WidthSpec::Fill);
         assert_eq!(style.height, 5);
 
-        let fixed: ModelConfig =
-            json5::from_str(r#"{"main":"gpt-4","ui":{"popup":{"width":64,"frame":true,"separator":false}}}"#)
-                .unwrap();
+        let fixed: ModelConfig = json5::from_str(
+            r#"{"main":"gpt-4","ui":{"popup":{"width":64,"frame":true,"separator":false}}}"#,
+        )
+        .unwrap();
         let style = fixed.ui.popup.to_style().unwrap();
         assert_eq!(style.width, phi_tui::popup_list::WidthSpec::Fixed(64));
         assert!(style.frame);
@@ -554,10 +579,12 @@ mod tests {
     #[test]
     fn ui_popup_rejects_zero_height() {
         let cfg: ModelConfig =
-            json5::from_str(r#"{"main":"gpt-4","ui":{"popup":{"width":"fill","height":0}}}"#).unwrap();
+            json5::from_str(r#"{"main":"gpt-4","ui":{"popup":{"width":"fill","height":0}}}"#)
+                .unwrap();
         let err = cfg.ui.popup.to_style().unwrap_err();
         assert!(
-            err.to_string().contains("ui.popup.height must be at least 1"),
+            err.to_string()
+                .contains("ui.popup.height must be at least 1"),
             "unhelpful error: {err}"
         );
     }

@@ -44,12 +44,12 @@ fn is_code_edit(args: &str) -> bool {
 
 /// Gate configuration.
 pub struct VerifyEnforcementConfig {
-        /// How many consecutive nudges before giving up and failing the turn.
+    /// How many consecutive nudges before giving up and failing the turn.
     pub max_nudges: usize,
-        /// Reminder injected as a User message, forcing verify first.
+    /// Reminder injected as a User message, forcing verify first.
     pub nudge_message: String,
-        /// Whether writes can happen this turn. In `deny` mode write tools are all
-        /// rejected, dirty can never set, and the gate is off -- it must not punish a read-only agent.
+    /// Whether writes can happen this turn. In `deny` mode write tools are all
+    /// rejected, dirty can never set, and the gate is off -- it must not punish a read-only agent.
     pub writes_possible: bool,
 }
 
@@ -90,7 +90,7 @@ impl VerifyEnforcementMiddleware {
 
 #[async_trait]
 impl Middleware for VerifyEnforcementMiddleware {
-        /// Each user message starts a fresh "edit -> verify" cycle.
+    /// Each user message starts a fresh "edit -> verify" cycle.
     async fn on_user_message(&self, _ctx: &mut UserMessageCtx) -> AgentResult<()> {
         let mut st = self.state.lock().expect("gate state lock poisoned");
         st.dirty = false;
@@ -103,7 +103,7 @@ impl Middleware for VerifyEnforcementMiddleware {
             return Ok(());
         }
 
-                // 1) Update dirty from the tool calls in this response: write tools set it, verify tools clear it.
+        // 1) Update dirty from the tool calls in this response: write tools set it, verify tools clear it.
         let (dirty, nudges) = {
             let mut st = self.state.lock().expect("gate state lock poisoned");
             for (_id, name, args) in &ctx.tool_calls {
@@ -117,12 +117,12 @@ impl Middleware for VerifyEnforcementMiddleware {
             (st.dirty, st.nudges)
         };
 
-                // 2) Only "text-only, wants to stop, with unverified changes" needs blocking.
+        // 2) Only "text-only, wants to stop, with unverified changes" needs blocking.
         if ctx.is_tool_call || ctx.full_text.is_empty() || !dirty {
             return Ok(());
         }
 
-                // 3) Over the limit -> fail outright and end the turn.
+        // 3) Over the limit -> fail outright and end the turn.
         if nudges >= self.config.max_nudges {
             tracing::warn!(
                 session_id = ctx.session_id.id,
@@ -134,7 +134,7 @@ impl Middleware for VerifyEnforcementMiddleware {
             ));
         }
 
-                // 4) Veto this reply, inject the reminder, force one more loop.
+        // 4) Veto this reply, inject the reminder, force one more loop.
         let new_nudges = {
             let mut st = self.state.lock().expect("gate state lock poisoned");
             st.nudges += 1;
@@ -157,22 +157,22 @@ mod tests {
     use super::*;
     use phi_agent::{FinishReason, SessionId};
 
-        /// Build an `(id, name, args)` tool call (args default to `{}`).
+    /// Build an `(id, name, args)` tool call (args default to `{}`).
     fn call(name: &str) -> (String, String, String) {
         call_with_args(name, "{}")
     }
 
-        /// Build a tool call with explicit args.
+    /// Build a tool call with explicit args.
     fn call_with_args(name: &str, args: &str) -> (String, String, String) {
         (format!("call_{name}"), name.to_string(), args.to_string())
     }
 
-        /// Build a write tool call carrying a `path`.
+    /// Build a write tool call carrying a `path`.
     fn write_call(tool: &str, path: &str) -> (String, String, String) {
         call_with_args(tool, &format!(r#"{{"path": "{path}"}}"#))
     }
 
-        /// Build a `PostLlmCtx` with defaults everywhere but `is_tool_call`/`full_text`/`tool_calls`.
+    /// Build a `PostLlmCtx` with defaults everywhere but `is_tool_call`/`full_text`/`tool_calls`.
     fn ctx(
         is_tool_call: bool,
         full_text: &str,
@@ -207,11 +207,11 @@ mod tests {
         let mw = VerifyEnforcementMiddleware::new(VerifyEnforcementConfig::default());
         let expected = VerifyEnforcementConfig::default().nudge_message;
 
-                // write_file marks dirty (the tool call itself is not blocked).
+        // write_file marks dirty (the tool call itself is not blocked).
         let mut edit = ctx(true, "", vec![call("write_file")]);
         mw.on_post_llm(&mut edit).await.unwrap();
 
-                // The text-only "done" that follows is vetoed.
+        // The text-only "done" that follows is vetoed.
         let mut done = ctx(false, "All done.", vec![]);
         mw.on_post_llm(&mut done).await.unwrap();
         assert!(done.skip_push);
@@ -298,7 +298,7 @@ mod tests {
 
     #[test]
     fn missing_path_conservatively_marks_dirty() {
-                // An unparseable path errs toward verifying.
+        // An unparseable path errs toward verifying.
         assert!(is_code_edit("{}"));
         assert!(is_code_edit("not json"));
     }
@@ -323,7 +323,7 @@ mod tests {
     async fn only_write_tools_mark_dirty() {
         let mw = VerifyEnforcementMiddleware::new(VerifyEnforcementConfig::default());
 
-                // Read-only/search tools must not trip the gate.
+        // Read-only/search tools must not trip the gate.
         let mut read = ctx(true, "", vec![call("read_file"), call("search_content")]);
         mw.on_post_llm(&mut read).await.unwrap();
 
@@ -336,7 +336,7 @@ mod tests {
     async fn no_veto_when_clean() {
         let mw = VerifyEnforcementMiddleware::new(VerifyEnforcementConfig::default());
 
-                // No writes this turn, so a text-only done is let through.
+        // No writes this turn, so a text-only done is let through.
         let mut done = ctx(false, "nothing changed, done.", vec![]);
         mw.on_post_llm(&mut done).await.unwrap();
         assert!(!done.skip_push);
@@ -349,7 +349,7 @@ mod tests {
         let mut edit = ctx(true, "", vec![call("write_file")]);
         mw.on_post_llm(&mut edit).await.unwrap();
 
-                // Still working (tool calls) is not blocked, dirty or not.
+        // Still working (tool calls) is not blocked, dirty or not.
         let mut work = ctx(true, "", vec![call("read_file")]);
         mw.on_post_llm(&mut work).await.unwrap();
         assert!(!work.skip_push);
@@ -362,7 +362,7 @@ mod tests {
         let mut edit = ctx(true, "", vec![call("write_file")]);
         mw.on_post_llm(&mut edit).await.unwrap();
 
-                // Empty text is not a "done", so it is not blocked (matches ToolEnforcementMiddleware).
+        // Empty text is not a "done", so it is not blocked (matches ToolEnforcementMiddleware).
         let mut empty = ctx(false, "", vec![]);
         mw.on_post_llm(&mut empty).await.unwrap();
         assert!(!empty.skip_push);
@@ -379,34 +379,39 @@ mod tests {
         let mut edit = ctx(true, "", vec![call("write_file")]);
         mw.on_post_llm(&mut edit).await.unwrap();
 
-                // First nudge (at the limit).
+        // First nudge (at the limit).
         let mut first = ctx(false, "done", vec![]);
         mw.on_post_llm(&mut first).await.unwrap();
         assert!(first.skip_push);
 
-                // Second one: fail outright.
+        // Second one: fail outright.
         let mut second = ctx(false, "done", vec![]);
         let result = mw.on_post_llm(&mut second).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("refused to run verify"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("refused to run verify")
+        );
     }
 
     #[tokio::test]
     async fn on_user_message_resets_state() {
         let mw = VerifyEnforcementMiddleware::new(VerifyEnforcementConfig::default());
 
-                // The edit marks dirty.
+        // The edit marks dirty.
         let mut edit = ctx(true, "", vec![call("write_file")]);
         mw.on_post_llm(&mut edit).await.unwrap();
 
-                // A new user message starts a new cycle.
+        // A new user message starts a new cycle.
         let mut u = UserMessageCtx {
             session_id: SessionId::new(1),
             user_input: "hi".into(),
         };
         mw.on_user_message(&mut u).await.unwrap();
 
-                // No edits in the new cycle, so done is not blocked.
+        // No edits in the new cycle, so done is not blocked.
         let mut done = ctx(false, "done", vec![]);
         mw.on_post_llm(&mut done).await.unwrap();
         assert!(!done.skip_push);

@@ -24,11 +24,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use async_trait::async_trait;
 
 use phi_agent::{
-    ChatMessage, CompactionKind, CompactionOutcome, ContextCompaction, SessionId, TokenBudgetAction,
-    TokenBudgetCore, clear_messages_jsonl, estimate_messages_tokens,
+    ChatMessage, CompactionKind, CompactionOutcome, ContextCompaction, SessionId,
+    TokenBudgetAction, TokenBudgetCore, clear_messages_jsonl, estimate_messages_tokens,
 };
 
-use phi_kernel_tools::context_rotation::{HistoryStore, NotesStore, read_thread_hint, extract_ledger};
+use phi_kernel_tools::context_rotation::{
+    HistoryStore, NotesStore, extract_ledger, read_thread_hint,
+};
 
 /// Global handle to the token-budget compactor for TUI access.
 /// Set during agent build; the TUI checks `reset_count()` after each turn
@@ -96,7 +98,12 @@ pub struct TokenBudgetCompactor {
 }
 
 impl TokenBudgetCompactor {
-    pub fn new(core: TokenBudgetCore, base_dir: PathBuf, session_id: String, agent_name: String) -> Self {
+    pub fn new(
+        core: TokenBudgetCore,
+        base_dir: PathBuf,
+        session_id: String,
+        agent_name: String,
+    ) -> Self {
         Self {
             core,
             base_dir,
@@ -185,12 +192,9 @@ impl ContextCompaction for TokenBudgetCompactor {
                 }
 
                 // 2. The model's own handoff note, if it wrote one.
-                let thread_hint = read_thread_hint(
-                    &self.base_dir,
-                    &self.session_id,
-                    &self.agent_name,
-                )
-                .map(|hint| format!("<thread_hint>\n{hint}\n</thread_hint>"));
+                let thread_hint =
+                    read_thread_hint(&self.base_dir, &self.session_id, &self.agent_name)
+                        .map(|hint| format!("<thread_hint>\n{hint}\n</thread_hint>"));
 
                 // 2b. Mechanical activity ledger (v4): extracted from the
                 //    outgoing window with zero model participation — the
@@ -201,11 +205,7 @@ impl ContextCompaction for TokenBudgetCompactor {
                 //    budget. Best effort on both I/O.
                 let ledger = extract_ledger(messages);
                 if let Some(text) = &ledger {
-                    let notes = NotesStore::new(
-                        &self.base_dir,
-                        &self.session_id,
-                        &self.agent_name,
-                    );
+                    let notes = NotesStore::new(&self.base_dir, &self.session_id, &self.agent_name);
                     if let Err(e) = notes.write_file("activity_ledger.md", text) {
                         tracing::warn!(error = %e, "failed to mirror activity ledger to notes");
                     }
@@ -347,8 +347,10 @@ mod tests {
         let result = result.messages;
         // Fresh window: system prompt + window info + user trail + guidance + seed
         assert_eq!(result.len(), 5);
-        assert!(matches!(&result[0], ChatMessage::System { content, ephemeral: false }
-            if content.contains("helpful assistant")));
+        assert!(
+            matches!(&result[0], ChatMessage::System { content, ephemeral: false }
+            if content.contains("helpful assistant"))
+        );
         assert!(matches!(&result[1], ChatMessage::System { content, .. }
             if content.contains("context_window")));
         // Trail preserves the real user message from the outgoing window.
@@ -424,10 +426,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let shell = shell_with(small_core(), &tmp);
         let cfg = shell.core().config();
-        let near = work_msgs(
-            shell.core(),
-            cfg.work_budget - cfg.reminder_threshold + 20,
-        );
+        let near = work_msgs(shell.core(), cfg.work_budget - cfg.reminder_threshold + 20);
         let input = near.clone();
         let outcome = shell.compact_sync(&near).expect("reminder must fire");
         assert_eq!(outcome.kind, CompactionKind::Reminder);
@@ -445,10 +444,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let shell = shell_with(small_core(), &tmp);
         let cfg = shell.core().config();
-        let over = work_msgs(
-            shell.core(),
-            cfg.work_budget + cfg.fallback_buffer / 2,
-        );
+        let over = work_msgs(shell.core(), cfg.work_budget + cfg.fallback_buffer / 2);
         let outcome = shell.compact_sync(&over).expect("fallback must fire");
         assert_eq!(outcome.kind, CompactionKind::Fallback);
         assert_eq!(outcome.messages.len(), over.len() + 1);

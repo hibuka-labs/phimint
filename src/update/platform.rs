@@ -36,7 +36,11 @@ mod tests {
         // We can't test cross-platform mappings without mocking std::env::consts,
         // but we can verify the current platform resolves.
         let key = platform_key();
-        assert!(key.is_ok(), "current platform should be supported: {:?}", key.err());
+        assert!(
+            key.is_ok(),
+            "current platform should be supported: {:?}",
+            key.err()
+        );
 
         // Verify the key contains expected substrings
         let key = key.unwrap();

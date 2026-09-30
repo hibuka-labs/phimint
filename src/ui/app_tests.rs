@@ -1,10 +1,10 @@
 //! Tests for App state machine and event handling.
 
 use super::*;
-use phi_tui::lines::{DiffLineKind, LineDetail};
-use phi_agent::{PlanItem, PlanStepStatus, UserEvent};
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use phi_agent::SessionId;
+use phi_agent::{PlanItem, PlanStepStatus, UserEvent};
+use phi_tui::lines::{DiffLineKind, LineDetail};
 
 fn text(s: &str) -> RuntimeEvent {
     RuntimeEvent::TextDelta {
@@ -131,10 +131,20 @@ fn status_tracks_state_machine() {
     assert_eq!(app.status, AgentStatus::Idle);
 
     app.handle_event(TuiEvent::Runtime(thought("hmm")));
-    assert_eq!(app.status, AgentStatus::Running { phase: Phase::Thinking });
+    assert_eq!(
+        app.status,
+        AgentStatus::Running {
+            phase: Phase::Thinking
+        }
+    );
 
     app.handle_event(TuiEvent::Runtime(text("answer")));
-    assert_eq!(app.status, AgentStatus::Running { phase: Phase::Streaming });
+    assert_eq!(
+        app.status,
+        AgentStatus::Running {
+            phase: Phase::Streaming
+        }
+    );
 
     app.handle_event(TuiEvent::Runtime(tool_started("read_file")));
     assert_eq!(
@@ -147,7 +157,12 @@ fn status_tracks_state_machine() {
     );
 
     app.handle_event(TuiEvent::Runtime(tool_finished("read_file", false)));
-    assert_eq!(app.status, AgentStatus::Running { phase: Phase::Thinking });
+    assert_eq!(
+        app.status,
+        AgentStatus::Running {
+            phase: Phase::Thinking
+        }
+    );
 
     app.handle_event(TuiEvent::Runtime(run_finished(None)));
     assert_eq!(app.status, AgentStatus::Idle);
@@ -162,7 +177,12 @@ fn tool_calls_render_inline_in_output() {
     app.handle_event(TuiEvent::Runtime(tool_finished("execute_command", true)));
 
     // Invocation + result lines land inline in `output`, in event order.
-    let texts: Vec<&str> = app.transcript.output.iter().map(|l| l.text.as_str()).collect();
+    let texts: Vec<&str> = app
+        .transcript
+        .output
+        .iter()
+        .map(|l| l.text.as_str())
+        .collect();
     assert_eq!(
         texts,
         vec![
@@ -202,7 +222,8 @@ fn text_deltas_coalesce_into_fewer_lines() {
     app.handle_event(TuiEvent::Runtime(text("world")));
     app.handle_event(TuiEvent::Runtime(tool_started("verify"))); // flush
     let normals: Vec<_> = app
-        .transcript.output
+        .transcript
+        .output
         .iter()
         .filter(|l| l.kind == LineKind::Normal)
         .collect();
@@ -216,7 +237,8 @@ fn text_with_newline_splits_lines() {
     app.handle_event(TuiEvent::Runtime(text("a\nb")));
     app.handle_event(TuiEvent::Runtime(tool_started("verify")));
     let normals: Vec<_> = app
-        .transcript.output
+        .transcript
+        .output
         .iter()
         .filter(|l| l.kind == LineKind::Normal)
         .collect();
@@ -297,7 +319,10 @@ fn pagedown_pages_half_a_screen() {
         app.push_system(&format!("history line {i}"));
     }
     let total = app.transcript.len();
-    assert!(total > 60, "precondition: enough content to page (got {total})");
+    assert!(
+        total > 60,
+        "precondition: enough content to page (got {total})"
+    );
     // Emulate a rendered frame so the viewport knows its geometry.
     app.viewport.viewport_height = 40;
     app.viewport.rendered_total = total;
@@ -322,14 +347,14 @@ fn pagedown_pages_half_a_screen() {
     );
 }
 
-
 #[test]
 fn submit_echoes_user_message() {
     let mut app = App::new();
     let action = submit(&mut app, "hello world");
     assert_eq!(action, Action::Submit("hello world".to_string()));
     let users: Vec<&str> = app
-        .transcript.output
+        .transcript
+        .output
         .iter()
         .filter(|l| l.kind == LineKind::User)
         .map(|l| l.text.as_str())
@@ -366,7 +391,10 @@ fn progress_updates_and_clears_live_progress() {
     app.handle_event(TuiEvent::Runtime(tool_started("read_file")));
     let line = app.status_line();
     assert!(line.contains("🔧 read_file"), "got: {line}");
-    assert!(!line.contains("Compiling"), "stale progress must drop, got: {line}");
+    assert!(
+        !line.contains("Compiling"),
+        "stale progress must drop, got: {line}"
+    );
 }
 
 #[test]
@@ -386,11 +414,15 @@ fn spawn_agent_invocation_line_is_compacted() {
     }));
     let last = app.transcript.output.last().unwrap();
     assert!(
-        last.text.starts_with("* spawn_agent analyze-pi - 分析 /Users/me/pi 工程的 agent 循环"),
+        last.text
+            .starts_with("* spawn_agent analyze-pi - 分析 /Users/me/pi 工程的 agent 循环"),
         "got: {}",
         last.text
     );
-    assert!(!last.text.contains("然后还要看"), "must not dump the full task");
+    assert!(
+        !last.text.contains("然后还要看"),
+        "must not dump the full task"
+    );
 }
 
 #[test]
@@ -404,7 +436,10 @@ fn activity_clock_follows_root_status() {
     assert!(app.is_active());
     assert!(app.activity_since.is_some());
     let line = app.status_line();
-    assert!(line.contains(" - "), "running status carries elapsed, got: {line}");
+    assert!(
+        line.contains(" - "),
+        "running status carries elapsed, got: {line}"
+    );
 
     // Turn settles with no children → Idle clears the clock.
     app.settle_after_turn(false);
@@ -462,7 +497,6 @@ fn turn_error_appends_red_line_and_resets() {
     assert!(app.transcript.output.last().unwrap().text.contains("boom"));
 }
 
-
 #[test]
 fn streaming_tail_lines_wraps_long_text() {
     let mut app = App::new();
@@ -511,7 +545,13 @@ fn streaming_tail_flips_to_text_after_thought() {
 fn scroll_up_steps_from_bottom_not_noop() {
     let mut app = App::new();
     for i in 0..100 {
-        app.transcript.push(OutputLine { spans: None, original: None, text: format!("line {i}"), kind: LineKind::Normal, detail: None });
+        app.transcript.push(OutputLine {
+            spans: None,
+            original: None,
+            text: format!("line {i}"),
+            kind: LineKind::Normal,
+            detail: None,
+        });
     }
     app.scroll_up();
     assert!(!app.viewport.follow_bottom);
@@ -522,7 +562,13 @@ fn scroll_up_steps_from_bottom_not_noop() {
 fn scroll_down_reenters_follow_bottom() {
     let mut app = App::new();
     for i in 0..100 {
-        app.transcript.push(OutputLine { spans: None, original: None, text: format!("line {i}"), kind: LineKind::Normal, detail: None });
+        app.transcript.push(OutputLine {
+            spans: None,
+            original: None,
+            text: format!("line {i}"),
+            kind: LineKind::Normal,
+            detail: None,
+        });
     }
     let step = app.viewport.page_step();
     app.scroll_up();
@@ -540,7 +586,13 @@ fn scroll_down_reenters_follow_bottom() {
 fn wheel_step_is_small_so_a_swipe_composes_smoothly() {
     let mut app = App::new();
     for i in 0..100 {
-        app.transcript.push(OutputLine { spans: None, original: None, text: format!("line {i}"), kind: LineKind::Normal, detail: None });
+        app.transcript.push(OutputLine {
+            spans: None,
+            original: None,
+            text: format!("line {i}"),
+            kind: LineKind::Normal,
+            detail: None,
+        });
     }
     // A few wheel ticks walk a few lines each — not half a screen per tick.
     app.scroll_wheel_up();
@@ -559,7 +611,13 @@ fn wheel_step_is_small_so_a_swipe_composes_smoothly() {
 fn keyboard_page_step_stays_half_screen_despite_wheel_step() {
     let mut app = App::new();
     for i in 0..100 {
-        app.transcript.push(OutputLine { spans: None, original: None, text: format!("line {i}"), kind: LineKind::Normal, detail: None });
+        app.transcript.push(OutputLine {
+            spans: None,
+            original: None,
+            text: format!("line {i}"),
+            kind: LineKind::Normal,
+            detail: None,
+        });
     }
     app.viewport.set_visible(1000, 40); // a real render: 40-row pane
     app.scroll_up();
@@ -586,7 +644,10 @@ fn pending_approval(app: &mut App) {
 fn approval_popup_routes_yan_and_swallows_others() {
     let mut app = App::new();
     pending_approval(&mut app);
-    assert_eq!(app.current_approval().map(|r| r.title.as_str()), Some("write_file"));
+    assert_eq!(
+        app.current_approval().map(|r| r.title.as_str()),
+        Some("write_file")
+    );
     assert!(app.has_pending_approval());
 
     // y/a/n route to the matching decision.
@@ -653,7 +714,9 @@ fn awaiting_approval_sets_status() {
     }));
     assert_eq!(
         app.status,
-        AgentStatus::Running { phase: Phase::AwaitingApproval }
+        AgentStatus::Running {
+            phase: Phase::AwaitingApproval
+        }
     );
 }
 
@@ -663,19 +726,27 @@ fn sub_agent_text_is_labeled_and_lifecycle_tracked() {
     app.handle_event(TuiEvent::Runtime(child_text("root/a", "found a thing")));
     // Flush to commit text
     app.flush_pending();
-    assert_eq!(app.sub_agents.get("root/a").map(|s| &s.status), Some(&SubAgentStatus::Running));
-    app.handle_event(TuiEvent::Runtime(run_finished(Some("root/a"))));
-    assert_eq!(app.sub_agents.get("root/a").map(|s| &s.status), Some(&SubAgentStatus::Done));
-    // Main transcript should only have the "started" marker
-    let texts: Vec<&str> = app.transcript.output.iter().map(|l| l.text.as_str()).collect();
     assert_eq!(
-        texts,
-        vec![
-            "* [root/a] started",
-        ]
+        app.sub_agents.get("root/a").map(|s| &s.status),
+        Some(&SubAgentStatus::Running)
     );
+    app.handle_event(TuiEvent::Runtime(run_finished(Some("root/a"))));
+    assert_eq!(
+        app.sub_agents.get("root/a").map(|s| &s.status),
+        Some(&SubAgentStatus::Done)
+    );
+    // Main transcript should only have the "started" marker
+    let texts: Vec<&str> = app
+        .transcript
+        .output
+        .iter()
+        .map(|l| l.text.as_str())
+        .collect();
+    assert_eq!(texts, vec!["* [root/a] started",]);
     // Check sub-agent transcript
-    let sub_texts: Vec<&str> = app.sub_agent_transcripts.get("root/a")
+    let sub_texts: Vec<&str> = app
+        .sub_agent_transcripts
+        .get("root/a")
         .map(|t| t.iter().map(|l| l.text.as_str()).collect())
         .unwrap_or_default();
     // Sub-agent transcript should have the text and done marker
@@ -687,24 +758,26 @@ fn sub_agent_text_is_labeled_and_lifecycle_tracked() {
 fn sub_agent_tool_calls_are_labeled() {
     let mut app = App::new();
     app.handle_event(TuiEvent::Runtime(child_tool_started("root/a", "read_file")));
-    app.handle_event(TuiEvent::Runtime(child_tool_finished("root/a", "read_file")));
-    let texts: Vec<&str> = app.transcript.output.iter().map(|l| l.text.as_str()).collect();
-    assert_eq!(
-        texts,
-        vec![
-            "* [root/a] started",
-        ]
-    );
+    app.handle_event(TuiEvent::Runtime(child_tool_finished(
+        "root/a",
+        "read_file",
+    )));
+    let texts: Vec<&str> = app
+        .transcript
+        .output
+        .iter()
+        .map(|l| l.text.as_str())
+        .collect();
+    assert_eq!(texts, vec!["* [root/a] started",]);
     // Check sub-agent transcript
-    let sub_texts: Vec<&str> = app.sub_agent_transcripts.get("root/a")
+    let sub_texts: Vec<&str> = app
+        .sub_agent_transcripts
+        .get("root/a")
         .map(|t| t.iter().map(|l| l.text.as_str()).collect())
         .unwrap_or_default();
     assert_eq!(
         sub_texts,
-        vec![
-            "* [root/a] read_file {}",
-            "  [root/a] + read_file done",
-        ]
+        vec!["* [root/a] read_file {}", "  [root/a] + read_file done",]
     );
 }
 
@@ -730,7 +803,10 @@ fn sub_agent_run_finished_does_not_end_turn() {
     app.handle_event(TuiEvent::Runtime(run_finished(Some("root/a"))));
     assert!(app.running);
     assert!(matches!(app.status, AgentStatus::Running { .. }));
-    assert_eq!(app.sub_agents.get("root/a").map(|s| &s.status), Some(&SubAgentStatus::Done));
+    assert_eq!(
+        app.sub_agents.get("root/a").map(|s| &s.status),
+        Some(&SubAgentStatus::Done)
+    );
 }
 
 #[test]
@@ -758,20 +834,31 @@ fn child_deltas_bypass_main_stream_tail() {
     assert!(!app.stream.has_pending_text());
     assert!(!app.stream.has_pending_thought());
     // Main transcript: only the started marker.
-    let texts: Vec<&str> = app.transcript.output.iter().map(|l| l.text.as_str()).collect();
+    let texts: Vec<&str> = app
+        .transcript
+        .output
+        .iter()
+        .map(|l| l.text.as_str())
+        .collect();
     assert_eq!(texts, vec!["* [root/a] started"]);
     // Child content is preserved, committed ahead of the done marker.
     app.handle_event(TuiEvent::Runtime(run_finished(Some("root/a"))));
-    let sub_texts: Vec<&str> = app.sub_agent_transcripts.get("root/a")
+    let sub_texts: Vec<&str> = app
+        .sub_agent_transcripts
+        .get("root/a")
         .map(|t| t.iter().map(|l| l.text.as_str()).collect())
         .unwrap_or_default();
     let done_idx = sub_texts.iter().position(|t| t.contains("done")).unwrap();
     assert!(
-        sub_texts[..done_idx].iter().any(|t| t.contains("thinking hard")),
+        sub_texts[..done_idx]
+            .iter()
+            .any(|t| t.contains("thinking hard")),
         "child thought must reach the child transcript: {sub_texts:?}"
     );
     assert!(
-        sub_texts[..done_idx].iter().any(|t| t.contains("partial prose")),
+        sub_texts[..done_idx]
+            .iter()
+            .any(|t| t.contains("partial prose")),
         "child text must reach the child transcript: {sub_texts:?}"
     );
 }
@@ -779,9 +866,14 @@ fn child_deltas_bypass_main_stream_tail() {
 #[test]
 fn child_stream_flushes_before_its_tool_line() {
     let mut app = App::new();
-    app.handle_event(TuiEvent::Runtime(child_text("root/a", "read the config first")));
+    app.handle_event(TuiEvent::Runtime(child_text(
+        "root/a",
+        "read the config first",
+    )));
     app.handle_event(TuiEvent::Runtime(child_tool_started("root/a", "read_file")));
-    let sub_texts: Vec<&str> = app.sub_agent_transcripts.get("root/a")
+    let sub_texts: Vec<&str> = app
+        .sub_agent_transcripts
+        .get("root/a")
         .map(|t| t.iter().map(|l| l.text.as_str()).collect())
         .unwrap_or_default();
     // Pending child text commits above the invocation line, in order.
@@ -807,8 +899,16 @@ fn root_tail_survives_child_interleaving() {
     assert_eq!(raw, "lo");
     assert_eq!(kind, LineKind::Normal);
     // "hel" was committed whole by the started marker, unchopped.
-    let texts: Vec<&str> = app.transcript.output.iter().map(|l| l.text.as_str()).collect();
-    assert!(texts.contains(&"hel"), "root text flushed intact: {texts:?}");
+    let texts: Vec<&str> = app
+        .transcript
+        .output
+        .iter()
+        .map(|l| l.text.as_str())
+        .collect();
+    assert!(
+        texts.contains(&"hel"),
+        "root text flushed intact: {texts:?}"
+    );
     assert!(
         texts.iter().all(|t| !t.contains("child chunk")),
         "child content must stay out of the main transcript: {texts:?}"
@@ -898,10 +998,24 @@ fn plan_renders_status_markers() {
             ("待办", PlanStepStatus::Pending),
         ],
     )));
-    let lines: Vec<&str> = app.transcript.output.iter().map(|l| l.text.as_str()).collect();
-    assert!(lines.iter().any(|l| l.contains("📋 目标")), "got: {lines:?}");
-    assert!(lines.iter().any(|l| l.contains("✅ 已完成")), "got: {lines:?}");
-    assert!(lines.iter().any(|l| l.contains("🔄 进行中")), "got: {lines:?}");
+    let lines: Vec<&str> = app
+        .transcript
+        .output
+        .iter()
+        .map(|l| l.text.as_str())
+        .collect();
+    assert!(
+        lines.iter().any(|l| l.contains("📋 目标")),
+        "got: {lines:?}"
+    );
+    assert!(
+        lines.iter().any(|l| l.contains("✅ 已完成")),
+        "got: {lines:?}"
+    );
+    assert!(
+        lines.iter().any(|l| l.contains("🔄 进行中")),
+        "got: {lines:?}"
+    );
     assert!(lines.iter().any(|l| l.contains("- 待办")), "got: {lines:?}");
 }
 
@@ -919,7 +1033,12 @@ fn plan_replaces_in_place_instead_of_appending() {
             ("步骤2", PlanStepStatus::Completed),
         ],
     )));
-    let texts: Vec<&str> = app.transcript.output.iter().map(|l| l.text.as_str()).collect();
+    let texts: Vec<&str> = app
+        .transcript
+        .output
+        .iter()
+        .map(|l| l.text.as_str())
+        .collect();
     assert_eq!(
         texts.iter().filter(|t| t.contains("📋 目标")).count(),
         1,
@@ -937,7 +1056,12 @@ fn plan_renders_explanation() {
         Some("检测到已有配置，直接复用"),
         vec![("步骤", PlanStepStatus::Pending)],
     )));
-    assert!(app.transcript.output.iter().any(|l| l.text.contains("↳ 检测到已有配置")));
+    assert!(
+        app.transcript
+            .output
+            .iter()
+            .any(|l| l.text.contains("↳ 检测到已有配置"))
+    );
 }
 
 #[test]
@@ -945,7 +1069,12 @@ fn update_plan_tool_result_line_is_suppressed() {
     let mut app = App::new();
     app.handle_event(TuiEvent::Runtime(tool_started("update_plan")));
     app.handle_event(TuiEvent::Runtime(tool_finished("update_plan", false)));
-    assert!(!app.transcript.output.iter().any(|l| l.text.contains("update_plan")));
+    assert!(
+        !app.transcript
+            .output
+            .iter()
+            .any(|l| l.text.contains("update_plan"))
+    );
 }
 
 #[test]
@@ -962,9 +1091,20 @@ fn plan_resets_across_turns() {
         "目标B",
         vec![("步骤B", PlanStepStatus::Pending)],
     )));
-    let texts: Vec<&str> = app.transcript.output.iter().map(|l| l.text.as_str()).collect();
-    assert!(texts.iter().any(|t| t.contains("📋 目标A")), "target A kept: {texts:?}");
-    assert!(texts.iter().any(|t| t.contains("📋 目标B")), "target B appended: {texts:?}");
+    let texts: Vec<&str> = app
+        .transcript
+        .output
+        .iter()
+        .map(|l| l.text.as_str())
+        .collect();
+    assert!(
+        texts.iter().any(|t| t.contains("📋 目标A")),
+        "target A kept: {texts:?}"
+    );
+    assert!(
+        texts.iter().any(|t| t.contains("📋 目标B")),
+        "target B appended: {texts:?}"
+    );
     assert_eq!(texts.iter().filter(|t| t.contains("📋")).count(), 2);
 }
 
@@ -972,12 +1112,21 @@ fn plan_resets_across_turns() {
 fn mouse_drag_selects_line_range() {
     let mut app = App::new();
     for i in 0..10 {
-        app.transcript.push(OutputLine { spans: None, original: None, text: format!("line {i}"), kind: LineKind::Normal, detail: None });
+        app.transcript.push(OutputLine {
+            spans: None,
+            original: None,
+            text: format!("line {i}"),
+            kind: LineKind::Normal,
+            detail: None,
+        });
     }
     app.output_area = Some((0, 0, 100, 10));
     app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 2, 100, 10);
     app.handle_mouse(MouseEventKind::Drag(MouseButton::Left), 0, 5, 100, 10);
-    assert_eq!(app.selection_state.selection, Some(Selection { anchor: 2, head: 5 }));
+    assert_eq!(
+        app.selection_state.selection,
+        Some(Selection { anchor: 2, head: 5 })
+    );
     assert_eq!(app.selection_text(), "line 2\nline 3\nline 4\nline 5");
 }
 
@@ -985,7 +1134,13 @@ fn mouse_drag_selects_line_range() {
 fn mouse_drag_up_normalizes_selection() {
     let mut app = App::new();
     for i in 0..10 {
-        app.transcript.push(OutputLine { spans: None, original: None, text: format!("line {i}"), kind: LineKind::Normal, detail: None });
+        app.transcript.push(OutputLine {
+            spans: None,
+            original: None,
+            text: format!("line {i}"),
+            kind: LineKind::Normal,
+            detail: None,
+        });
     }
     app.output_area = Some((0, 0, 100, 10));
     app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 5, 100, 10);
@@ -997,7 +1152,13 @@ fn mouse_drag_up_normalizes_selection() {
 #[test]
 fn click_outside_output_clears_selection() {
     let mut app = App::new();
-    app.transcript.push(OutputLine { spans: None, original: None, text: "x".into(), kind: LineKind::Normal, detail: None });
+    app.transcript.push(OutputLine {
+        spans: None,
+        original: None,
+        text: "x".into(),
+        kind: LineKind::Normal,
+        detail: None,
+    });
     app.output_area = Some((0, 0, 10, 5));
     app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 0, 10, 5);
     assert!(app.selection_state.selection.is_some());
@@ -1008,7 +1169,13 @@ fn click_outside_output_clears_selection() {
 #[test]
 fn selection_text_clamps_stale_indices() {
     let mut app = App::new();
-    app.transcript.push(OutputLine { spans: None, original: None, text: "a".into(), kind: LineKind::Normal, detail: None });
+    app.transcript.push(OutputLine {
+        spans: None,
+        original: None,
+        text: "a".into(),
+        kind: LineKind::Normal,
+        detail: None,
+    });
     app.selection_state.selection = Some(Selection { anchor: 0, head: 5 });
     assert_eq!(app.selection_text(), "a");
 }
@@ -1035,8 +1202,7 @@ fn ctrl_c_copies_selection_then_double_press_quits() {
         Some(Action::Quit)
     );
     // After timeout, hint resets: first press → hint again.
-    app.quit_hint_at =
-        Some(Instant::now() - std::time::Duration::from_secs(5));
+    app.quit_hint_at = Some(Instant::now() - std::time::Duration::from_secs(5));
     assert_eq!(
         app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL),
         None
@@ -1060,11 +1226,7 @@ fn ctrl_c_force_quits_when_stuck_after_cancel() {
         app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL),
         Some(Action::Cancel)
     );
-    assert!(app
-        .notice
-        .as_deref()
-        .unwrap_or("")
-        .contains("force quit"));
+    assert!(app.notice.as_deref().unwrap_or("").contains("force quit"));
     // Second Ctrl+C within the window while still stuck -> force quit.
     assert_eq!(
         app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL),
@@ -1073,8 +1235,7 @@ fn ctrl_c_force_quits_when_stuck_after_cancel() {
     // After the window lapses (cancel landed but user pressed late), the
     // next press cancels again instead of quitting.
     app.running = true;
-    app.quit_hint_at =
-        Some(Instant::now() - std::time::Duration::from_secs(5));
+    app.quit_hint_at = Some(Instant::now() - std::time::Duration::from_secs(5));
     assert_eq!(
         app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL),
         Some(Action::Cancel)
@@ -1084,11 +1245,24 @@ fn ctrl_c_force_quits_when_stuck_after_cancel() {
 #[test]
 fn right_click_opens_menu_and_enter_copies() {
     let mut app = App::new();
-    app.transcript.push(OutputLine { spans: None, original: None, text: "x".into(), kind: LineKind::Normal, detail: None });
+    app.transcript.push(OutputLine {
+        spans: None,
+        original: None,
+        text: "x".into(),
+        kind: LineKind::Normal,
+        detail: None,
+    });
     app.output_area = Some((0, 0, 10, 10));
     app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 0, 20, 20);
     app.handle_mouse(MouseEventKind::Down(MouseButton::Right), 3, 4, 20, 20);
-    assert_eq!(app.selection_state.context_menu, Some(ContextMenu { x: 3, y: 4, selected: 0 }));
+    assert_eq!(
+        app.selection_state.context_menu,
+        Some(ContextMenu {
+            x: 3,
+            y: 4,
+            selected: 0
+        })
+    );
     assert_eq!(
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE),
         Some(Action::CopySelection)
@@ -1099,12 +1273,21 @@ fn right_click_opens_menu_and_enter_copies() {
 #[test]
 fn context_menu_arrows_move_highlight_and_esc_closes() {
     let mut app = App::new();
-    app.transcript.push(OutputLine { spans: None, original: None, text: "x".into(), kind: LineKind::Normal, detail: None });
+    app.transcript.push(OutputLine {
+        spans: None,
+        original: None,
+        text: "x".into(),
+        kind: LineKind::Normal,
+        detail: None,
+    });
     app.output_area = Some((0, 0, 10, 10));
     app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 0, 20, 20);
     app.handle_mouse(MouseEventKind::Down(MouseButton::Right), 0, 0, 20, 20);
     assert_eq!(app.handle_key(KeyCode::Down, KeyModifiers::NONE), None);
-    assert_eq!(app.selection_state.context_menu.as_ref().unwrap().selected, 1);
+    assert_eq!(
+        app.selection_state.context_menu.as_ref().unwrap().selected,
+        1
+    );
     // Enter on the "cancel" item closes without copying.
     assert_eq!(app.handle_key(KeyCode::Enter, KeyModifiers::NONE), None);
     assert!(app.selection_state.context_menu.is_none());
@@ -1113,7 +1296,13 @@ fn context_menu_arrows_move_highlight_and_esc_closes() {
 #[test]
 fn clicking_menu_copy_item_copies_and_closes() {
     let mut app = App::new();
-    app.transcript.push(OutputLine { spans: None, original: None, text: "x".into(), kind: LineKind::Normal, detail: None });
+    app.transcript.push(OutputLine {
+        spans: None,
+        original: None,
+        text: "x".into(),
+        kind: LineKind::Normal,
+        detail: None,
+    });
     app.output_area = Some((0, 0, 10, 10));
     app.selection_state.selection = Some(Selection { anchor: 0, head: 0 });
     // Open the menu at (0,0): a 12x4 box whose items sit at rows y+1 (copy)
@@ -1135,7 +1324,13 @@ fn clicking_menu_copy_item_copies_and_closes() {
 #[test]
 fn clicking_menu_cancel_item_closes_without_copy() {
     let mut app = App::new();
-    app.transcript.push(OutputLine { spans: None, original: None, text: "x".into(), kind: LineKind::Normal, detail: None });
+    app.transcript.push(OutputLine {
+        spans: None,
+        original: None,
+        text: "x".into(),
+        kind: LineKind::Normal,
+        detail: None,
+    });
     app.output_area = Some((0, 0, 10, 10));
     app.selection_state.selection = Some(Selection { anchor: 0, head: 0 });
     app.handle_mouse(MouseEventKind::Down(MouseButton::Right), 0, 0, 20, 20);
@@ -1152,7 +1347,13 @@ fn clicking_menu_cancel_item_closes_without_copy() {
 #[test]
 fn clicking_outside_menu_closes_it_and_restarts_selection() {
     let mut app = App::new();
-    app.transcript.push(OutputLine { spans: None, original: None, text: "x".into(), kind: LineKind::Normal, detail: None });
+    app.transcript.push(OutputLine {
+        spans: None,
+        original: None,
+        text: "x".into(),
+        kind: LineKind::Normal,
+        detail: None,
+    });
     app.output_area = Some((0, 0, 10, 10));
     app.selection_state.selection = Some(Selection { anchor: 0, head: 0 });
     app.handle_mouse(MouseEventKind::Down(MouseButton::Right), 0, 0, 20, 20);
@@ -1180,7 +1381,10 @@ fn esc_clears_selection_before_composer() {
 fn cmd_c_copies_selection_but_never_quits() {
     let mut app = App::new();
     // No selection → Cmd+C does nothing (it must never quit).
-    assert_eq!(app.handle_key(KeyCode::Char('c'), KeyModifiers::SUPER), None);
+    assert_eq!(
+        app.handle_key(KeyCode::Char('c'), KeyModifiers::SUPER),
+        None
+    );
     // With a selection → copy.
     app.selection_state.selection = Some(Selection { anchor: 0, head: 0 });
     assert_eq!(
@@ -1190,10 +1394,8 @@ fn cmd_c_copies_selection_but_never_quits() {
 }
 
 fn mention_scratch(tag: &str) -> PathBuf {
-    let path = std::env::temp_dir().join(format!(
-        "phimint-app-mention-{tag}-{}",
-        std::process::id()
-    ));
+    let path =
+        std::env::temp_dir().join(format!("phimint-app-mention-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&path);
     std::fs::create_dir_all(&path).unwrap();
     path
@@ -1240,7 +1442,10 @@ fn dotdot_prefix_inserts_absolute_parent_path() {
     app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
     let text = app.composer.text();
     assert!(!text.contains('@'), "composer holds the path, got {text:?}");
-    assert!(text.starts_with('/'), "outside path is absolute, got {text:?}");
+    assert!(
+        text.starts_with('/'),
+        "outside path is absolute, got {text:?}"
+    );
 }
 
 #[test]
@@ -1273,7 +1478,11 @@ fn esc_with_typed_prefix_keeps_text_and_closes() {
     }
     app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
     assert!(app.mention().is_none());
-    assert_eq!(app.composer.text(), "@src", "Esc closes the picker but keeps the typed text");
+    assert_eq!(
+        app.composer.text(),
+        "@src",
+        "Esc closes the picker but keeps the typed text"
+    );
 }
 
 #[test]
@@ -1289,7 +1498,11 @@ fn esc_after_dir_navigation_keeps_text() {
     app.handle_key(KeyCode::Enter, KeyModifiers::NONE); // descend into sub/
     app.handle_key(KeyCode::Esc, KeyModifiers::NONE); // close the picker
     assert!(app.mention().is_none());
-    assert_eq!(app.composer.text(), "@sub/", "Esc keeps the typed @path in the composer");
+    assert_eq!(
+        app.composer.text(),
+        "@sub/",
+        "Esc keeps the typed @path in the composer"
+    );
 }
 
 #[test]
@@ -1319,7 +1532,11 @@ fn enter_on_directory_focuses_the_directory_row() {
     app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
     let m = app.mention().expect("picker stays open on a directory");
     assert_eq!(m.prefix(), "sub/");
-    assert_eq!(m.selected_index(), 0, "focus is on the entered directory (synthetic row)");
+    assert_eq!(
+        m.selected_index(),
+        0,
+        "focus is on the entered directory (synthetic row)"
+    );
     assert!(m.entries()[0].synthetic);
     assert_eq!(app.composer.text(), "@sub/");
 }
@@ -1372,7 +1589,10 @@ fn app_with_skills() -> App {
     // After sorting: commit(0), requesting-code-review(1), review(2)
     app.set_skill_summaries(vec![
         ("commit".into(), "Generate a commit message".into()),
-        ("requesting-code-review".into(), "Request a code review".into()),
+        (
+            "requesting-code-review".into(),
+            "Request a code review".into(),
+        ),
         ("review".into(), "Pre-landing PR review".into()),
     ]);
     app
@@ -1391,7 +1611,10 @@ fn slash_does_not_open_when_composer_not_empty() {
     let mut app = app_with_skills();
     app.handle_key(KeyCode::Char('h'), KeyModifiers::NONE);
     app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
-    assert!(app.slash().is_none(), "slash picker should not open mid-input");
+    assert!(
+        app.slash().is_none(),
+        "slash picker should not open mid-input"
+    );
 }
 
 #[test]
@@ -1405,9 +1628,15 @@ fn slash_filters_by_prefix() {
     // "commit" starts with 'c' → kept
     assert!(names.contains(&"commit"), "commit should match prefix 'c'");
     // "requesting-code-review" has 'c' but does NOT start with 'c' → filtered out
-    assert!(!names.contains(&"requesting-code-review"), "requesting-code-review should not match prefix 'c'");
+    assert!(
+        !names.contains(&"requesting-code-review"),
+        "requesting-code-review should not match prefix 'c'"
+    );
     // "review" does not start with 'c' → filtered out
-    assert!(!names.contains(&"review"), "review should not match prefix 'c'");
+    assert!(
+        !names.contains(&"review"),
+        "review should not match prefix 'c'"
+    );
     // Only "commit" remains
     assert_eq!(names.len(), 1, "only 'commit' should match prefix 'c'");
 }
@@ -1421,19 +1650,37 @@ fn slash_filters_progressively() {
 
     // Type 'r' → "requesting-code-review" and "review" start with 'r'
     app.handle_key(KeyCode::Char('r'), KeyModifiers::NONE);
-    let names: Vec<&str> = app.slash().unwrap().entries().iter().map(|(n, _)| n.as_str()).collect();
+    let names: Vec<&str> = app
+        .slash()
+        .unwrap()
+        .entries()
+        .iter()
+        .map(|(n, _)| n.as_str())
+        .collect();
     assert_eq!(names.len(), 2, "'r' should match 2 skills");
     assert!(names.contains(&"requesting-code-review"));
     assert!(names.contains(&"review"));
 
     // Type 'e' → "review" starts with "re", "requesting-code-review" starts with "re"
     app.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
-    let names: Vec<&str> = app.slash().unwrap().entries().iter().map(|(n, _)| n.as_str()).collect();
+    let names: Vec<&str> = app
+        .slash()
+        .unwrap()
+        .entries()
+        .iter()
+        .map(|(n, _)| n.as_str())
+        .collect();
     assert_eq!(names.len(), 2, "'re' should still match 2 skills");
 
     // Type 'v' → only "review" starts with "rev"
     app.handle_key(KeyCode::Char('v'), KeyModifiers::NONE);
-    let names: Vec<&str> = app.slash().unwrap().entries().iter().map(|(n, _)| n.as_str()).collect();
+    let names: Vec<&str> = app
+        .slash()
+        .unwrap()
+        .entries()
+        .iter()
+        .map(|(n, _)| n.as_str())
+        .collect();
     assert_eq!(names.len(), 1, "'rev' should match only 'review'");
     assert!(names.contains(&"review"));
 
@@ -1452,7 +1699,13 @@ fn slash_backspace_widens_filter() {
 
     // Backspace → "re" → both "review" and "requesting-code-review" match again
     app.handle_key(KeyCode::Backspace, KeyModifiers::NONE);
-    let names: Vec<&str> = app.slash().unwrap().entries().iter().map(|(n, _)| n.as_str()).collect();
+    let names: Vec<&str> = app
+        .slash()
+        .unwrap()
+        .entries()
+        .iter()
+        .map(|(n, _)| n.as_str())
+        .collect();
     assert_eq!(names.len(), 2, "backspace to 're' should widen filter");
     assert_eq!(app.composer.text(), "/re");
 }
@@ -1464,7 +1717,11 @@ fn slash_enter_confirms_selection() {
     // The first entry is selected by default ("commit" after sorting)
     app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
     assert!(app.slash().is_none(), "picker should close after Enter");
-    assert_eq!(app.composer.text(), "/commit ", "should insert /name + space");
+    assert_eq!(
+        app.composer.text(),
+        "/commit ",
+        "should insert /name + space"
+    );
 }
 
 #[test]
@@ -1474,7 +1731,10 @@ fn slash_esc_cancels() {
     app.handle_key(KeyCode::Char('r'), KeyModifiers::NONE);
     app.handle_key(KeyCode::Esc, KeyModifiers::NONE);
     assert!(app.slash().is_none(), "picker should close on Esc");
-    assert!(app.composer.is_empty(), "composer should be empty after cancel");
+    assert!(
+        app.composer.is_empty(),
+        "composer should be empty after cancel"
+    );
 }
 
 #[test]
@@ -1553,8 +1813,10 @@ fn write_file_produces_all_add_diff() {
         Some(LineDetail::Diff { path, hunks }) => {
             assert_eq!(path, "src/new.rs");
             let all_lines: Vec<_> = hunks.iter().flat_map(|h| h.lines.iter()).collect();
-            assert!(all_lines.iter().all(|l| l.kind == DiffLineKind::Add),
-                "write_file should produce all-Add lines");
+            assert!(
+                all_lines.iter().all(|l| l.kind == DiffLineKind::Add),
+                "write_file should produce all-Add lines"
+            );
         }
         other => panic!("expected LineDetail::Diff, got {other:?}"),
     }
@@ -1565,7 +1827,10 @@ fn non_file_tool_has_no_detail() {
     let mut app = App::new();
     app.handle_event(TuiEvent::Runtime(tool_started("read_file")));
     let tool_line = app.transcript.output.last().expect("tool line present");
-    assert!(tool_line.detail.is_none(), "non-file tools should have no detail");
+    assert!(
+        tool_line.detail.is_none(),
+        "non-file tools should have no detail"
+    );
 }
 
 #[test]
@@ -1586,7 +1851,12 @@ fn edit_file_diff_lines_appear_in_transcript() {
     }));
 
     // The tool line itself should be present
-    let texts: Vec<&str> = app.transcript.output.iter().map(|l| l.text.as_str()).collect();
+    let texts: Vec<&str> = app
+        .transcript
+        .output
+        .iter()
+        .map(|l| l.text.as_str())
+        .collect();
     assert!(texts[0].contains("edit_file"));
 }
 
@@ -1602,14 +1872,32 @@ fn turn_done_with_running_children_enters_waiting_state() {
     // must keep the panel alive and flip to Waiting.
     app.handle_event(TuiEvent::Runtime(run_finished(None)));
     assert_eq!(app.sub_agents.len(), 2);
-    assert!(matches!(app.status, AgentStatus::Waiting { running: 2, bg: 0 }));
+    assert!(matches!(
+        app.status,
+        AgentStatus::Waiting { running: 2, bg: 0 }
+    ));
 
     app.handle_event(TuiEvent::TurnDone);
-    let texts: Vec<&str> = app.transcript.output.iter().map(|l| l.text.as_str()).collect();
-    assert!(texts.iter().any(|t| t.contains("... 等待子 agent 返回（2 个运行中）")));
-    assert!(!texts.iter().any(|t| t.contains("✅ done")), "waiting is not done");
+    let texts: Vec<&str> = app
+        .transcript
+        .output
+        .iter()
+        .map(|l| l.text.as_str())
+        .collect();
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.contains("... 等待子 agent 返回（2 个运行中）"))
+    );
+    assert!(
+        !texts.iter().any(|t| t.contains("✅ done")),
+        "waiting is not done"
+    );
     assert!(!app.running);
-    assert!(matches!(app.status, AgentStatus::Waiting { running: 2, bg: 0 }));
+    assert!(matches!(
+        app.status,
+        AgentStatus::Waiting { running: 2, bg: 0 }
+    ));
     // Panel + per-agent transcripts stay alive for inspection while waiting.
     assert_eq!(app.sub_agents.len(), 2);
     assert!(app.sub_agent_transcripts.contains_key("root/a"));
@@ -1623,7 +1911,12 @@ fn turn_done_without_running_children_shows_done_and_clears_panel() {
     app.handle_event(TuiEvent::Runtime(run_finished(Some("root/a")))); // child done first
     app.handle_event(TuiEvent::Runtime(run_finished(None)));
     app.handle_event(TuiEvent::TurnDone);
-    let texts: Vec<&str> = app.transcript.output.iter().map(|l| l.text.as_str()).collect();
+    let texts: Vec<&str> = app
+        .transcript
+        .output
+        .iter()
+        .map(|l| l.text.as_str())
+        .collect();
     assert!(texts.iter().any(|t| t.contains("✅ done")));
     assert_eq!(app.status, AgentStatus::Idle);
     assert!(app.sub_agents.is_empty());
@@ -1636,12 +1929,21 @@ fn finishing_children_updates_waiting_count_to_idle_at_zero() {
     app.handle_event(TuiEvent::Runtime(child_text("root/a", "x")));
     app.handle_event(TuiEvent::Runtime(child_text("root/b", "y")));
     app.handle_event(TuiEvent::TurnDone);
-    assert!(matches!(app.status, AgentStatus::Waiting { running: 2, bg: 0 }));
+    assert!(matches!(
+        app.status,
+        AgentStatus::Waiting { running: 2, bg: 0 }
+    ));
 
     // Watcher Progress events flip panel entries and refresh the count.
     app.mark_sub_agent_finished("root/a");
-    assert!(matches!(app.status, AgentStatus::Waiting { running: 1, bg: 0 }));
-    assert_eq!(app.sub_agents.get("root/a").map(|s| &s.status), Some(&SubAgentStatus::Done));
+    assert!(matches!(
+        app.status,
+        AgentStatus::Waiting { running: 1, bg: 0 }
+    ));
+    assert_eq!(
+        app.sub_agents.get("root/a").map(|s| &s.status),
+        Some(&SubAgentStatus::Done)
+    );
 
     app.mark_sub_agent_finished("root/b");
     assert_eq!(app.status, AgentStatus::Idle);
@@ -1655,7 +1957,11 @@ fn batch_inject_marks_all_children_finished() {
     app.handle_event(TuiEvent::Runtime(child_text("root/b", "y")));
     app.handle_event(TuiEvent::TurnDone);
     app.mark_all_sub_agents_finished();
-    assert!(app.sub_agents.values().all(|s| s.status == SubAgentStatus::Done));
+    assert!(
+        app.sub_agents
+            .values()
+            .all(|s| s.status == SubAgentStatus::Done)
+    );
     assert_eq!(app.status, AgentStatus::Idle);
 }
 
@@ -1680,17 +1986,20 @@ fn running_daemon_task(app: &mut App, id: &str, command: &str) {
 }
 
 fn running_bg_task_with_timeout(app: &mut App, id: &str, command: &str, timeout_ms: u64) {
-    app.background_tasks.insert(id.to_string(), BackgroundTaskEntry {
-        id: id.to_string(),
-        command: command.to_string(),
-        timeout_ms,
-        status: BackgroundTaskStatus::Running,
-        started_at: std::time::Instant::now(),
-        finished_at: None,
-        reported: false,
-        output_tail: String::new(),
-        consumed: false,
-    });
+    app.background_tasks.insert(
+        id.to_string(),
+        BackgroundTaskEntry {
+            id: id.to_string(),
+            command: command.to_string(),
+            timeout_ms,
+            status: BackgroundTaskStatus::Running,
+            started_at: std::time::Instant::now(),
+            finished_at: None,
+            reported: false,
+            output_tail: String::new(),
+            consumed: false,
+        },
+    );
 }
 
 #[test]
@@ -1704,14 +2013,32 @@ fn turn_done_with_running_bg_tasks_enters_waiting_not_idle() {
     // the status must NOT drop to Idle ("done"), it must wait on the bg
     // tasks the same way it waits on sub-agents.
     app.handle_event(TuiEvent::Runtime(run_finished(None)));
-    assert!(matches!(app.status, AgentStatus::Waiting { running: 0, bg: 2 }));
+    assert!(matches!(
+        app.status,
+        AgentStatus::Waiting { running: 0, bg: 2 }
+    ));
 
     app.handle_event(TuiEvent::TurnDone);
-    let texts: Vec<&str> = app.transcript.output.iter().map(|l| l.text.as_str()).collect();
-    assert!(texts.iter().any(|t| t.contains("等待后台任务") && t.contains('2')));
-    assert!(!texts.iter().any(|t| t.contains("✅ done")), "waiting is not done");
+    let texts: Vec<&str> = app
+        .transcript
+        .output
+        .iter()
+        .map(|l| l.text.as_str())
+        .collect();
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.contains("等待后台任务") && t.contains('2'))
+    );
+    assert!(
+        !texts.iter().any(|t| t.contains("✅ done")),
+        "waiting is not done"
+    );
     assert!(!app.running);
-    assert!(matches!(app.status, AgentStatus::Waiting { running: 0, bg: 2 }));
+    assert!(matches!(
+        app.status,
+        AgentStatus::Waiting { running: 0, bg: 2 }
+    ));
     // Status bar: "waiting for background tasks", not "done".
     let line = app.status_line();
     assert!(line.contains("后台任务"), "bg wording missing: {line}");
@@ -1726,9 +2053,15 @@ fn turn_done_with_children_and_bg_tasks_waits_for_both() {
     running_bg_task(&mut app, "bg_aaaa1111", "sleep 5");
 
     app.handle_event(TuiEvent::TurnDone);
-    assert!(matches!(app.status, AgentStatus::Waiting { running: 1, bg: 1 }));
+    assert!(matches!(
+        app.status,
+        AgentStatus::Waiting { running: 1, bg: 1 }
+    ));
     let line = app.status_line();
-    assert!(line.contains("子 agent") && line.contains("后台任务"), "both: {line}");
+    assert!(
+        line.contains("子 agent") && line.contains("后台任务"),
+        "both: {line}"
+    );
 }
 
 #[test]
@@ -1740,9 +2073,14 @@ fn bg_task_finishing_while_waiting_updates_count() {
     let registry = BackgroundTaskRegistry::new(4);
     app.set_background_registry(registry.clone());
     let token = tokio_util::sync::CancellationToken::new();
-    let id = registry.register("cargo test", None, token, None, 120_000).unwrap();
+    let id = registry
+        .register("cargo test", None, token, None, 120_000)
+        .unwrap();
     assert!(app.reconcile_background_tasks(), "new task is a change");
-    assert!(matches!(app.status, AgentStatus::Waiting { running: 0, bg: 1 }));
+    assert!(matches!(
+        app.status,
+        AgentStatus::Waiting { running: 0, bg: 1 }
+    ));
 
     registry.finish(&id, Some(0));
     assert!(app.reconcile_background_tasks(), "status flip is a change");
@@ -1762,16 +2100,36 @@ fn daemon_only_settle_is_done_plus_service_note_not_waiting() {
     app.handle_event(TuiEvent::Runtime(run_finished(None)));
     app.handle_event(TuiEvent::TurnDone);
 
-    assert_eq!(app.status, AgentStatus::Idle, "daemon alone = the agent can rest");
-    let texts: Vec<&str> = app.transcript.output.iter().map(|l| l.text.as_str()).collect();
-    assert!(texts.iter().any(|t| *t == "✅ done"), "work is done: {texts:?}");
+    assert_eq!(
+        app.status,
+        AgentStatus::Idle,
+        "daemon alone = the agent can rest"
+    );
+    let texts: Vec<&str> = app
+        .transcript
+        .output
+        .iter()
+        .map(|l| l.text.as_str())
+        .collect();
     assert!(
-        texts.iter().any(|t| t.contains("后台服务") && t.contains('1')),
+        texts.iter().any(|t| *t == "✅ done"),
+        "work is done: {texts:?}"
+    );
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.contains("后台服务") && t.contains('1')),
         "service noted: {texts:?}"
     );
-    assert!(!texts.iter().any(|t| t.contains("等待")), "nothing to wait for: {texts:?}");
+    assert!(
+        !texts.iter().any(|t| t.contains("等待")),
+        "nothing to wait for: {texts:?}"
+    );
     let line = app.status_line();
-    assert!(line.contains("后台服务"), "status bar keeps the service visible: {line}");
+    assert!(
+        line.contains("后台服务"),
+        "status bar keeps the service visible: {line}"
+    );
     assert!(!line.contains("等待"), "status bar must not wait: {line}");
 }
 
@@ -1785,14 +2143,27 @@ fn mixed_bounded_and_daemon_settle_waits_only_for_the_bounded() {
     app.handle_event(TuiEvent::Runtime(run_finished(None)));
     app.handle_event(TuiEvent::TurnDone);
 
-    assert!(matches!(app.status, AgentStatus::Waiting { running: 0, bg: 2 }),
-        "counter still covers everything running");
-    let texts: Vec<&str> = app.transcript.output.iter().map(|l| l.text.as_str()).collect();
-    let wait = texts.iter().find(|t| t.contains("等待后台任务")).expect("waiting line");
+    assert!(
+        matches!(app.status, AgentStatus::Waiting { running: 0, bg: 2 }),
+        "counter still covers everything running"
+    );
+    let texts: Vec<&str> = app
+        .transcript
+        .output
+        .iter()
+        .map(|l| l.text.as_str())
+        .collect();
+    let wait = texts
+        .iter()
+        .find(|t| t.contains("等待后台任务"))
+        .expect("waiting line");
     assert!(wait.contains("1 个运行中"), "count = bounded only: {wait}");
     assert!(wait.contains("后台服务"), "daemon still listed: {wait}");
     let line = app.status_line();
-    assert!(line.contains("等待后台任务") && line.contains("后台服务"), "{line}");
+    assert!(
+        line.contains("等待后台任务") && line.contains("后台服务"),
+        "{line}"
+    );
 }
 
 #[test]
@@ -1810,7 +2181,10 @@ fn thought_delta_opens_thinking_segment() {
     let mut app = App::new();
     assert!(!app.thinking_since.contains_key(""));
     app.handle_event(TuiEvent::Runtime(thought("hmm ")));
-    assert!(app.thinking_since.contains_key(""), "first delta opens a segment");
+    assert!(
+        app.thinking_since.contains_key(""),
+        "first delta opens a segment"
+    );
 }
 
 #[test]
@@ -1837,7 +2211,11 @@ fn second_thought_delta_keeps_segment_start() {
     app.handle_event(TuiEvent::Runtime(thought("a ")));
     let t0 = app.thinking_since.get("").copied();
     app.handle_event(TuiEvent::Runtime(thought("b ")));
-    assert_eq!(app.thinking_since.get("").copied(), t0, "same segment keeps its start");
+    assert_eq!(
+        app.thinking_since.get("").copied(),
+        t0,
+        "same segment keeps its start"
+    );
 }
 
 #[test]
@@ -1846,7 +2224,10 @@ fn text_delta_retires_thought_timer() {
     app.handle_event(TuiEvent::Runtime(thought(&"x ".repeat(200))));
     assert!(app.thinking_since.contains_key(""));
     app.handle_event(TuiEvent::Runtime(text("answer ")));
-    assert!(!app.thinking_since.contains_key(""), "implicit flush retires the timer");
+    assert!(
+        !app.thinking_since.contains_key(""),
+        "implicit flush retires the timer"
+    );
 }
 
 #[test]
@@ -1858,7 +2239,10 @@ fn child_flush_keeps_other_children_timers() {
     assert!(app.thinking_since.contains_key("root/b"));
     app.flush_child_stream("root/a");
     assert!(!app.thinking_since.contains_key("root/a"));
-    assert!(app.thinking_since.contains_key("root/b"), "B's timer survives A's flush");
+    assert!(
+        app.thinking_since.contains_key("root/b"),
+        "B's timer survives A's flush"
+    );
 }
 
 #[test]
@@ -1881,12 +2265,14 @@ fn thought_agent_change_restarts_timer() {
     // flip. The new segment must re-arm the panel timer (`!was` alone keeps
     // the old `Instant` and overstates elapsed).
     let mut app = App::new();
-    let thought = |agent: Option<&str>| TuiEvent::Runtime(RuntimeEvent::ThoughtDelta {
-        session_id: SessionId::new(1),
-        text: "think ".repeat(50),
-        agent_id: agent.map(String::from),
-        trace_id: None,
-    });
+    let thought = |agent: Option<&str>| {
+        TuiEvent::Runtime(RuntimeEvent::ThoughtDelta {
+            session_id: SessionId::new(1),
+            text: "think ".repeat(50),
+            agent_id: agent.map(String::from),
+            trace_id: None,
+        })
+    };
     app.handle_event(thought(Some(""))); // routes to the root stream, tag Some("")
     let first = *app.thinking_since.get("").expect("timer armed");
     let n = app.transcript.len();
@@ -1896,7 +2282,10 @@ fn thought_agent_change_restarts_timer() {
         "agent-change flush must commit the old segment"
     );
     assert!(
-        app.transcript.output.iter().any(|l| l.kind == LineKind::Thought),
+        app.transcript
+            .output
+            .iter()
+            .any(|l| l.kind == LineKind::Thought),
         "old segment commits as a thought line"
     );
     let second = *app.thinking_since.get("").expect("timer re-armed");
@@ -1911,12 +2300,14 @@ fn child_thought_text_thought_rearms_timer() {
     // Kind-flip through prose: thought → text → thought on one child stream.
     // The implicit flush retires the timer; the new segment must re-arm it.
     let mut app = App::new();
-    let thought = || TuiEvent::Runtime(RuntimeEvent::ThoughtDelta {
-        session_id: SessionId::new(1),
-        text: "think ".repeat(50),
-        agent_id: Some("root/a".to_string()),
-        trace_id: None,
-    });
+    let thought = || {
+        TuiEvent::Runtime(RuntimeEvent::ThoughtDelta {
+            session_id: SessionId::new(1),
+            text: "think ".repeat(50),
+            agent_id: Some("root/a".to_string()),
+            trace_id: None,
+        })
+    };
     app.handle_event(thought());
     let first = *app.thinking_since.get("root/a").expect("child timer armed");
     app.handle_event(TuiEvent::Runtime(RuntimeEvent::TextDelta {
@@ -1930,7 +2321,10 @@ fn child_thought_text_thought_rearms_timer() {
         "prose retires the child's thought timer"
     );
     app.handle_event(thought());
-    let second = *app.thinking_since.get("root/a").expect("child timer re-armed");
+    let second = *app
+        .thinking_since
+        .get("root/a")
+        .expect("child timer re-armed");
     assert!(second > first, "new segment must get a fresh timer");
 }
 
@@ -1938,7 +2332,10 @@ fn child_thought_text_thought_rearms_timer() {
 fn popup_style_defaults_to_frameless_and_is_settable() {
     use phi_tui::popup_list::{PopupStyle, WidthSpec};
     let mut app = App::new();
-    assert!(!app.popup_style().frame, "default popup style must be frameless");
+    assert!(
+        !app.popup_style().frame,
+        "default popup style must be frameless"
+    );
     assert_eq!(app.popup_style().width, WidthSpec::Fill);
 
     app.set_popup_style(PopupStyle::framed(64, 9));

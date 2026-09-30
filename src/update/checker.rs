@@ -34,8 +34,8 @@ pub async fn check(
     current_version: &str,
 ) -> Result<Option<CheckResult>, UpdateError> {
     let platform_key = platform::platform_key()?;
-    let current = Version::parse(current_version)
-        .map_err(|e| UpdateError::Semver(e.to_string()))?;
+    let current =
+        Version::parse(current_version).map_err(|e| UpdateError::Semver(e.to_string()))?;
 
     for endpoint in endpoints {
         match try_endpoint(client, endpoint, platform_key, &current, state).await {
@@ -88,8 +88,8 @@ fn compare(
         }
     };
 
-    let latest = Version::parse(&manifest.version)
-        .map_err(|e| UpdateError::Semver(e.to_string()))?;
+    let latest =
+        Version::parse(&manifest.version).map_err(|e| UpdateError::Semver(e.to_string()))?;
 
     // Skip if user skipped this version
     if state.skipped_version.as_deref() == Some(&manifest.version) {
@@ -124,8 +124,8 @@ fn compare(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use crate::update::manifest::PlatformEntry;
+    use std::collections::HashMap;
 
     fn make_manifest(version: &str, platform_url: &str) -> Manifest {
         let mut platforms = HashMap::new();

@@ -64,7 +64,10 @@ pub fn write_pending_title_marker(sessions_dir: &Path, session_dir: &Path) {
     let pending = serde_json::json!({
         "session_dir": session_dir.to_string_lossy(),
     });
-    if let Err(e) = std::fs::write(&pending_path, serde_json::to_string_pretty(&pending).unwrap()) {
+    if let Err(e) = std::fs::write(
+        &pending_path,
+        serde_json::to_string_pretty(&pending).unwrap(),
+    ) {
         tracing::warn!(error = %e, "failed to write pending title marker");
     }
 }
@@ -155,22 +158,22 @@ async fn call_llm_for_title(
 
     let response = provider.chat(request).await?;
     let title = response.content.trim().to_string();
-    
+
     // Validate title length and content
     if title.is_empty() {
         return Ok(String::new());
     }
-    
+
     // Truncate if too long
     let title = if title.chars().count() > MAX_TITLE_LENGTH {
         title.chars().take(MAX_TITLE_LENGTH).collect()
     } else {
         title
     };
-    
+
     // Remove any quotes or special characters that might have been added
     let title = title.trim_matches(|c: char| c == '"' || c == '\'' || c == '「' || c == '」');
-    
+
     Ok(title.to_string())
 }
 

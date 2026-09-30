@@ -17,7 +17,9 @@ use phi_tui::transcript::DEFAULT_WRAP_WIDTH;
 
 use crate::banner::BannerStyle;
 
-use super::app::{AgentStatus, App, BackgroundTaskEntry, FocusTarget, SubAgentState, SubAgentStatus};
+use super::app::{
+    AgentStatus, App, BackgroundTaskEntry, FocusTarget, SubAgentState, SubAgentStatus,
+};
 use super::bg_wake::{MAX_TAIL_PER_TASK, may_reap};
 
 /// How long a completed background task stays visible in the panel before
@@ -38,7 +40,10 @@ pub(crate) struct ThinkingPanelState {
 impl App {
     /// Number of tracked sub-agents still `Running`.
     pub(crate) fn running_sub_agents(&self) -> usize {
-        self.sub_agents.values().filter(|s| s.status == SubAgentStatus::Running).count()
+        self.sub_agents
+            .values()
+            .filter(|s| s.status == SubAgentStatus::Running)
+            .count()
     }
 
     /// Running background tasks split by deadline: `(bounded, daemons)`.
@@ -96,7 +101,10 @@ impl App {
             self.status = if n > 0 || bounded > 0 {
                 // `bg` stays "all running" so the counter never under-reports;
                 // the wait itself is justified by bounded jobs only.
-                AgentStatus::Waiting { running: n, bg: bounded + daemons }
+                AgentStatus::Waiting {
+                    running: n,
+                    bg: bounded + daemons,
+                }
             } else {
                 AgentStatus::Idle
             };
@@ -117,16 +125,21 @@ impl App {
             self.flush_pending();
             // Extract task name from agent_id (format: "root/<task_name>")
             let name = p.split('/').last().unwrap_or(p).to_string();
-            self.sub_agents.insert(p.to_string(), SubAgentState {
-                name,
-                status: SubAgentStatus::Running,
-                files: Vec::new(),
-                started_at: Instant::now(),
-                completed_at: None,
-                last_tool_at: Instant::now(),
-                events: Vec::new(),
-            });
-            self.transcript.push(OutputLine { spans: None, original: None,
+            self.sub_agents.insert(
+                p.to_string(),
+                SubAgentState {
+                    name,
+                    status: SubAgentStatus::Running,
+                    files: Vec::new(),
+                    started_at: Instant::now(),
+                    completed_at: None,
+                    last_tool_at: Instant::now(),
+                    events: Vec::new(),
+                },
+            );
+            self.transcript.push(OutputLine {
+                spans: None,
+                original: None,
                 detail: None,
                 text: format!("* [{p}] started"),
                 kind: LineKind::Tool,
@@ -184,7 +197,9 @@ impl App {
             // receiving status updates below.
             if !self.background_tasks.contains_key(&snap.id)
                 && snap.status != BackgroundTaskStatus::Running
-                && snap.finished_at.map_or(false, |at| at.elapsed() >= BACKGROUND_REAP_AFTER)
+                && snap
+                    .finished_at
+                    .map_or(false, |at| at.elapsed() >= BACKGROUND_REAP_AFTER)
             {
                 continue;
             }
@@ -237,7 +252,9 @@ impl App {
         // that still owes the agent a wake report (see `may_reap`). The
         // registry's consume-GC can drop an entry whose outcome has not been
         // reported yet; the map keeps it until the wake delivers.
-        let stale_ids: Vec<String> = self.background_tasks.iter()
+        let stale_ids: Vec<String> = self
+            .background_tasks
+            .iter()
             .filter(|(id, t)| !live_ids.contains(*id) && may_reap(t))
             .map(|(id, _)| id.clone())
             .collect();
@@ -255,10 +272,13 @@ impl App {
             && !matches!(self.task_panel.focus, FocusTarget::TaskList(_))
         {
             let now = Instant::now();
-            let reap_ids: Vec<String> = self.background_tasks.iter()
+            let reap_ids: Vec<String> = self
+                .background_tasks
+                .iter()
                 .filter(|(_, t)| {
                     t.status != BackgroundTaskStatus::Running
-                        && t.finished_at.map_or(false, |at| now.duration_since(at) >= BACKGROUND_REAP_AFTER)
+                        && t.finished_at
+                            .map_or(false, |at| now.duration_since(at) >= BACKGROUND_REAP_AFTER)
                         && may_reap(t)
                 })
                 .map(|(id, _)| id.clone())
@@ -304,13 +324,13 @@ impl App {
                     (SubAgentStatus::Running, false) => {
                         state.status = SubAgentStatus::Done;
                         state.completed_at = Some(Instant::now());
-                    },
+                    }
                     (SubAgentStatus::Done, true) => {
                         // Re-tasked (send_message trigger): reopen the entry.
                         state.status = SubAgentStatus::Running;
                         state.completed_at = None;
-                    },
-                    _ => {},
+                    }
+                    _ => {}
                 }
             }
         }
@@ -345,10 +365,14 @@ impl App {
         }
         let now = Instant::now();
         let mut removed = false;
-        let ids_to_remove: Vec<String> = self.sub_agents.iter()
+        let ids_to_remove: Vec<String> = self
+            .sub_agents
+            .iter()
             .filter(|(_, state)| {
-                state.status == SubAgentStatus::Done &&
-                state.completed_at.map_or(false, |at| now.duration_since(at).as_secs() >= 3)
+                state.status == SubAgentStatus::Done
+                    && state
+                        .completed_at
+                        .map_or(false, |at| now.duration_since(at).as_secs() >= 3)
             })
             .map(|(id, _)| id.clone())
             .collect();
@@ -429,7 +453,11 @@ impl App {
     }
 
     /// Accumulate a child's reasoning delta into its own stream buffer.
-    pub(crate) fn push_child_thought(&mut self, id: &str, text: &str) -> Vec<OutputLine<BannerStyle>> {
+    pub(crate) fn push_child_thought(
+        &mut self,
+        id: &str,
+        text: &str,
+    ) -> Vec<OutputLine<BannerStyle>> {
         self.child_streams
             .entry(id.to_string())
             .or_insert_with(|| StreamState::new(DEFAULT_WRAP_WIDTH))

@@ -112,7 +112,8 @@ mod tests {
 
     #[test]
     fn partial_json_fills_defaults() {
-        let state: UpdateState = serde_json::from_str(r#"{"last_check_at":"2026-01-01T00:00:00Z"}"#).unwrap();
+        let state: UpdateState =
+            serde_json::from_str(r#"{"last_check_at":"2026-01-01T00:00:00Z"}"#).unwrap();
         assert_eq!(state.last_check_at.unwrap(), "2026-01-01T00:00:00Z");
         assert!(state.skipped_version.is_none());
     }

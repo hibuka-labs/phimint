@@ -110,7 +110,9 @@ impl App {
             return None;
         }
 
-        let ready: Vec<WakeItem> = self.background_tasks.values()
+        let ready: Vec<WakeItem> = self
+            .background_tasks
+            .values()
             .filter(|t| !t.reported && is_wake_worthy(&t.status))
             .map(|t| WakeItem {
                 id: t.id.clone(),

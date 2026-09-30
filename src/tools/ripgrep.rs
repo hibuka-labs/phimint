@@ -69,7 +69,9 @@ impl Tool for RipgrepTool {
             .trim()
             .to_string();
         if pattern.is_empty() {
-            return Ok(vec![Content::text("[Error]: no pattern provided".to_string())]);
+            return Ok(vec![Content::text(
+                "[Error]: no pattern provided".to_string(),
+            )]);
         }
 
         let path = args

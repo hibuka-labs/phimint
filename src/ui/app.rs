@@ -17,22 +17,22 @@ use phi_kernel_tools::background_shell::{BackgroundTaskRegistry, BackgroundTaskS
 
 use crate::approval::ApprovalItem;
 use crate::banner::{BannerRow, BannerStyle, ColorScheme};
+use phi_tui::completer::{CompleterAction, MentionCompleter, SlashCompleter};
 use phi_tui::input::Composer;
 use phi_tui::lines::{LineKind, OutputLine};
 use phi_tui::popup_list::PopupStyle;
-use phi_tui::completer::{MentionCompleter, SlashCompleter, CompleterAction};
 use phi_tui::selection::SelectionState;
 use phi_tui::stream::StreamState;
-use phi_tui::transcript::{Transcript, DEFAULT_WRAP_WIDTH};
-use phi_tui::visual::VisualMap;
+use phi_tui::transcript::{DEFAULT_WRAP_WIDTH, Transcript};
 use phi_tui::viewport::Viewport;
+use phi_tui::visual::VisualMap;
 use phi_tui::wrap::wrap;
 
 // Selection / ContextMenu / context_menu_pos / CONTEXT_MENU_* moved to
 // selection.rs; re-exported here for the renderer and tests.
 #[allow(unused_imports)] // re-exported for external consumers (tests use it via super::*)
 pub use phi_tui::selection::{
-    ContextMenu, Selection, CONTEXT_MENU_H, CONTEXT_MENU_W, context_menu_pos,
+    CONTEXT_MENU_H, CONTEXT_MENU_W, ContextMenu, Selection, context_menu_pos,
 };
 
 /// The phase of a running turn, driven by the event stream (§9.6 state machine).
@@ -51,8 +51,13 @@ pub enum AgentStatus {
     /// (`running`, fan-in wake) and/or background shell tasks (`bg`, bg
     /// wake). The two counts are independent: either alone, or both, keep
     /// the agent in `Waiting` instead of dropping to `Idle`.
-    Waiting { running: usize, bg: usize },
-    Running { phase: Phase },
+    Waiting {
+        running: usize,
+        bg: usize,
+    },
+    Running {
+        phase: Phase,
+    },
 }
 
 /// Live state of a sub-agent shown in the task panel.
@@ -213,7 +218,10 @@ pub enum TuiEvent {
     /// A turn completed (safety net in case `RunFinished` was never seen).
     TurnDone,
     /// An update check found a new version.
-    UpdateAvailable { version: String, download_url: String },
+    UpdateAvailable {
+        version: String,
+        download_url: String,
+    },
 }
 
 #[derive(Debug)]
@@ -451,8 +459,12 @@ impl App {
     /// Red ❌ line for turn errors and mid-turn warnings (wrapped).
     pub(crate) fn push_error_line(&mut self, msg: &str) {
         let err_text = format!("❌ {msg}");
-        for (i, line) in wrap(&err_text, self.transcript.wrap_width()).into_iter().enumerate() {
-            self.transcript.push(OutputLine { spans: None,
+        for (i, line) in wrap(&err_text, self.transcript.wrap_width())
+            .into_iter()
+            .enumerate()
+        {
+            self.transcript.push(OutputLine {
+                spans: None,
                 original: if i == 0 { Some(err_text.clone()) } else { None },
                 detail: None,
                 text: line,
@@ -477,9 +489,7 @@ impl App {
                     (r, 0) => {
                         format!("... 等待子 agent 返回（{r} 个运行中），结果将自动注入")
                     }
-                    (0, b) => format!(
-                        "... 等待后台任务完成（{b} 个运行中），完成后将自动汇报结果"
-                    ),
+                    (0, b) => format!("... 等待后台任务完成（{b} 个运行中），完成后将自动汇报结果"),
                     (r, b) => format!(
                         "... 等待子 agent（{r} 个）+ 后台任务（{b} 个）完成，结果将自动注入"
                     ),
@@ -487,14 +497,18 @@ impl App {
                 if daemons > 0 {
                     text.push_str(&format!("（另有 {daemons} 个后台服务长驻运行中）"));
                 }
-                self.transcript.push(OutputLine { spans: None, original: None,
+                self.transcript.push(OutputLine {
+                    spans: None,
+                    original: None,
                     detail: None,
                     text,
                     kind: LineKind::System,
                 });
             }
         } else if show_done_marker {
-            self.transcript.push(OutputLine { spans: None, original: None,
+            self.transcript.push(OutputLine {
+                spans: None,
+                original: None,
                 detail: None,
                 text: "✅ done".to_string(),
                 kind: LineKind::Done,
@@ -503,7 +517,9 @@ impl App {
         // Daemon-only settlement: the agent IS done — say so plainly, then
         // note the service without any "waiting" framing.
         if daemons > 0 && matches!(self.status, AgentStatus::Idle) {
-            self.transcript.push(OutputLine { spans: None, original: None,
+            self.transcript.push(OutputLine {
+                spans: None,
+                original: None,
                 detail: None,
                 text: format!("🟢 后台服务 {daemons} 个运行中（长驻；异常退出时会自动通知）"),
                 kind: LineKind::System,
@@ -527,7 +543,10 @@ impl App {
         let running = self.running_sub_agents();
         let (bounded, daemons) = self.bg_running_split();
         if running > 0 || bounded > 0 {
-            self.status = AgentStatus::Waiting { running, bg: bounded + daemons };
+            self.status = AgentStatus::Waiting {
+                running,
+                bg: bounded + daemons,
+            };
             true
         } else {
             self.status = AgentStatus::Idle;
@@ -627,7 +646,11 @@ impl App {
     }
 
     /// Key handling while the mention picker is open (swallows everything).
-    pub(crate) fn handle_mention_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Option<Action> {
+    pub(crate) fn handle_mention_key(
+        &mut self,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+    ) -> Option<Action> {
         let _ = modifiers;
         let Some(m) = self.mention.as_mut() else {
             return None;
@@ -715,7 +738,11 @@ impl App {
     // ── / skill picker ──────────────────────────────────────────────────────
 
     /// Key handling while the skill picker is open.
-    pub(crate) fn handle_slash_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Option<Action> {
+    pub(crate) fn handle_slash_key(
+        &mut self,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+    ) -> Option<Action> {
         let _ = modifiers;
         let Some(s) = self.slash.as_mut() else {
             return None;
@@ -889,20 +916,38 @@ impl App {
             }
             AgentStatus::Running { phase } => match phase {
                 Phase::Thinking => {
-                    format!("{} thinking...{} (Ctrl+C cancel)", self.spinner_char(), self.elapsed_suffix())
+                    format!(
+                        "{} thinking...{} (Ctrl+C cancel)",
+                        self.spinner_char(),
+                        self.elapsed_suffix()
+                    )
                 }
                 Phase::Streaming => {
-                    format!("{} streaming...{} (Ctrl+C cancel)", self.spinner_char(), self.elapsed_suffix())
+                    format!(
+                        "{} streaming...{} (Ctrl+C cancel)",
+                        self.spinner_char(),
+                        self.elapsed_suffix()
+                    )
                 }
                 Phase::ToolCall { tool } => match &self.live_progress {
                     Some(p) => {
-                        format!("{} 🔧 {tool}: {p}{}", self.spinner_char(), self.elapsed_suffix())
+                        format!(
+                            "{} 🔧 {tool}: {p}{}",
+                            self.spinner_char(),
+                            self.elapsed_suffix()
+                        )
                     }
                     None => {
-                        format!("{} 🔧 {tool}{} (Ctrl+C cancel)", self.spinner_char(), self.elapsed_suffix())
+                        format!(
+                            "{} 🔧 {tool}{} (Ctrl+C cancel)",
+                            self.spinner_char(),
+                            self.elapsed_suffix()
+                        )
                     }
                 },
-                Phase::AwaitingApproval => "!! waiting approval... (y/a/n, Ctrl+C cancel)".to_string(),
+                Phase::AwaitingApproval => {
+                    "!! waiting approval... (y/a/n, Ctrl+C cancel)".to_string()
+                }
             },
         }
     }

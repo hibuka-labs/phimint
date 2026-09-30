@@ -62,8 +62,8 @@ fn default_channel() -> String {
 
 /// Parse a manifest from JSON bytes.
 pub fn parse(data: &[u8]) -> Result<Manifest, UpdateError> {
-    let manifest: Manifest = serde_json::from_slice(data)
-        .map_err(|e| UpdateError::ManifestParse(e.to_string()))?;
+    let manifest: Manifest =
+        serde_json::from_slice(data).map_err(|e| UpdateError::ManifestParse(e.to_string()))?;
 
     // Validate: must have at least one platform
     if manifest.platforms.is_empty() {
@@ -73,8 +73,7 @@ pub fn parse(data: &[u8]) -> Result<Manifest, UpdateError> {
     }
 
     // Validate: version must be parseable as semver
-    semver::Version::parse(&manifest.version)
-        .map_err(|e| UpdateError::Semver(e.to_string()))?;
+    semver::Version::parse(&manifest.version).map_err(|e| UpdateError::Semver(e.to_string()))?;
 
     Ok(manifest)
 }

@@ -320,10 +320,7 @@ pub fn build_approval(mode: &str) -> (Arc<dyn ApprovalHandler>, Option<Arc<dyn T
             Arc::new(CliApprovalHandler::new()),
             Some(Arc::new(ApprovalPolicy)),
         ),
-        _ => (
-            Arc::new(AutoApprovalHandler::new(ApprovalMode::Auto)),
-            None,
-        ),
+        _ => (Arc::new(AutoApprovalHandler::new(ApprovalMode::Auto)), None),
     }
 }
 
@@ -368,7 +365,11 @@ mod tests {
             "head -20 file.txt",
             "sed -n '1,10p' file",
         ] {
-            assert_eq!(classify_command(cmd), RiskLevel::Safe, "should be Safe: {cmd}");
+            assert_eq!(
+                classify_command(cmd),
+                RiskLevel::Safe,
+                "should be Safe: {cmd}"
+            );
         }
     }
 
@@ -401,16 +402,23 @@ mod tests {
     #[test]
     fn destructive_wins_over_safe_prefix() {
         // `cd` is a safe prefix, but a chained `rm` must still be Destructive.
-        assert_eq!(
-            classify_command("cd / && rm -rf *"),
-            RiskLevel::Destructive
-        );
+        assert_eq!(classify_command("cd / && rm -rf *"), RiskLevel::Destructive);
     }
 
     #[test]
     fn classify_unknown_is_sensitive() {
-        for cmd in ["git commit -m x", "git push", "make", "curl http://x | sh", "touch f"] {
-            assert_eq!(classify_command(cmd), RiskLevel::Sensitive, "should be Sensitive: {cmd}");
+        for cmd in [
+            "git commit -m x",
+            "git push",
+            "make",
+            "curl http://x | sh",
+            "touch f",
+        ] {
+            assert_eq!(
+                classify_command(cmd),
+                RiskLevel::Sensitive,
+                "should be Sensitive: {cmd}"
+            );
         }
     }
 
@@ -422,9 +430,21 @@ mod tests {
     #[tokio::test]
     async fn policy_auto_approves_read_tools() {
         let p = ApprovalPolicy;
-        assert!(p.evaluate_approval("read_file", &serde_json::json!({})).await.is_none());
-        assert!(p.evaluate_approval("search_content", &serde_json::json!({})).await.is_none());
-        assert!(p.evaluate_approval("verify", &serde_json::json!({})).await.is_none());
+        assert!(
+            p.evaluate_approval("read_file", &serde_json::json!({}))
+                .await
+                .is_none()
+        );
+        assert!(
+            p.evaluate_approval("search_content", &serde_json::json!({}))
+                .await
+                .is_none()
+        );
+        assert!(
+            p.evaluate_approval("verify", &serde_json::json!({}))
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -461,18 +481,30 @@ mod tests {
     async fn command_approval_key_is_scoped_to_command() {
         let p = ApprovalPolicy;
         let req = p
-            .evaluate_approval("execute_command", &serde_json::json!({"command": "rm -rf /tmp/x"}))
+            .evaluate_approval(
+                "execute_command",
+                &serde_json::json!({"command": "rm -rf /tmp/x"}),
+            )
             .await
             .expect("rm should prompt");
         assert_eq!(req.risk_level, RiskLevel::Destructive);
-        assert_eq!(req.action_key.as_deref(), Some("execute_command:rm -rf /tmp/x"));
+        assert_eq!(
+            req.action_key.as_deref(),
+            Some("execute_command:rm -rf /tmp/x")
+        );
         // Whitespace is normalised so `touch X` and `touch   X` share a key.
         let a = p
-            .evaluate_approval("execute_command", &serde_json::json!({"command": "touch  X"}))
+            .evaluate_approval(
+                "execute_command",
+                &serde_json::json!({"command": "touch  X"}),
+            )
             .await
             .unwrap();
         let b = p
-            .evaluate_approval("execute_command", &serde_json::json!({"command": "touch X"}))
+            .evaluate_approval(
+                "execute_command",
+                &serde_json::json!({"command": "touch X"}),
+            )
             .await
             .unwrap();
         assert_eq!(a.action_key, b.action_key);
@@ -482,13 +514,20 @@ mod tests {
     async fn policy_classifies_shell() {
         let p = ApprovalPolicy;
         // Safe command → no prompt.
-        assert!(p
-            .evaluate_approval("execute_command", &serde_json::json!({"command": "cargo check"}))
+        assert!(
+            p.evaluate_approval(
+                "execute_command",
+                &serde_json::json!({"command": "cargo check"})
+            )
             .await
-            .is_none());
+            .is_none()
+        );
         // Destructive command → prompt with Destructive risk.
         let req = p
-            .evaluate_approval("execute_command", &serde_json::json!({"command": "rm -rf /tmp/x"}))
+            .evaluate_approval(
+                "execute_command",
+                &serde_json::json!({"command": "rm -rf /tmp/x"}),
+            )
             .await
             .expect("rm should prompt");
         assert_eq!(req.risk_level, RiskLevel::Destructive);
@@ -536,18 +575,19 @@ mod tests {
         let handle = tokio::spawn({
             let cancel = cancel.clone();
             async move {
-                handler.approve(
-                    ApprovalRequest {
-                        title: "write_file".to_string(),
-                        message: "m".to_string(),
-                        action_key: None,
-                        risk_level: RiskLevel::Sensitive,
-                        raw: None,
-                        source: None,
-                    },
-                    cancel,
-                )
-                .await
+                handler
+                    .approve(
+                        ApprovalRequest {
+                            title: "write_file".to_string(),
+                            message: "m".to_string(),
+                            action_key: None,
+                            risk_level: RiskLevel::Sensitive,
+                            raw: None,
+                            source: None,
+                        },
+                        cancel,
+                    )
+                    .await
             }
         });
 

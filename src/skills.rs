@@ -126,8 +126,16 @@ mod tests {
     fn default_dirs_layer_project_over_user() {
         let dirs = default_skill_dirs();
         assert_eq!(dirs.len(), 2);
-        assert!(dirs[0].ends_with(".claude/skills"), "user level first: {:?}", dirs[0]);
-        assert_eq!(dirs[1], PathBuf::from(".claude/skills"), "project level second");
+        assert!(
+            dirs[0].ends_with(".claude/skills"),
+            "user level first: {:?}",
+            dirs[0]
+        );
+        assert_eq!(
+            dirs[1],
+            PathBuf::from(".claude/skills"),
+            "project level second"
+        );
     }
 
     mod active_skills {
@@ -138,7 +146,9 @@ mod tests {
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(
                 dir.join("SKILL.md"),
-                format!("---\nname: {name}\ndescription: fixture\nuser-invocable: true\n---\n\n{body}"),
+                format!(
+                    "---\nname: {name}\ndescription: fixture\nuser-invocable: true\n---\n\n{body}"
+                ),
             )
             .unwrap();
             SkillResolver::from_dirs(&[tmp.join("skills")])
@@ -153,8 +163,14 @@ mod tests {
         #[test]
         fn appended_section_demotes_h2_and_lists_every_entry() {
             let active = vec![
-                ActiveSkillEntry { name: "a".into(), body: "## Inner\n\nbody a\n".into() },
-                ActiveSkillEntry { name: "b".into(), body: "plain body b\n".into() },
+                ActiveSkillEntry {
+                    name: "a".into(),
+                    body: "## Inner\n\nbody a\n".into(),
+                },
+                ActiveSkillEntry {
+                    name: "b".into(),
+                    body: "plain body b\n".into(),
+                },
             ];
             let out = append_active_skills("base", &active);
             assert!(out.starts_with("base"));
@@ -175,7 +191,10 @@ mod tests {
             let base = crate::agent::compose_system_prompt(&resolver);
             let out = append_active_skills(
                 &base,
-                &[ActiveSkillEntry { name: "s1".into(), body: "body one".into() }],
+                &[ActiveSkillEntry {
+                    name: "s1".into(),
+                    body: "body one".into(),
+                }],
             );
             assert!(out.starts_with(&base), "base must be preserved verbatim");
             assert!(out.contains("## Active Skills"));

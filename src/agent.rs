@@ -8,18 +8,19 @@ use phi_agent::{
     ApprovalHandler, ChildPermissionMode, ControlConfig, DefaultGuard, DefaultGuardConfig,
     LocalShellTool, MaxTurnsNudgeConfig, MaxTurnsNudgeMiddleware, MemoryConfig, MultiAgentConfig,
     PhiAgent, PhiAgentConfig, ReasoningEffort, ReasoningOnlyAction, RepeatToolLimitConfig,
-    RepeatToolLimitMiddleware, TokenBudgetConfig,
-    TokenBudgetCore, ToolPolicy, base_agent_builder_no_compression,
-    base_agent_builder_with_excludes,
+    RepeatToolLimitMiddleware, TokenBudgetConfig, TokenBudgetCore, ToolPolicy,
+    base_agent_builder_no_compression, base_agent_builder_with_excludes,
 };
 
-use code_intel::lsp::{ClientInfo, LspManager, LspServerSpec};
-use phi_kernel_tools::background_shell::{BackgroundTaskRegistry, TaskOutputTool, TaskCancelTool};
-use phi_kernel_tools::context_rotation::{HistoryStore, NotesStore, create_history_tools, create_notes_tools};
+use crate::context_rotation::TokenBudgetCompactor;
 use crate::skills::{SkillResolver, SkillTelemetry, SkillTool, render_catalog};
 use crate::tools::diagnostics::DiagnosticsTool;
 use crate::tools::{repomap::RepoMapTool, ripgrep::RipgrepTool};
-use crate::context_rotation::TokenBudgetCompactor;
+use code_intel::lsp::{ClientInfo, LspManager, LspServerSpec};
+use phi_kernel_tools::background_shell::{BackgroundTaskRegistry, TaskCancelTool, TaskOutputTool};
+use phi_kernel_tools::context_rotation::{
+    HistoryStore, NotesStore, create_history_tools, create_notes_tools,
+};
 
 /// Coding-oriented system prompt (adapted from Codex).
 const SYSTEM_PROMPT: &str = r#"You are phimint, a coding agent running in a terminal-based TUI. You are expected to be precise, safe, and helpful.
@@ -193,8 +194,8 @@ pub struct TokenBudgetOptions {
 /// sub-agent must not pollute parent notes). `history.*` is read-only: kept.
 fn child_multi_agent_config(has_policy: bool) -> MultiAgentConfig {
     MultiAgentConfig {
-                // Sub-agent permission follows the approval mode (codex-style
-                // delegation lives in agent-works): auto (no policy) grants full; ask/deny restrict and escalate.
+        // Sub-agent permission follows the approval mode (codex-style
+        // delegation lives in agent-works): auto (no policy) grants full; ask/deny restrict and escalate.
         child_permission_mode: if has_policy {
             ChildPermissionMode::None
         } else {
@@ -205,9 +206,9 @@ fn child_multi_agent_config(has_policy: bool) -> MultiAgentConfig {
         // (verified on-device), auto writes with full permission
         // (consistent with its parent).
         allow_child_write: true,
-                // Sub-agents are read-only investigators by default (read/search/report).
-                // The hard gate is this exclusion table; write capability means write_tools
-                // members are exempted from it (framework rule), so the table only lists tools no sub-agent should get.
+        // Sub-agents are read-only investigators by default (read/search/report).
+        // The hard gate is this exclusion table; write capability means write_tools
+        // members are exempted from it (framework rule), so the table only lists tools no sub-agent should get.
         child_excluded_tools: vec![
             "write_file".to_string(),
             "edit_file".to_string(),
@@ -217,11 +218,11 @@ fn child_multi_agent_config(has_policy: bool) -> MultiAgentConfig {
             "notes.write_file".to_string(),
             "notes.append_to_file".to_string(),
         ],
-                // Sub-agents get a narrow slice; reasoning depth is capped to stop them running away (the deepseek-v4-pro lesson).
+        // Sub-agents get a narrow slice; reasoning depth is capped to stop them running away (the deepseek-v4-pro lesson).
         child_reasoning_effort: Some(ReasoningEffort::Low),
-                // D3.1: the global nudge is off; the per-child rule owns it.
+        // D3.1: the global nudge is off; the per-child rule owns it.
         child_read_only: false,
-                // Hang guard (S9.2): a stuck sub-agent is hard-stopped after 10 minutes and its Error is pushed to the parent.
+        // Hang guard (S9.2): a stuck sub-agent is hard-stopped after 10 minutes and its Error is pushed to the parent.
         control: ControlConfig {
             task_timeout: Some(std::time::Duration::from_secs(10 * 60)),
             ..ControlConfig::default()
@@ -254,7 +255,12 @@ pub fn build(
     model: String,
     skill_dirs: Vec<PathBuf>,
     token_budget_opts: Option<TokenBudgetOptions>,
-) -> Result<(PhiAgent, Arc<SkillResolver>, Arc<SkillTelemetry>, Arc<BackgroundTaskRegistry>)> {
+) -> Result<(
+    PhiAgent,
+    Arc<SkillResolver>,
+    Arc<SkillTelemetry>,
+    Arc<BackgroundTaskRegistry>,
+)> {
     // Skills catalog (skill-injection design D1): the resolver must exist
     // BEFORE the builder — the catalog joins the system prompt at build time,
     // not after the agent is constructed. Wrapped in Arc so the `skill` tool
@@ -344,10 +350,7 @@ pub fn build(
         crate::context_rotation::set_global_compactor(Arc::clone(&compactor));
 
         // Register history + notes tools
-        let history_store = Arc::new(HistoryStore::new(
-            &tb_opts.base_dir,
-            &tb_opts.session_id,
-        ));
+        let history_store = Arc::new(HistoryStore::new(&tb_opts.base_dir, &tb_opts.session_id));
         let notes_store = Arc::new(NotesStore::new(
             &tb_opts.base_dir,
             &tb_opts.session_id,
@@ -379,17 +382,17 @@ pub fn build(
             .unwrap_or_else(|_| std::path::PathBuf::from("."));
 
         vec![
-            home.join(".claude").join("CLAUDE.md"),  // user-level (lowest priority)
-            std::path::PathBuf::from(".claude/CLAUDE.md"),  // project-level (.claude/)
-            std::path::PathBuf::from("CLAUDE.md"),   // project-level (root)
+            home.join(".claude").join("CLAUDE.md"), // user-level (lowest priority)
+            std::path::PathBuf::from(".claude/CLAUDE.md"), // project-level (.claude/)
+            std::path::PathBuf::from("CLAUDE.md"),  // project-level (root)
         ]
     };
 
     let mut builder = builder
         .system_prompt(system_prompt)
         .approval_handler(approval)
-                // phimint already injects the skill catalog in compose_system_prompt --
-                // agent-works' LazySkillPrompter must not append a second "## Available Skills".
+        // phimint already injects the skill catalog in compose_system_prompt --
+        // agent-works' LazySkillPrompter must not append a second "## Available Skills".
         .disable_skill_prompt_injection()
         // Inject CLAUDE.md (user-level + project-level) into system prompt
         .agent_instructions_paths(agent_instructions_paths)
@@ -416,7 +419,10 @@ pub fn build(
         .register_tool(RipgrepTool::new(workspace_root.clone()))
         .register_tool(RepoMapTool::new(workspace_root.clone()))
         // skill tool (skill-injection D2): model-initiated skill body loader.
-        .register_tool(SkillTool::new(Arc::clone(&skill_resolver), Arc::clone(&skill_telemetry)))
+        .register_tool(SkillTool::new(
+            Arc::clone(&skill_resolver),
+            Arc::clone(&skill_telemetry),
+        ))
         // Per-turn catalog refresh (skill-injection M3a): in-place swap of the
         // catalog section before each LLM call — the builder injected one copy
         // at build time, this middleware keeps it current without duplication.
@@ -464,10 +470,11 @@ pub fn build(
     // Custom guard: inject "stop thinking, act now" nudge for reasoning-only responses
     // Use DisableThinking strategy to handle reasoning-only loops
     let guard_config = DefaultGuardConfig {
-        reasoning_only_nudge: "STOP THINKING. You have been reasoning too long without taking action. \
+        reasoning_only_nudge:
+            "STOP THINKING. You have been reasoning too long without taking action. \
             IMMEDIATELY call a tool or provide your final answer. Do NOT produce more reasoning. \
             Just DO something NOW."
-            .to_string(),
+                .to_string(),
         reasoning_only_max_strikes: 2, // Fail faster after 2 reasoning-only turns
         reasoning_only_action: ReasoningOnlyAction::DisableThinking, // Disable thinking instead of failing
         disable_thinking_nudge: "Thinking has been disabled due to excessive reasoning. \
@@ -529,18 +536,24 @@ pub fn build(
         "high" => ReasoningEffort::High,
         "xhigh" => ReasoningEffort::XHigh,
         _ => {
-            tracing::warn!(effort = reasoning_effort, "unknown reasoning effort, using Medium");
+            tracing::warn!(
+                effort = reasoning_effort,
+                "unknown reasoning effort, using Medium"
+            );
             ReasoningEffort::Medium
         }
     };
 
-    let agent = PhiAgent::build(builder, PhiAgentConfig {
-        enable_thinking: true,
-        thinking_budget: Some(thinking_budget),
-        thinking_effort: effort,
-        model,
-        ..PhiAgentConfig::default()
-    })?;
+    let agent = PhiAgent::build(
+        builder,
+        PhiAgentConfig {
+            enable_thinking: true,
+            thinking_budget: Some(thinking_budget),
+            thinking_effort: effort,
+            model,
+            ..PhiAgentConfig::default()
+        },
+    )?;
 
     Ok((agent, skill_resolver, skill_telemetry, bg_registry))
 }
@@ -673,11 +686,11 @@ mod prompt_guard_tests {
     // run a real `build()` + turn against a capturing mock provider — delete
     // the compose call in `build()` and those go red.
 
-    use phi_agent::llm_trait::{
-        Capabilities, ChatMessage, ChatRequest, ChatResponse, ChatStream, FinishReason,
-        LlmError, LlmProvider, ProviderInfo, StreamChunk, UsageInfo,
-    };
     use futures_util;
+    use phi_agent::llm_trait::{
+        Capabilities, ChatMessage, ChatRequest, ChatResponse, ChatStream, FinishReason, LlmError,
+        LlmProvider, ProviderInfo, StreamChunk, UsageInfo,
+    };
     use std::sync::{Arc, Mutex};
 
     /// LLM stub that records the system prompt of every request it receives
@@ -700,9 +713,13 @@ mod prompt_guard_tests {
             self.record(&request);
             let chunks: Vec<Result<StreamChunk, LlmError>> = vec![
                 Ok(StreamChunk::Text("done".to_string())),
-                Ok(StreamChunk::Stop { finish_reason: Some("stop".to_string()) }),
+                Ok(StreamChunk::Stop {
+                    finish_reason: Some("stop".to_string()),
+                }),
             ];
-            Ok(ChatStream::new(Box::pin(futures_util::stream::iter(chunks))))
+            Ok(ChatStream::new(Box::pin(futures_util::stream::iter(
+                chunks,
+            ))))
         }
 
         async fn chat(&self, request: ChatRequest) -> Result<ChatResponse, LlmError> {
@@ -782,7 +799,10 @@ mod prompt_guard_tests {
         )
         .unwrap();
         let session = agent.create_session().await;
-        agent.run_turn(session, "hello", |_ev| Ok(())).await.unwrap();
+        agent
+            .run_turn(session, "hello", |_ev| Ok(()))
+            .await
+            .unwrap();
 
         let prompts = provider.system_prompts.lock().unwrap().clone();
         assert!(
@@ -799,9 +819,18 @@ mod prompt_guard_tests {
         let resolver = crate::skills::SkillResolver::from_dirs(&[skill_dir]);
 
         let prompt = compose_system_prompt(&resolver);
-        assert!(prompt.starts_with(SYSTEM_PROMPT), "catalog must be appended AFTER the base prompt");
-        assert!(prompt[SYSTEM_PROMPT.len()..].contains("## Skills"), "{prompt}");
-        assert!(prompt.contains("- catalog-skill: guard fixture skill\n"), "{prompt}");
+        assert!(
+            prompt.starts_with(SYSTEM_PROMPT),
+            "catalog must be appended AFTER the base prompt"
+        );
+        assert!(
+            prompt[SYSTEM_PROMPT.len()..].contains("## Skills"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("- catalog-skill: guard fixture skill\n"),
+            "{prompt}"
+        );
         assert!(prompt.contains("### How to use skills"), "{prompt}");
         assert!(
             prompt.contains(
@@ -870,7 +899,10 @@ mod prompt_guard_tests {
         )
         .unwrap();
         let session = agent.create_session().await;
-        agent.run_turn(session.clone(), "warmup", |_ev| Ok(())).await.unwrap();
+        agent
+            .run_turn(session.clone(), "warmup", |_ev| Ok(()))
+            .await
+            .unwrap();
 
         // The pristine build-time prompt (catalog + CLAUDE.md + memory index)
         // — exactly what agent_loop captures once before any bake. Baking
@@ -882,7 +914,9 @@ mod prompt_guard_tests {
 
         // Session-branch dispatch: activate, re-bake, run the raw command.
         let input = "/catalog-skill".to_string();
-        let r = resolver.resolve_with_meta(&input).expect("fixture mismatch");
+        let r = resolver
+            .resolve_with_meta(&input)
+            .expect("fixture mismatch");
         assert_eq!(r.scope, crate::skills::SkillScope::Session);
         let active = vec![crate::skills::ActiveSkillEntry {
             name: r.name.clone(),
@@ -932,7 +966,9 @@ mod prompt_guard_tests {
         let prompts = system_prompts_received(vec![empty]).await;
 
         assert!(
-            prompts.iter().any(|p| p.starts_with(SYSTEM_PROMPT) && !p.contains("## Skills")),
+            prompts
+                .iter()
+                .any(|p| p.starts_with(SYSTEM_PROMPT) && !p.contains("## Skills")),
             "with no skills the live prompt must be the base prompt with no catalog fragment"
         );
     }
@@ -1104,8 +1140,7 @@ mod prompt_guard_tests {
             .memory_root
             .display()
             .to_string();
-        let prompts =
-            system_prompts_received_in(tmp.path(), vec![tmp.path().join("skills")]).await;
+        let prompts = system_prompts_received_in(tmp.path(), vec![tmp.path().join("skills")]).await;
 
         assert!(
             prompts.iter().any(|p| {
@@ -1129,7 +1164,7 @@ mod prompt_guard_tests {
 
     use phi_agent::{ChildToolCapability, resolve_capability};
 
-        /// T9 (outside voice finding 4): the task-boundary guidance for parallel write sub-agents must stay resident.
+    /// T9 (outside voice finding 4): the task-boundary guidance for parallel write sub-agents must stay resident.
     #[test]
     fn system_prompt_demands_disjoint_file_sets_for_parallel_writers() {
         assert!(
@@ -1142,7 +1177,7 @@ mod prompt_guard_tests {
         );
     }
 
-        /// The "read-only by default, explicit opt-in" wording replaces the old blanket read-only assertion.
+    /// The "read-only by default, explicit opt-in" wording replaces the old blanket read-only assertion.
     #[test]
     fn system_prompt_states_default_read_only_with_opt_in_write() {
         assert!(
@@ -1161,7 +1196,10 @@ mod prompt_guard_tests {
     #[test]
     fn child_config_wiring_write_open_and_notes_excluded() {
         let ask = super::child_multi_agent_config(true);
-        assert!(ask.allow_child_write, "D0: ask/deny (with policy) allows write children");
+        assert!(
+            ask.allow_child_write,
+            "D0: ask/deny (with policy) allows write children"
+        );
         assert_eq!(
             ask.child_permission_mode,
             phi_agent::ChildPermissionMode::None,
@@ -1177,10 +1215,10 @@ mod prompt_guard_tests {
             phi_agent::ChildPermissionMode::Full,
             "auto has no approval chain; children must keep Full permission (never None mode)"
         );
-                // D3.1: the computation rule owns the nudge; phimint turns the global nudge off explicitly.
+        // D3.1: the computation rule owns the nudge; phimint turns the global nudge off explicitly.
         assert!(!ask.child_read_only);
         assert!(!auto.child_read_only);
-                // eng-review finding 1: mutating notes tools must be excluded (a sub-agent must not pollute parent notes).
+        // eng-review finding 1: mutating notes tools must be excluded (a sub-agent must not pollute parent notes).
         for t in ["notes.write_file", "notes.append_to_file"] {
             assert!(
                 ask.child_excluded_tools.iter().any(|e| e == t),
@@ -1189,9 +1227,9 @@ mod prompt_guard_tests {
         }
     }
 
-        /// CRITICAL regression (design S5/S8): a default spawn (no `tools` arg ->
-        /// read_only) must have a resolved exclusion set covering **all** write tools
-        /// (notes.* included) -- this pins the behaviour for read-only scenarios like /review.
+    /// CRITICAL regression (design S5/S8): a default spawn (no `tools` arg ->
+    /// read_only) must have a resolved exclusion set covering **all** write tools
+    /// (notes.* included) -- this pins the behaviour for read-only scenarios like /review.
     #[test]
     fn critical_default_spawn_children_get_no_write_tools() {
         let write_tools = ["write_file", "edit_file", "execute_command"];
@@ -1220,7 +1258,7 @@ mod prompt_guard_tests {
                         "{t} must stay excluded for default spawn (cap={cap:?})"
                     );
                 }
-                                // Defensive: write_tools really is the default trio (this assertion flags a framework default change for review).
+                // Defensive: write_tools really is the default trio (this assertion flags a framework default change for review).
                 for t in write_tools {
                     assert!(cfg.control.write_tools.iter().any(|w| w == t));
                 }
@@ -1228,7 +1266,7 @@ mod prompt_guard_tests {
         }
     }
 
-        /// The write sub-agent surface (D0, ask mode): under a write request the write tools are exempt and registerable.
+    /// The write sub-agent surface (D0, ask mode): under a write request the write tools are exempt and registerable.
     #[test]
     fn ask_mode_write_request_exempts_write_tools() {
         let cfg = super::child_multi_agent_config(true);
@@ -1242,7 +1280,7 @@ mod prompt_guard_tests {
         for t in ["write_file", "edit_file", "execute_command"] {
             assert!(!res.excluded_tools.contains(t), "write 子 agent 需 {t}");
         }
-                // Only write_tools members are exempt -- notes.* is not in write_tools, so it stays excluded.
+        // Only write_tools members are exempt -- notes.* is not in write_tools, so it stays excluded.
         assert!(res.excluded_tools.contains("notes.write_file"));
         assert!(res.excluded_tools.contains("task_output"));
         assert!(res.degraded_reason.is_none());
@@ -1263,7 +1301,10 @@ mod prompt_guard_tests {
             &cfg.control.write_tools,
         );
         for t in ["write_file", "edit_file", "execute_command"] {
-            assert!(!res.excluded_tools.contains(t), "auto write child needs {t}");
+            assert!(
+                !res.excluded_tools.contains(t),
+                "auto write child needs {t}"
+            );
         }
         assert!(res.degraded_reason.is_none());
     }

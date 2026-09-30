@@ -40,10 +40,7 @@ impl ModelStore {
     ///
     /// The default provider is created from `config.main`.
     /// Other tiers are initialized from their config or fall back to main.
-    pub fn new(
-        config: ModelConfig,
-        default_provider: Arc<dyn LlmProvider>,
-    ) -> Self {
+    pub fn new(config: ModelConfig, default_provider: Arc<dyn LlmProvider>) -> Self {
         let default_model = config.main.model().to_string();
 
         let mut tiers = HashMap::new();
@@ -53,17 +50,22 @@ impl ModelStore {
         let default_protocol = config.protocol.as_deref().unwrap_or("");
 
         // Main tier
-        let (model, url, key, proto) = config.main.resolve(default_url, default_key, default_protocol);
+        let (model, url, key, proto) =
+            config
+                .main
+                .resolve(default_url, default_key, default_protocol);
         tiers.insert("main".to_string(), (model, url, key, proto));
 
         // Lite tier (falls back to main if not configured)
         let lite_config = config.lite.as_ref().unwrap_or(&config.main);
-        let (model, url, key, proto) = lite_config.resolve(default_url, default_key, default_protocol);
+        let (model, url, key, proto) =
+            lite_config.resolve(default_url, default_key, default_protocol);
         tiers.insert("lite".to_string(), (model, url, key, proto));
 
         // Advanced tier (falls back to main if not configured)
         let advanced_config = config.advanced.as_ref().unwrap_or(&config.main);
-        let (model, url, key, proto) = advanced_config.resolve(default_url, default_key, default_protocol);
+        let (model, url, key, proto) =
+            advanced_config.resolve(default_url, default_key, default_protocol);
         tiers.insert("advanced".to_string(), (model, url, key, proto));
 
         Self {
@@ -97,7 +99,15 @@ impl ModelStore {
             let default_url = self.config.base_url.as_deref().unwrap_or("");
             let default_key = self.config.api_key.as_deref().unwrap_or("");
             let default_protocol = self.config.protocol.as_deref().unwrap_or("");
-            self.tiers.insert(tier.to_string(), (model, default_url.to_string(), default_key.to_string(), default_protocol.to_string()));
+            self.tiers.insert(
+                tier.to_string(),
+                (
+                    model,
+                    default_url.to_string(),
+                    default_key.to_string(),
+                    default_protocol.to_string(),
+                ),
+            );
         }
     }
 
@@ -106,13 +116,17 @@ impl ModelStore {
     /// If the tier uses the default model, returns the default provider.
     /// Otherwise, creates a new provider (cached for future use).
     pub fn get_or_create_provider(&mut self, tier: &str) -> Result<Arc<dyn LlmProvider>, LlmError> {
-        let (model, base_url, api_key, protocol) = self.tiers.get(tier)
-            .cloned()
-            .unwrap_or_else(|| {
+        let (model, base_url, api_key, protocol) =
+            self.tiers.get(tier).cloned().unwrap_or_else(|| {
                 let default_url = self.config.base_url.as_deref().unwrap_or("");
                 let default_key = self.config.api_key.as_deref().unwrap_or("");
                 let default_protocol = self.config.protocol.as_deref().unwrap_or("");
-                (self.default_model.clone(), default_url.to_string(), default_key.to_string(), default_protocol.to_string())
+                (
+                    self.default_model.clone(),
+                    default_url.to_string(),
+                    default_key.to_string(),
+                    default_protocol.to_string(),
+                )
             });
 
         // If using the default model, return the default provider
@@ -145,7 +159,13 @@ impl ModelStore {
     }
 
     /// Create a provider for a specific model.
-    fn create_provider(&self, model: &str, base_url: &str, api_key: &str, protocol: &str) -> Result<Arc<dyn LlmProvider>, LlmError> {
+    fn create_provider(
+        &self,
+        model: &str,
+        base_url: &str,
+        api_key: &str,
+        protocol: &str,
+    ) -> Result<Arc<dyn LlmProvider>, LlmError> {
         // Use the unified provider factory
         let provider = phi_agent::create_provider(&phi_agent::llm_trait::LlmConfig {
             model: model.to_string(),
@@ -223,11 +243,17 @@ mod tests {
 
     #[async_trait::async_trait]
     impl LlmProvider for MockProvider {
-        async fn stream(&self, _request: phi_agent::llm_trait::ChatRequest) -> Result<phi_agent::llm_trait::ChatStream, LlmError> {
+        async fn stream(
+            &self,
+            _request: phi_agent::llm_trait::ChatRequest,
+        ) -> Result<phi_agent::llm_trait::ChatStream, LlmError> {
             Err(LlmError::llm("mock"))
         }
 
-        async fn chat(&self, _request: phi_agent::llm_trait::ChatRequest) -> Result<phi_agent::llm_trait::ChatResponse, LlmError> {
+        async fn chat(
+            &self,
+            _request: phi_agent::llm_trait::ChatRequest,
+        ) -> Result<phi_agent::llm_trait::ChatResponse, LlmError> {
             Err(LlmError::llm("mock"))
         }
 

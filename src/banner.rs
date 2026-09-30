@@ -96,7 +96,11 @@ impl BannerRow {
         let mut off = 0usize;
         for (s, style) in &self.spans {
             if *style != BannerStyle::Default {
-                spans.push(SpanSpec { start: off, len: s.len(), style: *style });
+                spans.push(SpanSpec {
+                    start: off,
+                    len: s.len(),
+                    style: *style,
+                });
             }
             off += s.len();
         }
@@ -109,19 +113,54 @@ impl BannerRow {
 /// (asserted by test). `GLYPHS[i][row]` is the `i`th letter's `row`-th row.
 const GLYPHS: [[&str; 6]; 7] = [
     // P
-    ["██████╗ ", "██╔══██╗", "██████╔╝", "██╔═══╝ ", "██║     ", "╚═╝     "],
+    [
+        "██████╗ ",
+        "██╔══██╗",
+        "██████╔╝",
+        "██╔═══╝ ",
+        "██║     ",
+        "╚═╝     ",
+    ],
     // H
-    ["██╗  ██╗", "██║  ██║", "███████║", "██╔══██║", "██║  ██║", "╚═╝  ╚═╝"],
+    [
+        "██╗  ██╗",
+        "██║  ██║",
+        "███████║",
+        "██╔══██║",
+        "██║  ██║",
+        "╚═╝  ╚═╝",
+    ],
     // I
     ["██╗", "██║", "██║", "██║", "██║", "╚═╝"],
     // M
-    ["███╗   ███╗", "████╗ ████║", "██╔████╔██║", "██║╚██╔╝██║", "██║ ╚═╝ ██║", "╚═╝     ╚═╝"],
+    [
+        "███╗   ███╗",
+        "████╗ ████║",
+        "██╔████╔██║",
+        "██║╚██╔╝██║",
+        "██║ ╚═╝ ██║",
+        "╚═╝     ╚═╝",
+    ],
     // I
     ["██╗", "██║", "██║", "██║", "██║", "╚═╝"],
     // N
-    ["███╗   ██╗", "████╗  ██║", "██╔██╗ ██║", "██║╚██╗██║", "██║ ╚████║", "╚═╝  ╚═══╝"],
+    [
+        "███╗   ██╗",
+        "████╗  ██║",
+        "██╔██╗ ██║",
+        "██║╚██╗██║",
+        "██║ ╚████║",
+        "╚═╝  ╚═══╝",
+    ],
     // T
-    ["████████╗", "╚══██╔══╝", "   ██║   ", "   ██║   ", "   ██║   ", "   ╚═╝   "],
+    [
+        "████████╗",
+        "╚══██╔══╝",
+        "   ██║   ",
+        "   ██║   ",
+        "   ██║   ",
+        "   ╚═╝   ",
+    ],
 ];
 
 /// The six wordmark rows: letters joined by single `Default` connector spaces,
@@ -134,7 +173,11 @@ pub fn logo_rows() -> Vec<BannerRow> {
                 if i > 0 {
                     spans.push((" ".to_string(), BannerStyle::Default));
                 }
-                let style = if i % 2 == 0 { BannerStyle::LogoA } else { BannerStyle::LogoB };
+                let style = if i % 2 == 0 {
+                    BannerStyle::LogoA
+                } else {
+                    BannerStyle::LogoB
+                };
                 spans.push((glyph[row].to_string(), style));
             }
             BannerRow { spans }
@@ -163,7 +206,10 @@ pub fn shorten_home_with(path: &Path, home: Option<&Path>) -> String {
 
 /// `shorten_home_with` using `$HOME` from the environment.
 pub fn shorten_home(path: &Path) -> String {
-    shorten_home_with(path, std::env::var("HOME").ok().map(PathBuf::from).as_deref())
+    shorten_home_with(
+        path,
+        std::env::var("HOME").ok().map(PathBuf::from).as_deref(),
+    )
 }
 
 /// The tagline row: brand name (bold) + English positioning + slogan + version.
@@ -171,7 +217,12 @@ fn tagline_row(version: &str) -> BannerRow {
     BannerRow {
         spans: vec![
             ("Phimint".to_string(), BannerStyle::Brand),
-            (format!(" v{version} - Forged with intent. Shipped with care. - Built on phi-agent"), BannerStyle::Tagline),
+            (
+                format!(
+                    " v{version} - Forged with intent. Shipped with care. - Built on phi-agent"
+                ),
+                BannerStyle::Tagline,
+            ),
         ],
     }
 }
@@ -225,9 +276,14 @@ mod tests {
 
     #[test]
     fn palette_light_is_distinct_from_dark() {
-        for s in [BannerStyle::LogoA, BannerStyle::LogoB, BannerStyle::Brand,
-                  BannerStyle::Tagline, BannerStyle::Label,
-                  BannerStyle::Value] {
+        for s in [
+            BannerStyle::LogoA,
+            BannerStyle::LogoB,
+            BannerStyle::Brand,
+            BannerStyle::Tagline,
+            BannerStyle::Label,
+            BannerStyle::Value,
+        ] {
             assert_ne!(s.rgb(ColorScheme::Dark), s.rgb(ColorScheme::Light), "{s:?}");
         }
     }
@@ -246,7 +302,10 @@ mod tests {
                     assert_eq!(chunk, " ", "connector must be a single space");
                     continue;
                 }
-                assert!(chunk.chars().all(|c| c == ' ' || "█╔═╝╗║╚".contains(c)), "bad glyph char: {chunk:?}");
+                assert!(
+                    chunk.chars().all(|c| c == ' ' || "█╔═╝╗║╚".contains(c)),
+                    "bad glyph char: {chunk:?}"
+                );
             }
         }
     }
@@ -264,41 +323,80 @@ mod tests {
     #[test]
     fn shorten_home_replaces_prefix() {
         let home = Path::new("/Users/eve");
-        assert_eq!(shorten_home_with(Path::new("/Users/eve/proj"), Some(home)), "~/proj");
+        assert_eq!(
+            shorten_home_with(Path::new("/Users/eve/proj"), Some(home)),
+            "~/proj"
+        );
         assert_eq!(shorten_home_with(Path::new("/Users/eve"), Some(home)), "~");
         assert_eq!(shorten_home_with(Path::new("/tmp/x"), Some(home)), "/tmp/x");
-        assert_eq!(shorten_home_with(Path::new("/Users/evelyn/x"), Some(home)), "/Users/evelyn/x");
+        assert_eq!(
+            shorten_home_with(Path::new("/Users/evelyn/x"), Some(home)),
+            "/Users/evelyn/x"
+        );
         assert_eq!(shorten_home_with(Path::new("/p"), None), "/p");
     }
 
     #[test]
     fn build_emits_nine_rows_with_brand_and_version() {
-        let rows = build(Path::new("/Users/eve/w"), Path::new("/Users/eve/.phimint/s/1/session.log"), "0.1.0");
+        let rows = build(
+            Path::new("/Users/eve/w"),
+            Path::new("/Users/eve/.phimint/s/1/session.log"),
+            "0.1.0",
+        );
         assert_eq!(rows.len(), 9, "6 art + tagline + 2 info");
         let tagline = rows[6].text();
         assert!(tagline.contains("Phimint"), "missing brand: {tagline}");
-        assert!(tagline.contains("Forged with intent"), "missing slogan: {tagline}");
+        assert!(
+            tagline.contains("Forged with intent"),
+            "missing slogan: {tagline}"
+        );
         assert!(tagline.contains("v0.1.0"), "missing version: {tagline}");
         let ws = rows[7].text();
         let logs = rows[8].text();
         let want_ws = shorten_home(Path::new("/Users/eve/w"));
         let want_logs = shorten_home(Path::new("/Users/eve/.phimint/s/1/session.log"));
-        assert!(ws.starts_with("Workspace") && ws.ends_with(&want_ws), "bad workspace row: {ws}");
-        assert!(logs.starts_with("Logs") && logs.ends_with(&want_logs), "bad logs row: {logs}");
-        assert!(rows[7].spans.iter().any(|(t, s)| *s == BannerStyle::Label && t.len() == 11));
+        assert!(
+            ws.starts_with("Workspace") && ws.ends_with(&want_ws),
+            "bad workspace row: {ws}"
+        );
+        assert!(
+            logs.starts_with("Logs") && logs.ends_with(&want_logs),
+            "bad logs row: {logs}"
+        );
+        assert!(
+            rows[7]
+                .spans
+                .iter()
+                .any(|(t, s)| *s == BannerStyle::Label && t.len() == 11)
+        );
     }
 
     #[test]
     fn resolve_scheme_obeys_flag_then_env_then_osc() {
-        assert_eq!(resolve_scheme("dark", Some("7;0"), Some(ColorScheme::Light)), ColorScheme::Dark);
+        assert_eq!(
+            resolve_scheme("dark", Some("7;0"), Some(ColorScheme::Light)),
+            ColorScheme::Dark
+        );
         assert_eq!(resolve_scheme("light", None, None), ColorScheme::Light);
         // $COLORFGBG is "fg;bg" — background 7 means a light terminal.
         assert_eq!(resolve_scheme("auto", Some("7;0"), None), ColorScheme::Dark);
-        assert_eq!(resolve_scheme("auto", Some("0;7"), None), ColorScheme::Light);
-        assert_eq!(resolve_scheme("auto", Some("15;0"), None), ColorScheme::Dark);
-        assert_eq!(resolve_scheme("auto", None, Some(ColorScheme::Light)), ColorScheme::Light);
+        assert_eq!(
+            resolve_scheme("auto", Some("0;7"), None),
+            ColorScheme::Light
+        );
+        assert_eq!(
+            resolve_scheme("auto", Some("15;0"), None),
+            ColorScheme::Dark
+        );
+        assert_eq!(
+            resolve_scheme("auto", None, Some(ColorScheme::Light)),
+            ColorScheme::Light
+        );
         assert_eq!(resolve_scheme("auto", None, None), ColorScheme::Dark);
-        assert_eq!(resolve_scheme("auto", None, Some(ColorScheme::Dark)), ColorScheme::Dark);
+        assert_eq!(
+            resolve_scheme("auto", None, Some(ColorScheme::Dark)),
+            ColorScheme::Dark
+        );
     }
 
     #[test]
@@ -316,8 +414,16 @@ mod tests {
         assert_eq!(
             runs,
             vec![
-                SpanSpec { start: 0, len: 6, style: S::LogoA },
-                SpanSpec { start: 7, len: 3, style: S::Brand },
+                SpanSpec {
+                    start: 0,
+                    len: 6,
+                    style: S::LogoA
+                },
+                SpanSpec {
+                    start: 7,
+                    len: 3,
+                    style: S::Brand
+                },
             ]
         );
     }

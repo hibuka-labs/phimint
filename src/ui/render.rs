@@ -1,7 +1,6 @@
 //! ratatui frame rendering: transcript (output) / composer / status bar.
 
 use phi_agent::RiskLevel;
-use std::time::Instant;
 use ratatui::{
     Frame, Terminal,
     backend::TestBackend,
@@ -11,19 +10,20 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap},
 };
+use std::time::Instant;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::banner::{BannerStyle, ColorScheme, SpanSpec};
 use crate::ui::app::{
-    AgentStatus, App, CONTEXT_MENU_H, CONTEXT_MENU_W, FocusTarget, SubAgentStatus, context_menu_pos,
-    is_writing_hint,
+    AgentStatus, App, CONTEXT_MENU_H, CONTEXT_MENU_W, FocusTarget, SubAgentStatus,
+    context_menu_pos, is_writing_hint,
 };
 use crate::ui::task_panel::ThinkingPanelState;
 use phi_tui::completer::{MentionCompleter, SlashCompleter};
 use phi_tui::lines::LineKind;
 use phi_tui::markdown::{line_plain_text, render_markdown};
-use phi_tui::popup_list::{band_width, GUTTER_W, PopupList};
-use phi_tui::wrap::{elide, pad_cols, Elide, wrap};
+use phi_tui::popup_list::{GUTTER_W, PopupList, band_width};
+use phi_tui::wrap::{Elide, elide, pad_cols, wrap};
 
 /// Max composer rows shown (its box grows with the buffer up to this).
 const MAX_COMPOSER_ROWS: usize = 8;
@@ -48,7 +48,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // Composer height: visual rows (accounting for soft-wrap) + 2 for border.
     // The composer's Block::borders(ALL) consumes 2 columns (left+right).
     let composer_inner_w = term_w.saturating_sub(2);
-    let composer_vis = app.composer.visual_height(composer_inner_w).min(MAX_COMPOSER_ROWS);
+    let composer_vis = app
+        .composer
+        .visual_height(composer_inner_w)
+        .min(MAX_COMPOSER_ROWS);
     let composer_height = composer_vis as u16 + 2;
     let has_task_panel = app.should_show_task_panel();
 
@@ -63,7 +66,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     );
 
     let mut constraints = vec![
-        Constraint::Min(3),                  // output (transcript)
+        Constraint::Min(3), // output (transcript)
     ];
     if has_task_panel {
         let task_count = app.sub_agents.len();
@@ -129,7 +132,9 @@ fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
     // following a sub-agent is watching it work (e.g. the long silent
     // report-writing stretch with no tool-call boundary).
     let tail_raw: Option<(String, LineKind)> = if is_sub_agent {
-        let id = focused_agent.as_deref().expect("is_sub_agent implies focus");
+        let id = focused_agent
+            .as_deref()
+            .expect("is_sub_agent implies focus");
         app.child_stream_tail_raw(id)
     } else {
         app.streaming_tail_raw()
@@ -181,7 +186,8 @@ fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
                     // Hunk lines
                     let wrap_w = app.transcript.wrap_width().saturating_sub(8).max(20);
                     // Compute max line number width for alignment
-                    let max_line = hunks.iter()
+                    let max_line = hunks
+                        .iter()
                         .flat_map(|h| h.lines.iter())
                         .flat_map(|l| [l.old_line, l.new_line])
                         .flatten()
@@ -244,7 +250,11 @@ fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
                     }
                     continue; // skip the normal rendering path below
                 }
-                phi_tui::lines::LineDetail::Thought { raw, line_count, char_count } => {
+                phi_tui::lines::LineDetail::Thought {
+                    raw,
+                    line_count,
+                    char_count,
+                } => {
                     // Folded by default (one summary line); Ctrl+O expands to
                     // the full text re-wrapped at the current width. Folding
                     // is a render-time decision — the line always carries the
@@ -386,7 +396,8 @@ fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
     let total = lines.len();
     let preferred_head = anchor.and_then(|a| visual_map.resolve_anchor(a));
     app.visual_map = visual_map;
-    app.viewport.set_visible_anchored(total, height, preferred_head);
+    app.viewport
+        .set_visible_anchored(total, height, preferred_head);
     let window = app.viewport.window_range(total, height);
 
     // The panel's screen rect = where its placeholder rows land in the window.
@@ -412,7 +423,14 @@ fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
 
     if let (Some(rect), Some(state)) = (panel_rect, &panel) {
         f.render_widget(Clear, rect);
-        render_thinking_panel(f, app, rect, &state.lines, state.agent.as_deref(), state.chars);
+        render_thinking_panel(
+            f,
+            app,
+            rect,
+            &state.lines,
+            state.agent.as_deref(),
+            state.chars,
+        );
     }
 }
 
@@ -513,10 +531,7 @@ fn render_composer(f: &mut Frame, app: &App, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded);
-    f.render_widget(
-        Paragraph::new(items).block(block).scroll((scroll, 0)),
-        area,
-    );
+    f.render_widget(Paragraph::new(items).block(block).scroll((scroll, 0)), area);
 }
 
 fn render_status(f: &mut Frame, app: &App, area: Rect) {
@@ -525,7 +540,10 @@ fn render_status(f: &mut Frame, app: &App, area: Rect) {
         AgentStatus::Waiting { .. } => Style::default().fg(Color::Cyan),
         AgentStatus::Running { .. } => Style::default().fg(Color::Yellow),
     };
-    f.render_widget(Paragraph::new(Line::from(Span::styled(app.status_line(), style))), area);
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(app.status_line(), style))),
+        area,
+    );
 }
 
 /// Format files list for display (max 2 files, truncate with ...).
@@ -647,14 +665,26 @@ fn render_task_panel(f: &mut Frame, app: &App, area: Rect) {
         // columns: `format!("{:<w$}")` pads by chars and would overshoot.
         let spans = vec![
             Span::styled(format!("{marker} "), Style::default().bg(bg_color)),
-            Span::styled(format!("{status_icon} "), Style::default().fg(status_color).bg(bg_color)),
+            Span::styled(
+                format!("{status_icon} "),
+                Style::default().fg(status_color).bg(bg_color),
+            ),
             Span::styled(
                 pad_cols(&elide(&state.name, name_w, Elide::Head), name_w),
                 Style::default().bg(bg_color),
             ),
-            Span::styled(pad_cols(&activity.0, act_w), Style::default().fg(activity.1).bg(bg_color)),
-            Span::styled(pad_cols(&files, files_w), Style::default().fg(Color::DarkGray).bg(bg_color)),
-            Span::styled(format!("│ {:>5}", time), Style::default().fg(Color::DarkGray).bg(bg_color)),
+            Span::styled(
+                pad_cols(&activity.0, act_w),
+                Style::default().fg(activity.1).bg(bg_color),
+            ),
+            Span::styled(
+                pad_cols(&files, files_w),
+                Style::default().fg(Color::DarkGray).bg(bg_color),
+            ),
+            Span::styled(
+                format!("│ {:>5}", time),
+                Style::default().fg(Color::DarkGray).bg(bg_color),
+            ),
         ];
         lines.push(Line::from(spans));
     }
@@ -680,7 +710,9 @@ fn render_approval_popup(f: &mut Frame, app: &App) {
     let mut lines = vec![
         Line::from(Span::styled(
             "!! Approval required",
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
     ];
@@ -688,7 +720,9 @@ fn render_approval_popup(f: &mut Frame, app: &App) {
     if let Some(source) = &request.source {
         lines.push(Line::from(Span::styled(
             format!("requested by sub-agent [{source}]"),
-            Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::from(""));
     }
@@ -714,7 +748,10 @@ fn render_approval_popup(f: &mut Frame, app: &App) {
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .title("approval");
-    f.render_widget(Paragraph::new(lines).block(block).wrap(Wrap { trim: true }), area);
+    f.render_widget(
+        Paragraph::new(lines).block(block).wrap(Wrap { trim: true }),
+        area,
+    );
 }
 
 /// A small context menu at the right-click cell, with a highlighted "copy" /
@@ -737,7 +774,9 @@ fn render_context_menu(f: &mut Frame, app: &App) {
         .enumerate()
         .map(|(i, label)| {
             let style = if i == menu.selected {
-                Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .bg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };
@@ -799,11 +838,18 @@ fn slash_lines(s: &SlashCompleter, width: usize) -> Vec<Line<'static>> {
             let budget = avail.saturating_sub(name_w + gap_w);
 
             let name = elide(name, name_w, Elide::Tail { sep: None });
-            let desc_fg = if i == selected { Color::Gray } else { Color::DarkGray };
+            let desc_fg = if i == selected {
+                Color::Gray
+            } else {
+                Color::DarkGray
+            };
             Line::from(vec![
                 Span::styled(pad_cols(&name, name_w), Style::default().fg(Color::White)),
                 Span::raw(" ".repeat(gap_w)),
-                Span::styled(elide(desc, budget, Elide::Head), Style::default().fg(desc_fg)),
+                Span::styled(
+                    elide(desc, budget, Elide::Head),
+                    Style::default().fg(desc_fg),
+                ),
             ])
         })
         .collect()
@@ -910,7 +956,11 @@ fn render_thinking_panel(
         title.push(Span::styled(format!(" - {id}"), dim));
     }
     title.push(Span::styled(
-        format!(" - {} - ~{} tok", App::fmt_elapsed(elapsed), fmt_k(chars / 3)),
+        format!(
+            " - {} - ~{} tok",
+            App::fmt_elapsed(elapsed),
+            fmt_k(chars / 3)
+        ),
         dim,
     ));
     f.render_widget(
@@ -947,7 +997,9 @@ fn style_for(kind: LineKind) -> Style {
         LineKind::System => Style::default().fg(Color::DarkGray),
         LineKind::Cancelled => Style::default().fg(Color::Yellow),
         LineKind::Approval => Style::default().fg(Color::Yellow),
-        LineKind::User => Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
+        LineKind::User => Style::default()
+            .fg(Color::Blue)
+            .add_modifier(Modifier::BOLD),
     }
 }
 

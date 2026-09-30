@@ -14,7 +14,11 @@ use clap::Parser;
 use phi_agent::{SessionContext, load_session_messages, resolve_session};
 
 #[derive(Parser)]
-#[command(name = "phimint", version, about = "AI coding agent built on phi-agent")]
+#[command(
+    name = "phimint",
+    version,
+    about = "AI coding agent built on phi-agent"
+)]
 struct Cli {
     /// Workspace directory to operate in (default: current directory)
     #[arg(short, long, default_value = ".")]
@@ -127,8 +131,7 @@ async fn main() -> Result<()> {
     let mut model_config = if let Some(config_path) = &cli.config {
         // CLI --config flag specified
         let path = PathBuf::from(config_path);
-        config::ModelConfig::from_file(&path)
-            .context("Failed to load config file")?
+        config::ModelConfig::from_file(&path).context("Failed to load config file")?
     } else {
         match config::ModelConfig::from_default_location() {
             Ok(Some(config)) => {
@@ -183,13 +186,12 @@ async fn main() -> Result<()> {
         base_url: main_url,
         options: {
             let mut opts = std::collections::HashMap::new();
-            opts.insert("max_tokens".to_string(), serde_json::json!("24576"));  // 24K output
+            opts.insert("max_tokens".to_string(), serde_json::json!("24576")); // 24K output
             opts
         },
     };
     let llm_client: Arc<dyn phi_agent::llm_trait::LlmProvider> =
-        phi_agent::create_provider(&llm_config)
-            .context("Failed to create LLM provider")?;
+        phi_agent::create_provider(&llm_config).context("Failed to create LLM provider")?;
 
     // Extract update config before model_config is moved into the store.
     let update_config = model_config.update.clone();
@@ -201,9 +203,10 @@ async fn main() -> Result<()> {
         .context("invalid ui.popup config")?;
 
     // Model store and router for multi-model support
-    let model_store = Arc::new(tokio::sync::Mutex::new(
-        model_store::ModelStore::new(model_config, llm_client.clone())
-    ));
+    let model_store = Arc::new(tokio::sync::Mutex::new(model_store::ModelStore::new(
+        model_config,
+        llm_client.clone(),
+    )));
     let router = Arc::new(router::PhimintRouter::new());
 
     // Approval is two layers (see approval.rs): a policy (the gate) + a handler
@@ -245,8 +248,8 @@ async fn main() -> Result<()> {
     // Session is resolved BEFORE agent::build so that token_budget_opts
     // (which needs session_id for history/notes stores) is available.
     let session_ctx = if cli.resume {
-        let picked_dir = ui::picker::show_picker(&base_dir, None)?
-            .context("No session selected")?;
+        let picked_dir =
+            ui::picker::show_picker(&base_dir, None)?.context("No session selected")?;
         let picked_id = picked_dir
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -268,7 +271,7 @@ async fn main() -> Result<()> {
         session_id: session_ctx.session_id.clone(),
     };
 
-        // `deny` mode is read-only (all write tools rejected), so the enforced verify gate is pointless and off.
+    // `deny` mode is read-only (all write tools rejected), so the enforced verify gate is pointless and off.
     let (agent, skill_resolver, skill_telemetry, bg_registry) = agent::build(
         llm_client,
         approval,
@@ -308,7 +311,28 @@ async fn main() -> Result<()> {
     let show_banner = cli.banner != "off";
     let version = env!("CARGO_PKG_VERSION");
 
-    ui::run_tui(agent, skill_resolver, skill_telemetry, bg_registry, session, session_ctx, base_dir, workspace, approval_rx, scheme, popup_style, show_banner, version, model_store, router, resume_messages, update_config, cli.no_update_check, log_sinks).await
+    ui::run_tui(
+        agent,
+        skill_resolver,
+        skill_telemetry,
+        bg_registry,
+        session,
+        session_ctx,
+        base_dir,
+        workspace,
+        approval_rx,
+        scheme,
+        popup_style,
+        show_banner,
+        version,
+        model_store,
+        router,
+        resume_messages,
+        update_config,
+        cli.no_update_check,
+        log_sinks,
+    )
+    .await
 }
 
 /// Base directory for all phimint session data (~/.phimint).
@@ -384,7 +408,10 @@ fn cleanup_expired_data(base_dir: &PathBuf, retention_days: i64) {
 /// Returns a `SinkHandle` so an in-TUI `/resume` can re-point the file sink at
 /// the resumed session's directory (the global subscriber itself can only be
 /// initialized once per process).
-async fn init_logging(session_ctx: &SessionContext, log_level: &str) -> Result<log_core::SinkHandle> {
+async fn init_logging(
+    session_ctx: &SessionContext,
+    log_level: &str,
+) -> Result<log_core::SinkHandle> {
     use log_core::{LogCoreLayer, LogLevel};
     use tracing_subscriber::prelude::*;
 
@@ -397,7 +424,8 @@ async fn init_logging(session_ctx: &SessionContext, log_level: &str) -> Result<l
         _ => LogLevel::Info,
     };
 
-    let layer = LogCoreLayer::file(session_log_path.to_str().unwrap_or("phimint.log"), level).await?;
+    let layer =
+        LogCoreLayer::file(session_log_path.to_str().unwrap_or("phimint.log"), level).await?;
     let sink_handle = layer.sink_handle();
 
     tracing_subscriber::registry()

@@ -79,14 +79,14 @@ impl Tool for DiagnosticsTool {
             .filter(|s| !s.is_empty())
             .map(String::from);
 
-                // 1) Collect source files, route them by language to their server and sync (blocking I/O -> spawn_blocking).
+        // 1) Collect source files, route them by language to their server and sync (blocking I/O -> spawn_blocking).
         let manager = self.manager.clone();
         let root = self.workspace_root.clone();
         let files_result = {
             let root = root.clone();
             tokio::task::spawn_blocking(move || {
                 let (files, scope) = collect_code_files(&root, path.as_deref())?;
-                                // The servers in use (deduped by Arc pointer, for the later health/snapshot).
+                // The servers in use (deduped by Arc pointer, for the later health/snapshot).
                 let mut clients: Vec<Arc<LspClient>> = Vec::new();
                 let mut synced = 0usize;
                 for f in &files {
@@ -114,7 +114,7 @@ impl Tool for DiagnosticsTool {
             Err(e) => {
                 return Ok(vec![Content::text(format!(
                     "[Error]: diagnostics task failed: {e}"
-                ))])
+                ))]);
             }
         };
         if files.is_empty() {
@@ -131,7 +131,7 @@ impl Tool for DiagnosticsTool {
 
         tracing::info!(files = synced, "diagnostics: synced files to LSP servers");
 
-                // 2) Wait for every handshake; any failure is reported explicitly rather than claiming "no diagnostics".
+        // 2) Wait for every handshake; any failure is reported explicitly rather than claiming "no diagnostics".
         wait_ready(&clients).await;
         if let Some(e) = first_health_error(&clients) {
             return Ok(vec![Content::text(format!(
@@ -139,10 +139,10 @@ impl Tool for DiagnosticsTool {
             ))]);
         }
 
-                // 3) Settle: give save-time checks time to run check + publish.
+        // 3) Settle: give save-time checks time to run check + publish.
         tokio::time::sleep(Duration::from_millis(SETTLE_MS)).await;
 
-                // 4) Merge the per-server snapshots, filter by range, format.
+        // 4) Merge the per-server snapshots, filter by range, format.
         let snapshot: Vec<_> = clients.iter().flat_map(|c| c.snapshot()).collect();
         let filtered: Vec<_> = match &scope {
             Some(sp) => snapshot
@@ -196,8 +196,8 @@ mod tests {
             .join("\n")
     }
 
-        /// A manager with an empty routing table (no servers): `client_for` is always
-        /// `None`, and lazy startup guarantees no real LSP process is ever spawned.
+    /// A manager with an empty routing table (no servers): `client_for` is always
+    /// `None`, and lazy startup guarantees no real LSP process is ever spawned.
     fn manager(root: &std::path::Path) -> Arc<LspManager> {
         Arc::new(LspManager::new(
             root.to_path_buf(),
@@ -211,7 +211,10 @@ mod tests {
 
     #[test]
     fn metadata_carries_identity() {
-        let tool = DiagnosticsTool::new(manager(std::env::temp_dir().as_path()), std::env::temp_dir());
+        let tool = DiagnosticsTool::new(
+            manager(std::env::temp_dir().as_path()),
+            std::env::temp_dir(),
+        );
         assert_eq!(tool.name(), "diagnostics");
         let md = tool.metadata();
         assert_eq!(md.name, "diagnostics");
@@ -225,7 +228,11 @@ mod tests {
         let tool = DiagnosticsTool::new(manager(dir.path()), dir.path().to_path_buf());
 
         let out = tool.call(&json!({}), &ctx()).await.unwrap();
-        assert!(text(&out).contains("No source files found"), "{}", text(&out));
+        assert!(
+            text(&out).contains("No source files found"),
+            "{}",
+            text(&out)
+        );
     }
 
     #[tokio::test]

@@ -9,9 +9,9 @@ use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyModifiers};
 
+use crate::ui::app::{Action, AgentStatus, App, FocusTarget, Phase};
 use phi_agent::ApprovalDecision;
 use phi_kernel_tools::background_shell::BackgroundTaskStatus;
-use crate::ui::app::{Action, App, AgentStatus, FocusTarget, Phase};
 
 impl App {
     /// Handle a keyboard event and return an action if one was triggered.
@@ -48,8 +48,7 @@ impl App {
         //   3. If there are running background tasks, cancel them.
         //   4. Otherwise, show a hint; a second Ctrl+C within timeout quits.
         if ctrl && code == Char('c') {
-            const DOUBLE_PRESS_TIMEOUT: std::time::Duration =
-                std::time::Duration::from_secs(2);
+            const DOUBLE_PRESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
             if self.selection_state.selection.is_some() {
                 tracing::info!("ctrl+c: has selection -> copy");
                 self.selection_state.context_menu = None;
@@ -72,7 +71,9 @@ impl App {
                 return Some(Action::Cancel);
             }
             // Cancel running background tasks
-            let running_bg_tasks: Vec<String> = self.background_tasks.iter()
+            let running_bg_tasks: Vec<String> = self
+                .background_tasks
+                .iter()
                 .filter(|(_, t)| t.status == BackgroundTaskStatus::Running)
                 .map(|(id, _)| id.clone())
                 .collect();

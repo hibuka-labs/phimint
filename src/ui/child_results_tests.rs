@@ -84,7 +84,10 @@ fn batch_when_idle_injects_immediately() {
 
     match router.on_event(
         false,
-        batch(vec![report("root/a", "report a"), report("root/b", "report b")]),
+        batch(vec![
+            report("root/a", "report a"),
+            report("root/b", "report b"),
+        ]),
     ) {
         ChildResultRoute::Inject { notice, input } => {
             assert!(notice.contains("2"), "{notice}");
