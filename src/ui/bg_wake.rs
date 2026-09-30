@@ -22,6 +22,12 @@
 //!   *bounded* job is terminal, listing every not-yet-reported outcome
 //!   (done / timed out / error) in one synthetic run. A daemon joins a
 //!   listing only when it itself reaches a terminal state.
+//! - **Quiet window** (issue #30): a notification turn is a full-context
+//!   turn, so a burst of completions must not cost one wake each. The wake
+//!   waits out [`BG_WAKE_QUIET`] anchored on the *newest* terminal outcome —
+//!   each new completion pushes the deadline out (debounce) — and fires the
+//!   moment that deadline passes and the hold gates above are clear. The hold
+//!   postpones a wake; it never restarts the window behind one.
 //! - **Cancelled is not wake-worthy**: a user-initiated Ctrl+C cancel is
 //!   already surfaced by the status-bar notice; waking the agent to narrate
 //!   it would burn a turn the user never asked for. Done/TimedOut/Error are
@@ -42,6 +48,8 @@
 //! The decision logic lives here (unit-tested); `run.rs` only executes the
 //! side effects (`push_system`, `Cmd::Run`) and stays free of timing policy.
 
+use std::time::{Duration, Instant};
+
 use phi_kernel_tools::background_shell::{BackgroundTaskStatus, tail_utf8};
 
 use super::app::{App, BackgroundTaskEntry};
@@ -53,6 +61,8 @@ struct WakeItem {
     status: BackgroundTaskStatus,
     output_tail: String,
     consumed: bool,
+    /// Terminal time — the quiet window anchors on the newest of these.
+    finished_at: Option<Instant>,
 }
 
 /// Whether a terminal task outcome should wake the agent. `Cancelled` is
@@ -78,6 +88,15 @@ pub(crate) fn may_reap(entry: &BackgroundTaskEntry) -> bool {
     entry.reported || !is_wake_worthy(&entry.status)
 }
 
+/// Aggregation quiet window (issue #30): after the newest terminal outcome,
+/// wait this long for its siblings before composing the wake. Notification
+/// turns are full-context turns (~185K input tokens at the session's end), so
+/// one wake per completion is a tax — session 20260927_4180845c paid 10 wakes
+/// in 9 minutes for 100–500-char status reports. 15s collapses a completion
+/// burst into one listing while an isolated completion still wakes within the
+/// window of its terminal state.
+pub(crate) const BG_WAKE_QUIET: Duration = Duration::from_secs(15);
+
 impl App {
     /// Consume the background-task wake, if one is due.
     ///
@@ -85,14 +104,19 @@ impl App {
     /// went terminal is always part of the *first* wake after its finish —
     /// batching is decided on fresh state, never on a tick-lagged cache.
     ///
-    /// Returns `Some((transcript_notice, synthetic_input))` when every
-    /// *bounded* job is terminal (daemons are ignored — they never finish on
-    /// their own), nothing is in flight (no root turn queued or running, no
-    /// sub-agents), and at least one wake-worthy outcome has not been
-    /// reported yet. Marks the reported flag before returning so a task can
-    /// never be reported twice; returns `None` otherwise (the caller just
-    /// retries on the next tick).
-    pub(crate) fn take_bg_wake(&mut self) -> Option<(String, String)> {
+    /// Returns `Some((transcript_notice, synthetic_input))` when the quiet
+    /// window has stood ([`BG_WAKE_QUIET`], issue #30), every *bounded* job is
+    /// terminal (daemons are ignored — they never finish on their own),
+    /// nothing is in flight (no root turn queued or running, no sub-agents),
+    /// and at least one wake-worthy outcome has not been reported yet. Marks
+    /// the reported flag before returning so a task can never be reported
+    /// twice; returns `None` otherwise (the caller just retries on the next
+    /// tick).
+    ///
+    /// `now` is the decision clock: the quiet-window deadline is compared
+    /// against it, so tests pin the window without sleeping (same seam as
+    /// [`is_writing_hint`](super::app::is_writing_hint)).
+    pub(crate) fn take_bg_wake(&mut self, now: Instant) -> Option<(String, String)> {
         // Freshness first — even when held, so the map stops lagging.
         let _ = self.reconcile_background_tasks();
 
@@ -120,9 +144,21 @@ impl App {
                 status: t.status.clone(),
                 output_tail: t.output_tail.clone(),
                 consumed: t.consumed,
+                finished_at: t.finished_at,
             })
             .collect();
         if ready.is_empty() {
+            return None;
+        }
+
+        // Quiet window (issue #30): anchor on the newest terminal outcome so a
+        // sibling finishing mid-window pushes the deadline out — one wake for
+        // the whole burst. An outcome with no `finished_at` (production stamps
+        // every terminal transition) counts as already past the window: the
+        // window may delay a wake, never lose one.
+        if let Some(newest) = ready.iter().filter_map(|t| t.finished_at).max()
+            && now.saturating_duration_since(newest) < BG_WAKE_QUIET
+        {
             return None;
         }
 
@@ -227,7 +263,9 @@ fn compose_wake(items: &[WakeItem]) -> (String, String) {
 
 /// Test-only seam: build a panel entry directly (the registry path needs a
 /// live `BackgroundTaskRegistry` + tokio runtime). `timeout_ms == 0` builds a
-/// daemon entry; anything else is a bounded job.
+/// daemon entry; anything else is a bounded job. `finished_at` is left `None`
+/// (undated → treated as past the quiet window, i.e. immediately due); tests
+/// that exercise window behavior stamp it explicitly.
 #[cfg(test)]
 pub(crate) fn mock_bg_entry(
     id: &str,

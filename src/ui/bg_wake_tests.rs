@@ -3,14 +3,18 @@
 //! Covers the delivery gates (root turn in flight / children running / tasks
 //! running), wake-worthiness (Done/TimedOut/Error wake, Cancelled doesn't),
 //! the report-once semantics, the synthetic-input composition (embedded
-//! output tail, consumed annotation, bounded budgets), and the #29 freshness
-//! invariants (synthetic-turn hold, just-finished tasks join the first wake).
+//! output tail, consumed annotation, bounded budgets), the #29 freshness
+//! invariants (synthetic-turn hold, just-finished tasks join the first wake),
+//! and the #30 aggregation quiet window (burst collapse, isolation latency,
+//! deadline refresh).
+
+use std::time::{Duration, Instant};
 
 use phi_kernel_tools::background_shell::{BackgroundTaskRegistry, BackgroundTaskStatus};
 use tokio_util::sync::CancellationToken;
 
 use super::super::app::{AgentStatus, App, Phase, SubAgentState, SubAgentStatus};
-use super::{MAX_TAIL_PER_TASK, MAX_TAIL_PER_WAKE, mock_bg_entry, status_desc};
+use super::{BG_WAKE_QUIET, MAX_TAIL_PER_TASK, MAX_TAIL_PER_WAKE, mock_bg_entry, status_desc};
 
 /// Insert a bounded background job (`timeout_ms > 0`) straight into the panel
 /// (bypasses the registry; `reconcile_background_tasks` owns the registry path).
@@ -37,6 +41,21 @@ fn insert_with_tail(
     let mut entry = mock_bg_entry(id, command, status, 120_000);
     entry.output_tail = tail.to_string();
     entry.consumed = consumed;
+    app.background_tasks.insert(id.to_string(), entry);
+}
+
+/// Insert a bounded job whose completion is stamped — the timestamp the quiet
+/// window anchors on (production: the registry's `finished_at` at the terminal
+/// transition). `mock_bg_entry` leaves it `None` (undated → no window).
+fn insert_bg_finished_at(
+    app: &mut App,
+    id: &str,
+    command: &str,
+    status: BackgroundTaskStatus,
+    finished_at: Instant,
+) {
+    let mut entry = mock_bg_entry(id, command, status, 120_000);
+    entry.finished_at = Some(finished_at);
     app.background_tasks.insert(id.to_string(), entry);
 }
 
@@ -67,10 +86,13 @@ fn wake_holds_while_agent_is_running() {
         BackgroundTaskStatus::Done,
     );
     app.running = true;
-    assert!(app.take_bg_wake().is_none(), "must not inject mid-turn");
+    assert!(
+        app.take_bg_wake(Instant::now()).is_none(),
+        "must not inject mid-turn"
+    );
     // Same state, agent idle → fires.
     app.running = false;
-    assert!(app.take_bg_wake().is_some());
+    assert!(app.take_bg_wake(Instant::now()).is_some());
 }
 
 #[test]
@@ -90,13 +112,13 @@ fn wake_holds_for_synthetic_turns_too() {
         phase: Phase::Thinking,
     };
     assert!(
-        app.take_bg_wake().is_none(),
+        app.take_bg_wake(Instant::now()).is_none(),
         "synthetic turn in flight must hold"
     );
 
     // Turn over → the wake is due.
     app.status = AgentStatus::Idle;
-    assert!(app.take_bg_wake().is_some());
+    assert!(app.take_bg_wake(Instant::now()).is_some());
 }
 
 #[test]
@@ -109,11 +131,14 @@ fn wake_holds_while_sub_agents_are_running() {
         BackgroundTaskStatus::Done,
     );
     running_child(&mut app, "root/auth");
-    assert!(app.take_bg_wake().is_none(), "sub-agents still in flight");
+    assert!(
+        app.take_bg_wake(Instant::now()).is_none(),
+        "sub-agents still in flight"
+    );
 
     // Child finishes → the wake is now due.
     app.mark_sub_agent_finished("root/auth");
-    assert!(app.take_bg_wake().is_some());
+    assert!(app.take_bg_wake(Instant::now()).is_some());
 }
 
 #[test]
@@ -132,13 +157,15 @@ fn wake_holds_while_any_bg_task_is_running() {
         BackgroundTaskStatus::Running,
     );
     assert!(
-        app.take_bg_wake().is_none(),
+        app.take_bg_wake(Instant::now()).is_none(),
         "batch semantics: wait for all"
     );
 
     // The slow task ends → one batched wake covering both.
     app.background_tasks.get_mut("bg_bbbb2222").unwrap().status = BackgroundTaskStatus::Done;
-    let (_, input) = app.take_bg_wake().expect("all terminal → wake");
+    let (_, input) = app
+        .take_bg_wake(Instant::now())
+        .expect("all terminal → wake");
     assert!(input.contains("bg_aaaa1111"));
     assert!(input.contains("bg_bbbb2222"));
 }
@@ -163,7 +190,7 @@ fn daemon_running_does_not_hold_the_wake() {
         BackgroundTaskStatus::Running,
     );
     let (_, input) = app
-        .take_bg_wake()
+        .take_bg_wake(Instant::now())
         .expect("daemon must not swallow the report");
     assert!(input.contains("bg_aaaa1111"));
     assert!(
@@ -187,7 +214,7 @@ fn daemon_death_wakes_on_its_own() {
         "mvn spring-boot:run",
         BackgroundTaskStatus::Error("exited".into()),
     );
-    let (_, input) = app.take_bg_wake().expect("dead daemon wakes");
+    let (_, input) = app.take_bg_wake(Instant::now()).expect("dead daemon wakes");
     assert!(input.contains("bg_daemon01"));
 }
 
@@ -208,13 +235,16 @@ fn bounded_job_still_holds_a_daemon_death() {
         "slow job",
         BackgroundTaskStatus::Running,
     );
-    assert!(app.take_bg_wake().is_none(), "bounded job still in flight");
+    assert!(
+        app.take_bg_wake(Instant::now()).is_none(),
+        "bounded job still in flight"
+    );
 }
 
 #[test]
 fn wake_needs_no_bg_tasks() {
     let mut app = App::new();
-    assert!(app.take_bg_wake().is_none());
+    assert!(app.take_bg_wake(Instant::now()).is_none());
 }
 
 // ── Freshness (issue #29) ─────────────────────────────────────────────────
@@ -243,14 +273,157 @@ fn just_finished_tasks_join_the_first_wake() {
         "precondition: map is stale"
     );
 
+    // The registry stamped both completions at their terminal transition, so
+    // the first wake is due only after the quiet window; freshness (issue #29)
+    // is what puts both of them in that one wake.
     let (_, input) = app
-        .take_bg_wake()
+        .take_bg_wake(Instant::now() + BG_WAKE_QUIET)
         .expect("freshly finished tasks must join the first wake");
     assert!(input.contains(&one), "first task listed: {input}");
     assert!(
         input.contains(&two),
         "second task batched into the same wake: {input}"
     );
+}
+
+// ── Quiet window (issue #30) ──────────────────────────────────────────────
+
+#[test]
+fn burst_completions_collapse_into_one_wake() {
+    // AC1: two completions within the window of each other produce exactly one
+    // wake listing both — the second completion refreshes the deadline, so
+    // the first never fires early and strands its sibling in a wake of its own.
+    let t0 = Instant::now();
+    let mut app = App::new();
+    insert_bg_finished_at(
+        &mut app,
+        "bg_aaaa1111",
+        "cargo publish a",
+        BackgroundTaskStatus::Done,
+        t0,
+    );
+    insert_bg_finished_at(
+        &mut app,
+        "bg_bbbb2222",
+        "cargo publish b",
+        BackgroundTaskStatus::Done,
+        t0 + Duration::from_secs(10),
+    );
+
+    // At the first outcome's naive deadline the batch is still quieting down.
+    assert!(app.take_bg_wake(t0 + BG_WAKE_QUIET).is_none());
+
+    // Window stood → exactly one wake covering the burst …
+    let (_, input) = app
+        .take_bg_wake(t0 + Duration::from_secs(25))
+        .expect("one wake for the burst");
+    assert!(input.contains("bg_aaaa1111"));
+    assert!(input.contains("bg_bbbb2222"));
+
+    // … and the reported-at-most-once invariant still holds afterwards.
+    assert!(app.take_bg_wake(t0 + Duration::from_secs(40)).is_none());
+}
+
+#[test]
+fn isolated_completion_wakes_within_the_window() {
+    // AC2: a lone completion must not wait past the window.
+    let t0 = Instant::now();
+    let mut app = App::new();
+    insert_bg_finished_at(
+        &mut app,
+        "bg_aaaa1111",
+        "cargo test",
+        BackgroundTaskStatus::Done,
+        t0,
+    );
+
+    assert!(
+        app.take_bg_wake(t0 + Duration::from_millis(14_900))
+            .is_none(),
+        "still inside the window"
+    );
+    assert!(
+        app.take_bg_wake(t0 + BG_WAKE_QUIET).is_some(),
+        "due at the window boundary"
+    );
+}
+
+#[test]
+fn new_terminal_event_refreshes_the_deadline() {
+    // A completion inside the window pushes the deadline out to its own finish
+    // + window — one wake covers both instead of a wake each.
+    let t0 = Instant::now();
+    let mut app = App::new();
+    insert_bg_finished_at(
+        &mut app,
+        "bg_aaaa1111",
+        "job one",
+        BackgroundTaskStatus::Done,
+        t0,
+    );
+    assert!(
+        app.take_bg_wake(t0 + Duration::from_secs(14)).is_none(),
+        "first outcome still quieting"
+    );
+
+    // Sibling finishes at t0+14s → the deadline moves to t0+29s.
+    insert_bg_finished_at(
+        &mut app,
+        "bg_bbbb2222",
+        "job two",
+        BackgroundTaskStatus::Done,
+        t0 + Duration::from_secs(14),
+    );
+    assert!(
+        app.take_bg_wake(t0 + Duration::from_secs(28)).is_none(),
+        "deadline refreshed by the new terminal event"
+    );
+    let (_, input) = app
+        .take_bg_wake(t0 + Duration::from_secs(29))
+        .expect("one wake for both");
+    assert!(input.contains("bg_aaaa1111"));
+    assert!(input.contains("bg_bbbb2222"));
+}
+
+#[test]
+fn hold_is_a_gate_not_a_fresh_window() {
+    // The hold is a precondition, not a substitute (issue #30): it postpones
+    // a wake but must not restart the quiet window behind it — a completion
+    // held through a turn wakes as soon as the turn ends, not a window later.
+    let t0 = Instant::now();
+    let mut app = App::new();
+    insert_bg_finished_at(
+        &mut app,
+        "bg_aaaa1111",
+        "cargo test",
+        BackgroundTaskStatus::Done,
+        t0,
+    );
+    app.running = true;
+    // The turn runs past the deadline …
+    assert!(
+        app.take_bg_wake(t0 + Duration::from_secs(60)).is_none(),
+        "mid-turn injection is forbidden"
+    );
+    // … and ends: the wake is already due, no re-quieten.
+    app.running = false;
+    assert!(app.take_bg_wake(t0 + Duration::from_secs(61)).is_some());
+}
+
+#[test]
+fn undated_outcomes_skip_the_quiet_window() {
+    // `finished_at: None` exists only on test mocks (production stamps every
+    // terminal transition) and is treated as already past the window: the
+    // window may delay a wake, never lose or hold one indefinitely. The dated
+    // path is covered by the tests above.
+    let mut app = App::new();
+    insert_bg(
+        &mut app,
+        "bg_aaaa1111",
+        "cargo test",
+        BackgroundTaskStatus::Done,
+    );
+    assert!(app.take_bg_wake(Instant::now()).is_some());
 }
 
 // ── Wake-worthiness ───────────────────────────────────────────────────────
@@ -265,7 +438,7 @@ fn cancelled_tasks_never_wake() {
         BackgroundTaskStatus::Cancelled,
     );
     assert!(
-        app.take_bg_wake().is_none(),
+        app.take_bg_wake(Instant::now()).is_none(),
         "user cancelled it deliberately"
     );
 }
@@ -285,7 +458,9 @@ fn cancelled_is_filtered_from_a_mixed_wake() {
         "cargo build",
         BackgroundTaskStatus::Done,
     );
-    let (_, input) = app.take_bg_wake().expect("the done task still wakes");
+    let (_, input) = app
+        .take_bg_wake(Instant::now())
+        .expect("the done task still wakes");
     assert!(input.contains("bg_dddd4444"));
     assert!(
         !input.contains("bg_cccc3333"),
@@ -308,7 +483,9 @@ fn timed_out_and_error_are_wake_worthy() {
         "broken job",
         BackgroundTaskStatus::Error("spawn failed".into()),
     );
-    let (_, input) = app.take_bg_wake().expect("failures must reach the agent");
+    let (_, input) = app
+        .take_bg_wake(Instant::now())
+        .expect("failures must reach the agent");
     assert!(input.contains("bg_eeee5555"));
     assert!(input.contains("bg_ffff6666"));
     assert!(input.contains("超时"));
@@ -326,7 +503,7 @@ fn wake_reports_each_task_exactly_once() {
         "cargo test",
         BackgroundTaskStatus::Done,
     );
-    let (notice, input) = app.take_bg_wake().expect("first wake fires");
+    let (notice, input) = app.take_bg_wake(Instant::now()).expect("first wake fires");
     assert!(notice.contains('1'), "notice carries the count: {notice}");
     assert!(input.contains("bg_aaaa1111"));
     assert!(
@@ -337,7 +514,10 @@ fn wake_reports_each_task_exactly_once() {
         input.contains("不要重新运行"),
         "agent is told not to re-run: {input}"
     );
-    assert!(app.take_bg_wake().is_none(), "already reported");
+    assert!(
+        app.take_bg_wake(Instant::now()).is_none(),
+        "already reported"
+    );
 
     // A NEW task spawned later (during the report turn) wakes on its own.
     insert_bg(
@@ -346,7 +526,7 @@ fn wake_reports_each_task_exactly_once() {
         "next job",
         BackgroundTaskStatus::Done,
     );
-    let (_, input) = app.take_bg_wake().expect("new task wakes");
+    let (_, input) = app.take_bg_wake(Instant::now()).expect("new task wakes");
     assert!(input.contains("bg_bbbb2222"));
     assert!(!input.contains("bg_aaaa1111"), "old task not re-listed");
 }
@@ -363,7 +543,7 @@ fn long_commands_are_capped() {
         &long_cmd,
         BackgroundTaskStatus::Done,
     );
-    let (_, input) = app.take_bg_wake().unwrap();
+    let (_, input) = app.take_bg_wake(Instant::now()).unwrap();
     assert!(input.len() < long_cmd.len(), "listing must be capped");
     assert!(input.contains("…"), "truncation marker present");
 }
@@ -403,7 +583,7 @@ fn wake_carries_each_tasks_output_tail() {
         true,
     );
 
-    let (_, input) = app.take_bg_wake().expect("wake fires");
+    let (_, input) = app.take_bg_wake(Instant::now()).expect("wake fires");
     assert!(
         input.contains("all tests passed"),
         "tail is embedded: {input}"
@@ -472,7 +652,7 @@ fn wake_tail_budget_is_bounded_and_utf8_safe() {
         false,
     );
 
-    let (_, input) = app.take_bg_wake().expect("wake fires");
+    let (_, input) = app.take_bg_wake(Instant::now()).expect("wake fires");
     assert!(
         !input.contains('\u{FFFD}'),
         "truncation must never split a code point"

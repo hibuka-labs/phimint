@@ -4,7 +4,8 @@
 //!
 //! Extracted from `mod.rs`'s `run_tui` loop so the hot loop stays focused on
 //! "drain events → poll input → draw". Each logger owns its own file handle
-//! and its own dedup/throttle state.
+//! and its own dedup/throttle state — `perf.log` samples idle ticks to a 1 Hz
+//! heartbeat (issue #34) while keeping every dirty frame at full fidelity.
 
 use std::fs::File;
 use std::io::{BufWriter, Write};
@@ -92,9 +93,20 @@ pub struct PerfRow<'a> {
     pub event_types: &'a str,
 }
 
+/// Sampling interval for idle (`!dirty`) frames (issue #34). The loop ticks
+/// at ~500 Hz while nothing happens (`slept = !dirty` in `run.rs`), so an
+/// un-sampled log is pure heartbeat noise: session 20260927_4180845c wrote
+/// 32.7M rows of which 99.9% were zero-cost `slept=true, dirty=false` ticks.
+/// One row per second still proves the loop was alive and roughly captures
+/// tick cadence; dirty frames keep full fidelity.
+const IDLE_HEARTBEAT: Duration = Duration::from_secs(1);
+
 /// Per-frame timing log (CSV) for diagnosing scroll jank.
 pub struct PerfLog {
     file: BufWriter<File>,
+    /// When the last idle row was written — the sampling gate. Dirty rows are
+    /// always written and do not touch this clock.
+    last_idle_row: Option<Instant>,
 }
 
 impl PerfLog {
@@ -104,10 +116,32 @@ impl PerfLog {
             file,
             "frame_id,draw_ms,capture_ms,loop_ms,dirty,scroll_offset,follow_bottom,output_lines,crossterm_events,slept,event_types"
         );
-        Ok(Self { file })
+        Ok(Self {
+            file,
+            last_idle_row: None,
+        })
     }
 
+    /// Append one row. Dirty frames always land (full fidelity where it
+    /// matters); idle frames are sampled to [`IDLE_HEARTBEAT`] so an idle
+    /// session proves it was alive without a row per tick. CSV schema
+    /// unchanged — only which rows reach the file changes.
     pub fn record(&mut self, row: &PerfRow<'_>) {
+        self.record_at(row, Instant::now());
+    }
+
+    /// [`record`] under an explicit clock — the sampling gate is time-based,
+    /// so tests pin the 1 Hz boundary without sleeping.
+    fn record_at(&mut self, row: &PerfRow<'_>, now: Instant) {
+        if !row.dirty {
+            if self
+                .last_idle_row
+                .is_some_and(|at| now.saturating_duration_since(at) < IDLE_HEARTBEAT)
+            {
+                return;
+            }
+            self.last_idle_row = Some(now);
+        }
         let _ = writeln!(
             self.file,
             "{},{},{},{},{},{},{},{},{},{},{}",
@@ -261,6 +295,83 @@ mod tests {
             lines[1], "7,3,1,9,true,42,false,120,4,false,k",
             "CSV row must be field-ordered"
         );
+    }
+
+    /// A plain perf row: `slept` follows the loop's definition (`!dirty`).
+    fn perf_row(frame_id: u64, dirty: bool) -> PerfRow<'static> {
+        PerfRow {
+            frame_id,
+            draw_ms: 0,
+            capture_ms: 0,
+            loop_ms: 2,
+            dirty,
+            scroll_offset: 0,
+            follow_bottom: true,
+            output_lines: 10,
+            crossterm_events: 0,
+            slept: !dirty,
+            event_types: "",
+        }
+    }
+
+    fn row_ids(log_path: &Path) -> Vec<String> {
+        read(log_path)
+            .lines()
+            .skip(1)
+            .map(|row| row.split(',').next().unwrap().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn perf_log_writes_every_dirty_frame() {
+        // Dirty is the signal (issue #34): sampling must never drop one, even
+        // in a rapid burst.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("perf.log");
+        let mut log = PerfLog::new(&path).unwrap();
+
+        let t0 = Instant::now();
+        for i in 0..5 {
+            log.record_at(&perf_row(i, true), t0 + Duration::from_millis(i));
+        }
+        log.flush();
+        assert_eq!(row_ids(&path), ["0", "1", "2", "3", "4"]);
+    }
+
+    #[test]
+    fn perf_log_samples_idle_frames_at_1hz() {
+        // Idle ticks are heartbeat noise: at most one row per second, with an
+        // exact boundary.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("perf.log");
+        let mut log = PerfLog::new(&path).unwrap();
+
+        let t0 = Instant::now();
+        log.record_at(&perf_row(1, false), t0);
+        log.record_at(&perf_row(2, false), t0 + Duration::from_millis(999));
+        log.record_at(&perf_row(3, false), t0 + IDLE_HEARTBEAT);
+        log.flush();
+        assert_eq!(row_ids(&path), ["1", "3"], "idle rows sampled at the beat");
+    }
+
+    #[test]
+    fn perf_log_interleaves_dirty_and_sampled_idle() {
+        // All dirty frames land in order; idle frames only at the heartbeat.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("perf.log");
+        let mut log = PerfLog::new(&path).unwrap();
+
+        let t0 = Instant::now();
+        log.record_at(&perf_row(0, true), t0);
+        log.record_at(&perf_row(1, false), t0 + Duration::from_millis(10));
+        log.record_at(&perf_row(2, false), t0 + Duration::from_millis(20));
+        log.record_at(&perf_row(3, true), t0 + Duration::from_millis(30));
+        log.record_at(&perf_row(4, false), t0 + Duration::from_millis(40));
+        // First idle row landed at +10ms → the next is due at +1010ms.
+        log.record_at(&perf_row(5, false), t0 + Duration::from_millis(1_000));
+        log.record_at(&perf_row(6, false), t0 + Duration::from_millis(1_010));
+        log.flush();
+        assert_eq!(row_ids(&path), ["0", "1", "3", "6"]);
     }
 
     #[test]

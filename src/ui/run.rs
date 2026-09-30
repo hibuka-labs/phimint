@@ -427,10 +427,11 @@ pub async fn run_tui(
             // and at least one done/timed-out/errored outcome is unreported —
             // start a synthetic run telling the agent to fetch each output via
             // `task_output` and report it. The delivery gates (hold while the
-            // agent is mid-turn / children run / other tasks run, Cancelled
-            // suppressed, report-once) live in `bg_wake::take_bg_wake`; this loop
-            // only executes the side effects.
-            if let Some((notice, input)) = app.take_bg_wake() {
+            // agent is mid-turn / children run / other tasks run, the 15s
+            // aggregation quiet window, Cancelled suppressed, report-once)
+            // live in `bg_wake::take_bg_wake`; this loop only executes the
+            // side effects.
+            if let Some((notice, input)) = app.take_bg_wake(Instant::now()) {
                 tracing::info!("tui: bg_wake -> injecting background task report");
                 app.push_system(&notice);
                 if cmd_tx.send(Cmd::Run(input)).is_ok() {

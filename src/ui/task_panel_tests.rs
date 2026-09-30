@@ -1290,8 +1290,11 @@ fn unreported_outcome_survives_reconcile_until_the_wake_reports_it() {
     );
 
     // The debt is paid by the report, not by the clock: the wake still lists
-    // it even though it is past the display window.
-    let (_, input) = app.take_bg_wake().expect("wake must still report it");
+    // it even though it is past the display window (decision clock moved past
+    // the aggregation quiet window — the 4s age above is for the reap).
+    let (_, input) = app
+        .take_bg_wake(Instant::now() + crate::ui::bg_wake::BG_WAKE_QUIET)
+        .expect("wake must still report it");
     assert!(
         input.contains(&task_id),
         "wake lists the surviving task: {input}"
