@@ -1987,17 +1987,16 @@ fn notice_warning_renders_persistent_error_line() {
     );
     let line = app.transcript.output.last().expect("one line");
     assert_eq!(line.kind, LineKind::Error, "warning renders as red line");
+    // User-facing copy: the mechanism fact ("guard judge …") never reaches
+    // the user — nobody outside the engine knows what a "judge" is.
     assert!(
-        line.text
-            .contains("guard judge unparsed — treating as complete"),
-        "line carries the mechanism text, got: {}",
+        line.text.contains("Answer accepted without verification."),
+        "line carries the user-facing copy, got: {}",
         line.text
     );
-    // The message already names its source — no "guard: guard …" doubling
-    // (design §4 shows the bare mechanism fact on the red line).
     assert!(
-        !line.text.contains("guard: guard"),
-        "source must not be doubled, got: {}",
+        !line.text.contains("judge") && !line.text.contains("guard"),
+        "mechanism jargon must not leak to the user, got: {}",
         line.text
     );
     // No turn settlement: the notice must not call settle_after_turn —
@@ -2006,6 +2005,47 @@ fn notice_warning_renders_persistent_error_line() {
         matches!(app.status, AgentStatus::Running { .. }),
         "warning must not settle the turn, got: {:?}",
         app.status
+    );
+}
+
+/// The three judge fail-open causes (unparsed / call failed / unavailable)
+/// are indistinguishable to a user and none of them is actionable — product
+/// layer collapses them to one copy (design §8: mechanism layer keeps the
+/// cause-specific English facts for logs and tests).
+#[test]
+fn notice_guard_judge_fail_open_causes_collapse_to_one_user_copy() {
+    let user_copy = "Answer accepted without verification.";
+    for mechanism in [
+        "guard judge unparsed — treating as complete",
+        "guard judge call failed — treating as complete",
+        "guard judge unavailable — treating as complete",
+    ] {
+        let mut app = App::new();
+        app.handle_event(TuiEvent::Runtime(notice(
+            phi_agent::NoticeKind::Warning,
+            "guard",
+            mechanism,
+        )));
+        let line = app.transcript.output.last().expect("one line");
+        assert!(
+            line.text.contains(user_copy),
+            "mechanism `{mechanism}` must render as the user copy, got: {}",
+            line.text
+        );
+    }
+
+    // Guard notices that are NOT judge fail-open keep their own text.
+    let mut app = App::new();
+    app.handle_event(TuiEvent::Runtime(notice(
+        phi_agent::NoticeKind::Warning,
+        "guard",
+        "guard reasoning strikes exhausted",
+    )));
+    let line = app.transcript.output.last().expect("one line");
+    assert!(
+        line.text.contains("guard reasoning strikes exhausted"),
+        "non-judge guard notices pass through, got: {}",
+        line.text
     );
 }
 

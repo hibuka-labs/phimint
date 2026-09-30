@@ -234,9 +234,11 @@ async fn judge_degradation_renders_red_line_end_to_end() {
     );
     let line = app.transcript.output.last().expect("line appended");
     assert_eq!(line.kind, LineKind::Error, "warning renders as red line");
+    // The event carries the cause-specific English fact (asserted above); the
+    // TUI shows the product-layer user copy — no "judge" jargon on screen.
     assert_eq!(
-        line.text, "❌ guard judge unparsed — treating as complete",
-        "red line = error glyph + bare mechanism fact — no doubled source prefix"
+        line.text, "❌ Answer accepted without verification.",
+        "red line = error glyph + user-facing copy"
     );
     assert!(
         matches!(app.status, AgentStatus::Running { .. }),

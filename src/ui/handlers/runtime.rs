@@ -19,10 +19,18 @@ use phi_tui::lines::{DiffHunk, LineKind, OutputLine, LineDetail};
 use phi_tui::diff::{diff_to_hunks, diff_to_hunks_indexed};
 use phi_tui::wrap::{one_line, wrap};
 
-/// Render a notice line: `source: text`, unless `text` already names the
-/// source (the pinned judge message starts with "guard" — design §4 shows
-/// the bare mechanism fact on the red line, so don't double the prefix).
+/// Render a notice line for the TUI.
+///
+/// Product-layer copy table (design §8): the mechanism layer emits
+/// cause-specific English facts ("guard judge unparsed/call failed/unavailable
+/// — treating as complete"), but end users have never heard of a "judge" and
+/// cannot act on the cause — the three collapse to one user-facing line. The
+/// cause stays in `session.log` for debugging. Everything else renders as
+/// `source: text`, unless `text` already names the source (no doubling).
 fn notice_line(source: &str, text: &str) -> String {
+    if source == "guard" && text.starts_with("guard judge") {
+        return "Answer accepted without verification.".to_string();
+    }
     if text.starts_with(source) {
         text.to_string()
     } else {

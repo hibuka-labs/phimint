@@ -484,7 +484,10 @@ pub fn build(
         // Production sessions (2026-09-22, d84374ca/bfef1017) show the judge
         // model routinely exceeds the 10s default — every session ended with
         // "judge timeout after 10s" and a permanently ineffective judge.
-        judge_timeout_secs: 20,
+        // 2026-09-30 (20260930_b81e3aec): still timed out at 20s on a fast
+        // flash model. 32s is the compromise — slower third-party models need
+        // the headroom; beyond that the judge is not worth waiting for.
+        judge_timeout_secs: 32,
         ..DefaultGuardConfig::default()
     };
     // Wire the judge's LLM client — `new()` leaves it None, making the judge
