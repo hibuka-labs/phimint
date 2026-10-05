@@ -9,8 +9,8 @@
 .superpowers/
 
 
-# local docs (not tracked)
-docs/
+# internal design notes / session analyses (not shipped; docs/ holds the site)
+notes/
 
 # local phimint data dir (sessions/logs created by in-repo runs)
 .phimint/

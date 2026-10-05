@@ -1,35 +1,39 @@
 # phimint
 
-**读作** `/ˈfaɪmɪnt/`（phi-mint，同英文 "fie-mint"），不是「皮敏特」。
+**Pronounced** `/ˈfaɪmɪnt/` ("fie-mint", phi + mint) — a terminal AI coding agent built on [phi-agent](https://github.com/hibuka-labs/phi-agent). Product first; it also serves as the real-world stress test for the framework.
 
-> 基于 [phi-agent](../phi-agent) 的终端 AI 编码 agent —— **「产品优先」**，同时是 phi-agent 框架的真实压测场。
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/Rust-edition%202024-orange.svg)](https://www.rust-lang.org)
+[![中文](https://img.shields.io/badge/README-中文-blue.svg)](README_CN.md)
 
-phimint 跑「理解需求 → 读码 → 多文件改 → 编译/测试 → 报错迭代」的完整编码链路。设计目标是**「先验再交」**：改完先验、验过才交付——目前这一纪律由 system prompt 承载（交前编译/测试必须过），强制闸门已实现但暂缓接线（见「路线图」）。
+![phimint demo](docs/assets/readme-demo.gif)
 
-## 特性
+phimint runs the full coding loop — understand the request, read the code, change multiple files, compile and test, iterate on failures. The design goal is **verify-before-deliver**: changes are verified before they are reported. That discipline is currently carried by the system prompt (compile/tests must pass before shipping); a hard enforcement gate is implemented but deliberately parked (see [Roadmap](#roadmap)).
 
-- **流式 TUI**：ratatui + crossterm，底部固定输入栏、逐字流式输出、工具调用内联、shell 命令逐行实时回显、审批弹窗、启动 banner（自动识别终端明暗配色）。
-- **`/skill` 斜杠命令**：启动时扫描 `.claude/skills`，`/skill-name args` 直接注入 skill 正文（phi-agent `skill` feature）。
-- **拉取式上下文**：`repo_map`（tree-sitter 符号/结构索引）+ `search_content`（ripgrep），agent 主动搜、主动读，而非把整个仓库塞进 context。
-- **LSP 快速内环**：多 server 懒启动（rust-analyzer / typescript-language-server / clangd），改完不重编译秒级拿到 `file:line:col` 诊断；server 起不来降级到 shell。
-- **多 agent 扇出 + 推送式 fan-in**：`spawn_agent` 派只读子 agent 调查，主 agent **结束回合即收全量报告**（无需轮询）；TUI 任务面板逐子 agent 实时跟踪，单任务 10 分钟超时硬停。
-- **审批三态**：`auto`（全自动）/ `ask`（写操作逐条弹窗）/ `deny`（只读）；子 agent 权限跟随主 agent 模式。
-- **防护栏**：reasoning-only 纠偏（连续空转 → 自动关思考）、max-turns 预警（最后 3 轮逼收尾）、provider 截断守卫（谎报 `finish_reason` 的容错，agent-base 提供）、工具输出 16k 上限。
-- **多语言**：`code-intel` 注册表（扩展名 → LSP server → verify 兜底），Rust / TypeScript / JavaScript / C / C++ 开箱即用。
-- **模块化底座**：UI 组件与语言智能已沉淀为独立 crate —— [`phi-tui`](../phi-tui)（聊天 TUI 组件）与 [`code-intel`](../code-intel)（LSP/repomap/ripgrep 核心），phimint 只保留产品壳。
+## Features
 
-## 快速开始
+- **Streaming TUI** — ratatui + crossterm: fixed bottom composer, token-by-token streaming, inline tool calls, live line-by-line shell output, approval popups, startup banner that detects your terminal's light/dark background.
+- **Slash commands** — `.claude/skills`-compatible skills: `/skill-name args` injects the skill body into the turn. `/resume` reopens a previous session with an interactive picker.
+- **Pull-based context** — `repo_map` (tree-sitter symbol/structure index) plus `search_content` (ripgrep). The agent searches and reads on demand instead of stuffing the whole repo into context.
+- **LSP fast inner loop** — lazily started per-language servers (rust-analyzer, typescript-language-server, clangd); `file:line:col` diagnostics in seconds without recompiling. Falls back to shell when a server is missing.
+- **Multi-agent fan-out, push-based fan-in** — `spawn_agent` sends read-only sub-agents to investigate; the main agent gets the **full reports at end of turn** (no polling). The TUI task panel tracks each sub-agent live; a 10-minute per-task hard timeout guarantees delivery.
+- **Three approval modes** — `auto` (full auto), `ask` (prompt on writes/risky shell), `deny` (read-only). Sub-agents inherit the main agent's mode (and can never write).
+- **Guardrails** — reasoning-only spin correction, max-turns nudge, provider truncation guard (lying `finish_reason` tolerance, from agent-base), 16k tool-output cap.
+- **Multi-language** — `code-intel` registry (extension → LSP server → verify fallback): Rust, TypeScript, JavaScript, C, C++ out of the box.
+- **Modular base** — chat UI components and language intelligence are distilled into their own crates: [`phi-tui`](https://github.com/hibuka-labs/phi-tui) (chat TUI components) and [`code-intel`](https://github.com/hibuka-labs/code-intel) (LSP/repomap/ripgrep cores). phimint keeps only the product shell.
 
-### 前置条件
+## Quick start
 
-- Rust 工具链（edition 2024）
-- 任一 genai 支持的模型 provider 的 API key（OpenAI / Anthropic / DeepSeek / Aliyun / Moonshot / Gemini / Ollama …）
-- 本仓库的同级 sibling crates（`Cargo.toml` 以 `path` 引用）：直接依赖 `phi-agent` / `phi-tui` / `code-intel` / `phi-telemetry` / `log-core`；`agent-base` / `agent-works` / `phi-kernel-tools` / `llm-*` 经 `[patch.crates-io]` 钉到本地源
-- （可选）各语言的 LSP server 在 `PATH` 上；`cargo` / `npm` / `make` 等构建工具
+### Prerequisites
 
-### 配置
+- Rust toolchain (edition 2024)
+- An API key for any supported model provider (OpenAI / Anthropic / DeepSeek / Aliyun / Moonshot / Gemini / Ollama …)
+- Sibling checkouts of the family crates next to this repo (dependencies are local `path` references): `phi-agent`, `phi-tui`, `code-intel`, `phi-telemetry`, `log-core`, plus `agent-base`, `agent-works`, `phi-kernel-tools`, `llm-providers` pinned via `[patch.crates-io]`
+- (Optional) language servers on `PATH`; `cargo` / `npm` / `make` and friends
 
-创建 `~/.phimint/config.json`：
+### Configure
+
+Create `~/.phimint/config.json` (JSON5 — comments and trailing commas welcome):
 
 ```json
 {
@@ -41,7 +45,7 @@ phimint 跑「理解需求 → 读码 → 多文件改 → 编译/测试 → 报
 }
 ```
 
-不同 provider 的配置：
+Different provider per tier:
 
 ```json
 {
@@ -51,159 +55,180 @@ phimint 跑「理解需求 → 读码 → 多文件改 → 编译/测试 → 报
 }
 ```
 
-或使用 CLI 参数：
+Or pass everything on the command line (see `config.json.example` for the full schema):
 
 ```bash
 cargo run -- --model gpt-5.4-mini --base-url https://api.openai.com/v1 --api-key sk-xxx
 ```
 
-### 运行
+### Run
 
 ```bash
-cargo run                          # 启动 TUI
-cargo run -- -w ../some-project    # 指定工作区目录
+./install.sh                       # build + install to ~/.cargo/bin
+cargo run                          # or run straight from the source tree
+cargo run -- -w ../some-project    # point at another workspace
 ```
 
-## 使用
+## Usage
 
 ```
-cargo run -- [OPTIONS]
+phimint [OPTIONS]
 
-  -w, --workspace <PATH>    工作区目录（默认：当前目录）
-      --model <NAME>        主模型名（覆盖 config.json）
-      --lite-model <NAME>   lite 模型名（覆盖 config.json）
-      --advanced-model <NAME>  advanced 模型名（覆盖 config.json）
-      --base-url <URL>      API base URL（覆盖 config.json）
-      --api-key <KEY>       API key（覆盖 config.json）
-      --protocol <PROTO>    API 协议（覆盖 config.json，默认自动推断）
-      --config <PATH>       配置文件路径（覆盖默认位置）
-      --approval <MODE>     auto（默认）/ ask / deny
-      --shell-timeout-ms    shell 命令超时（默认 120000）
-      --session <ID>        会话 ID（默认自动生成；复用同 ID 续写同一会话）
-      --log-level <LEVEL>   session.log 级别（默认 info）
-      --color-scheme <S>    banner 配色：auto（默认，探测终端底色）/ dark / light
-      --banner <on|off>     启动 banner（默认 on）
-      --thinking-budget <N> 思考 token 预算（默认 8192）
-      --reasoning-effort <E> 推理深度：none/low/medium/high/xhigh（默认 medium）
-      --token-budget <N>    上下文窗口 token 预算（默认 160000）
-      --session-retention-days <N> 会话保留天数（默认 7）
+  -w, --workspace <PATH>       workspace directory (default: current directory)
+      --model <NAME>           main model (overrides config.json)
+      --lite-model <NAME>      lite model (overrides config.json)
+      --advanced-model <NAME>  advanced model (overrides config.json)
+      --base-url <URL>         API base URL (overrides config.json)
+      --api-key <KEY>          API key (overrides config.json)
+      --protocol <PROTO>       API protocol (default: inferred from model)
+      --config <PATH>          config file path (default: ~/.phimint/config.json)
+      --approval <MODE>        auto (default) / ask / deny
+      --shell-timeout-ms <N>   shell command timeout (default 120000)
+      --session <ID>           session ID (default: auto; reuse to append turns)
+      --resume                 pick a previous session interactively
+      --log-level <LEVEL>      session.log level (default info)
+      --color-scheme <S>       banner colors: auto (default) / dark / light
+      --banner <on|off>        startup banner (default on)
+      --thinking-budget <N>    reasoning token budget (default 8192)
+      --reasoning-effort <E>   none/low/medium/high/xhigh (default medium)
+      --token-budget <N>       context-window token budget (default 210000)
+      --session-retention-days <N>  days to keep session history (default 7)
+      --no-update-check        skip the startup update check
 ```
 
-### 界面与交互
+### Interface & interaction
 
-- **输入与输出**：底部固定输入栏（多行 Composer、括号粘贴、CJK 双宽），输出区逐字流式 + Markdown 渲染；`@` 触发文件路径补全，`/` 触发 skill 选择。
-- **按键**：`Ctrl+Y` 复制最后一条 AI 回复；`Ctrl+C` 按状态分流——有选区→复制、运行中/审批中→取消、空闲→提示后再次按下退出；`Ctrl+D` 退出。
-- **鼠标**：滚轮滚动、左键拖选出行范围、右键弹出拷贝菜单。
-- **审批三态**：
+- **Composer & transcript** — fixed bottom composer (multi-line, bracketed paste, CJK double-width aware); output streams token-by-token with markdown rendering. Type `@` for file-path completion, `/` for the skill picker.
+- **Keys**
 
-  | 模式 | 行为 |
+  | Key | Action |
   |---|---|
-  | `auto` | 全自动，什么都不问；子 agent 拿满权限 |
-  | `ask` | 写操作逐条弹窗：`y` 放行一次 / `a` 永久放行 / `n` 拒绝；子 agent 受限、决策上抛父级 |
-  | `deny` | 只读，拒绝所有写 |
+  | `Enter` | send |
+  | `Shift+Enter` | newline |
+  | `Ctrl+O` | expand/collapse thinking blocks |
+  | `Ctrl+Y` | copy the last reply |
+  | `Ctrl+C` | context-sensitive: copy selection → cancel run → quit (press twice) |
+  | `Ctrl+D` | quit |
+  | `Esc` | clear selection, else clear the composer |
+  | `PageUp` / `PageDown` | scroll the transcript |
 
-### 一次典型任务
+- **Mouse** — wheel scrolls; left-drag selects lines; right-click opens a copy menu.
+- **Approvals**
+
+  | Mode | Behavior |
+  |---|---|
+  | `auto` | everything allowed; sub-agents get full (read-only) run |
+  | `ask` | each write prompts: `y` allow once / `a` allow always / `n` deny |
+  | `deny` | read-only; all writes rejected |
+
+### A typical task
 
 ```
-用户: "帮我在 lib 里加一个带缓存的 get_user 函数"
-1. repo_map 拿结构 → search_content 定位 → read_file 读相关代码
-2. edit_file / write_file 改代码
-3. diagnostics 秒级拿类型错误（LSP 快速内环，不重编译）
-4. execute_command 跑 cargo check / 测试 → 修 → 重跑，直到全绿
-5. 简述改动、汇报收工（system prompt 纪律：交前编译/测试必须过）
+you: "add a cached get_user function to the lib"
+1. repo_map for structure → search_content to locate → read_file the relevant code
+2. edit_file / write_file the change
+3. diagnostics for type errors in seconds (LSP fast loop, no recompile)
+4. execute_command cargo check / tests → fix → rerun until green
+5. summarize the diff and report (system prompt: verify before deliver)
 ```
 
-### 一次典型多 agent 协作
+### A typical multi-agent run
 
 ```
-用户: "调查 X / Y / Z 三个问题"
-1. spawn_agent × 3 派只读子 agent（各带窄切片任务），主 agent 立即结束回合
-2. 子 agent 运行期间主 agent 什么都不做——报告是推送的，不是拉的
-3. 全部完成后报告合为一帧批量到达（TUI 任务面板可见每个子 agent 状态与实时输出）
-4. 主 agent 汇总报告，自行完成所有编辑（子 agent 永远只读）
+you: "investigate questions X / Y / Z"
+1. spawn_agent × 3 read-only sub-agents (each a narrow slice), main agent ends the turn
+2. while they run, the main agent does nothing — reports are pushed, not polled
+3. reports arrive batched at once (the task panel shows each sub-agent live)
+4. the main agent synthesizes and does all editing itself (children never write)
 ```
 
-## 工具面
+## Tool surface
 
-| 工具 | 作用 |
+| Tool | What it does |
 |---|---|
-| `read_file` / `write_file` / `edit_file` / `list_files` | 文件读写与精准编辑（`edit_file` 原子写 + 4 级匹配；phi-kernel-tools） |
-| `execute_command` | shell（跑构建/测试/命令，逐行流式回显 + 超时/取消杀进程组） |
-| `search_content` | ripgrep 内容搜索（regex） |
-| `repo_map` | tree-sitter 符号/结构索引（多语言，拉取式上下文） |
-| `diagnostics` | LSP 诊断（改完不重编译的快速内环；server 缺失降级到 shell） |
-| `update_plan` | 复杂任务先展示结构化清单（display-only，Codex 风格；agent-base） |
-| `spawn_agent` / `send_message` / `wait_agent` / `list_agents` / `close_agent` | 子 agent 原语（agent-works；推荐用法见上：spawn 后结束回合等推送） |
+| `read_file` / `write_file` / `edit_file` / `list_files` | file I/O and surgical edits (`edit_file` is atomic with 4-level matching; phi-kernel-tools) |
+| `execute_command` | shell (builds/tests/anything; streamed line-by-line, timeout + cancel kills the process group) |
+| `search_content` | ripgrep content search (regex) |
+| `repo_map` | tree-sitter symbol/structure index (multi-language, pull-based context) |
+| `diagnostics` | LSP diagnostics (fast loop without recompiling; degrades to shell) |
+| `update_plan` | structured checklist for complex tasks (display-only, Codex-style; agent-base) |
+| `spawn_agent` / `send_message` / `wait_agent` / `list_agents` / `close_agent` | sub-agent primitives (agent-works; preferred pattern: spawn, end turn, await push) |
 
-## 工作原理
+## How it works
 
-phimint 是 `phi-agent` 框架的 consumer：agent 循环 / ReAct / 审批 / 会话事件流 / 守卫全部来自框架（经 facade 一个依赖引入），phimint 只做产品壳——系统提示、工具注册、审批接线、TUI。
+phimint is a consumer of the `phi-agent` framework: the agent loop, ReAct, approvals, session event stream and guards all come from the framework (one facade dependency). phimint brings the product shell — system prompt, tool registration, approval wiring, TUI.
 
-- **推送式 fan-in**（agent-works）：子 agent 的报告在完成时被持有，主 agent 回合结束的瞬间批量注入为新回合；进度信息 display-only（不唤醒、不插话）；单任务超 10 分钟硬停并推 Error 结果——挂死的子 agent 一定能唤醒父级。子 agent 硬闸只读：`write_file` / `edit_file` / `execute_command` 不进子 agent 工具面。
-- **TUI 架构**：`ui/run.rs` 主循环里，后台任务跑 agent 回合并把 `RuntimeEvent` 推过 mpsc 通道，主循环把事件灌进 `App` 状态机、轮询键盘、重绘——输入与事件只经通道相遇，无共享可变状态，agent 循环零侵入。
-- **任务面板**：`task_panel.rs` 记账子 agent 生命周期（spawn 出现 / done 翻转 / 完成 3s 后回收，根 agent 忙碌或用户正在看面板时不回收），每个子 agent 独立流式缓冲，交叉输出互不切断；`child_results.rs` 把框架的 fan-in 路由事件映射成面板文案与聚焦子 agent 的实时尾随。
-- **LSP**：`code-intel` 按语言懒启动进程级单例 server，`didOpen`/`didChange`/`didSave` 同步 + `publishDiagnostics` 缓存，`diagnostics` 工具拉取；注册表决定 server 选择，code-intel 不感知「phimint」。
-- **守卫**（框架提供、phimint 调参）：reasoning-only 连续 2 次空转 → 注入「立即行动」nudge 并关闭思考；回合末裁决器 fail-open（裁决不可用不阻塞正常收尾）；`MaxTurnsNudgeMiddleware` 在 256 轮预算的最后 3 轮逼出最终答复。
+- **Push-based fan-in** (agent-works) — sub-agent reports are held on completion and injected as a new turn the instant the main agent's turn ends; progress is display-only (never wakes or interrupts). A task over 10 minutes is hard-stopped with an Error result, so a hung child can always wake the parent. Children are hard-gated read-only: `write_file` / `edit_file` / `execute_command` never enter their tool surface.
+- **TUI architecture** — `ui/run.rs` runs a background task per agent turn pushing `RuntimeEvent`s over an mpsc channel; the main loop feeds events into the `App` state machine, polls keys and repaints. Input and events only meet through channels — no shared mutable state, zero intrusion into the agent loop.
+- **Task panel** — `task_panel.rs` books sub-agent lifecycle (appears on spawn, flips on done, recycled 3s after completion, deferred while the root is busy or you're looking at the panel). Each sub-agent streams into its own buffer so interleaved output never cuts lines.
+- **LSP** — `code-intel` lazily starts one server per language, syncs `didOpen`/`didChange`/`didSave` with cached `publishDiagnostics`, pulled by the `diagnostics` tool. The registry picks the server; code-intel knows nothing about phimint.
+- **Guards** (framework-provided, product-tuned) — reasoning-only spin: two empty turns in a row injects an "act now" nudge and disables thinking; the end-of-turn judge fails open; `MaxTurnsNudgeMiddleware` forces a final answer in the last 3 turns of a 256-turn budget.
 
-## 会话与可观测性
+## Sessions & observability
 
-每次运行落一份会话到 `~/.phimint/sessions/<id>/`：
+Every run lands a session directory under `~/.phimint/sessions/<id>/`:
 
-| 文件 | 内容 |
+| File | Contents |
 |---|---|
-| `session.log` | tracing 日志（log-core 写入） |
-| `turn_NNN.jsonl` | 每轮结构化事件流（工具调用、文本增量、推理 …） |
-| `frames.txt` | TUI 帧翻页书（去色留布局，供离线回看 UI） |
-| `perf.log` | 每帧渲染耗时 CSV（性能回归排查） |
-| `session_metrics.json` | 每轮 token 用量与会话汇总（phi-telemetry） |
+| `session.log` | tracing log (via log-core) |
+| `turn_NNN.jsonl` | structured per-turn event stream (tool calls, text deltas, reasoning …) |
+| `frames.txt` | flip-book of TUI frames (colors stripped, layout kept) for offline UI replay |
+| `perf.log` | per-frame render-time CSV (performance regression hunting) |
+| `session_metrics.json` | per-turn token usage and session totals (phi-telemetry) |
 
-复用 `--session <id>` 会在同一目录续号追加 turn。
+Re-running with `--session <id>` appends new turns to the same directory; `--resume` picks one interactively.
 
-## 项目结构
+## Project structure
 
 ```
 phimint/
 ├── src/
-│   ├── main.rs        # CLI 入口（clap）、装配、选配色
-│   ├── agent.rs       # 系统提示 + 工具注册 + 多 agent/守卫/审批接线（verify 闸门 parked 在此）
-│   ├── approval.rs    # 审批两层：ApprovalPolicy 闸门 + 决策 handler（含 TUI 队列）
-│   ├── banner.rs      # 启动 banner（明暗两套配色）
-│   ├── gate.rs        # 强制 verify 闸门（VerifyEnforcementMiddleware，暂缓接线）
-│   ├── skills.rs      # Skill 薄壳：re-export agent-works 的 skill 子系统 + phimint 默认目录策略
-│   ├── tools/         # 应用工具壳（核心在 code-intel）
-│   │   ├── diagnostics.rs   # LSP 诊断工具
-│   │   ├── repomap.rs       # repo_map 工具
-│   │   └── ripgrep.rs       # search_content 工具
-│   └── ui/            # TUI 产品壳（通用组件已沉淀到 phi-tui）
-│       ├── run.rs             # 主循环：终端装配、事件/命令通道、回合 runner
-│       ├── app.rs (+tests)    # App 状态机（事件驱动）
-│       ├── render.rs (+tests) # 帧渲染
-│       ├── task_panel.rs (+tests)   # 子 agent 任务面板（生命周期 + 每子流式缓冲）
-│       ├── child_results.rs (+tests)# fan-in 结果呈现（聚焦尾随、文案路由）
+│   ├── main.rs        # CLI entry (clap), assembly, banner color detection
+│   ├── agent.rs       # system prompt + tool registration + multi-agent/guard/approval wiring
+│   ├── approval.rs    # two layers: ApprovalPolicy gate + decision handler (TUI queue)
+│   ├── banner.rs      # startup banner (light + dark palettes)
+│   ├── gate.rs        # hard verify gate (VerifyEnforcementMiddleware, currently parked)
+│   ├── skills.rs      # thin Skill shell: agent-works skill subsystem + default dir policy
+│   ├── tools/         # application tool shells (cores live in code-intel)
+│   │   ├── diagnostics.rs   # LSP diagnostics tool
+│   │   ├── repomap.rs       # repo_map tool
+│   │   └── ripgrep.rs       # search_content tool
+│   └── ui/            # TUI product shell (generic widgets live in phi-tui)
+│       ├── run.rs             # main loop: terminal setup, event/command channels, turn runner
+│       ├── app.rs (+tests)    # App state machine (event-driven)
+│       ├── render.rs (+tests) # frame rendering
+│       ├── task_panel.rs (+tests)   # sub-agent task panel
+│       ├── child_results.rs (+tests)# fan-in result presentation
 │       ├── frame_log.rs       # frames.txt + perf.log
 │       └── handlers/          # keyboard.rs / mouse.rs / runtime.rs
 └── Cargo.toml
 ```
 
-## 设计目标与路线图
+## Roadmap
 
-- **先验再交（PARKED）**：`gate.rs` 的 `VerifyEnforcementMiddleware` 已实现——动过代码却没跑验证就拦下「报 done」、注入「先 verify」nudge；接线暂注释（`agent.rs` Phase 6a），当前纪律由 system prompt 承载。重新接线即恢复硬保证。
-- **子 agent 受控写**：从只读调查演进到受限写委派（agent-works 的 `ChildPermissionMode` 基建已就位）。
+- **Verify-before-deliver (PARKED)** — `gate.rs`'s `VerifyEnforcementMiddleware` is implemented: it blocks "done" if code changed without a verification run and injects a "verify first" nudge. Wiring is commented out (`agent.rs`); the discipline currently rides on the system prompt. Re-enabling restores the hard guarantee.
+- **Controlled child writes** — evolve sub-agents from read-only investigation to restricted write delegation (`ChildPermissionMode` groundwork already lands in agent-works).
 
-## 开发
+## Development
 
 ```bash
-cargo build            # 编译
-cargo test             # 运行所有测试（单元测试在 *_tests.rs 独立文件中）
+cargo build            # compile
+cargo test             # all tests (unit tests live in standalone *_tests.rs files)
 cargo clippy           # lint
 ```
 
-### 测试组织
+Tests are split from business code (module-separated tests): `app.rs`, `render.rs` and friends hold logic only; tests sit in `app_tests.rs` etc., `#[cfg(test)]`-isolated from production builds but still inside the crate, so `pub(crate)` members are reachable.
 
-**模块分离测试**模式：业务代码（`app.rs`、`render.rs` 等）只含业务逻辑，测试放独立文件（`app_tests.rs` 等），`#[cfg(test)]` 隔离出生产构建；测试仍在 crate 内部，可访问 `pub(crate)` 成员。
+Sibling crates are `path` dependencies — `cargo test` in any crate uses the local sources directly. Design notes live in `notes/` (local, not committed); `docs/` holds public-facing documentation and assets.
 
-依赖的 sibling crates 用 `path` 引用，任一 crate 里 `cargo test` 直接吃本地源；`phi-tui` / `code-intel` 已独立发布（GitHub hibuka-labs + crates.io），发布流程走 `version` 字段。设计文档在 `docs/`（本地目录，不进版本库）。
+The README demo GIF is rebuilt from a recorded session: `cargo test frame_reel -- --ignored` writes ANSI frames to `target/reel/`, then `python3 scripts/readme_reel.py` renders them to `docs/assets/readme-demo.gif`.
 
 ## License
 
-MIT（见 `Cargo.toml`）。
+MIT — see [LICENSE](LICENSE).
+
+## Contact
+
+GitHub Issues — [hibuka-labs/phimint](https://github.com/hibuka-labs/phimint/issues)
+
+[中文](README_CN.md)
