@@ -264,7 +264,7 @@ fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
                         // the same double-width-in-CJK-fonts drift class the
                         // `CJK_WIDTH_UNSAFE` guard bans (session 20260908).
                         let summary = format!(
-                            "> thinking - {line_count} 行 - ~{} tok",
+                            "> thinking - {line_count} lines - ~{} tok",
                             fmt_k(*char_count / 3)
                         );
                         let mut styled =
@@ -768,7 +768,7 @@ fn render_context_menu(f: &mut Frame, app: &App) {
     let rect = Rect::new(x, y, CONTEXT_MENU_W, CONTEXT_MENU_H);
     f.render_widget(Clear, rect);
 
-    let items = [" 拷贝 ", " 取消 "];
+    let items = [" Copy ", " Cancel "];
     let lines: Vec<Line> = items
         .iter()
         .enumerate()

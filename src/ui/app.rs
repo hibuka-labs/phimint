@@ -487,15 +487,17 @@ impl App {
                 let (bounded, _) = self.bg_running_split();
                 let mut text = match (*running, bounded) {
                     (r, 0) => {
-                        format!("... 等待子 agent 返回（{r} 个运行中），结果将自动注入")
+                        format!("... waiting for sub-agents ({r} running), results auto-injected")
                     }
-                    (0, b) => format!("... 等待后台任务完成（{b} 个运行中），完成后将自动汇报结果"),
+                    (0, b) => format!(
+                        "... waiting for background tasks ({b} running), auto-report on completion"
+                    ),
                     (r, b) => format!(
-                        "... 等待子 agent（{r} 个）+ 后台任务（{b} 个）完成，结果将自动注入"
+                        "... waiting for sub-agents ({r}) + background tasks ({b}), results auto-injected"
                     ),
                 };
                 if daemons > 0 {
-                    text.push_str(&format!("（另有 {daemons} 个后台服务长驻运行中）"));
+                    text.push_str(&format!(" (+{daemons} daemon(s) always-on)"));
                 }
                 self.transcript.push(OutputLine {
                     spans: None,
@@ -521,7 +523,9 @@ impl App {
                 spans: None,
                 original: None,
                 detail: None,
-                text: format!("🟢 后台服务 {daemons} 个运行中（长驻；异常退出时会自动通知）"),
+                text: format!(
+                    "🟢 {daemons} daemon(s) running (always-on; you're notified on abnormal exit)"
+                ),
                 kind: LineKind::System,
             });
         }
@@ -881,11 +885,11 @@ impl App {
                 } else if let Some(n) = &self.notice {
                     n.clone()
                 } else {
-                    "Idle - Enter send | Shift+Enter newline | Ctrl+Y copy | 滚轮/fn+Up/Down scroll | Ctrl+C quit".to_string()
+                    "Idle - Enter send | Shift+Enter newline | Ctrl+Y copy | wheel / fn+Up/Down scroll | Ctrl+C quit".to_string()
                 };
                 let (_, daemons) = self.bg_running_split();
                 if daemons > 0 {
-                    format!("{base}（后台服务 {daemons} 个）")
+                    format!("{base} ({daemons} daemon(s))")
                 } else {
                     base
                 }
@@ -894,23 +898,23 @@ impl App {
                 let (bounded, daemons) = self.bg_running_split();
                 let mut line = match (*running, bounded) {
                     (_, 0) => format!(
-                        "{} 等待子 agent 返回（{running} 个运行中）...{} 结果到达后自动继续",
+                        "{} waiting for sub-agents ({running} running)...{} auto-continue when results arrive",
                         self.spinner_char(),
                         self.elapsed_suffix()
                     ),
                     (0, _) => format!(
-                        "{} 等待后台任务（{bounded} 个运行中）...{} 完成后自动汇报结果",
+                        "{} waiting for background tasks ({bounded} running)...{} auto-report when done",
                         self.spinner_char(),
                         self.elapsed_suffix()
                     ),
                     (_, _) => format!(
-                        "{} 等待子 agent（{running} 个）+ 后台任务（{bounded} 个）...{} 完成后自动继续",
+                        "{} waiting for sub-agents ({running}) + background tasks ({bounded})...{} auto-continue when done",
                         self.spinner_char(),
                         self.elapsed_suffix()
                     ),
                 };
                 if daemons > 0 {
-                    line.push_str(&format!("（另有 {daemons} 个后台服务）"));
+                    line.push_str(&format!(" (+{daemons} daemon(s))"));
                 }
                 line
             }

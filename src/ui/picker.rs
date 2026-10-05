@@ -189,18 +189,18 @@ fn picker_loop(
 fn format_date(time: SystemTime) -> String {
     let duration = match SystemTime::now().duration_since(time) {
         Ok(d) => d,
-        Err(_) => return "刚刚".to_string(), // clock skew
+        Err(_) => return "just now".to_string(), // clock skew
     };
 
     let secs = duration.as_secs();
     if secs < 60 {
-        "刚刚".to_string()
+        "just now".to_string()
     } else if secs < 3600 {
-        format!("{}分钟前", secs / 60)
+        format!("{}m ago", secs / 60)
     } else if secs < 86400 {
-        format!("{}小时前", secs / 3600)
+        format!("{}h ago", secs / 3600)
     } else if secs < 30 * 86400 {
-        format!("{}天前", secs / 86400)
+        format!("{}d ago", secs / 86400)
     } else {
         // Absolute date for old sessions.
         let dt: chrono::DateTime<chrono::Local> = time.into();
@@ -307,10 +307,10 @@ mod tests {
     #[test]
     fn test_format_date_relative() {
         let now = SystemTime::now();
-        assert_eq!(format_date(now - Duration::from_secs(30)), "刚刚");
-        assert!(format_date(now - Duration::from_secs(300)).contains("分钟前"));
-        assert!(format_date(now - Duration::from_secs(10800)).contains("小时前"));
-        assert!(format_date(now - Duration::from_secs(10 * 86400)).contains("天前"));
+        assert_eq!(format_date(now - Duration::from_secs(30)), "just now");
+        assert!(format_date(now - Duration::from_secs(300)).contains("m ago"));
+        assert!(format_date(now - Duration::from_secs(10800)).contains("h ago"));
+        assert!(format_date(now - Duration::from_secs(10 * 86400)).contains("d ago"));
         let formatted = format_date(now - Duration::from_secs(60 * 86400));
         assert!(
             formatted.contains("-"),
@@ -322,6 +322,6 @@ mod tests {
     #[test]
     fn test_format_date_future_clock_skew() {
         let future = SystemTime::now() + Duration::from_secs(60);
-        assert_eq!(format_date(future), "刚刚");
+        assert_eq!(format_date(future), "just now");
     }
 }

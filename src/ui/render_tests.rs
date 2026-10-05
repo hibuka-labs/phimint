@@ -676,7 +676,7 @@ fn committed_thought_folds_and_expands() {
     let text = snapshot_text(&mut app, 80, 24);
     // Full summary: marker + line count + estimate (spec: the summary carries a line count and an estimated tok count).
     assert!(
-        text.contains("> thinking - 5 行 - ~16 tok"),
+        text.contains("> thinking - 5 lines - ~16 tok"),
         "summary missing:\n{text}"
     );
     assert!(

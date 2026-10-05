@@ -198,10 +198,13 @@ fn daemon_running_does_not_hold_the_wake() {
         "a still-running daemon is not an outcome"
     );
     assert!(
-        input.contains("以下后台任务已结束"),
+        input.contains("have finished"),
         "no 'all finished' claim: {input}"
     );
-    assert!(!input.contains("全部结束"), "a daemon may still be running");
+    assert!(
+        !input.contains("all finished") && !input.contains("all tasks"),
+        "a daemon may still be running"
+    );
 }
 
 #[test]
@@ -488,7 +491,7 @@ fn timed_out_and_error_are_wake_worthy() {
         .expect("failures must reach the agent");
     assert!(input.contains("bg_eeee5555"));
     assert!(input.contains("bg_ffff6666"));
-    assert!(input.contains("超时"));
+    assert!(input.contains("timed out"));
     assert!(input.contains("spawn failed"));
 }
 
@@ -511,7 +514,7 @@ fn wake_reports_each_task_exactly_once() {
         "agent is told how to fetch output: {input}"
     );
     assert!(
-        input.contains("不要重新运行"),
+        input.contains("Do not re-run"),
         "agent is told not to re-run: {input}"
     );
     assert!(
@@ -550,13 +553,13 @@ fn long_commands_are_capped() {
 
 #[test]
 fn status_desc_covers_all_variants() {
-    assert_eq!(status_desc(&BackgroundTaskStatus::Done), "已完成");
-    assert_eq!(status_desc(&BackgroundTaskStatus::TimedOut), "超时");
-    assert_eq!(status_desc(&BackgroundTaskStatus::Cancelled), "已取消");
-    assert_eq!(status_desc(&BackgroundTaskStatus::Running), "运行中");
+    assert_eq!(status_desc(&BackgroundTaskStatus::Done), "done");
+    assert_eq!(status_desc(&BackgroundTaskStatus::TimedOut), "timed out");
+    assert_eq!(status_desc(&BackgroundTaskStatus::Cancelled), "cancelled");
+    assert_eq!(status_desc(&BackgroundTaskStatus::Running), "running");
     assert_eq!(
         status_desc(&BackgroundTaskStatus::Error("boom".into())),
-        "出错：boom"
+        "error: boom"
     );
 }
 
@@ -592,13 +595,16 @@ fn wake_carries_each_tasks_output_tail() {
         input.contains("fresh tail"),
         "consumed task's tail is embedded: {input}"
     );
-    assert!(input.contains("输出 tail"), "tail section marker: {input}");
     assert!(
-        input.contains("输出此前已被 task_output 取走"),
+        input.contains("output tail"),
+        "tail section marker: {input}"
+    );
+    assert!(
+        input.contains("output already consumed by task_output"),
         "consumed task is annotated: {input}"
     );
     assert_eq!(
-        input.matches("输出此前已被").count(),
+        input.matches("output already consumed").count(),
         1,
         "only the consumed task is annotated: {input}"
     );

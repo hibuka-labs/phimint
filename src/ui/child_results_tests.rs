@@ -50,18 +50,18 @@ fn progress_without_summary_falls_back_to_status_word() {
     match router.on_event(false, progress("root/w", "ok", None)) {
         ChildResultRoute::Notice { notice } => {
             assert!(notice.contains("w"), "{notice}");
-            assert!(notice.contains("已完成"), "{notice}");
+            assert!(notice.contains("done"), "{notice}");
         }
         other => panic!("expected Notice, got {other:?}"),
     }
 
     match router.on_event(false, progress("root/e", "error", None)) {
-        ChildResultRoute::Notice { notice } => assert!(notice.contains("出错"), "{notice}"),
+        ChildResultRoute::Notice { notice } => assert!(notice.contains("failed"), "{notice}"),
         other => panic!("expected Notice, got {other:?}"),
     }
 
     match router.on_event(false, progress("root/c", "closed", None)) {
-        ChildResultRoute::Notice { notice } => assert!(notice.contains("已关闭"), "{notice}"),
+        ChildResultRoute::Notice { notice } => assert!(notice.contains("closed"), "{notice}"),
         other => panic!("expected Notice, got {other:?}"),
     }
 }
@@ -110,7 +110,7 @@ fn batch_when_running_holds_until_turn_ends() {
 
     match router.on_event(true, batch(vec![report("root/a", "report a")])) {
         ChildResultRoute::Hold { notice } => {
-            assert!(notice.contains("本轮结束"), "{notice}");
+            assert!(notice.contains("after this turn"), "{notice}");
         }
         other => panic!("running agent must hold the batch, got {other:?}"),
     }
@@ -217,7 +217,7 @@ fn oversized_report_is_truncated_with_visible_marker() {
                 "injected report must be capped: {total} chars"
             );
             assert!(
-                input.contains("报告过长已截断"),
+                input.contains("report truncated"),
                 "truncation marker must be visible to the model"
             );
         }
@@ -231,7 +231,7 @@ fn report_under_cap_is_passed_through_verbatim() {
     match router.on_event(false, batch(vec![report("root/a", "report a")])) {
         ChildResultRoute::Inject { input, .. } => {
             assert!(
-                input.contains("report a") && !input.contains("报告过长已截断"),
+                input.contains("report a") && !input.contains("report truncated"),
                 "short report must not be touched"
             );
         }

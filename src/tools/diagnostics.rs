@@ -91,7 +91,7 @@ impl Tool for DiagnosticsTool {
                 let mut synced = 0usize;
                 for f in &files {
                     let Some(client) = manager.client_for(f) else {
-                        continue; // 该语言无 LSP server，降级到 verify。
+                        continue; // no LSP server for this language — fall back to verify.
                     };
                     let Some(language_id) = lang::lsp_language_id(&f.to_string_lossy()) else {
                         continue;
@@ -164,7 +164,7 @@ async fn wait_ready(clients: &[Arc<LspClient>]) {
             return;
         }
         if clients.iter().any(|c| c.failed_error().is_some()) {
-            return; // 有 server 启动失败，错误已记录。
+            return; // a server failed to start; the error is already recorded.
         }
         if tokio::time::Instant::now() >= deadline {
             return;

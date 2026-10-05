@@ -74,7 +74,9 @@ impl ChildResultRouter {
                 notice: progress_notice(&agent_path, &status, summary.as_deref()),
             },
             phi_agent::ChildResultRoute::Held { held } => ChildResultRoute::Hold {
-                notice: format!("所有子 agent 已返回（{held} 个），结果将在本轮结束后注入"),
+                notice: format!(
+                    "all sub-agents returned ({held}); results injected after this turn"
+                ),
             },
             phi_agent::ChildResultRoute::Batch { reports } => {
                 let (notice, input) = compose_inject(&reports);
@@ -97,12 +99,12 @@ impl ChildResultRouter {
 fn progress_notice(agent_path: &str, status: &str, summary: Option<&str>) -> String {
     let name = short_name(agent_path);
     match (status, summary) {
-        ("ok", Some(s)) => format!("子 agent {name}：{s}"),
-        ("ok", None) => format!("子 agent {name} 已完成"),
-        ("error", Some(s)) => format!("子 agent {name} 出错：{s}"),
-        ("error", None) => format!("子 agent {name} 执行出错"),
-        ("closed", _) => format!("子 agent {name} 已关闭"),
-        (other, _) => format!("子 agent {name} 状态：{other}"),
+        ("ok", Some(s)) => format!("sub-agent {name}: {s}"),
+        ("ok", None) => format!("sub-agent {name} done"),
+        ("error", Some(s)) => format!("sub-agent {name} error: {s}"),
+        ("error", None) => format!("sub-agent {name} failed"),
+        ("closed", _) => format!("sub-agent {name} closed"),
+        (other, _) => format!("sub-agent {name} status: {other}"),
     }
 }
 
@@ -113,7 +115,10 @@ const MAX_REPORT_CHARS: usize = phi_agent::ChildResultRouter::MAX_REPORT_CHARS;
 
 /// Notification + synthetic input for a set of batch reports.
 fn compose_inject(reports: &[ChildReport]) -> (String, String) {
-    let notice = format!("{} 个子 agent 结果已注入上下文", reports.len());
+    let notice = format!(
+        "{} sub-agent report(s) injected into context",
+        reports.len()
+    );
     let input = reports
         .iter()
         .map(|r| {
@@ -122,7 +127,7 @@ fn compose_inject(reports: &[ChildReport]) -> (String, String) {
                 kept
             } else {
                 format!(
-                    "{kept}\n\n[! 报告过长已截断：{total}/{} 字符，关键结论可能在后段；如需细节请向该子 agent 追问]",
+                    "{kept}\n\n[! report truncated: {total}/{} chars; key conclusions may sit at the end; ask this sub-agent for details if needed]",
                     MAX_REPORT_CHARS
                 )
             }

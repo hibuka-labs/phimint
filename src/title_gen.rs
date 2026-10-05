@@ -1,6 +1,6 @@
 //! Session title generation via LLM.
 //!
-//! Generates a concise Chinese title for a session based on the first N user
+//! Generates a concise session title (in the conversation's language) from the first N user
 //! messages.  Uses the lite model (or falls back to the main model) for speed.
 
 use std::path::{Path, PathBuf};
@@ -15,11 +15,12 @@ use phi_agent::{ChatMessage, load_session_messages, write_session_title};
 const TITLE_INPUT_LIMIT: usize = 10;
 
 /// Maximum length of generated title (characters).
-const MAX_TITLE_LENGTH: usize = 20;
+const MAX_TITLE_LENGTH: usize = 40;
 
 /// Prompt sent to the LLM for title generation.
-const TITLE_PROMPT: &str = "你是一个标题生成器。根据以下对话内容，生成一个简短的中文标题（不超过 20 个字）。\
-只输出标题本身，不要任何解释、引号或标点符号前缀。";
+const TITLE_PROMPT: &str = "You are a title generator. From the conversation below, write a short title \
+in the same language as the conversation (at most 6 words). Output the title only — no explanation, \
+quotes, or leading punctuation.";
 
 /// Generate a session title from user messages and persist it to `session_meta.json`.
 ///

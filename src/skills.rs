@@ -113,8 +113,8 @@ pub fn default_skill_dirs() -> Vec<PathBuf> {
         .unwrap_or_else(|_| PathBuf::from("."));
 
     vec![
-        home.join(".claude").join("skills"), // 用户级（低优先级）
-        PathBuf::from(".claude/skills"),     // 项目级（高优先级）
+        home.join(".claude").join("skills"), // user level (lower priority)
+        PathBuf::from(".claude/skills"),     // project level (higher priority)
     ]
 }
 

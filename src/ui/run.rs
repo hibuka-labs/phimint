@@ -1150,7 +1150,7 @@ fn terminal_scroll_notice(term_program: Option<&str>) -> Option<String> {
         return None;
     }
     Some(
-        "提示：触控板/滚轮滚动需勾选菜单「显示 > 允许鼠标上报」；若不能滚，可用 fn+Up/fn+Down 翻页历史".to_string(),
+        "Note: wheel/trackpad scroll needs View > Allow Mouse Reporting - fn+Up/fn+Down page history".to_string(),
     )
 }
 
@@ -1168,7 +1168,7 @@ fn wheel_dead_notice(
         return None;
     }
     Some(
-        "提示：本次运行未收到任何滚轮事件。若触控板滚动历史无反应，请勾选菜单「显示 > 允许鼠标上报」后重试；fn+Up/fn+Down 随时可用".to_string(),
+        "Note: no wheel events were received this run. If trackpad scrolling does nothing, enable View > Allow Mouse Reporting in your terminal and retry; fn+Up/fn+Down always work".to_string(),
     )
 }
 
@@ -1188,9 +1188,17 @@ fn resume_digest_line(messages: &[ChatMessage], title: Option<String>) -> String
             )
         })
         .count();
-    let label = title.map(|t| format!("「{t}」")).unwrap_or_default();
+    // Leading space so a titled digest reads `resumed session "foo"` and an
+    // untitled one still reads `resumed session` with no dangling gap.
+    let label = title.map(|t| format!(" \"{t}\"")).unwrap_or_default();
+    let turn_word = if turns == 1 { "turn" } else { "turns" };
+    let msg_word = if messages.len() == 1 {
+        "message"
+    } else {
+        "messages"
+    };
     format!(
-        "↩ 已恢复会话{label}：共 {turns} 轮对话、{} 条消息，PgUp 向上翻阅历史，发送消息继续对话",
+        "↩ resumed session{label}: {turns} {turn_word}, {} {msg_word}. PgUp scrolls history, send a message to continue",
         messages.len()
     )
 }
@@ -1294,9 +1302,9 @@ mod resume_digest_tests {
             assistant("好的"),
         ];
         let line = resume_digest_line(&msgs, Some("探究工程".into()));
-        assert!(line.contains("已恢复会话「探究工程」"), "{line}");
-        assert!(line.contains("共 2 轮对话"), "{line}");
-        assert!(line.contains("5 条消息"), "{line}");
+        assert!(line.contains("resumed session \"探究工程\""), "{line}");
+        assert!(line.contains("2 turns"), "{line}");
+        assert!(line.contains("5 messages"), "{line}");
         assert!(line.contains("PgUp"), "{line}");
     }
 
@@ -1304,8 +1312,8 @@ mod resume_digest_tests {
     fn digest_omits_title_when_absent() {
         let msgs = vec![user("hi"), assistant("hello")];
         let line = resume_digest_line(&msgs, None);
-        assert!(!line.contains("「"), "{line}");
-        assert!(line.contains("共 1 轮对话、2 条消息"), "{line}");
+        assert!(!line.contains('"'), "{line}");
+        assert!(line.contains("1 turn, 2 messages"), "{line}");
     }
 
     /// Ephemeral user messages (skill bodies) never reach the persisted
@@ -1315,7 +1323,7 @@ mod resume_digest_tests {
     fn digest_does_not_count_ephemeral_as_turn() {
         let msgs = vec![ChatMessage::user_ephemeral("skill body"), assistant("ok")];
         let line = resume_digest_line(&msgs, None);
-        assert!(line.contains("共 0 轮对话、2 条消息"), "{line}");
+        assert!(line.contains("0 turns, 2 messages"), "{line}");
     }
 
     /// Terminal.app needs View → Allow Mouse Reporting before wheel events
@@ -1324,7 +1332,7 @@ mod resume_digest_tests {
     #[test]
     fn scroll_notice_targets_apple_terminal_only() {
         let notice = terminal_scroll_notice(Some("Apple_Terminal")).expect("notice expected");
-        assert!(notice.contains("允许鼠标上报"), "{notice}");
+        assert!(notice.contains("Allow Mouse Reporting"), "{notice}");
         assert!(notice.contains("fn+Up"), "{notice}");
         assert_eq!(terminal_scroll_notice(Some("iTerm.app")), None);
         assert_eq!(terminal_scroll_notice(Some("ghostty")), None);
@@ -1339,8 +1347,8 @@ mod resume_digest_tests {
     fn wheel_dead_notice_needs_apple_terminal_zero_scroll_and_history() {
         let notice =
             wheel_dead_notice(Some("Apple_Terminal"), false, true).expect("notice expected");
-        assert!(notice.contains("未收到任何滚轮事件"), "{notice}");
-        assert!(notice.contains("允许鼠标上报"), "{notice}");
+        assert!(notice.contains("no wheel events were received"), "{notice}");
+        assert!(notice.contains("Allow Mouse Reporting"), "{notice}");
         // Saw a wheel event: reporting works, stay quiet.
         assert_eq!(wheel_dead_notice(Some("Apple_Terminal"), true, true), None);
         // Nothing to scroll: the message would be noise.

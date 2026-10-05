@@ -1887,7 +1887,7 @@ fn turn_done_with_running_children_enters_waiting_state() {
     assert!(
         texts
             .iter()
-            .any(|t| t.contains("... 等待子 agent 返回（2 个运行中）"))
+            .any(|t| t.contains("... waiting for sub-agents (2 running)"))
     );
     assert!(
         !texts.iter().any(|t| t.contains("✅ done")),
@@ -1971,7 +1971,7 @@ fn waiting_status_line_mentions_running_count() {
     app.status = AgentStatus::Waiting { running: 3, bg: 0 };
     let line = app.status_line();
     assert!(line.contains('3'), "count missing: {line}");
-    assert!(line.contains("等待"), "waiting wording missing: {line}");
+    assert!(line.contains("waiting"), "waiting wording missing: {line}");
 }
 
 // ── Background-task waiting state (turn ends while bg tasks run) ────────────
@@ -2028,7 +2028,7 @@ fn turn_done_with_running_bg_tasks_enters_waiting_not_idle() {
     assert!(
         texts
             .iter()
-            .any(|t| t.contains("等待后台任务") && t.contains('2'))
+            .any(|t| t.contains("waiting for background tasks") && t.contains('2'))
     );
     assert!(
         !texts.iter().any(|t| t.contains("✅ done")),
@@ -2041,7 +2041,10 @@ fn turn_done_with_running_bg_tasks_enters_waiting_not_idle() {
     ));
     // Status bar: "waiting for background tasks", not "done".
     let line = app.status_line();
-    assert!(line.contains("后台任务"), "bg wording missing: {line}");
+    assert!(
+        line.contains("background tasks"),
+        "bg wording missing: {line}"
+    );
     assert!(line.contains('2'), "bg count missing: {line}");
 }
 
@@ -2059,7 +2062,7 @@ fn turn_done_with_children_and_bg_tasks_waits_for_both() {
     ));
     let line = app.status_line();
     assert!(
-        line.contains("子 agent") && line.contains("后台任务"),
+        line.contains("sub-agents") && line.contains("background tasks"),
         "both: {line}"
     );
 }
@@ -2118,19 +2121,22 @@ fn daemon_only_settle_is_done_plus_service_note_not_waiting() {
     assert!(
         texts
             .iter()
-            .any(|t| t.contains("后台服务") && t.contains('1')),
+            .any(|t| t.contains("daemon") && t.contains('1')),
         "service noted: {texts:?}"
     );
     assert!(
-        !texts.iter().any(|t| t.contains("等待")),
+        !texts.iter().any(|t| t.contains("waiting")),
         "nothing to wait for: {texts:?}"
     );
     let line = app.status_line();
     assert!(
-        line.contains("后台服务"),
+        line.contains("daemon"),
         "status bar keeps the service visible: {line}"
     );
-    assert!(!line.contains("等待"), "status bar must not wait: {line}");
+    assert!(
+        !line.contains("waiting"),
+        "status bar must not wait: {line}"
+    );
 }
 
 #[test]
@@ -2155,13 +2161,13 @@ fn mixed_bounded_and_daemon_settle_waits_only_for_the_bounded() {
         .collect();
     let wait = texts
         .iter()
-        .find(|t| t.contains("等待后台任务"))
+        .find(|t| t.contains("waiting for background tasks"))
         .expect("waiting line");
-    assert!(wait.contains("1 个运行中"), "count = bounded only: {wait}");
-    assert!(wait.contains("后台服务"), "daemon still listed: {wait}");
+    assert!(wait.contains("1 running"), "count = bounded only: {wait}");
+    assert!(wait.contains("daemon"), "daemon still listed: {wait}");
     let line = app.status_line();
     assert!(
-        line.contains("等待后台任务") && line.contains("后台服务"),
+        line.contains("waiting for background tasks") && line.contains("daemon"),
         "{line}"
     );
 }
@@ -2173,7 +2179,7 @@ fn idle_status_line_lists_daemons_without_waiting() {
     app.status = AgentStatus::Idle;
     let line = app.status_line();
     assert!(line.starts_with("Idle"), "{line}");
-    assert!(line.contains("后台服务 1 个"), "{line}");
+    assert!(line.contains("1 daemon(s)"), "{line}");
 }
 
 #[test]

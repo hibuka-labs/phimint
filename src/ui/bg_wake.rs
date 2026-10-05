@@ -183,19 +183,19 @@ const MAX_ERROR_DESC: usize = 200;
 /// calling `task_output` (so it can prioritize a failed task first).
 fn status_desc(status: &BackgroundTaskStatus) -> String {
     match status {
-        BackgroundTaskStatus::Done => "已完成".to_string(),
-        BackgroundTaskStatus::TimedOut => "超时".to_string(),
-        BackgroundTaskStatus::Cancelled => "已取消".to_string(),
+        BackgroundTaskStatus::Done => "done".to_string(),
+        BackgroundTaskStatus::TimedOut => "timed out".to_string(),
+        BackgroundTaskStatus::Cancelled => "cancelled".to_string(),
         BackgroundTaskStatus::Error(e) => {
             let trimmed = e.trim();
             if trimmed.chars().count() <= MAX_ERROR_DESC {
-                format!("出错：{trimmed}")
+                format!("error: {trimmed}")
             } else {
                 let head: String = trimmed.chars().take(MAX_ERROR_DESC).collect();
-                format!("出错：{head}…")
+                format!("error: {head}…")
             }
         }
-        BackgroundTaskStatus::Running => "运行中".to_string(),
+        BackgroundTaskStatus::Running => "running".to_string(),
     }
 }
 
@@ -227,36 +227,37 @@ pub(crate) const MAX_TAIL_PER_WAKE: usize = 8 * 1024;
 /// TTL). Consumed tasks say so — the tail *is* the report source there.
 fn compose_wake(items: &[WakeItem]) -> (String, String) {
     let n = items.len();
-    let notice = format!("{n} 个后台任务已结束，唤醒 agent 汇报结果");
+    let notice = format!("{n} background task(s) finished; waking the agent to report");
     let per_task = MAX_TAIL_PER_TASK.min(MAX_TAIL_PER_WAKE / n.max(1));
     let listing = items
         .iter()
         .map(|t| {
             let head = format!(
-                "- {}：`{}`（{}）",
+                "- {}: `{}` ({})",
                 t.id,
                 short_command(&t.command),
                 status_desc(&t.status)
             );
             let tail = tail_utf8(&t.output_tail, per_task);
             let consumed_note = if t.consumed {
-                "（输出此前已被 task_output 取走）"
+                " (output already consumed by task_output)"
             } else {
                 ""
             };
             if tail.is_empty() {
-                format!("{head}\n  （无输出{consumed_note}）")
+                format!("{head}\n  (no output{consumed_note})")
             } else {
-                format!("{head}\n  输出 tail{consumed_note}：\n----\n{tail}\n----")
+                format!("{head}\n  output tail{consumed_note}:\n----\n{tail}\n----")
             }
         })
         .collect::<Vec<_>>()
         .join("\n");
     let input = format!(
-        "[系统通知] 你启动的以下后台任务已结束（{n} 个）：\n{listing}\n\n\
-         请优先根据上方输出 tail 汇总后向用户汇报结果；如需完整输出可逐个调用 \
-         task_output(task_id)（任务已结束，wait=false 即可；若已回收会返回 \
-         not_found，以 tail 为准）。不要重新运行这些命令。"
+        "[System notice] Background tasks you started have finished ({n}):\n{listing}\n\n\
+         Report to the user first, summarizing from the output tails above. Call \
+         task_output(task_id) for full output if you need it (the task is finished, so \
+         wait=false is enough; if it was reclaimed you get not_found, so trust the tail). \
+         Do not re-run these commands."
     );
     (notice, input)
 }
