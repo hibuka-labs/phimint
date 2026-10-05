@@ -14,24 +14,53 @@ pub enum ColorScheme {
     Light,
 }
 
-/// Semantic role of one text run in the banner.
+/// Semantic role of one text run in the banner. The palette is all-warm:
+/// hierarchy comes from lightness steps (bright gold → orange → burnt →
+/// ember-brown), never from neutral gray.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BannerStyle {
-    /// Uncolored connector (e.g. the single spaces between wordmark letters).
+    /// Uncolored spaces (letter connectors and intra-glyph padding).
     Default,
-    /// First tone of the wordmark gradient.
-    LogoA,
-    /// Second tone of the wordmark gradient.
-    LogoB,
-    /// The "Phimint" brand name on the tagline (bold).
-    Brand,
-    /// Tagline text after the brand name.
-    Tagline,
-    /// "Workspace" / "Logs" labels.
+    /// Wordmark face stroke (`█`) at gradient stop `0..=6`, left → right.
+    Logo(u8),
+    /// Wordmark drop-shadow strokes (`╔═╗║╚╝`).
+    LogoShadow,
+    /// Full-width divider rule under the banner block.
+    Rule,
+    /// The slogan (bold).
+    Slogan,
+    /// `   -   v{version}` tail.
+    Version,
+    /// "Workspace" / "Logs" / "Built on" labels.
     Label,
     /// Path values.
     Value,
+    /// `phi-agent` in the ad row — the brightest run of the card (bold).
+    Ad,
+    /// `-` separators and the docs URL.
+    Dim,
 }
+
+/// 7-stop face gradient (stop 0 = leftmost letter). Precomputed so render
+/// stays a table lookup; values match the approved design mockup exactly.
+const LOGO_STOPS_DARK: [(u8, u8, u8); 7] = [
+    (255, 106, 61),
+    (255, 120, 66),
+    (255, 135, 72),
+    (255, 150, 78),
+    (255, 164, 83),
+    (255, 178, 88),
+    (255, 193, 94),
+];
+const LOGO_STOPS_LIGHT: [(u8, u8, u8); 7] = [
+    (196, 62, 16),
+    (201, 75, 21),
+    (205, 87, 26),
+    (210, 100, 31),
+    (215, 113, 36),
+    (219, 125, 41),
+    (224, 138, 46),
+];
 
 impl BannerStyle {
     /// 24-bit RGB for the given scheme. `Default` returns `(0,0,0)` and is not
@@ -39,30 +68,52 @@ impl BannerStyle {
     pub fn rgb(self, scheme: ColorScheme) -> (u8, u8, u8) {
         match self {
             BannerStyle::Default => (0, 0, 0),
-            BannerStyle::LogoA => match scheme {
-                ColorScheme::Dark => (0xff, 0x78, 0x47),
-                ColorScheme::Light => (0xc4, 0x3e, 0x10),
+            BannerStyle::Logo(i) => {
+                let stops = match scheme {
+                    ColorScheme::Dark => &LOGO_STOPS_DARK,
+                    ColorScheme::Light => &LOGO_STOPS_LIGHT,
+                };
+                debug_assert!(
+                    usize::from(i) < stops.len(),
+                    "gradient stop out of range: {i}"
+                );
+                stops[usize::from(i).min(stops.len() - 1)]
+            }
+            BannerStyle::LogoShadow => match scheme {
+                ColorScheme::Dark => (0x4a, 0x32, 0x26),
+                ColorScheme::Light => (0xd9, 0xc3, 0xac),
             },
-            BannerStyle::LogoB => match scheme {
-                ColorScheme::Dark => (0xff, 0xa9, 0x4d),
-                ColorScheme::Light => (0xd9, 0x6a, 0x1f),
-            },
-            BannerStyle::Brand => match scheme {
+            BannerStyle::Rule => BannerStyle::LogoShadow.rgb(scheme),
+            BannerStyle::Slogan => match scheme {
                 ColorScheme::Dark => (0xff, 0xb0, 0x66),
                 ColorScheme::Light => (0x9a, 0x4b, 0x12),
             },
-            BannerStyle::Tagline => match scheme {
-                ColorScheme::Dark => (0xd0, 0xd7, 0xde),
-                ColorScheme::Light => (0x57, 0x60, 0x6a),
+            BannerStyle::Version => match scheme {
+                ColorScheme::Dark => (0xb0, 0x7a, 0x52),
+                ColorScheme::Light => (0x9c, 0x72, 0x50),
             },
-            BannerStyle::Label => BannerStyle::Brand.rgb(scheme),
-            BannerStyle::Value => BannerStyle::Tagline.rgb(scheme),
+            BannerStyle::Label => match scheme {
+                ColorScheme::Dark => (0xf2, 0xa4, 0x62),
+                ColorScheme::Light => (0xb5, 0x62, 0x1c),
+            },
+            BannerStyle::Value => match scheme {
+                ColorScheme::Dark => (0xd1, 0x8f, 0x5d),
+                ColorScheme::Light => (0x8f, 0x5a, 0x36),
+            },
+            BannerStyle::Ad => match scheme {
+                ColorScheme::Dark => (0xff, 0xc6, 0x6e),
+                ColorScheme::Light => (0xc4, 0x3e, 0x10),
+            },
+            BannerStyle::Dim => BannerStyle::Version.rgb(scheme),
         }
     }
 
-    /// True for the brand name, which renders bold in addition to its color.
+    /// True for runs that render bold in addition to their color.
     pub fn is_bold(self) -> bool {
-        matches!(self, BannerStyle::Brand)
+        matches!(
+            self,
+            BannerStyle::Logo(_) | BannerStyle::Slogan | BannerStyle::Ad
+        )
     }
 }
 
@@ -163,26 +214,39 @@ const GLYPHS: [[&str; 6]; 7] = [
     ],
 ];
 
-/// The six wordmark rows: letters joined by single `Default` connector spaces,
-/// alternating `LogoA`/`LogoB` per letter.
+/// The six wordmark rows: letters joined by single `Default` connector spaces.
+/// Each glyph is split per character into face (`█` → `Logo(letter)` gradient
+/// stop) and shadow (`╔═╗║╚╝` → `LogoShadow`) runs; consecutive same-style
+/// characters merge into one span.
 pub fn logo_rows() -> Vec<BannerRow> {
     (0..6)
         .map(|row| {
-            let mut spans = Vec::new();
+            let mut spans: Vec<BannerSpan> = Vec::new();
             for (i, glyph) in GLYPHS.iter().enumerate() {
                 if i > 0 {
-                    spans.push((" ".to_string(), BannerStyle::Default));
+                    push_char(&mut spans, ' ', BannerStyle::Default);
                 }
-                let style = if i % 2 == 0 {
-                    BannerStyle::LogoA
-                } else {
-                    BannerStyle::LogoB
-                };
-                spans.push((glyph[row].to_string(), style));
+                let stop = i as u8;
+                for ch in glyph[row].chars() {
+                    let style = match ch {
+                        '█' => BannerStyle::Logo(stop),
+                        ' ' => BannerStyle::Default,
+                        _ => BannerStyle::LogoShadow,
+                    };
+                    push_char(&mut spans, ch, style);
+                }
             }
             BannerRow { spans }
         })
         .collect()
+}
+
+/// Append `ch` to `spans`, merging into the previous run when styles match.
+fn push_char(spans: &mut Vec<BannerSpan>, ch: char, style: BannerStyle) {
+    match spans.last_mut() {
+        Some((text, prev)) if *prev == style => text.push(ch),
+        _ => spans.push((ch.to_string(), style)),
+    }
 }
 
 /// A path shortened by replacing its `$HOME` prefix with `~`. `home` is the
@@ -212,18 +276,43 @@ pub fn shorten_home(path: &Path) -> String {
     )
 }
 
-/// The tagline row: brand name (bold) + English positioning + slogan + version.
+/// The slogan row: brand voice (emphasis) + `   -   v{version}` tail.
+/// The wordmark already carries the name — no "Phimint" here.
+/// Separator is ASCII `-`, not `·`: per the CJK chrome guard
+/// (`chrome_sources_stay_cjk_width_safe`), which was introduced with the
+/// `·` → `-` retrofit in 3ae1926.
 fn tagline_row(version: &str) -> BannerRow {
     BannerRow {
         spans: vec![
-            ("Phimint".to_string(), BannerStyle::Brand),
             (
-                format!(
-                    " v{version} - Forged with intent. Shipped with care. - Built on phi-agent"
-                ),
-                BannerStyle::Tagline,
+                "Forged with intent. Shipped with care.".to_string(),
+                BannerStyle::Slogan,
             ),
+            (format!("   -   v{version}"), BannerStyle::Version),
         ],
+    }
+}
+
+/// The phi-agent endorsement row (label column width matches `info_row`).
+/// Separator is ASCII `-`, not `·` — same CJK chrome guard as `tagline_row`.
+fn ad_row() -> BannerRow {
+    BannerRow {
+        spans: vec![
+            ("Built on   ".to_string(), BannerStyle::Label),
+            ("phi-agent".to_string(), BannerStyle::Ad),
+            (" - ".to_string(), BannerStyle::Dim),
+            ("https://docs.phiagent.dev/".to_string(), BannerStyle::Dim),
+        ],
+    }
+}
+
+/// The full-width divider: `term_width` dashes as one `Rule` run. It marks
+/// the end of the banner block ("page-header" close), not a content underline.
+/// Callers pass `term_width ≥ 1` (run.rs clamps); the `.max(1)` below is a
+/// belt-and-suspenders floor, so width 0 still renders 1 dash.
+fn rule_row(term_width: usize) -> BannerRow {
+    BannerRow {
+        spans: vec![("─".repeat(term_width.max(1)), BannerStyle::Rule)],
     }
 }
 
@@ -237,12 +326,23 @@ fn info_row(label: &str, value: &str) -> BannerRow {
     }
 }
 
-/// Build the banner: 6 wordmark rows + tagline + Workspace + Logs.
-pub fn build(workspace: &Path, log_path: &Path, version: &str) -> Vec<BannerRow> {
+/// Build the banner: 6 wordmark rows + spacer + slogan + ad + Workspace +
+/// Logs + full-width rule = 12 rows. `term_width` is the terminal's column
+/// count at startup (resize afterwards may leave the rule slightly stale —
+/// clipped when narrower, a stub when wider; accepted by design).
+pub fn build(
+    workspace: &Path,
+    log_path: &Path,
+    version: &str,
+    term_width: usize,
+) -> Vec<BannerRow> {
     let mut rows = logo_rows();
+    rows.push(BannerRow { spans: vec![] });
     rows.push(tagline_row(version));
+    rows.push(ad_row());
     rows.push(info_row("Workspace", &shorten_home(workspace)));
     rows.push(info_row("Logs", &shorten_home(log_path)));
+    rows.push(rule_row(term_width));
     rows
 }
 
@@ -277,14 +377,42 @@ mod tests {
     #[test]
     fn palette_light_is_distinct_from_dark() {
         for s in [
-            BannerStyle::LogoA,
-            BannerStyle::LogoB,
-            BannerStyle::Brand,
-            BannerStyle::Tagline,
+            BannerStyle::Logo(0),
+            BannerStyle::Logo(3),
+            BannerStyle::Logo(6),
+            BannerStyle::LogoShadow,
+            BannerStyle::Rule,
+            BannerStyle::Slogan,
+            BannerStyle::Version,
             BannerStyle::Label,
             BannerStyle::Value,
+            BannerStyle::Ad,
+            BannerStyle::Dim,
         ] {
             assert_ne!(s.rgb(ColorScheme::Dark), s.rgb(ColorScheme::Light), "{s:?}");
+        }
+    }
+
+    /// 全暖约束：文字变体禁止回到中性灰（红通道领先、色散 ≥ 20）。
+    #[test]
+    fn text_styles_stay_warm() {
+        for scheme in [ColorScheme::Dark, ColorScheme::Light] {
+            for s in [
+                BannerStyle::Slogan,
+                BannerStyle::Version,
+                BannerStyle::Label,
+                BannerStyle::Value,
+                BannerStyle::Ad,
+                BannerStyle::Dim,
+            ] {
+                let (r, g, b) = s.rgb(scheme);
+                assert!(
+                    r > g && g >= b,
+                    "{s:?}/{scheme:?} not warm-ordered: {r},{g},{b}"
+                );
+                let spread = i32::from(r.max(g).max(b)) - i32::from(r.min(g).min(b));
+                assert!(spread >= 20, "{s:?}/{scheme:?} too neutral: {r},{g},{b}");
+            }
         }
     }
 
@@ -299,7 +427,10 @@ mod tests {
         for row in &rows {
             for (chunk, style) in &row.spans {
                 if *style == BannerStyle::Default {
-                    assert_eq!(chunk, " ", "connector must be a single space");
+                    assert!(
+                        chunk.chars().all(|c| c == ' '),
+                        "non-space Default: {chunk:?}"
+                    );
                     continue;
                 }
                 assert!(
@@ -308,6 +439,155 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// 字面 `█` → `Logo(档)`，阴影 `╔═╗║╚╝` → `LogoShadow`，空格 → `Default`。
+    /// 字符集两分零歧义，这是 3D 立体感的机制基础。
+    #[test]
+    fn wordmark_face_and_shadow_split_by_charset() {
+        for row in logo_rows() {
+            for (chunk, style) in &row.spans {
+                match style {
+                    BannerStyle::Default => {
+                        assert!(chunk.chars().all(|c| c == ' '), "{chunk:?}")
+                    }
+                    BannerStyle::Logo(_) => {
+                        assert!(
+                            !chunk.is_empty() && chunk.chars().all(|c| c == '█'),
+                            "{chunk:?}"
+                        )
+                    }
+                    BannerStyle::LogoShadow => {
+                        assert!(
+                            !chunk.is_empty() && chunk.chars().all(|c| "╔═╗║╚╝".contains(c)),
+                            "{chunk:?}"
+                        )
+                    }
+                    other => panic!("unexpected wordmark style: {other:?}"),
+                }
+            }
+        }
+    }
+
+    /// 纯文本不变式：span 合并不得改变可复制文本（copy/frame capture 依赖它）。
+    #[test]
+    fn wordmark_row_text_is_single_space_joined_glyphs() {
+        for (r, row) in logo_rows().iter().enumerate() {
+            let expected: String = GLYPHS
+                .iter()
+                .map(|glyph| glyph[r])
+                .collect::<Vec<_>>()
+                .join(" ");
+            assert_eq!(row.text(), expected, "row {r} text drifted");
+        }
+    }
+
+    /// 渐变语义：stop = 字母序号（PHIMINT 左→右 0..=6）。镜像/错位会让
+    /// 分色测试照样通过，这里把定义钉死。一个字母的字面笔画可被阴影/空格拆
+    /// 成多段 run（H/M/N/T），故按 GLYPHS 的连续 `█` 段展开期望序列：每段 run
+    /// 的 stop 都必须等于其字母序号；基线行（如 `╚═╝`）无 `█`，期望为空。
+    #[test]
+    fn gradient_stop_equals_letter_index_left_to_right() {
+        for (r, row) in logo_rows().iter().enumerate() {
+            let mut expected: Vec<u8> = Vec::new();
+            for (i, glyph) in GLYPHS.iter().enumerate() {
+                let mut in_face = false;
+                for ch in glyph[r].chars() {
+                    if ch == '█' {
+                        if !in_face {
+                            expected.push(i as u8);
+                        }
+                        in_face = true;
+                    } else {
+                        in_face = false;
+                    }
+                }
+            }
+            let got: Vec<u8> = row
+                .spans
+                .iter()
+                .filter_map(|(_, s)| match s {
+                    BannerStyle::Logo(i) => Some(*i),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(got, expected, "row {r}: stops must equal letter indices");
+        }
+    }
+
+    #[test]
+    fn logo_gradient_stops_are_seven_distinct_steps() {
+        for scheme in [ColorScheme::Dark, ColorScheme::Light] {
+            let stops: std::collections::HashSet<(u8, u8, u8)> =
+                (0..7u8).map(|i| BannerStyle::Logo(i).rgb(scheme)).collect();
+            assert_eq!(
+                stops.len(),
+                7,
+                "{scheme:?}: stops must be pairwise distinct"
+            );
+            assert_ne!(
+                BannerStyle::Logo(0).rgb(scheme),
+                BannerStyle::Logo(6).rgb(scheme),
+                "gradient must move across the wordmark"
+            );
+        }
+    }
+
+    #[test]
+    fn bold_set_is_logo_slogan_ad() {
+        for i in 0..7u8 {
+            assert!(BannerStyle::Logo(i).is_bold(), "Logo({i})");
+        }
+        assert!(BannerStyle::Slogan.is_bold());
+        assert!(BannerStyle::Ad.is_bold());
+        for s in [
+            BannerStyle::Default,
+            BannerStyle::LogoShadow,
+            BannerStyle::Rule,
+            BannerStyle::Version,
+            BannerStyle::Label,
+            BannerStyle::Value,
+            BannerStyle::Dim,
+        ] {
+            assert!(!s.is_bold(), "{s:?} must not be bold");
+        }
+    }
+
+    /// Golden values from the approved design mockup — a channel typo in the
+    /// tables must not sail through the distinctness checks above.
+    #[test]
+    fn logo_stop_tables_match_design_golden_values() {
+        assert_eq!(
+            LOGO_STOPS_DARK,
+            [
+                (255, 106, 61),
+                (255, 120, 66),
+                (255, 135, 72),
+                (255, 150, 78),
+                (255, 164, 83),
+                (255, 178, 88),
+                (255, 193, 94),
+            ]
+        );
+        assert_eq!(
+            LOGO_STOPS_LIGHT,
+            [
+                (196, 62, 16),
+                (201, 75, 21),
+                (205, 87, 26),
+                (210, 100, 31),
+                (215, 113, 36),
+                (219, 125, 41),
+                (224, 138, 46),
+            ]
+        );
+    }
+
+    /// 字母数与渐变档数必须一致，否则 `Logo(i)` 在 release 里会被静默夹到 stop 6。
+    #[test]
+    fn glyph_count_matches_gradient_stops() {
+        assert_eq!(GLYPHS.len(), LOGO_STOPS_DARK.len());
+        assert_eq!(GLYPHS.len(), LOGO_STOPS_LIGHT.len());
     }
 
     #[test]
@@ -337,38 +617,123 @@ mod tests {
     }
 
     #[test]
-    fn build_emits_nine_rows_with_brand_and_version() {
+    fn build_emits_twelve_rows_with_slogan_ad_and_rule() {
         let rows = build(
             Path::new("/Users/eve/w"),
             Path::new("/Users/eve/.phimint/s/1/session.log"),
             "0.1.0",
+            80,
         );
-        assert_eq!(rows.len(), 9, "6 art + tagline + 2 info");
-        let tagline = rows[6].text();
-        assert!(tagline.contains("Phimint"), "missing brand: {tagline}");
+        assert_eq!(
+            rows.len(),
+            12,
+            "6 art + blank + slogan + ad + 2 info + rule"
+        );
+        assert_eq!(rows[6].text(), "", "spacer row");
+        let tagline = rows[7].text();
         assert!(
-            tagline.contains("Forged with intent"),
+            tagline.contains("Forged with intent. Shipped with care."),
             "missing slogan: {tagline}"
         );
         assert!(tagline.contains("v0.1.0"), "missing version: {tagline}");
-        let ws = rows[7].text();
-        let logs = rows[8].text();
+        assert!(
+            !tagline.contains("Phimint"),
+            "brand is redundant with the wordmark: {tagline}"
+        );
+        let ad = rows[8].text();
+        assert!(ad.starts_with("Built on"), "bad ad row: {ad}");
+        assert!(ad.contains("phi-agent"), "missing engine: {ad}");
+        assert!(
+            ad.contains("https://docs.phiagent.dev/"),
+            "missing docs url: {ad}"
+        );
+        let ws = rows[9].text();
+        let logs = rows[10].text();
         let want_ws = shorten_home(Path::new("/Users/eve/w"));
         let want_logs = shorten_home(Path::new("/Users/eve/.phimint/s/1/session.log"));
         assert!(
             ws.starts_with("Workspace") && ws.ends_with(&want_ws),
-            "bad workspace row: {ws}"
+            "bad ws row: {ws}"
         );
         assert!(
             logs.starts_with("Logs") && logs.ends_with(&want_logs),
-            "bad logs row: {logs}"
+            "bad logs: {logs}"
         );
-        assert!(
-            rows[7]
-                .spans
-                .iter()
-                .any(|(t, s)| *s == BannerStyle::Label && t.len() == 11)
+        // Label column is 11 display columns (`{label:<9}  `) on all three
+        // label rows — ad/Workspace/Logs values start at the same x.
+        for (n, row) in [("ad", &rows[8]), ("ws", &rows[9]), ("logs", &rows[10])] {
+            let label = &row.spans[0].0;
+            assert_eq!(
+                unicode_width::UnicodeWidthStr::width(label.as_str()),
+                11,
+                "{n} label column must be 11 cols: {label:?}"
+            );
+        }
+    }
+
+    /// Style runs of the content rows, pinned via `to_runs()`: the design's
+    /// row/col alignment depends on this exact run order (ad row 8's label
+    /// width, slogan emphasis, Ad brightness, Dim separators).
+    #[test]
+    fn content_row_runs_match_design_styles() {
+        let rows = build(
+            Path::new("/Users/eve/w"),
+            Path::new("/Users/eve/.phimint/s/1/session.log"),
+            "0.1.0",
+            80,
         );
+        fn run_text(text: &str, start: usize, len: usize) -> &str {
+            &text[start..start + len]
+        }
+
+        // Row 7 slogan: Slogan body + Version tail.
+        let (text, runs) = rows[7].to_runs();
+        assert_eq!(
+            runs.iter().map(|r| r.style).collect::<Vec<_>>(),
+            vec![BannerStyle::Slogan, BannerStyle::Version],
+            "row 7 style order: {text}"
+        );
+        assert_eq!(
+            run_text(&text, runs[0].start, runs[0].len),
+            "Forged with intent. Shipped with care."
+        );
+        assert_eq!(run_text(&text, runs[1].start, runs[1].len), "   -   v0.1.0");
+
+        // Row 8 ad: Label + Ad + Dim separator + Dim url.
+        let (text, runs) = rows[8].to_runs();
+        assert_eq!(
+            runs.iter().map(|r| r.style).collect::<Vec<_>>(),
+            vec![
+                BannerStyle::Label,
+                BannerStyle::Ad,
+                BannerStyle::Dim,
+                BannerStyle::Dim
+            ],
+            "row 8 style order: {text}"
+        );
+        assert_eq!(run_text(&text, runs[0].start, runs[0].len), "Built on   ");
+        assert_eq!(run_text(&text, runs[1].start, runs[1].len), "phi-agent");
+        assert_eq!(run_text(&text, runs[2].start, runs[2].len), " - ");
+        assert_eq!(
+            run_text(&text, runs[3].start, runs[3].len),
+            "https://docs.phiagent.dev/"
+        );
+    }
+
+    #[test]
+    fn rule_row_is_full_width_dash_line() {
+        for width in [1usize, 60, 100] {
+            let rows = build(Path::new("/w"), Path::new("/l"), "0.1.0", width);
+            let rule = rows.last().unwrap();
+            let (text, spans) = rule.to_runs();
+            assert_eq!(text.chars().count(), width, "rule width {width}");
+            assert!(
+                text.chars().all(|c| c == '─'),
+                "rule must be dashes: {text:?}"
+            );
+            assert_eq!(spans.len(), 1, "rule is one run");
+            assert_eq!(spans[0].style, BannerStyle::Rule);
+        }
     }
 
     #[test]
@@ -404,9 +769,9 @@ mod tests {
         use BannerStyle as S;
         let row = BannerRow {
             spans: vec![
-                ("██".to_string(), S::LogoA),
+                ("██".to_string(), S::Logo(0)),
                 (" ".to_string(), S::Default),
-                ("abc".to_string(), S::Brand),
+                ("abc".to_string(), S::Slogan),
             ],
         };
         let (text, runs) = row.to_runs();
@@ -417,12 +782,12 @@ mod tests {
                 SpanSpec {
                     start: 0,
                     len: 6,
-                    style: S::LogoA
+                    style: S::Logo(0)
                 },
                 SpanSpec {
                     start: 7,
                     len: 3,
-                    style: S::Brand
+                    style: S::Slogan
                 },
             ]
         );

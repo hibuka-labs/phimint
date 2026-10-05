@@ -256,15 +256,26 @@ pub async fn run_tui(
         app.set_skill_summaries(skill_summaries);
         app.set_background_registry(bg_registry.clone());
         if show_banner {
+            // Divider width follows the startup window (see banner::build docs
+            // for the accepted resize staleness).
+            let term_width = terminal
+                .size()
+                .map(|s| s.width as usize)
+                .unwrap_or(80)
+                .max(1);
             app.push_banner(crate::banner::build(
                 &workspace,
                 std::path::Path::new(&log_path),
                 version,
+                term_width,
             ));
         } else {
-            app.push_system(
-                "Phimint - Forged with intent. Shipped with care. - Built on phi-agent",
-            );
+            // No wordmark when the banner is off — the brand name has to
+            // appear here or nowhere. ASCII `-`, not `—`: the CJK chrome
+            // guard (`chrome_sources_stay_cjk_width_safe`) bans the em dash.
+            app.push_system(&format!(
+                "Phimint v{version} - Forged with intent. Shipped with care."
+            ));
         }
 
         // Clipboard for Ctrl+Y "copy last reply". Optional: on headless or

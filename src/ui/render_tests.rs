@@ -439,21 +439,31 @@ fn banner_spans_render_palette_on_top_of_system_style() {
         Path::new("/tmp/ws"),
         Path::new("/tmp/ws/.phimint/s/1/session.log"),
         "0.1.0",
+        120,
     ));
     terminal.draw(|f| draw(f, &mut app)).unwrap();
     let buf = terminal.backend().buffer().clone();
     let w = 120usize;
     let cell = |x: usize, y: usize| buf.content()[y * w + x].clone();
 
-    // Wordmark row 0: glyph 0 ('p') is LogoA dark fg; connector (col 8)
+    // Wordmark row 0: face glyph 0 is Logo(0) = dark stop #FF6A3D; the shadow
+    // stroke (col 6, '╗') is LogoShadow #4A3226; the connector/padding (col 8)
     // is Default → falls back to the System base (DarkGray).
-    assert_eq!(cell(0, 0).style().fg, Some(Color::Rgb(0xff, 0x78, 0x47)));
+    assert_eq!(cell(0, 0).style().fg, Some(Color::Rgb(0xff, 0x6a, 0x3d)));
+    assert_eq!(cell(6, 0).style().fg, Some(Color::Rgb(0x4a, 0x32, 0x26)));
     assert_eq!(cell(8, 0).style().fg, Some(Color::DarkGray));
 
-    // Tagline row (index 6): "Phimint" is bold Brand.
-    let brand = cell(0, 6).style();
-    assert_eq!(brand.fg, Some(Color::Rgb(0xff, 0xb0, 0x66)));
-    assert!(brand.add_modifier.contains(Modifier::BOLD));
+    // Slogan row (index 7): "Forged…" is bold Slogan #FFB066.
+    let slogan = cell(0, 7).style();
+    assert_eq!(slogan.fg, Some(Color::Rgb(0xff, 0xb0, 0x66)));
+    assert!(slogan.add_modifier.contains(Modifier::BOLD));
+
+    // Ad row (index 8): "Built on" label #F2A462, then "phi-agent" Ad #FFC66E (bold).
+    assert_eq!(cell(0, 8).style().fg, Some(Color::Rgb(0xf2, 0xa4, 0x62)));
+    let ad_x = "Built on   ".len();
+    let ad = cell(ad_x, 8).style();
+    assert_eq!(ad.fg, Some(Color::Rgb(0xff, 0xc6, 0x6e)));
+    assert!(ad.add_modifier.contains(Modifier::BOLD));
 }
 
 #[test]
