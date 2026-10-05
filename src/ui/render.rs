@@ -23,7 +23,7 @@ use phi_tui::completer::{MentionCompleter, SlashCompleter};
 use phi_tui::lines::LineKind;
 use phi_tui::markdown::{line_plain_text, render_markdown};
 use phi_tui::popup_list::{GUTTER_W, PopupList, band_width};
-use phi_tui::wrap::{Elide, elide, pad_cols, wrap};
+use phi_tui::wrap::{Elide, elide, pad_cols, wrap, wrap_line};
 
 /// Max composer rows shown (its box grows with the buffer up to this).
 const MAX_COMPOSER_ROWS: usize = 8;
@@ -294,33 +294,71 @@ fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
         }
 
         if kind == LineKind::Normal && spans.is_empty() {
+            // Markdown emits one styled Line per paragraph and the transcript
+            // `Paragraph` does not soft-wrap — an over-wide line is clipped at
+            // the pane edge, so the tail of a long answer disappears from the
+            // screen. Wrap each markdown row into visual rows (span-level,
+            // style-preserving) and map every row back to source line `i`.
+            let width = app.transcript.wrap_width();
             let md_lines = render_markdown(&line.text);
-            for mut md_line in md_lines {
-                if app.is_selected(vis_idx) {
-                    apply_bg(&mut md_line, Color::DarkGray);
+            for md_line in md_lines {
+                for mut wrapped in wrap_line(md_line, width) {
+                    if app.is_selected(vis_idx) {
+                        apply_bg(&mut wrapped, Color::DarkGray);
+                    }
+                    visual_map.push_mapped(i, line_plain_text(&wrapped));
+                    lines.push(wrapped);
+                    vis_idx += 1;
                 }
-                visual_map.push_mapped(i, line_plain_text(&md_line));
-                lines.push(md_line);
-                vis_idx += 1;
             }
         } else {
             let base = style_for(kind);
             let mut styled = span_line(&line.text, spans, base, app.scheme());
-            if app.is_selected(vis_idx) {
-                apply_bg(&mut styled, Color::DarkGray);
+            // Exempt `push_styled_line` rows (spans + no `original`) from the
+            // wrap below. They are fixed-width chrome — banner wordmark art and
+            // the full-width `─` rule — and phi-tui's `push_styled_line`
+            // contract is "**no** soft-wrap (the wordmark must stay whole;
+            // ratatui clips on narrow terminals), no re-wrap on width change
+            // (`original: None`)". Wrapping breaks that in two ways: the rule
+            // has no whitespace to break at, so it hard-splits into dash
+            // fragments, and the 60-col wordmark splits at its letter gaps.
+            // Emit as ONE visual row; ratatui clips at the pane edge.
+            if line.spans.is_some() && line.original.is_none() {
+                if app.is_selected(vis_idx) {
+                    apply_bg(&mut styled, Color::DarkGray);
+                }
+                visual_map.push_mapped(i, line_plain_text(&styled));
+                lines.push(styled);
+                vis_idx += 1;
+            } else {
+                // Same wrap contract as the markdown path: an over-wide tool or
+                // attributed line is clipped by the pane otherwise (lines already
+                // shortened with `elide`/`one_line` fit and take the fast path).
+                let width = app.transcript.wrap_width();
+                for mut wrapped in wrap_line(styled, width) {
+                    if app.is_selected(vis_idx) {
+                        apply_bg(&mut wrapped, Color::DarkGray);
+                    }
+                    visual_map.push_mapped(i, line_plain_text(&wrapped));
+                    lines.push(wrapped);
+                    vis_idx += 1;
+                }
             }
-            visual_map.push_mapped(i, line_plain_text(&styled));
-            lines.push(styled);
-            vis_idx += 1;
         }
     }
 
     // --- streaming tail (prose only) ---
     if let Some((raw, LineKind::Normal)) = &tail_raw {
+        // Same wrap contract as the committed markdown path above: the live
+        // tail is uncommitted prose, and clipping it hides the end of an
+        // in-flight answer until it commits.
+        let width = app.transcript.wrap_width();
         let md_lines = render_markdown(raw);
         for md_line in md_lines {
-            visual_map.push_unselectable(line_plain_text(&md_line));
-            lines.push(md_line);
+            for wrapped in wrap_line(md_line, width) {
+                visual_map.push_unselectable(line_plain_text(&wrapped));
+                lines.push(wrapped);
+            }
         }
     }
 

@@ -1805,3 +1805,98 @@ fn frame_reel() {
     );
 }
 
+#[test]
+fn prose_longer_than_width_must_wrap_not_clip() {
+    let mut app = App::new();
+    // Assistant prose that clearly overflows 80 columns.
+    let long = "The policy lives in the wake module and batches completions behind a quiet window so a burst of finished tasks costs one notification turn, not ten of them.";
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::TextDelta {
+        session_id: SessionId::new(1),
+        text: long.to_string(),
+        agent_id: None,
+        trace_id: None,
+    }));
+    app.handle_event(TuiEvent::TurnDone);
+    let snap = snapshot_text(&mut app, 80, 24);
+    // Wrapped, not clipped: the tail is on screen and every word survives.
+    let has_head = snap.lines().any(|l| l.contains("The policy lives in"));
+    let has_tail = snap.lines().any(|l| l.contains("them."));
+    assert!(has_head, "head clipped:\n{snap}");
+    assert!(has_tail, "TAIL LOST (clipped at width):\n{snap}");
+    for w in long.split_whitespace() {
+        assert!(snap.contains(w), "word {w:?} lost (clipped):\n{snap}");
+    }
+    // Real wrap: the sentence spans several visual rows, not one hard-cut row.
+    let prose_rows = snap
+        .lines()
+        .filter(|l| l.contains("policy") || l.contains("window so") || l.contains("them."))
+        .count();
+    assert!(
+        prose_rows >= 2,
+        "prose must wrap into multiple rows:\n{snap}"
+    );
+}
+
+/// The same clip bug on the uncommitted streaming tail: prose mid-stream must
+/// wrap, not vanish at the pane edge until it commits.
+#[test]
+fn streaming_tail_longer_than_width_must_wrap_not_clip() {
+    let mut app = App::new();
+    let long = "Streaming answers stay uncommitted until the turn ends, so the live tail is the only place a reader sees the sentence, and its ending must remain on screen the whole time.";
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::TextDelta {
+        session_id: SessionId::new(1),
+        text: long.to_string(),
+        agent_id: None,
+        trace_id: None,
+    }));
+    // No TurnDone: the text is still the streaming tail.
+    let snap = snapshot_text(&mut app, 80, 24);
+    let has_head = snap
+        .lines()
+        .any(|l| l.contains("Streaming answers stay uncommitted"));
+    let has_tail = snap.lines().any(|l| l.contains("whole time."));
+    assert!(has_head, "head clipped:\n{snap}");
+    assert!(has_tail, "TAIL LOST (clipped at width):\n{snap}");
+    for w in long.split_whitespace() {
+        assert!(snap.contains(w), "word {w:?} lost (clipped):\n{snap}");
+    }
+}
+
+/// The opposite contract on `push_styled_line` rows: they must NOT soft-wrap.
+/// phi-tui documents "**no** soft-wrap (the wordmark must stay whole; ratatui
+/// clips on narrow terminals), no re-wrap on width change (`original: None`)".
+/// Banner art and the full-width `─` rule are fixed-width chrome — wrapping the
+/// rule (no break points) hard-splits it into dash fragments and the 60-col
+/// wordmark splits at its letter gaps. Render a banner wider than the pane and
+/// assert the rule stays ONE visual row (clipped), not a stack of fragments.
+#[test]
+fn styled_banner_rows_stay_whole_and_do_not_soft_wrap() {
+    let mut app = App::new();
+    // 100-col rule on a 40-col pane: wider than the backend, no break points.
+    app.push_banner(crate::banner::build(
+        std::path::Path::new("/w"),
+        std::path::Path::new("/l"),
+        "0.1.0",
+        100,
+    ));
+    let snap = snapshot_text(&mut app, 40, 30);
+    let dash_rows: Vec<&str> = snap
+        .lines()
+        .filter(|l| !l.trim().is_empty() && l.trim().chars().all(|c| c == '─'))
+        .collect();
+    assert_eq!(
+        dash_rows.len(),
+        1,
+        "rule must stay one clipped visual row, not wrap into fragments:\n{snap}"
+    );
+    // And the wordmark keeps one visual row per glyph row (6), not 12 halves.
+    // (Row 5 is pure shadow `╚═╝`, so count the full face+shadow charset.)
+    let wordmark_rows = snap
+        .lines()
+        .filter(|l| l.chars().any(|c| "█╔═╗║╚╝".contains(c)))
+        .count();
+    assert_eq!(
+        wordmark_rows, 6,
+        "wordmark must stay whole (6 rows), not split at letter gaps:\n{snap}"
+    );
+}

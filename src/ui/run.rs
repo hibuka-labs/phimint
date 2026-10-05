@@ -1232,18 +1232,21 @@ fn replay_messages_to_transcript(app: &mut super::app::App, messages: &[ChatMess
                 ..
             } => {
                 // Push text content (if any).
+                // ONE raw OutputLine for the whole message: Normal prose is
+                // wrapped at display time (markdown + `wrap_line`), and
+                // `rewrap_output` keeps Normal lines whole for exactly that
+                // reason. Pre-wrapping here froze the resume-time width into
+                // the transcript, so a resized terminal kept stale breaks.
                 if let Some(text) = content {
                     if !text.is_empty() {
-                        let wrapped = phi_tui::wrap::wrap(text, app.transcript.wrap_width());
-                        for (i, line) in wrapped.into_iter().enumerate() {
-                            app.transcript.push(OutputLine {
-                                text: line,
-                                kind: LineKind::Normal,
-                                spans: None,
-                                original: if i == 0 { Some(text.clone()) } else { None },
-                                detail: None,
-                            });
-                        }
+                        let text = text.clone();
+                        app.transcript.push(OutputLine {
+                            original: Some(text.clone()),
+                            text,
+                            kind: LineKind::Normal,
+                            spans: None,
+                            detail: None,
+                        });
                     }
                 }
                 // Push tool call markers.
@@ -1262,11 +1265,14 @@ fn replay_messages_to_transcript(app: &mut super::app::App, messages: &[ChatMess
             ChatMessage::Tool { name, content, .. } => {
                 let label = name.as_deref().unwrap_or("tool");
                 let preview = content.lines().next().unwrap_or(content);
-                let display = if preview.len() > 120 {
-                    format!("↻ {}: {}...", label, &preview[..120])
-                } else {
-                    format!("↻ {}: {}", label, preview)
-                };
+                // `elide`, not a byte slice: `&preview[..120]` panics mid-UTF-8
+                // on non-ASCII tool output (any CJK repo), and the budget is
+                // display columns so the row cannot overflow the pane.
+                let display = format!(
+                    "↻ {}: {}",
+                    label,
+                    phi_tui::wrap::elide(preview, 120, phi_tui::wrap::Elide::Head)
+                );
                 app.transcript.push(OutputLine {
                     text: display,
                     kind: LineKind::ToolResult,
@@ -1787,5 +1793,63 @@ mod skill_turn_log_tests {
             refreshed.contains("## Active Skills") && refreshed.contains("forge the anchor"),
             "Active Skills section must survive catalog refresh"
         );
+    }
+}
+
+/// Replay must follow the Normal-prose contract: one raw `OutputLine`, wrapped
+/// at display time. Pre-wrapping froze the resume-time width into the
+/// transcript — a later resize kept the stale breaks, because
+/// `rewrap_output` deliberately leaves Normal lines whole.
+#[cfg(test)]
+mod replay_tests {
+    use super::*;
+    use crate::ui::app::App;
+    use phi_tui::lines::LineKind;
+
+    fn assistant(text: &str) -> ChatMessage {
+        ChatMessage::Assistant {
+            content: Some(text.into()),
+            reasoning_content: None,
+            thinking_signature: None,
+            tool_calls: None,
+        }
+    }
+
+    #[test]
+    fn replay_keeps_prose_as_one_raw_line() {
+        let mut app = App::new();
+        let long = "The policy lives in the wake module and batches completions behind a quiet window so a burst of finished tasks costs one notification turn, not ten of them.";
+        let msgs = vec![assistant(long)];
+        replay_messages_to_transcript(&mut app, &msgs);
+        let normals: Vec<_> = app
+            .transcript
+            .output
+            .iter()
+            .filter(|l| l.kind == LineKind::Normal)
+            .collect();
+        assert_eq!(normals.len(), 1, "prose must stay one logical line");
+        assert_eq!(normals[0].text, long);
+        assert_eq!(normals[0].original.as_deref(), Some(long));
+    }
+
+    /// The tool preview used to be a raw byte slice at 120, which panics
+    /// mid-UTF-8 on non-ASCII output (any CJK repo) during resume.
+    #[test]
+    fn replay_tool_preview_never_panics_on_multibyte() {
+        let mut app = App::new();
+        let msgs = vec![ChatMessage::Tool {
+            tool_call_id: "tc1".into(),
+            name: Some("bash".into()),
+            content: "中".repeat(200), // 600 bytes — past the old cut
+        }];
+        replay_messages_to_transcript(&mut app, &msgs);
+        let preview = app
+            .transcript
+            .output
+            .iter()
+            .find(|l| l.kind == LineKind::ToolResult)
+            .expect("tool result line");
+        assert!(preview.text.contains("bash"), "{}", preview.text);
+        assert!(preview.text.len() < 300, "preview elided: {}", preview.text);
     }
 }
