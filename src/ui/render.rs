@@ -15,12 +15,14 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::banner::{BannerStyle, ColorScheme, SpanSpec};
 use crate::ui::app::{
-    AgentStatus, App, CONTEXT_MENU_H, CONTEXT_MENU_W, FocusTarget, SubAgentStatus,
+    AgentStatus, App, CONTEXT_MENU_H, CONTEXT_MENU_W, FocusTarget, ResultTier, SubAgentStatus,
     context_menu_pos, is_writing_hint,
 };
 use crate::ui::task_panel::ThinkingPanelState;
+use crate::ui::theme;
 use phi_tui::completer::{MentionCompleter, SlashCompleter};
-use phi_tui::lines::LineKind;
+use phi_tui::layout::{Preview, folded_body, opens_block};
+use phi_tui::lines::{LineKind, ToolState};
 use phi_tui::markdown::{line_plain_text, render_markdown};
 use phi_tui::popup_list::{GUTTER_W, PopupList, band_width};
 use phi_tui::wrap::{Elide, elide, pad_cols, wrap, wrap_line};
@@ -150,8 +152,32 @@ fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
     let mut visual_map = phi_tui::visual::VisualMap::with_capacity(committed + 32);
 
     // --- committed output ---
+    // Theme for this frame: the scheme is resolved once at startup, and every
+    // gray/truecolor site below reads its value from `theme` slots.
+    let scheme = app.scheme();
+    let sel_bg = theme::selection_bg(scheme);
+    // Which lines open a block. Decided up front so the detail branches below
+    // don't each have to carry rhythm state through their `continue`s.
+    let opens: Vec<bool> = {
+        let mut v = Vec::with_capacity(committed);
+        let mut prev: Option<&phi_tui::lines::OutputLine<BannerStyle>> = None;
+        for line in transcript.iter() {
+            v.push(prev.is_none_or(|p| opens_block(p, line)));
+            prev = Some(line);
+        }
+        v
+    };
     let mut vis_idx: usize = 0; // running visual line counter
     for i in 0..committed {
+        // Block spacer. Render-time only: it is a row on the screen and not a
+        // row in `transcript.output`, so history, selection indices,
+        // `follow_bottom`, export and resume digests never see it (the same
+        // rule the thinking fold follows).
+        if i > 0 && opens[i] {
+            lines.push(Line::from(Span::raw("")));
+            visual_map.push_unselectable(String::new());
+            vis_idx += 1;
+        }
         let line = &transcript[i];
         let kind = line.kind;
         let spans = line.spans.as_deref().unwrap_or(&[]);
@@ -160,11 +186,16 @@ fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
         if let Some(ref detail) = line.detail {
             match detail {
                 phi_tui::lines::LineDetail::Diff { path, hunks } => {
-                    // Invocation line (same as non-diff tool lines)
-                    let base = style_for(kind);
-                    let mut styled = span_line(&line.text, spans, base, app.scheme());
+                    // Invocation line: same composed tool row as everywhere
+                    // else (state glyph + name + grey args).
+                    let mut styled = tool_invocation_line(
+                        &line.text,
+                        line.tool_state.unwrap_or(ToolState::Running),
+                        app.spinner_char(),
+                        scheme,
+                    );
                     if app.is_selected(vis_idx) {
-                        apply_bg(&mut styled, Color::DarkGray);
+                        apply_bg(&mut styled, sel_bg);
                     }
                     visual_map.push_mapped(i, line_plain_text(&styled));
                     lines.push(styled);
@@ -174,10 +205,10 @@ fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
                     let header_text = format!("┌─ {path}");
                     let mut header_line = Line::from(Span::styled(
                         header_text.clone(),
-                        Style::default().fg(Color::DarkGray),
+                        Style::default().fg(theme::faint(scheme)),
                     ));
                     if app.is_selected(vis_idx) {
-                        apply_bg(&mut header_line, Color::DarkGray);
+                        apply_bg(&mut header_line, sel_bg);
                     }
                     visual_map.push_mapped(i, header_text);
                     lines.push(header_line);
@@ -203,7 +234,7 @@ fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
                             Style::default().fg(Color::Cyan),
                         ));
                         if app.is_selected(vis_idx) {
-                            apply_bg(&mut hunk_line, Color::DarkGray);
+                            apply_bg(&mut hunk_line, sel_bg);
                         }
                         visual_map.push_mapped(i, hunk_text);
                         lines.push(hunk_line);
@@ -213,7 +244,7 @@ fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
                             let (sign, color) = match dl.kind {
                                 phi_tui::lines::DiffLineKind::Add => ("+", Color::Green),
                                 phi_tui::lines::DiffLineKind::Del => ("-", Color::Red),
-                                phi_tui::lines::DiffLineKind::Context => (" ", Color::DarkGray),
+                                phi_tui::lines::DiffLineKind::Context => (" ", theme::faint(scheme)),
                             };
                             // Line number: prefer old_line for context/del, new_line for add
                             let line_num = match dl.kind {
@@ -240,7 +271,7 @@ fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
                                     Style::default().fg(color),
                                 ));
                                 if app.is_selected(vis_idx) {
-                                    apply_bg(&mut styled, Color::DarkGray);
+                                    apply_bg(&mut styled, sel_bg);
                                 }
                                 visual_map.push_mapped(i, display);
                                 lines.push(styled);
@@ -250,41 +281,123 @@ fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
                     }
                     continue; // skip the normal rendering path below
                 }
-                phi_tui::lines::LineDetail::Thought {
+                phi_tui::lines::LineDetail::Folded {
                     raw,
                     line_count,
                     char_count,
+                    meta_head,
                 } => {
+                    let width = app.transcript.wrap_width();
+                    // ── thinking ──────────────────────────────────────────
                     // Folded by default (one summary line); Ctrl+O expands to
                     // the full text re-wrapped at the current width. Folding
                     // is a render-time decision — the line always carries the
                     // full text in `detail.raw`.
-                    if !app.show_thoughts {
-                        // ASCII `>`, not `▸`: U+25B8 is East_Asian_Width=Ambiguous,
-                        // the same double-width-in-CJK-fonts drift class the
-                        // `CJK_WIDTH_UNSAFE` guard bans (session 20260908).
-                        let summary = format!(
-                            "> thinking - {line_count} lines - ~{} tok",
-                            fmt_k(*char_count / 3)
-                        );
-                        let mut styled =
-                            Line::from(Span::styled(summary.clone(), style_for(LineKind::Thought)));
-                        if app.is_selected(vis_idx) {
-                            apply_bg(&mut styled, Color::DarkGray);
+                    if kind == LineKind::Thought {
+                        if !app.show_thoughts {
+                            // No leading `>`: that is the user line's marker
+                            // (transcript.rs `push_user`) and a summary that
+                            // starts with `>` reads as something you typed.
+                            let summary = format!(
+                                "thinking - {line_count} lines - ~{} tok",
+                                fmt_k(*char_count / 3)
+                            );
+                            let mut styled = Line::from(Span::styled(
+                                summary.clone(),
+                                style_for(LineKind::Thought, scheme),
+                            ));
+                            if app.is_selected(vis_idx) {
+                                apply_bg(&mut styled, sel_bg);
+                            }
+                            visual_map.push_mapped(i, summary);
+                            lines.push(styled);
+                            vis_idx += 1;
+                            continue;
                         }
-                        visual_map.push_mapped(i, summary);
-                        lines.push(styled);
-                        vis_idx += 1;
+                        for wline in wrap(raw, width) {
+                            let mut styled = Line::from(Span::styled(
+                                wline.clone(),
+                                style_for(LineKind::Thought, scheme),
+                            ));
+                            if app.is_selected(vis_idx) {
+                                apply_bg(&mut styled, sel_bg);
+                            }
+                            visual_map.push_mapped(i, wline);
+                            lines.push(styled);
+                            vis_idx += 1;
+                        }
                         continue;
                     }
-                    let width = app.transcript.wrap_width();
-                    let base = style_for(LineKind::Thought);
-                    for wline in wrap(raw, width) {
-                        let mut styled = Line::from(Span::styled(wline.clone(), base));
+
+                    // ── tool block: the preview ladder (design §4) ────────
+                    // The meta row is already in `text`. Everything under it is
+                    // the payload, shown 0 / 2 / all rows by `result_tier`.
+                    // Only display changes: `raw` always holds the tool's
+                    // answer whole, so the transcript, selection and copy are
+                    // unaffected by which tier is on.
+                    let meta = if kind == LineKind::Tool {
+                        tool_invocation_line(
+                            &line.text,
+                            line.tool_state.unwrap_or(ToolState::Running),
+                            app.spinner_char(),
+                            scheme,
+                        )
+                    } else {
+                        result_meta_line(&line.text, kind, scheme)
+                    };
+                    let mut styled = meta;
+                    if app.is_selected(vis_idx) {
+                        apply_bg(&mut styled, sel_bg);
+                    }
+                    visual_map.push_mapped(i, line_plain_text(&styled));
+                    lines.push(styled);
+                    vis_idx += 1;
+
+                    // Which payload rows the tier owes: the meta row's
+                    // relationship to `raw`'s head is recorded at commit time
+                    // (`MetaHead`), so nothing is re-derived from the width
+                    // here. Wrapping/indenting is ours; row selection is
+                    // `phi_tui::layout`.
+                    let preview = match app.result_tier {
+                        ResultTier::Compact => Preview::Rows(0),
+                        ResultTier::Default => Preview::Rows(2),
+                        ResultTier::Expanded => Preview::All,
+                    };
+                    let fold = folded_body(raw, *meta_head, preview);
+                    let inner = width.saturating_sub(FOLD_INDENT.len()).max(20);
+                    let mut payload: Vec<String> = Vec::new();
+                    // An abbreviated head comes back in full at Expanded —
+                    // otherwise "expand" would still be hiding text. It is
+                    // drawn *first*, so the expanded payload keeps the
+                    // answer's own order (design: order may never change).
+                    if let Some(head) = fold.restore_head {
+                        payload.extend(wrap(head, inner));
+                    }
+                    for row in &fold.rows {
+                        payload.extend(wrap(row, inner));
+                    }
+                    for wline in payload {
+                        let display = format!("{FOLD_INDENT}{wline}");
+                        let mut styled =
+                            Line::from(Span::styled(display.clone(), style_for(kind, scheme)));
                         if app.is_selected(vis_idx) {
-                            apply_bg(&mut styled, Color::DarkGray);
+                            apply_bg(&mut styled, sel_bg);
                         }
-                        visual_map.push_mapped(i, wline);
+                        visual_map.push_mapped(i, display);
+                        lines.push(styled);
+                        vis_idx += 1;
+                    }
+                    if fold.hidden > 0 {
+                        // ASCII `...`: `…` is CJK-width-unsafe (render_tests.rs).
+                        let hint = format!("{FOLD_INDENT}... +{} lines", fold.hidden);
+                        let mut styled = Line::from(Span::styled(
+                            hint.clone(),
+                            Style::default().fg(theme::faint(scheme)),
+                        ));
+                        if app.is_selected(vis_idx) {
+                            apply_bg(&mut styled, sel_bg);
+                        }
+                        visual_map.push_mapped(i, hint);
                         lines.push(styled);
                         vis_idx += 1;
                     }
@@ -304,7 +417,7 @@ fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
             for md_line in md_lines {
                 for mut wrapped in wrap_line(md_line, width) {
                     if app.is_selected(vis_idx) {
-                        apply_bg(&mut wrapped, Color::DarkGray);
+                        apply_bg(&mut wrapped, sel_bg);
                     }
                     visual_map.push_mapped(i, line_plain_text(&wrapped));
                     lines.push(wrapped);
@@ -312,8 +425,21 @@ fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
                 }
             }
         } else {
-            let base = style_for(kind);
-            let mut styled = span_line(&line.text, spans, base, app.scheme());
+            // A tool invocation is composed (state glyph + name + grey args),
+            // a result row splits the connector from the answer — only these
+            // two need anything fancier than "paint the whole line".
+            let mut styled = if kind == LineKind::Tool {
+                tool_invocation_line(
+                    &line.text,
+                    line.tool_state.unwrap_or(ToolState::Running),
+                    app.spinner_char(),
+                    scheme,
+                )
+            } else if kind == LineKind::ToolResult {
+                result_meta_line(&line.text, kind, scheme)
+            } else {
+                span_line(&line.text, spans, style_for(kind, scheme), scheme)
+            };
             // Exempt `push_styled_line` rows (spans + no `original`) from the
             // wrap below. They are fixed-width chrome — banner wordmark art and
             // the full-width `─` rule — and phi-tui's `push_styled_line`
@@ -325,7 +451,7 @@ fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
             // Emit as ONE visual row; ratatui clips at the pane edge.
             if line.spans.is_some() && line.original.is_none() {
                 if app.is_selected(vis_idx) {
-                    apply_bg(&mut styled, Color::DarkGray);
+                    apply_bg(&mut styled, sel_bg);
                 }
                 visual_map.push_mapped(i, line_plain_text(&styled));
                 lines.push(styled);
@@ -337,7 +463,7 @@ fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
                 let width = app.transcript.wrap_width();
                 for mut wrapped in wrap_line(styled, width) {
                     if app.is_selected(vis_idx) {
-                        apply_bg(&mut wrapped, Color::DarkGray);
+                        apply_bg(&mut wrapped, sel_bg);
                     }
                     visual_map.push_mapped(i, line_plain_text(&wrapped));
                     lines.push(wrapped);
@@ -380,7 +506,7 @@ fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
     // UNPREFIXED (its title names the agent).
     let panel: Option<ThinkingPanelState> = if app.show_thoughts {
         if let Some(state) = app.thinking_panel_state() {
-            let base = style_for(LineKind::Thought);
+            let base = style_for(LineKind::Thought, scheme);
             let agent_prefix = state
                 .agent
                 .as_ref()
@@ -625,6 +751,7 @@ fn format_time(elapsed: std::time::Duration) -> String {
 
 /// Render the task panel showing sub-agents and their status.
 fn render_task_panel(f: &mut Frame, app: &App, area: Rect) {
+    let scheme = app.scheme();
     let total = app.sub_agents.len();
     let block = Block::default()
         .borders(Borders::ALL)
@@ -672,14 +799,17 @@ fn render_task_panel(f: &mut Frame, app: &App, area: Rect) {
         // calls (the long silent report-writing stretch has no tool events).
         let activity = if act_w > 6 {
             if is_writing_hint(state, Instant::now()) {
-                (elide("writing...", act_w, Elide::Head), Color::DarkGray)
+                (
+                    elide("writing...", act_w, Elide::Head),
+                    theme::faint(scheme),
+                )
             } else {
                 state
                     .events
                     .last()
                     .map(|e| {
                         let (mark, color) = if e.is_finished {
-                            ("+", Color::DarkGray)
+                            ("+", theme::faint(scheme))
                         } else {
                             (">", Color::Reset)
                         };
@@ -694,7 +824,7 @@ fn render_task_panel(f: &mut Frame, app: &App, area: Rect) {
             (String::new(), Color::Reset)
         };
         let bg_color = if is_selected {
-            Color::DarkGray
+            theme::selection_bg(scheme)
         } else {
             Color::Reset
         };
@@ -717,11 +847,11 @@ fn render_task_panel(f: &mut Frame, app: &App, area: Rect) {
             ),
             Span::styled(
                 pad_cols(&files, files_w),
-                Style::default().fg(Color::DarkGray).bg(bg_color),
+                Style::default().fg(theme::faint(scheme)).bg(bg_color),
             ),
             Span::styled(
                 format!("│ {:>5}", time),
-                Style::default().fg(Color::DarkGray).bg(bg_color),
+                Style::default().fg(theme::faint(scheme)).bg(bg_color),
             ),
         ];
         lines.push(Line::from(spans));
@@ -807,14 +937,13 @@ fn render_context_menu(f: &mut Frame, app: &App) {
     f.render_widget(Clear, rect);
 
     let items = [" Copy ", " Cancel "];
+    let sel_bg = theme::selection_bg(app.scheme());
     let lines: Vec<Line> = items
         .iter()
         .enumerate()
         .map(|(i, label)| {
             let style = if i == menu.selected {
-                Style::default()
-                    .bg(Color::DarkGray)
-                    .add_modifier(Modifier::BOLD)
+                Style::default().bg(sel_bg).add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };
@@ -855,9 +984,9 @@ fn mention_lines(m: &MentionCompleter, width: usize) -> Vec<Line<'static>> {
 ///
 /// The row is deliberately two-tone on the selected line as well: the widget's
 /// `highlight` carries only the background + emphasis, so both foregrounds stay
-/// the product's call. The description steps `DarkGray` → `Gray` when selected
-/// so it survives the highlight's `bg(DarkGray)` instead of vanishing into it.
-fn slash_lines(s: &SlashCompleter, width: usize) -> Vec<Line<'static>> {
+/// the product's call. The description steps `faint` → `lifted` when selected
+/// so it survives the highlight's background instead of vanishing into it.
+fn slash_lines(s: &SlashCompleter, width: usize, scheme: ColorScheme) -> Vec<Line<'static>> {
     const NAME_W: usize = 24;
     const GAP_W: usize = 2;
     let selected = s.selected_index();
@@ -877,12 +1006,15 @@ fn slash_lines(s: &SlashCompleter, width: usize) -> Vec<Line<'static>> {
 
             let name = elide(name, name_w, Elide::Tail { sep: None });
             let desc_fg = if i == selected {
-                Color::Gray
+                theme::lifted(scheme)
             } else {
-                Color::DarkGray
+                theme::faint(scheme)
             };
             Line::from(vec![
-                Span::styled(pad_cols(&name, name_w), Style::default().fg(Color::White)),
+                Span::styled(
+                    pad_cols(&name, name_w),
+                    Style::default().fg(theme::strong(scheme)),
+                ),
                 Span::raw(" ".repeat(gap_w)),
                 Span::styled(
                     elide(desc, budget, Elide::Head),
@@ -920,7 +1052,7 @@ fn render_slash_popup(f: &mut Frame, app: &App, composer: Rect) {
     // Budget the rows against the content width, not the band: a framed band
     // spends 2 columns on its border, and `Paragraph` would hard-clip those.
     let width = style.content_width(band_width(composer, f.area(), &style.width)) as usize;
-    let mut rows = slash_lines(s, width);
+    let mut rows = slash_lines(s, width, app.scheme());
     // An empty result is not a choice: show it as plain dim text that is never
     // highlighted. The widget already supplies the 2-column gutter, so the row
     // carries no padding of its own. `usize::MAX` never equals `window.start +
@@ -928,7 +1060,7 @@ fn render_slash_popup(f: &mut Frame, app: &App, composer: Rect) {
     let selected = if rows.is_empty() {
         rows.push(Line::from(Span::styled(
             "no matching skills",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(theme::faint(app.scheme())),
         )));
         usize::MAX
     } else {
@@ -981,7 +1113,7 @@ fn render_thinking_panel(
     agent: Option<&str>,
     chars: usize,
 ) {
-    let dim = Style::default().fg(Color::DarkGray);
+    let dim = Style::default().fg(theme::faint(app.scheme()));
     let spinner = app.spinner_char();
     // Per-stream timer (`""` = root, matching the agent_id routing key).
     let key = agent.unwrap_or("");
@@ -1005,7 +1137,7 @@ fn render_thinking_panel(
         phi_tui::tail_panel::TailPanel {
             title: Line::from(title),
             lines,
-            line_style: style_for(LineKind::Thought),
+            line_style: style_for(LineKind::Thought, app.scheme()),
             border_style: dim,
         },
         area,
@@ -1021,23 +1153,114 @@ fn fmt_k(n: usize) -> String {
     }
 }
 
-fn style_for(kind: LineKind) -> Style {
+fn style_for(kind: LineKind, scheme: ColorScheme) -> Style {
+    // Hue is punctuation, grey is area (design §5). Only three things should
+    // jump out of a screen: your input (blue), what went wrong (red), what is
+    // running right now (cyan). Tools and results are the densest elements in
+    // the transcript — tint those as a block and the pane turns into noise.
+    // Grays and absolute tones come from `theme` so the same roles survive a
+    // light background; the hues above are the terminal's to paint.
     match kind {
         LineKind::Normal => Style::default(),
-        LineKind::Thought => Style::default()
-            .add_modifier(Modifier::DIM)
-            .add_modifier(Modifier::ITALIC),
+        // Process text: dimmer than results, still legible. Shape still
+        // separates it from results (summary line / un-indented body vs
+        // `  < ` + indented payload).
+        LineKind::Thought => Style::default().fg(theme::thought(scheme)),
         LineKind::Plan => Style::default().fg(Color::Cyan),
         LineKind::Tool => Style::default().fg(Color::Cyan),
         LineKind::Done => Style::default().fg(Color::Green),
-        LineKind::ToolResult => Style::default().fg(Color::Green),
+        // Result text is the tool's answer, not a verdict — grey, so a red or
+        // green actually means something.
+        LineKind::ToolResult => Style::default().fg(theme::muted(scheme)),
         LineKind::Error => Style::default().fg(Color::Red),
-        LineKind::System => Style::default().fg(Color::DarkGray),
+        LineKind::System => Style::default().fg(theme::faint(scheme)),
         LineKind::Cancelled => Style::default().fg(Color::Yellow),
         LineKind::Approval => Style::default().fg(Color::Yellow),
         LineKind::User => Style::default()
-            .fg(Color::Blue)
+            .fg(theme::user(scheme))
             .add_modifier(Modifier::BOLD),
+    }
+}
+
+/// Split a tool invocation body into `(who, args)`.
+///
+/// [`runtime::tool_invocation_text`] joins the tool name (plus any sub-agent
+/// prefix) to its readable arguments with **two** spaces, and emits the name
+/// alone when there is nothing worth naming. Two spaces is the contract — a
+/// tool name never contains a double space, so the split is unambiguous.
+fn split_tool_body(body: &str) -> (&str, &str) {
+    body.split_once("  ").unwrap_or((body, ""))
+}
+
+/// Style for a tool state's leading glyph — the one row element whose meaning
+/// is "how is this call doing", so it gets the state colour.
+fn tool_state_style(state: ToolState, scheme: ColorScheme) -> Style {
+    match state {
+        ToolState::Running => Style::default().fg(Color::Cyan),
+        ToolState::Done => Style::default().fg(Color::LightGreen),
+        ToolState::Failed | ToolState::Denied => Style::default().fg(Color::Red),
+        ToolState::Queued => Style::default().fg(theme::faint(scheme)),
+    }
+}
+
+/// A tool invocation line, composed rather than uniformly tinted.
+///
+/// The `*` in `text` is a marker slot, not a glyph: it is replaced here by the
+/// call's state glyph (the braille frame while running, `o`/`x` once settled),
+/// so the row answers "did this finish?" without opening anything. Arguments
+/// drop to grey — the tool name is the identity, the values are detail.
+fn tool_invocation_line(
+    text: &str,
+    state: ToolState,
+    spinner: &str,
+    scheme: ColorScheme,
+) -> Line<'static> {
+    let body = text.strip_prefix("* ").unwrap_or(text);
+    let (who, args) = split_tool_body(body);
+    let glyph = match state {
+        ToolState::Running => spinner,
+        ToolState::Done => "o",
+        ToolState::Queued => "o",
+        ToolState::Failed | ToolState::Denied => "x",
+    };
+    let mut spans = vec![
+        Span::styled(glyph.to_string(), tool_state_style(state, scheme)),
+        Span::styled(format!(" {who}"), style_for(LineKind::Tool, scheme)),
+    ];
+    if !args.is_empty() {
+        spans.push(Span::styled(
+            format!("  {args}"),
+            Style::default().fg(theme::muted(scheme)),
+        ));
+    }
+    Line::from(spans)
+}
+
+/// Row indent for a folded block's payload.
+///
+/// Four columns, which is exactly where a result row's answer starts (`  < `
+/// is the connector) — so the extra rows read as more of the same answer
+/// rather than as a quote. Under a call row the same indent still nests
+/// cleanly, and one constant keeps the ladder's shape identical everywhere.
+const FOLD_INDENT: &str = "    ";
+
+/// The meta row for a tool result: the connector dimmer than the answer.
+///
+/// `  < ` is the result's attachment marker (the glyph column plus one). It is
+/// punctuation, so it sits in the darkest grey; the tool's words are the
+/// content and take the result style.
+fn result_meta_line(text: &str, kind: LineKind, scheme: ColorScheme) -> Line<'static> {
+    let connector = Style::default().fg(theme::faint(scheme));
+    if let Some(rest) = text.strip_prefix("  < ") {
+        Line::from(vec![
+            Span::styled("  < ".to_string(), connector),
+            Span::styled(rest.to_string(), style_for(kind, scheme)),
+        ])
+    } else if text.trim_end() == "  <" {
+        Line::from(Span::styled(text.to_string(), connector))
+    } else {
+        // Denied / error rows keep their own wording and colour.
+        Line::from(Span::styled(text.to_string(), style_for(kind, scheme)))
     }
 }
 

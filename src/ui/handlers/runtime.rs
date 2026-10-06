@@ -16,7 +16,7 @@ use std::time::Instant;
 use crate::banner::BannerStyle;
 use crate::ui::app::{AgentStatus, App, Phase, SubAgentStatus, ToolEvent};
 use phi_tui::diff::{diff_to_hunks, diff_to_hunks_indexed};
-use phi_tui::lines::{DiffHunk, LineDetail, LineKind, OutputLine};
+use phi_tui::lines::{DiffHunk, LineDetail, LineKind, MetaHead, OutputLine, ToolState};
 use phi_tui::wrap::{one_line, wrap};
 
 /// Render a notice line for the TUI.
@@ -38,8 +38,21 @@ fn notice_line(source: &str, text: &str) -> String {
     }
 }
 
-/// Build a `LineDetail::Diff` from a file tool's `args_json`, or `None` if
-/// the tool is not a file-edit tool or parsing fails.
+/// Build the structured block a tool attaches under its invocation line, or
+/// `None` when the call has no payload worth a block.
+///
+/// Three shapes, and the split is deliberate (design §write):
+/// - `edit_file` → [`LineDetail::Diff`] — an edit is a *transformation*, and
+///   its evidence is never previewed away. Rendered in full, outside the
+///   preview ladder.
+/// - `write_file` → [`LineDetail::Folded`] holding the content being written.
+///   A create is an *artifact*, not a transformation: the useful facts are
+///   "what shape, how big", so it rides the preview ladder. If the call turns
+///   out to be an overwrite, [`App::handle_runtime_event`] swaps this for a
+///   real old→new diff — an overwrite *is* a transformation.
+/// - `spawn_agent` → [`LineDetail::Folded`] holding the task brief. Also an
+///   artifact (a briefing, not a change): the row keeps a gist of the head,
+///   the brief rides the ladder.
 fn build_tool_detail(tool_name: &str, args_json: &str) -> Option<LineDetail> {
     let args: serde_json::Value = match serde_json::from_str(args_json) {
         Ok(v) => v,
@@ -48,6 +61,22 @@ fn build_tool_detail(tool_name: &str, args_json: &str) -> Option<LineDetail> {
             return None;
         }
     };
+    // `spawn_agent` → the task brief. An artifact like written content: what
+    // matters at a glance is "who, roughly what", so the invocation row keeps
+    // the gist and the brief rides the preview ladder, whole.
+    if tool_name == "spawn_agent" {
+        let task = args.get("task").and_then(|v| v.as_str())?;
+        if task.is_empty() {
+            return None;
+        }
+        let (_, meta_head) = spawn_task_head(task);
+        return Some(LineDetail::Folded {
+            raw: task.to_string(),
+            line_count: task.lines().count(),
+            char_count: task.chars().count(),
+            meta_head,
+        });
+    }
     let path = match args.get("path").and_then(|v| v.as_str()) {
         Some(p) => p.to_string(),
         None => return None,
@@ -71,49 +100,215 @@ fn build_tool_detail(tool_name: &str, args_json: &str) -> Option<LineDetail> {
             })
         }
         "write_file" => {
-            let content = match args.get("content").and_then(|v| v.as_str()) {
-                Some(c) => c,
-                None => return None,
-            };
-            // Always show all-Add diff for write_file (what's being written).
-            // For overwrite, the old file may already exist on disk but we
-            // don't want to diff against it — the tool result handles that.
-            let hunks = diff_to_hunks("", content, 3);
-            if hunks.is_empty() {
+            let content = args.get("content").and_then(|v| v.as_str())?;
+            if content.is_empty() {
                 return None;
             }
-            Some(LineDetail::Diff { path, hunks })
+            Some(LineDetail::Folded {
+                raw: content.to_string(),
+                line_count: content.lines().count(),
+                char_count: content.chars().count(),
+                // The meta row is the invocation (`* write_file <path>`); it
+                // says nothing about the content, so the body owns every row.
+                meta_head: MetaHead::None,
+            })
         }
         _ => None,
     }
 }
 
-/// Compact invocation text for `spawn_agent`: `* spawn_agent <name> - <task
-/// first line>`. The raw args JSON is a multi-KB dump (the full self-contained
+/// Basename of a filesystem path for an invocation line.
+///
+/// The file name is what identifies the call; the parent directories are the
+/// same `/Users/…/projects/-Users-…/memory/` prefix repeated on every row.
+/// The full path is still in `session.log` and in the tool result.
+fn path_label(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(path)
+        .to_string()
+}
+
+/// Argument values that identify a call, with the JSON syntax dropped.
+///
+/// `args_json` is a syntax dump — `{"limit": 60, "path": "/Users/…/x.md"}` —
+/// whose braces, quoted keys and full paths eat the line budget while adding
+/// nothing the tool name doesn't already say. The transcript shows the values
+/// (rule 3: 工具名 + 可读参数); the raw JSON stays in the log.
+///
+/// Content payloads (`content`, `old_text`/`new_text`, `edits`, `task`) are
+/// never inlined here — they are either multi-KB or already rendered as the
+/// tool's structured block.
+fn args_label(tool_name: &str, args: &serde_json::Value) -> String {
+    // Payload keys shown elsewhere (structured block) or too long to inline.
+    const SKIP: &[&str] = &[
+        "content",
+        "old_text",
+        "new_text",
+        "edits",
+        "task",
+        "description",
+        "prompt",
+    ];
+    // Path-shaped keys: show the basename only.
+    const PATHISH: &[&str] = &["path", "file", "file_path", "dir", "directory", "target"];
+
+    let obj = match args.as_object() {
+        Some(o) => o,
+        None => return String::new(),
+    };
+
+    // read_file's identifying detail is the range, not just the name.
+    if tool_name == "read_file" {
+        let mut out = match obj.get("path").and_then(|v| v.as_str()) {
+            Some(p) => path_label(p),
+            None => String::new(),
+        };
+        if let Some(off) = obj.get("offset").and_then(|v| v.as_u64()) {
+            out.push_str(&format!(" from L{}", off + 1));
+        }
+        return out;
+    }
+
+    let mut parts: Vec<String> = Vec::new();
+    for (k, v) in obj {
+        if SKIP.contains(&k.as_str()) {
+            continue;
+        }
+        if PATHISH.contains(&k.as_str()) {
+            if let Some(p) = v.as_str() {
+                let label = path_label(p);
+                if !label.is_empty() {
+                    parts.push(label);
+                }
+            }
+            continue;
+        }
+        match v {
+            serde_json::Value::String(s) if s.is_empty() => {}
+            serde_json::Value::String(s) => {
+                // A command or a pattern is worth showing whole-ish; a bare name
+                // reads better without its key.
+                let shown = one_line(s, 60);
+                if k == "name" || k == "pattern" {
+                    parts.push(shown);
+                } else {
+                    parts.push(format!("{k}={shown}"));
+                }
+            }
+            serde_json::Value::Number(n) => parts.push(format!("{k}={n}")),
+            serde_json::Value::Bool(b) => parts.push(format!("{k}={b}")),
+            serde_json::Value::Null => {}
+            // Objects/arrays are structure, not values — they live in the
+            // structured block or the log.
+            _ => {}
+        }
+    }
+    parts.join("  ")
+}
+
+/// Invocation-line body for a tool call: `tool_name` plus readable arguments.
+/// No leading glyph — the renderer draws that from the call's [`ToolState`].
+fn tool_invocation_text(tool_name: &str, args_json: &str, prefix: &str) -> String {
+    if tool_name == "spawn_agent" {
+        return spawn_invocation_text(args_json, prefix)
+            .unwrap_or_else(|| format!("{prefix}{tool_name}"));
+    }
+    let args: serde_json::Value = match serde_json::from_str(args_json) {
+        Ok(v) => v,
+        Err(_) => return format!("{prefix}{tool_name}"),
+    };
+    let label = args_label(tool_name, &args);
+    if label.is_empty() {
+        format!("{prefix}{tool_name}")
+    } else {
+        format!("{prefix}{tool_name}  {label}")
+    }
+}
+
+/// Budget for the task gist on a `spawn_agent` invocation line, and for the
+/// outcome message on its result line.
+///
+/// **Not** the terminal width: the gist is a label, and a label that
+/// re-expands into a paragraph on a wide terminal is the exact dump this line
+/// exists to avoid (session 20261006_9264ba3e — four spawn briefs ate the
+/// pane). The task brief itself rides the preview ladder, whole, one
+/// keypress away.
+const SPAWN_GIST_COLS: usize = 56;
+
+/// The task head a spawn invocation line shows, and how it relates to the
+/// payload's first line (`MetaHead`), for the fold that carries the brief.
+fn spawn_task_head(task: &str) -> (String, MetaHead) {
+    let head = task.lines().next().unwrap_or("").trim();
+    let gist = one_line(head, SPAWN_GIST_COLS);
+    let meta_head = if gist == head {
+        MetaHead::Whole
+    } else {
+        MetaHead::Abbreviated
+    };
+    (gist, meta_head)
+}
+
+/// Compact invocation text for `spawn_agent`: `spawn_agent <name> - <task
+/// gist>`. The raw args JSON is a multi-KB dump (the full self-contained
 /// task text) — in session 20260904_e6612477 its invisible tail was the dead
 /// air of a 20 s LLM call. Name + one task line is all the transcript needs;
-/// the task panel and the tool result carry the rest. `None` → the caller
-/// falls back to the generic rendering.
-fn spawn_invocation_text(args_json: &str, max_cols: usize, prefix: &str) -> Option<String> {
+/// the fold under the line, the task panel and the tool result carry the rest.
+/// `None` → the caller falls back to the generic rendering.
+fn spawn_invocation_text(args_json: &str, prefix: &str) -> Option<String> {
     let args: serde_json::Value = serde_json::from_str(args_json).ok()?;
     let name = args.get("task_name").and_then(|v| v.as_str())?;
-    let head = args
-        .get("task")
-        .and_then(|v| v.as_str())
-        .and_then(|t| t.lines().next())
-        .unwrap_or("")
-        .trim();
-    let budget = max_cols
-        .saturating_sub(
-            2 + prefix.chars().count() + "spawn_agent ".len() + name.chars().count() + 3,
-        )
-        .max(16);
-    let head = one_line(head, budget);
-    Some(if head.is_empty() {
-        format!("* {prefix}spawn_agent {name}")
+    let task = args.get("task").and_then(|v| v.as_str()).unwrap_or("");
+    let (gist, _) = spawn_task_head(task);
+    Some(if gist.is_empty() {
+        format!("{prefix}spawn_agent {name}")
     } else {
-        format!("* {prefix}spawn_agent {name} - {head}")
+        format!("{prefix}spawn_agent {name} - {gist}")
     })
+}
+
+/// Human label for a `spawn_agent` result.
+///
+/// The tool answers with structured JSON (`{"agent_path":…,"message":…}`),
+/// and a raw JSON row is a machine dump where the transcript wants a fact:
+/// whom was spawned, with what capability. The two facts that must never be
+/// silent — a recycled registration slot, a read-only degradation — come
+/// from the tool's own `message`; the registered-tool list is a dump and
+/// rides the fold with the rest of the raw result.
+///
+/// `None` when the summary is not that shape → the generic head/meta path.
+fn spawn_result_label(summary: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(summary).ok()?;
+    let path = v.get("agent_path").and_then(serde_json::Value::as_str)?;
+    let msg = v
+        .get("message")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    if path.is_empty() {
+        // The spawn failed and the orphan was closed — the message *is* the
+        // outcome ("Agent spawned but task delivery failed…").
+        return Some(one_line(msg, SPAWN_GIST_COLS));
+    }
+    let mut facts: Vec<&str> = Vec::new();
+    if msg.contains("recycled a finished agent") {
+        facts.push("recycled");
+    }
+    if msg.contains("tools degraded to read-only") {
+        facts.push("degraded to read-only");
+    } else if let Some(cap) = msg
+        .split_once("(tools: ")
+        .and_then(|(_, rest)| rest.split(|c| c == ';' || c == ')').next())
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+    {
+        facts.push(cap);
+    }
+    if facts.is_empty() {
+        Some(format!("spawned {path}"))
+    } else {
+        Some(format!("spawned {path} ({})", facts.join(", ")))
+    }
 }
 
 /// Prefix for sub-agent output lines (e.g., `[task_name] `).
@@ -124,6 +319,52 @@ pub(crate) fn agent_prefix(agent_id: Option<&str>) -> String {
     }
 }
 
+/// Settle the last still-running tool invocation in `output`: refill its state,
+/// and for a `write_file` overwrite swap the staged written-content block for a
+/// real old→new diff (an overwrite is a transformation, so it earns the same
+/// always-full diff treatment an edit gets).
+///
+/// Returns whether that invocation is the transcript's last line — i.e. the
+/// result about to be appended sits directly under its own call and can drop
+/// the redundant tool name.
+fn settle_tool_call(
+    output: &mut [OutputLine<BannerStyle>],
+    settled: ToolState,
+    details: Option<&serde_json::Value>,
+) -> bool {
+    let inv_idx = output
+        .iter()
+        .rposition(|l| l.kind == LineKind::Tool && l.tool_state == Some(ToolState::Running));
+    let Some(idx) = inv_idx else {
+        return false;
+    };
+    let adjacent = idx + 1 == output.len();
+    let inv = &mut output[idx];
+    inv.tool_state = Some(settled);
+
+    // Overwrite is a transformation, so it earns a diff. The tool reports
+    // `write_mode` + `old_content`; the new content is what we staged on the
+    // line at `ToolCallStarted`.
+    let Some(det) = details else { return adjacent };
+    if det.get("write_mode").and_then(|v| v.as_str()) != Some("overwrite") {
+        return adjacent;
+    }
+    let Some(LineDetail::Folded { raw: new_content, .. }) = inv.detail.clone() else {
+        return adjacent;
+    };
+    let old = det.get("old_content").and_then(|v| v.as_str()).unwrap_or("");
+    let path = det
+        .get("path")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .unwrap_or_default();
+    let hunks = diff_to_hunks(old, &new_content, 3);
+    if !hunks.is_empty() {
+        inv.detail = Some(LineDetail::Diff { path, hunks });
+    }
+    adjacent
+}
+
 impl App {
     /// Reflect streaming activity in the status strip — root events only.
     /// Child events arrive through the persistent bus subscription even while
@@ -131,11 +372,12 @@ impl App {
     /// Running.
     fn note_activity(&mut self, agent_id: Option<&str>, phase: Phase) {
         if agent_id.map_or(true, |id| id.is_empty()) {
-            // A fresh Running stretch (Idle → Running) starts the spinner
-            // clock; Waiting keeps it — the wait belongs to the same stretch.
-            if matches!(self.status, AgentStatus::Idle) {
-                self.activity_since = Some(std::time::Instant::now());
-            }
+            // Start the stretch's clock on the first busy signal — not only on
+            // Idle → Running: the user-send path and an approval grant set the
+            // status directly, and a stretch that never started its clock
+            // renders a frozen spinner with no elapsed suffix (the perceived
+            // hang of session 20261006_9264ba3e).
+            self.begin_activity();
             self.status = AgentStatus::Running { phase };
         }
     }
@@ -248,6 +490,12 @@ impl App {
                 }
                 // Fresh tool call → drop any progress from the previous one.
                 self.live_progress = None;
+                // Root calls materialize together, after the stream drains —
+                // the drafting window is over. Child calls must not clear the
+                // root's drafts.
+                if agent_id.as_deref().filter(|id| !id.is_empty()).is_none() {
+                    self.tool_drafts.clear();
+                }
                 // Tools render inline in the transcript (Claude Code style): an
                 // invocation line now, a result line on `ToolCallFinished`.
                 self.track_agent(agent_id.as_deref());
@@ -267,28 +515,23 @@ impl App {
                 // its invocation line (raw JSON args) and result line are noise —
                 // suppress them. Its status transition is still applied.
                 if tool_name != "update_plan" {
-                    // For file-edit tools, build an inline diff and attach it as
-                    // structured detail. The invocation line shows a compact summary;
-                    // the renderer expands the diff block below it.
+                    // For payload tools, attach the structured block (edit diff /
+                    // written content / spawn brief) the ladder expands below
+                    // this line.
                     let detail = build_tool_detail(&tool_name, &args_json);
-                    let max_cols = self.transcript.wrap_width().saturating_sub(20).max(40);
-                    let text = if tool_name == "spawn_agent" {
-                        spawn_invocation_text(&args_json, max_cols, &prefix)
-                            .unwrap_or_else(|| format!("* {prefix}{tool_name}"))
-                    } else {
-                        let args = one_line(&args_json, max_cols);
-                        if args.is_empty() {
-                            format!("* {prefix}{tool_name}")
-                        } else {
-                            format!("* {prefix}{tool_name} {args}")
-                        }
-                    };
+                    let body = tool_invocation_text(&tool_name, &args_json, &prefix);
+                    // The `*` is a marker slot, not a glyph: the renderer draws
+                    // the state glyph over it (braille while running, `o`/`x`
+                    // when settled). Keeping a stable placeholder means the
+                    // line's plain text is self-describing in the log.
+                    let text = format!("* {body}");
                     let line = OutputLine {
                         spans: None,
                         original: None,
                         detail,
                         text,
                         kind: LineKind::Tool,
+                        tool_state: Some(ToolState::Running),
                     };
                     // Route to the correct transcript
                     if let Some(id) = agent_id.as_deref() {
@@ -316,6 +559,7 @@ impl App {
             } => {
                 self.track_agent(agent_id.as_deref());
                 let prefix = agent_prefix(agent_id.as_deref());
+
                 // Update SubAgentState events
                 if let Some(id) = agent_id.as_deref() {
                     if let Some(state) = self.sub_agents.get_mut(id) {
@@ -328,28 +572,124 @@ impl App {
                         state.last_tool_at = Instant::now();
                     }
                 }
+
+                // Fill the invocation line's state in place (the marker slot is
+                // redrawn from this) and, for a `write_file` overwrite, swap the
+                // written-content block for a real old→new diff.
+                let settled = if denied {
+                    ToolState::Denied
+                } else {
+                    ToolState::Done
+                };
+                let is_child = matches!(agent_id.as_deref(), Some(id) if !id.is_empty());
+                let adjacent = if is_child {
+                    let id = agent_id.as_deref().unwrap_or_default().to_string();
+                    let output = self.sub_agent_transcripts.entry(id).or_default();
+                    settle_tool_call(output, settled, details.as_ref())
+                } else {
+                    settle_tool_call(&mut self.transcript.output, settled, details.as_ref())
+                };
+
                 // `update_plan` renders as a plan block (see `PlanUpdated`), so its
                 // tool-result line is redundant — suppress it. Everything else
                 // still finalizes the tool-progress state.
                 if tool_name != "update_plan" {
-                    let (text, kind) = if denied {
-                        (format!("  {prefix}⛔ {tool_name} denied"), LineKind::Error)
+                    let (text, kind, detail) = if denied {
+                        (
+                            format!("  {prefix}⛔ {tool_name} denied"),
+                            LineKind::Error,
+                            None,
+                        )
+                    } else if let Some(label) = spawn_result_label(&summary) {
+                        // A spawn answers with structured JSON. The meta row
+                        // states the fact the row exists for (whom, with what
+                        // capability) and the raw result rides the fold — the
+                        // registered-tool dump and the tool's own wording stay
+                        // one keypress away, and `summary` is never rewritten.
+                        let body = if adjacent {
+                            label
+                        } else {
+                            format!("{tool_name}  {label}")
+                        };
+                        let raw = summary.clone();
+                        let detail = Some(LineDetail::Folded {
+                            line_count: raw.lines().count(),
+                            char_count: raw.chars().count(),
+                            raw,
+                            // The meta row is a label, not the payload's head.
+                            meta_head: MetaHead::None,
+                        });
+                        (
+                            format!("  {prefix}< {body}"),
+                            LineKind::ToolResult,
+                            detail,
+                        )
                     } else {
                         let max_cols = self.transcript.wrap_width().saturating_sub(20).max(40);
-                        let s = one_line(&summary, max_cols);
-                        let text = if s.is_empty() {
-                            format!("  {prefix}+ {tool_name}")
+                        // The result text is the tool's own answer and is never
+                        // rewritten — only displayed. `raw` keeps it whole; the
+                        // preview ladder decides how much of it to draw.
+                        let raw = summary.clone();
+                        let line_count = raw.lines().count();
+                        let char_count = raw.chars().count();
+                        // Fold only when there is something to fold: a lone
+                        // short line stays a plain line, exactly as before.
+                        let folds = !raw.is_empty() && (line_count > 1 || char_count > max_cols);
+                        // The meta row is a *label*, not a restatement: just the
+                        // answer's head line, abbreviated. The rest of the answer
+                        // is payload for the preview ladder (`render.rs`), and
+                        // `raw` keeps all of it — squashing the whole answer up
+                        // here would leak past every tier and break the ladder.
+                        let head = raw.lines().next().unwrap_or("");
+                        let s = one_line(head, max_cols);
+                        // The meta row *is* the answer's head (`  < head`),
+                        // abbreviated to the line budget — record which, so
+                        // the ladder neither draws the head twice nor loses
+                        // the truncated tail at full expansion.
+                        let meta_head = if s == head {
+                            MetaHead::Whole
                         } else {
-                            format!("  {prefix}+ {tool_name} {s}")
+                            MetaHead::Abbreviated
                         };
-                        (text, LineKind::ToolResult)
+                        // When the result sits directly under its own call the
+                        // tool name is already on the line above — repeating it
+                        // is chrome, not content. Out-of-order (parallel) results
+                        // carry the name so the attachment stays readable.
+                        let body = if s.is_empty() {
+                            if adjacent {
+                                String::new()
+                            } else {
+                                tool_name.clone()
+                            }
+                        } else if adjacent {
+                            s
+                        } else {
+                            format!("{tool_name}  {s}")
+                        };
+                        let text = if body.is_empty() {
+                            format!("  {prefix}<")
+                        } else {
+                            format!("  {prefix}< {body}")
+                        };
+                        let detail = if folds {
+                            Some(LineDetail::Folded {
+                                raw,
+                                line_count,
+                                char_count,
+                                meta_head,
+                            })
+                        } else {
+                            None
+                        };
+                        (text, LineKind::ToolResult, detail)
                     };
                     let line = OutputLine {
                         spans: None,
                         original: None,
-                        detail: None,
+                        detail,
                         text,
                         kind,
+                        tool_state: None,
                     };
                     // Route to the correct transcript
                     if let Some(id) = agent_id.as_deref() {
@@ -451,6 +791,7 @@ impl App {
                         detail: None,
                         text,
                         kind: LineKind::Plan,
+                                            tool_state: None,
                     });
                 }
                 for item in &plan {
@@ -465,6 +806,7 @@ impl App {
                         detail: None,
                         text: format!("   {marker} {}", item.step),
                         kind: LineKind::Plan,
+                                            tool_state: None,
                     });
                 }
                 if let Some(exp) = &explanation {
@@ -485,6 +827,7 @@ impl App {
                                 detail: None,
                                 text,
                                 kind: LineKind::Plan,
+                                                            tool_state: None,
                             });
                         }
                     }
@@ -504,6 +847,7 @@ impl App {
                     detail: None,
                     text: format!("!! approval: {}", request.title),
                     kind: LineKind::Approval,
+                                    tool_state: None,
                 });
                 self.transcript.push(OutputLine {
                     spans: None,
@@ -511,7 +855,9 @@ impl App {
                     detail: None,
                     text: format!("     {}", request.message),
                     kind: LineKind::Approval,
+                                    tool_state: None,
                 });
+                self.begin_activity();
                 self.status = AgentStatus::Running {
                     phase: Phase::AwaitingApproval,
                 };
@@ -543,6 +889,7 @@ impl App {
                                 detail: None,
                                 text: format!("+ [{p}] done"),
                                 kind: LineKind::Done,
+                                                            tool_state: None,
                             });
                     }
                     _ => {
@@ -589,6 +936,7 @@ impl App {
                                 detail: None,
                                 text: format!("+ [{p}] done"),
                                 kind: LineKind::Done,
+                                                            tool_state: None,
                             });
                     }
                     _ => {
@@ -598,6 +946,7 @@ impl App {
                             detail: None,
                             text: "⏹ cancelled".to_string(),
                             kind: LineKind::Cancelled,
+                                                    tool_state: None,
                         });
                         // `running` clears via the turn's terminal event
                         // (settle_after_turn) — see the RunFinished note.
@@ -644,6 +993,25 @@ impl App {
                 },
                 _ => {}
             },
+            // Tool-call arguments still streaming in (root only). The calls
+            // themselves materialize only when the turn's stream drains, so
+            // this is the sole liveness signal while a long brief is being
+            // written — record it and let the status strip narrate the draft
+            // instead of freezing on "streaming..." (session
+            // 20261006_9264ba3e: ~25 s invisible while four spawn_agent
+            // tasks streamed in).
+            RuntimeEvent::ToolCallDraft {
+                index,
+                name,
+                args_len,
+                agent_id,
+                ..
+            } => {
+                if agent_id.as_deref().filter(|id| !id.is_empty()).is_none() {
+                    self.tool_drafts.insert(index, (name, args_len));
+                    self.note_activity(None, Phase::Streaming);
+                }
+            }
             _ => {}
         }
     }

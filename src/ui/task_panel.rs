@@ -143,6 +143,7 @@ impl App {
                 detail: None,
                 text: format!("* [{p}] started"),
                 kind: LineKind::Tool,
+                            tool_state: None,
             });
         }
     }

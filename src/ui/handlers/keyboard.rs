@@ -164,6 +164,14 @@ impl App {
                 self.show_thoughts = !self.show_thoughts;
                 None
             }
+            // Ctrl+E cycles the tool-block preview ladder (compact → default →
+            // expanded). Separate from Ctrl+O so "show me the thinking" keeps
+            // its own key and its own meaning; this one is about how much of a
+            // tool's payload is on screen. Also render-time only.
+            Char('e') if ctrl => {
+                self.result_tier = self.result_tier.next();
+                None
+            }
             Esc => {
                 // No menu is open here (handled above); clear a selection if
                 // present, else clear the composer.
@@ -193,6 +201,10 @@ impl App {
                     // scrolled up reading history, this is the moment their
                     // reading position ends.
                     self.scroll_to_bottom();
+                    // The user just committed to a turn — start the activity
+                    // clock now, not at the engine's first event, so the
+                    // thinking/streaming stretch ticks from this keystroke.
+                    self.begin_activity();
                     self.status = AgentStatus::Running {
                         phase: Phase::Thinking,
                     };

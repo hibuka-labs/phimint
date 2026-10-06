@@ -244,12 +244,22 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Detect terminal color scheme once for the whole process: the `--resume`
+    // picker below and the startup banner palette both resolve against it.
+    // `--color-scheme` flag takes priority; `auto` reads `$COLORFGBG` (set by
+    // iTerm2, kitty, etc.) where the background digit is `7` → light. The OSC
+    // 11 stdin probe is intentionally skipped: its termios manipulation
+    // interferes with crossterm's raw-mode setup on macOS. Use
+    // `--color-scheme light` or `dark` to override when COLORFGBG is absent.
+    let color_fgbg = std::env::var("COLORFGBG").ok();
+    let scheme = banner::resolve_scheme(&cli.color_scheme, color_fgbg.as_deref(), None);
+
     // Resolve session: --resume shows a picker; otherwise normal resolve.
     // Session is resolved BEFORE agent::build so that token_budget_opts
     // (which needs session_id for history/notes stores) is available.
     let session_ctx = if cli.resume {
-        let picked_dir =
-            ui::picker::show_picker(&base_dir, None)?.context("No session selected")?;
+        let picked_dir = ui::picker::show_picker(&base_dir, None, scheme)?
+            .context("No session selected")?;
         let picked_id = picked_dir
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -300,14 +310,6 @@ async fn main() -> Result<()> {
         (agent.create_session().await, None)
     };
 
-    // Detect terminal color scheme for the startup banner palette.
-    // `--color-scheme` flag takes priority; `auto` reads `$COLORFGBG` (set by
-    // iTerm2, kitty, etc.) where the background digit is `7` → light. The OSC
-    // 11 stdin probe is intentionally skipped: its termios manipulation
-    // interferes with crossterm's raw-mode setup on macOS. Use
-    // `--color-scheme light` or `dark` to override when COLORFGBG is absent.
-    let color_fgbg = std::env::var("COLORFGBG").ok();
-    let scheme = banner::resolve_scheme(&cli.color_scheme, color_fgbg.as_deref(), None);
     let show_banner = cli.banner != "off";
     let version = env!("CARGO_PKG_VERSION");
 

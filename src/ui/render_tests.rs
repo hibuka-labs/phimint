@@ -2,7 +2,8 @@
 
 use super::*;
 use crate::ui::app::{
-    AgentStatus, App, BackgroundTaskEntry, Phase, SubAgentState, SubAgentStatus, TuiEvent,
+    AgentStatus, App, BackgroundTaskEntry, Phase, ResultTier, SubAgentState, SubAgentStatus,
+    TuiEvent,
 };
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use phi_agent::{RuntimeEvent, SessionId};
@@ -21,6 +22,7 @@ fn populated_app() -> App {
             detail: None,
             text: format!("streamed line {i}"),
             kind: LineKind::Normal,
+                    tool_state: None,
         });
     }
     app.transcript.push(OutputLine {
@@ -29,6 +31,7 @@ fn populated_app() -> App {
         detail: None,
         text: "* [sub/1] read_file {\"path\":\"src/lib.rs\"}".into(),
         kind: LineKind::Tool,
+            tool_state: None,
     });
     app.transcript.push(OutputLine {
         spans: None,
@@ -36,6 +39,7 @@ fn populated_app() -> App {
         detail: None,
         text: "  ⛔ execute_command denied".into(),
         kind: LineKind::Error,
+            tool_state: None,
     });
     app.composer.insert_str("hello\nworld");
     app.running = true;
@@ -73,6 +77,7 @@ fn draw_empty_and_scrolled_states() {
             detail: None,
             text: format!("long line {i}"),
             kind: LineKind::Normal,
+                    tool_state: None,
         });
     }
     app.viewport.follow_bottom = false;
@@ -200,6 +205,7 @@ fn window_range_shifts_by_scroll_offset() {
             text: format!("line {i}"),
             kind: LineKind::Normal,
             detail: None,
+                    tool_state: None,
         });
     }
     assert_eq!(app.viewport.window_range(100, 30), 70..100);
@@ -359,6 +365,7 @@ fn draw_with_selection_and_context_menu_does_not_panic() {
             detail: None,
             text: format!("line {i}"),
             kind: LineKind::Normal,
+                    tool_state: None,
         });
     }
     app.output_area = Some((0, 0, 80, 20));
@@ -492,6 +499,294 @@ fn snapshot_shows_diff_block() {
     assert!(text.contains("println"), "diff content missing:\n{text}");
     // Verify line numbers are present (hunk header has "1,3")
     assert!(text.contains("-1,3"), "line numbers missing:\n{text}");
+}
+
+// ── block rhythm + preview ladder (design §1 / §4) ──────────────────────────
+// The layout may change; the content and its order may not. These pin the two
+// rules that keep that true: spacers are a *rendering* decision that never
+// enters history, and the ladder only ever decides how much of an intact
+// payload to draw.
+
+#[test]
+fn block_spacers_are_render_time_only() {
+    // A blank row goes *between* blocks (design §1). It must be a draw-time
+    // decision — history, copy and session replay never acquire blank lines.
+    let mut app = App::new();
+    app.push_system("one");
+    app.push_system("two");
+    let before = app.transcript.output.len();
+    let text = snapshot_text(&mut app, 80, 12);
+    assert_eq!(
+        app.transcript.output.len(),
+        before,
+        "rendering appended to history:\n{text}"
+    );
+    assert!(
+        app.transcript
+            .output
+            .iter()
+            .all(|l| !l.text.trim().is_empty()),
+        "blank line in history: {:?}",
+        app.transcript.output.iter().map(|l| &l.text).collect::<Vec<_>>()
+    );
+
+    let rows: Vec<&str> = text.lines().collect();
+    assert_eq!(rows.first().map(|r| r.trim()), Some("one"), "\n{text}");
+    assert_eq!(
+        rows.get(1).map(|r| r.trim()),
+        Some(""),
+        "missing spacer between blocks:\n{text}"
+    );
+    assert_eq!(rows.get(2).map(|r| r.trim()), Some("two"), "\n{text}");
+}
+
+#[test]
+fn call_and_its_folded_result_are_one_block() {
+    // A tool block is the call *and* its results (design §1) — the blank row
+    // goes between blocks, never inside one. A result that folds its payload is
+    // still that call's result; the fold must not tear the block apart.
+    let mut app = app_with_multi_row_result();
+    for tier in [
+        ResultTier::Compact,
+        ResultTier::Default,
+        ResultTier::Expanded,
+    ] {
+        app.result_tier = tier;
+        let text = snapshot_text(&mut app, 80, 20);
+        let rows: Vec<&str> = text.lines().collect();
+        let call = rows
+            .iter()
+            .position(|r| r.contains("search_files"))
+            .unwrap_or_else(|| panic!("call row missing at {tier:?}:\n{text}"));
+        let result = rows
+            .iter()
+            .position(|r| r.trim_start().starts_with("<"))
+            .unwrap_or_else(|| panic!("result row missing at {tier:?}:\n{text}"));
+        assert!(
+            result > call && result == call + 1,
+            "call and result split apart at {tier:?} (call {call}, result {result}):\n{text}"
+        );
+    }
+}
+
+fn app_with_multi_row_result() -> App {
+    let mut app = App::new();
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallStarted {
+        session_id: SessionId::new(1),
+        tool_name: "search_files".to_string(),
+        args_json: serde_json::json!({"pattern": "TODO"}).to_string(),
+        agent_id: None,
+        trace_id: None,
+    }));
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallFinished {
+        session_id: SessionId::new(1),
+        tool_name: "search_files".to_string(),
+        summary: "head line\nalpha\nbeta\ngamma".to_string(),
+        denied: false,
+        details: None,
+        agent_id: None,
+        trace_id: None,
+    }));
+    app
+}
+
+#[test]
+fn tool_result_rides_the_preview_ladder() {
+    // The tool's answer is stored whole and drawn 0 / 2 / all rows. Only the
+    // amount on screen changes — never the text itself, never its order.
+    let mut app = app_with_multi_row_result();
+
+    // Compact: nothing of the payload, just the count of what is held back.
+    assert_eq!(app.result_tier, ResultTier::Compact);
+    let text = snapshot_text(&mut app, 80, 20);
+    assert!(text.contains("  < head line"), "meta row missing:\n{text}");
+    assert!(text.contains("... +3 lines"), "fold hint missing:\n{text}");
+    assert!(
+        !text.contains("alpha") && !text.contains("gamma"),
+        "payload leaked while compact:\n{text}"
+    );
+
+    // Default: two rows, the rest counted.
+    app.result_tier = ResultTier::Default;
+    let text = snapshot_text(&mut app, 80, 20);
+    assert!(text.contains("alpha") && text.contains("beta"), "\n{text}");
+    assert!(!text.contains("gamma"), "tail shown at default:\n{text}");
+    assert!(text.contains("... +1 lines"), "fold hint missing:\n{text}");
+
+    // Expanded: the whole answer, no hint.
+    app.result_tier = ResultTier::Expanded;
+    let text = snapshot_text(&mut app, 80, 20);
+    for row in ["alpha", "beta", "gamma"] {
+        assert!(text.contains(row), "{row} missing when expanded:\n{text}");
+    }
+    assert!(
+        !text.contains("... +"),
+        "fold hint left behind when expanded:\n{text}"
+    );
+
+    // The ladder is display-only: the payload is still whole in history.
+    let result = app
+        .transcript
+        .output
+        .iter()
+        .find(|l| l.kind == LineKind::ToolResult)
+        .expect("result line present");
+    match &result.detail {
+        Some(phi_tui::lines::LineDetail::Folded { raw, .. }) => {
+            assert_eq!(raw, "head line\nalpha\nbeta\ngamma");
+        }
+        other => panic!("result text must be kept whole, got {other:?}"),
+    }
+}
+
+#[test]
+fn ctrl_e_cycles_the_result_tier() {
+    let mut app = App::new();
+    assert_eq!(app.result_tier, ResultTier::Compact);
+    app.handle_key(KeyCode::Char('e'), KeyModifiers::CONTROL);
+    assert_eq!(app.result_tier, ResultTier::Default);
+    app.handle_key(KeyCode::Char('e'), KeyModifiers::CONTROL);
+    assert_eq!(app.result_tier, ResultTier::Expanded);
+    app.handle_key(KeyCode::Char('e'), KeyModifiers::CONTROL);
+    assert_eq!(app.result_tier, ResultTier::Compact);
+}
+
+#[test]
+fn tool_state_glyph_reflects_call_state() {
+    // The `*` in `text` is a marker slot, not chrome: the renderer substitutes
+    // the state glyph, so a settled call is legible without opening anything.
+    let mut app = App::new();
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallStarted {
+        session_id: SessionId::new(1),
+        tool_name: "search_files".to_string(),
+        args_json: serde_json::json!({"pattern": "TODO"}).to_string(),
+        agent_id: None,
+        trace_id: None,
+    }));
+    let text = snapshot_text(&mut app, 80, 20);
+    let row = text
+        .lines()
+        .find(|r| r.contains("search_files"))
+        .unwrap_or_else(|| panic!("tool row missing:\n{text}"));
+    assert!(
+        !row.trim_start().starts_with('*'),
+        "marker slot leaked into display: {row:?}"
+    );
+
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallFinished {
+        session_id: SessionId::new(1),
+        tool_name: "search_files".to_string(),
+        summary: "1 hit".to_string(),
+        denied: false,
+        details: None,
+        agent_id: None,
+        trace_id: None,
+    }));
+    let text = snapshot_text(&mut app, 80, 20);
+    let row = text
+        .lines()
+        .find(|r| r.contains("search_files"))
+        .unwrap_or_else(|| panic!("tool row missing:\n{text}"));
+    assert!(
+        row.trim_start().starts_with('o'),
+        "done glyph missing: {row:?}"
+    );
+
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallStarted {
+        session_id: SessionId::new(1),
+        tool_name: "execute_command".to_string(),
+        args_json: serde_json::json!({"command": "rm -rf /"}).to_string(),
+        agent_id: None,
+        trace_id: None,
+    }));
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallFinished {
+        session_id: SessionId::new(1),
+        tool_name: "execute_command".to_string(),
+        summary: String::new(),
+        denied: true,
+        details: None,
+        agent_id: None,
+        trace_id: None,
+    }));
+    let text = snapshot_text(&mut app, 80, 20);
+    let row = text
+        .lines()
+        .find(|r| r.contains("execute_command") && r.trim_start().starts_with('x'))
+        .unwrap_or_else(|| panic!("denied glyph missing:\n{text}"));
+    assert!(row.trim_start().starts_with('x'));
+}
+
+#[test]
+fn edit_diff_never_folds_at_any_tier() {
+    // Red line from the design review: an edit *is* the evidence of what
+    // changed, so no tier may drop a single line of it. The ladder is for
+    // artifacts (a written file's content), never for a transformation.
+    let mut app = App::new();
+    let args = serde_json::json!({
+        "path": "src/main.rs",
+        "edits": [
+            {
+                "old_text": "fn main() {\n    println!(\"hello\");\n}",
+                "new_text": "fn main() {\n    println!(\"world\");\n}"
+            }
+        ]
+    });
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallStarted {
+        session_id: SessionId::new(1),
+        tool_name: "edit_file".to_string(),
+        args_json: args.to_string(),
+        agent_id: None,
+        trace_id: None,
+    }));
+
+    for tier in [
+        ResultTier::Compact,
+        ResultTier::Default,
+        ResultTier::Expanded,
+    ] {
+        app.result_tier = tier;
+        let text = snapshot_text(&mut app, 100, 30);
+        assert!(text.contains("┌─ src/main.rs"), "{tier:?}:\n{text}");
+        assert!(
+            text.contains("println") && text.contains("-") && text.contains("+"),
+            "diff content dropped at {tier:?}:\n{text}"
+        );
+        assert!(
+            !text.contains("... +"),
+            "a diff must never be folded: {tier:?}:\n{text}"
+        );
+    }
+}
+
+#[test]
+fn write_create_rides_the_ladder_but_keeps_the_content() {
+    // A created file is an artifact: its body folds onto the ladder. The
+    // content itself is never rewritten or lost — expanding shows all of it.
+    let mut app = App::new();
+    let args = serde_json::json!({
+        "path": "src/new.rs",
+        "content": "fn hello() {\n    println!(\"hi\");\n}\n"
+    });
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallStarted {
+        session_id: SessionId::new(1),
+        tool_name: "write_file".to_string(),
+        args_json: args.to_string(),
+        agent_id: None,
+        trace_id: None,
+    }));
+
+    assert_eq!(app.result_tier, ResultTier::Compact);
+    let text = snapshot_text(&mut app, 80, 20);
+    assert!(
+        text.contains("... +3 lines"),
+        "written content should be folded when compact:\n{text}"
+    );
+
+    app.result_tier = ResultTier::Expanded;
+    let text = snapshot_text(&mut app, 80, 20);
+    for row in ["fn hello()", "println", "}"] {
+        assert!(text.contains(row), "{row} missing when expanded:\n{text}");
+    }
 }
 
 // ── CJK width-safety guard (session 20260908_a9f7a846) ──────────────────────
@@ -675,18 +970,22 @@ fn committed_thought_folds_and_expands() {
         // `original` on resize and drop `detail`). Construct the production
         // shape flush_thought emits.
         original: None,
-        detail: Some(phi_tui::lines::LineDetail::Thought {
+        detail: Some(phi_tui::lines::LineDetail::Folded {
             raw: raw.to_string(),
             line_count: 5,
             char_count: raw.chars().count(),
+            meta_head: phi_tui::lines::MetaHead::None,
         }),
         text: "line one".into(),
         kind: LineKind::Thought,
+            tool_state: None,
     });
     let text = snapshot_text(&mut app, 80, 24);
-    // Full summary: marker + line count + estimate (spec: the summary carries a line count and an estimated tok count).
+    // Line count + estimate (spec: the summary carries a line count and an
+    // estimated tok count). No leading `>` — that marker belongs to user
+    // lines, and a summary starting with `>` reads as something you typed.
     assert!(
-        text.contains("> thinking - 5 lines - ~16 tok"),
+        text.contains("thinking - 5 lines - ~16 tok"),
         "summary missing:\n{text}"
     );
     assert!(
@@ -700,7 +999,7 @@ fn committed_thought_folds_and_expands() {
         "expanded text missing:\n{text}"
     );
     assert!(
-        !text.contains("> thinking"),
+        !text.contains("thinking - 5 lines"),
         "summary gone when expanded:\n{text}"
     );
 }
@@ -824,8 +1123,10 @@ fn thinking_panel_blank_when_cut_by_window_edge() {
 
 #[test]
 fn thinking_panel_anchors_row_position_below_history() {
-    // The box sits exactly where its placeholder rows land: 3 committed rows
-    // above → the `╭` title row is screen row 3.
+    // The box sits exactly where its placeholder rows land: directly under the
+    // committed history. Three separate `push_system` calls are three system
+    // *blocks* (design §1 — a block is one message, not one kind), so they
+    // interleave with render-time spacers and the title row lands at 5.
     let mut app = App::new();
     app.push_system("one");
     app.push_system("two");
@@ -837,10 +1138,21 @@ fn thinking_panel_anchors_row_position_below_history() {
         trace_id: None,
     }));
     let text = snapshot_text(&mut app, 80, 20);
-    let row = text.lines().nth(3).unwrap_or_default();
-    assert!(
-        row.contains("thinking -") && row.contains('╭'),
-        "panel title row must sit at flow row 3, got: {row:?}\n{text}"
+    let rows: Vec<&str> = text.lines().collect();
+    // Block rhythm: content, spacer, content, spacer, content, then the panel.
+    assert_eq!(rows.first().map(|r| r.trim()), Some("one"), "\n{text}");
+    assert_eq!(rows.get(1).map(|r| r.trim()), Some(""), "\n{text}");
+    assert_eq!(rows.get(2).map(|r| r.trim()), Some("two"), "\n{text}");
+    assert_eq!(rows.get(3).map(|r| r.trim()), Some(""), "\n{text}");
+    assert_eq!(rows.get(4).map(|r| r.trim()), Some("three"), "\n{text}");
+
+    let title = rows
+        .iter()
+        .position(|r| r.contains('╭') && r.contains("thinking -"))
+        .unwrap_or_else(|| panic!("panel title row missing:\n{text}"));
+    assert_eq!(
+        title, 5,
+        "panel title row must sit right below history, got row {title}:\n{text}"
     );
 }
 
@@ -885,13 +1197,15 @@ fn expanded_thought_rewraps_at_current_width() {
         spans: None,
         // Production folded shape (see committed_thought_folds_and_expands).
         original: None,
-        detail: Some(phi_tui::lines::LineDetail::Thought {
+        detail: Some(phi_tui::lines::LineDetail::Folded {
             raw: raw.clone(),
             line_count: 3,
             char_count,
+            meta_head: phi_tui::lines::MetaHead::None,
         }),
         text: "line one".into(),
         kind: LineKind::Thought,
+            tool_state: None,
     });
     app.show_thoughts = true;
     let text = snapshot_text(&mut app, 80, 24);
@@ -924,13 +1238,15 @@ fn history_head_survives_fold_reflow_above_viewport() {
         spans: None,
         // Production folded shape (see committed_thought_folds_and_expands).
         original: None,
-        detail: Some(phi_tui::lines::LineDetail::Thought {
+        detail: Some(phi_tui::lines::LineDetail::Folded {
             raw: raw.clone(),
             line_count: 8,
             char_count: raw.chars().count(),
+            meta_head: phi_tui::lines::MetaHead::None,
         }),
         text: "thought line 0".into(),
         kind: LineKind::Thought,
+            tool_state: None,
     });
     for i in 0..60 {
         app.transcript.push(OutputLine {
@@ -939,6 +1255,7 @@ fn history_head_survives_fold_reflow_above_viewport() {
             detail: None,
             text: format!("filler row {i}"),
             kind: LineKind::Normal,
+                    tool_state: None,
         });
     }
     let _ = snapshot_text(&mut app, 80, 24); // establish viewport sizes
@@ -985,13 +1302,15 @@ fn expanded_thought_with_tail() -> App {
     app.transcript.push(OutputLine {
         spans: None,
         original: None,
-        detail: Some(phi_tui::lines::LineDetail::Thought {
+        detail: Some(phi_tui::lines::LineDetail::Folded {
             raw: raw.clone(),
             line_count: 40,
             char_count: raw.chars().count(),
+            meta_head: phi_tui::lines::MetaHead::None,
         }),
         text: "thought line 0".into(),
         kind: LineKind::Thought,
+            tool_state: None,
     });
     for i in 0..6 {
         app.transcript.push(OutputLine {
@@ -1000,6 +1319,7 @@ fn expanded_thought_with_tail() -> App {
             detail: None,
             text: format!("filler row {i}"),
             kind: LineKind::Normal,
+                    tool_state: None,
         });
     }
     let _ = snapshot_text(&mut app, 80, 24); // establish viewport sizes
@@ -1239,7 +1559,7 @@ fn slash_lines_elide_descriptions_to_the_band_width() {
     app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
 
     let s = app.slash().expect("picker open");
-    let rows = slash_lines(s, 60);
+    let rows = slash_lines(s, 60, ColorScheme::Dark);
     let text: String = rows[0].spans.iter().map(|sp| sp.content.as_ref()).collect();
     assert!(text.starts_with("review"), "name column missing: {text:?}");
     assert!(text.ends_with("..."), "description not elided: {text:?}");
@@ -1255,7 +1575,7 @@ fn slash_lines_pads_the_name_column_in_display_columns() {
     app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
 
     let s = app.slash().expect("picker open");
-    let rows = slash_lines(s, 60);
+    let rows = slash_lines(s, 60, ColorScheme::Dark);
     // The name span alone must be exactly NAME_W (24) display columns. Padding
     // by char count would give 24 chars = 30 columns here.
     let name_span = &rows[0].spans[0];
@@ -1283,14 +1603,14 @@ fn slash_lines_fit_a_band_narrower_than_the_name_column() {
     // A 20-column band is narrower than GUTTER_W + NAME_W + GAP_W (28). The
     // fixed 24-col name column built a 28-col row that `Paragraph` then
     // hard-clipped. Reachable via `ui.popup.width: 20`.
-    let rows = slash_lines(s, 20);
+    let rows = slash_lines(s, 20, ColorScheme::Dark);
     let text: String = rows[0].spans.iter().map(|sp| sp.content.as_ref()).collect();
     assert!(
         unicode_width::UnicodeWidthStr::width(text.as_str()) <= 18,
         "row overflows a 20-col band: {text:?}"
     );
     // And a degenerate 3-column band must not go negative either.
-    let tiny = slash_lines(s, 3);
+    let tiny = slash_lines(s, 3, ColorScheme::Dark);
     let tiny_text: String = tiny[0].spans.iter().map(|sp| sp.content.as_ref()).collect();
     assert!(
         unicode_width::UnicodeWidthStr::width(tiny_text.as_str()) <= 1,
@@ -1309,13 +1629,13 @@ fn slash_lines_keeps_the_selected_row_two_tone() {
 
     let s = app.slash().expect("picker open");
     assert_eq!(s.selected_index(), 0, "expected the first row selected");
-    let rows = slash_lines(s, 60);
+    let rows = slash_lines(s, 60, ColorScheme::Dark);
     // spans: [name, gap, desc]
     let fg = |row: usize, span: usize| rows[row].spans[span].style.fg;
 
     assert_eq!(fg(0, 0), Some(Color::White), "selected name lost its fg");
-    // The description stays dim on the selected row, but lifts `DarkGray` →
-    // `Gray` so it survives the widget's `bg(DarkGray)` highlight.
+    // The description stays dim on the selected row, but lifts `faint` →
+    // `lifted` so it survives the widget's selection background.
     assert_eq!(
         fg(0, 2),
         Some(Color::Gray),
@@ -1328,6 +1648,59 @@ fn slash_lines_keeps_the_selected_row_two_tone() {
         "unselected description drifted"
     );
     assert_eq!(fg(1, 0), Some(Color::White), "unselected name drifted");
+}
+
+#[test]
+fn light_scheme_flips_the_gray_and_truecolor_slots() {
+    // The Dark palette is pinned by the tests above (`App::new()` is Dark);
+    // this guards the other half: a light terminal must not wear dark chrome.
+    assert_eq!(
+        style_for(LineKind::System, ColorScheme::Light).fg,
+        Some(theme::faint(ColorScheme::Light))
+    );
+    assert_eq!(
+        style_for(LineKind::ToolResult, ColorScheme::Light).fg,
+        Some(theme::muted(ColorScheme::Light))
+    );
+    assert_eq!(
+        style_for(LineKind::Thought, ColorScheme::Light).fg,
+        Some(theme::thought(ColorScheme::Light))
+    );
+    assert_eq!(
+        style_for(LineKind::User, ColorScheme::Light).fg,
+        Some(theme::user(ColorScheme::Light))
+    );
+    // And the split is real: Light does not fall back to the Dark values.
+    for kind in [
+        LineKind::System,
+        LineKind::ToolResult,
+        LineKind::Thought,
+        LineKind::User,
+    ] {
+        assert_ne!(
+            style_for(kind, ColorScheme::Light).fg,
+            style_for(kind, ColorScheme::Dark).fg,
+            "{kind:?} is identical in Dark and Light"
+        );
+    }
+}
+
+#[test]
+fn popup_highlight_follows_the_scheme() {
+    let mut app = App::new();
+    // `App::new()` is Dark: the highlight is the dark selection chrome.
+    assert_eq!(
+        app.popup_style().highlight.bg,
+        Some(theme::selection_bg(ColorScheme::Dark))
+    );
+    app.set_scheme(ColorScheme::Light);
+    assert_eq!(
+        app.popup_style().highlight.bg,
+        Some(theme::selection_bg(ColorScheme::Light))
+    );
+    // Foreground stays the row's own — a forced fg would flatten the `/`
+    // popup's two-tone name/description rows.
+    assert_eq!(app.popup_style().highlight.fg, None);
 }
 
 /// Draw and return each row as `(symbol, fg, bg)` cells, so tests can pin

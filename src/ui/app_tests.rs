@@ -4,7 +4,7 @@ use super::*;
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use phi_agent::SessionId;
 use phi_agent::{PlanItem, PlanStepStatus, UserEvent};
-use phi_tui::lines::{DiffLineKind, LineDetail};
+use phi_tui::lines::{DiffLineKind, LineDetail, MetaHead, ToolState};
 
 fn text(s: &str) -> RuntimeEvent {
     RuntimeEvent::TextDelta {
@@ -186,8 +186,11 @@ fn tool_calls_render_inline_in_output() {
     assert_eq!(
         texts,
         vec![
-            "* read_file {}",
-            "  + read_file done",
+            // No args to name → bare tool name; the `*` is the marker slot the
+            // renderer fills from `tool_state`.
+            "* read_file",
+            // Adjacent to its own call → the tool name is already one line up.
+            "  < done",
             "  ⛔ execute_command denied",
         ]
     );
@@ -449,6 +452,280 @@ fn activity_clock_follows_root_status() {
 }
 
 #[test]
+fn submit_starts_activity_clock_and_keeps_origin() {
+    let mut app = App::new();
+    assert!(app.activity_since.is_none(), "idle: no stretch");
+
+    let _ = submit(&mut app, "hello");
+    // The stretch's clock starts at the keystroke, not at the engine's first
+    // event: a model that thinks for half a minute before its first delta must
+    // not render a frozen spinner with no elapsed readout (session
+    // 20261006_9264ba3e).
+    let origin = app.activity_since.expect("submit must start the clock");
+
+    // A phase change inside the stretch keeps its origin — the elapsed readout
+    // measures the whole stretch, not the time since the last event.
+    app.handle_event(TuiEvent::Runtime(tool_started("read_file")));
+    assert_eq!(
+        app.activity_since,
+        Some(origin),
+        "tool events must not restart the stretch clock"
+    );
+}
+
+fn draft(index: usize, name: &str, args_len: usize, count: usize) -> RuntimeEvent {
+    RuntimeEvent::ToolCallDraft {
+        session_id: SessionId::new(1),
+        index,
+        name: name.to_string(),
+        args_len,
+        count,
+        agent_id: None,
+        trace_id: None,
+    }
+}
+
+#[test]
+fn tool_call_drafts_narrate_writing_and_clear_when_calls_materialize() {
+    let mut app = App::new();
+    app.handle_event(TuiEvent::Runtime(draft(0, "spawn_agent", 881, 1)));
+    assert!(app.is_active(), "a draft is a busy signal");
+    let line = app.status_line();
+    assert!(
+        line.contains("writing spawn_agent (881 chars)..."),
+        "got: {line}"
+    );
+
+    // A second parallel draft → plural form, summed chars.
+    app.handle_event(TuiEvent::Runtime(draft(1, "spawn_agent", 400, 2)));
+    let line = app.status_line();
+    assert!(
+        line.contains("writing 2 tool calls (1281 chars)..."),
+        "got: {line}"
+    );
+
+    // The calls materializing (stream drained) ends the drafting window.
+    app.handle_event(TuiEvent::Runtime(tool_started("spawn_agent")));
+    assert!(app.tool_drafts.is_empty(), "materialized calls clear drafts");
+    let line = app.status_line();
+    assert!(!line.contains("writing "), "got: {line}");
+}
+
+#[test]
+fn tool_call_drafts_clear_on_turn_end() {
+    let mut app = App::new();
+    app.handle_event(TuiEvent::Runtime(draft(0, "spawn_agent", 12, 1)));
+    app.handle_event(TuiEvent::Runtime(run_finished(None)));
+    assert!(
+        app.tool_drafts.is_empty(),
+        "a finished turn can draft no more"
+    );
+}
+
+#[test]
+fn child_tool_drafts_never_touch_root_state() {
+    let mut app = App::new();
+    // A child's draft belongs to the task panel's liveness, not the root
+    // status strip — and must not flip the root to Running.
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallDraft {
+        session_id: SessionId::new(1),
+        index: 0,
+        name: "read_file".to_string(),
+        args_len: 64,
+        count: 1,
+        agent_id: Some("root/child".to_string()),
+        trace_id: None,
+    }));
+    assert!(app.tool_drafts.is_empty());
+    assert_eq!(app.status, AgentStatus::Idle);
+
+    // A root draft survives a child's call materializing (the root's calls
+    // materialize together only after the root's own stream drains).
+    app.handle_event(TuiEvent::Runtime(draft(0, "spawn_agent", 32, 1)));
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallStarted {
+        session_id: SessionId::new(1),
+        tool_name: "read_file".to_string(),
+        args_json: "{}".to_string(),
+        agent_id: Some("root/child".to_string()),
+        trace_id: None,
+    }));
+    assert_eq!(
+        app.tool_drafts.len(),
+        1,
+        "child materialize must not clear root drafts"
+    );
+}
+
+#[test]
+fn spawn_task_brief_rides_the_preview_ladder() {
+    let mut app = App::new();
+    // Short first line → the meta row shows it whole; the fold's body owns
+    // rows[1..], and the full brief is whole on the ladder.
+    let task = "看一眼 pi 的 agent 循环\n然后还要看工具系统\n报告带文件行号";
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallStarted {
+        session_id: SessionId::new(1),
+        tool_name: "spawn_agent".to_string(),
+        args_json: serde_json::json!({"task_name": "analyze-pi", "task": task}).to_string(),
+        agent_id: None,
+        trace_id: None,
+    }));
+    let last = app.transcript.output.last().unwrap();
+    assert!(
+        last.text.starts_with("* spawn_agent analyze-pi - "),
+        "got: {}",
+        last.text
+    );
+    match &last.detail {
+        Some(LineDetail::Folded {
+            raw, meta_head, ..
+        }) => {
+            assert_eq!(raw, task, "the full brief rides the ladder, whole");
+            assert_eq!(*meta_head, MetaHead::Whole);
+        }
+        other => panic!("expected Folded brief, got {other:?}"),
+    }
+}
+
+#[test]
+fn spawn_task_head_is_abbreviated_when_the_first_line_is_long() {
+    let mut app = App::new();
+    // A first line past the gist budget is truncated in the meta row; the
+    // ladder restores the full head at full expansion (Abbreviated), so the
+    // truncation never loses text.
+    let head = "分析".repeat(40); // 160 display cols > the 56-col gist
+    let task = format!("{head}\n第二行");
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallStarted {
+        session_id: SessionId::new(1),
+        tool_name: "spawn_agent".to_string(),
+        args_json: serde_json::json!({"task_name": "analyze-pi", "task": task}).to_string(),
+        agent_id: None,
+        trace_id: None,
+    }));
+    let last = app.transcript.output.last().unwrap();
+    assert!(
+        !last.text.contains(&head),
+        "meta row must not dump the head, got: {}",
+        last.text
+    );
+    match &last.detail {
+        Some(LineDetail::Folded { meta_head, .. }) => {
+            assert_eq!(*meta_head, MetaHead::Abbreviated);
+        }
+        other => panic!("expected Folded brief, got {other:?}"),
+    }
+}
+
+#[test]
+fn spawn_result_is_humanized_with_raw_preserved() {
+    let mut app = App::new();
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallStarted {
+        session_id: SessionId::new(1),
+        tool_name: "spawn_agent".to_string(),
+        args_json: serde_json::json!({"task_name": "analyze-pi", "task": "看看 pi"}).to_string(),
+        agent_id: None,
+        trace_id: None,
+    }));
+    let summary = serde_json::json!({
+        "agent_path": "root/analyze-pi",
+        "message": "Agent spawned successfully (tools: read_only; registered: read_file, grep)"
+    })
+    .to_string();
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallFinished {
+        session_id: SessionId::new(1),
+        tool_name: "spawn_agent".to_string(),
+        summary: summary.clone(),
+        agent_id: None,
+        trace_id: None,
+        denied: false,
+        details: None,
+    }));
+    let last = app.transcript.output.last().unwrap();
+    assert_eq!(last.text, "  < spawned root/analyze-pi (read_only)");
+    match &last.detail {
+        Some(LineDetail::Folded {
+            raw, meta_head, ..
+        }) => {
+            assert_eq!(
+                raw, &summary,
+                "summary is display-only — raw rides the fold, never rewritten"
+            );
+            assert_eq!(
+                *meta_head,
+                MetaHead::None,
+                "the label is a fact, not the payload's head"
+            );
+        }
+        other => panic!("expected Folded result, got {other:?}"),
+    }
+}
+
+#[test]
+fn spawn_result_label_keeps_recycled_and_degraded_facts() {
+    let mut app = App::new();
+    let spawn = |app: &mut App| {
+        app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallStarted {
+            session_id: SessionId::new(1),
+            tool_name: "spawn_agent".to_string(),
+            args_json: serde_json::json!({"task_name": "t", "task": "x"}).to_string(),
+            agent_id: None,
+            trace_id: None,
+        }));
+    };
+    let finish = |app: &mut App, message: &str| {
+        app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallFinished {
+            session_id: SessionId::new(1),
+            tool_name: "spawn_agent".to_string(),
+            summary: serde_json::json!({"agent_path": "root/t", "message": message}).to_string(),
+            agent_id: None,
+            trace_id: None,
+            denied: false,
+            details: None,
+        }));
+        app.transcript.output.last().unwrap().text.clone()
+    };
+
+    spawn(&mut app);
+    let text = finish(
+        &mut app,
+        "Agent spawned successfully (recycled a finished agent with the same path)",
+    );
+    assert_eq!(text, "  < spawned root/t (recycled)", "got: {text}");
+
+    spawn(&mut app);
+    let text = finish(
+        &mut app,
+        "Agent spawned successfully (tools degraded to read-only: sandbox policy)",
+    );
+    assert_eq!(text, "  < spawned root/t (degraded to read-only)", "got: {text}");
+}
+
+#[test]
+fn write_file_content_head_is_never_restored() {
+    let mut app = App::new();
+    // A long first line wraps at display time; `MetaHead::None` is what keeps
+    // the ladder from re-drawing that head on top of itself at full expansion
+    // — the meta row is `* write_file <path>`, a label, never the content.
+    let content = "fn main() { /* a deliberately long first line that wraps on any terminal and must not be drawn twice when the fold expands */ }\nsecond line\n";
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallStarted {
+        session_id: SessionId::new(1),
+        tool_name: "write_file".to_string(),
+        args_json: serde_json::json!({"path": "/tmp/x.rs", "content": content}).to_string(),
+        agent_id: None,
+        trace_id: None,
+    }));
+    let last = app.transcript.output.last().unwrap();
+    match &last.detail {
+        Some(LineDetail::Folded {
+            raw, meta_head, ..
+        }) => {
+            assert_eq!(raw, content);
+            assert_eq!(*meta_head, MetaHead::None);
+        }
+        other => panic!("expected Folded content, got {other:?}"),
+    }
+}
+
+#[test]
 fn elapsed_suffix_formats_minutes() {
     let mut app = App::new();
     app.activity_since = Some(Instant::now() - std::time::Duration::from_secs(91));
@@ -551,6 +828,7 @@ fn scroll_up_steps_from_bottom_not_noop() {
             text: format!("line {i}"),
             kind: LineKind::Normal,
             detail: None,
+                    tool_state: None,
         });
     }
     app.scroll_up();
@@ -568,6 +846,7 @@ fn scroll_down_reenters_follow_bottom() {
             text: format!("line {i}"),
             kind: LineKind::Normal,
             detail: None,
+                    tool_state: None,
         });
     }
     let step = app.viewport.page_step();
@@ -592,6 +871,7 @@ fn wheel_step_is_small_so_a_swipe_composes_smoothly() {
             text: format!("line {i}"),
             kind: LineKind::Normal,
             detail: None,
+                    tool_state: None,
         });
     }
     // A few wheel ticks walk a few lines each — not half a screen per tick.
@@ -617,6 +897,7 @@ fn keyboard_page_step_stays_half_screen_despite_wheel_step() {
             text: format!("line {i}"),
             kind: LineKind::Normal,
             detail: None,
+                    tool_state: None,
         });
     }
     app.viewport.set_visible(1000, 40); // a real render: 40-row pane
@@ -777,7 +1058,7 @@ fn sub_agent_tool_calls_are_labeled() {
         .unwrap_or_default();
     assert_eq!(
         sub_texts,
-        vec!["* [root/a] read_file {}", "  [root/a] + read_file done",]
+        vec!["* [root/a] read_file", "  [root/a] < done",]
     );
 }
 
@@ -1118,6 +1399,7 @@ fn mouse_drag_selects_line_range() {
             text: format!("line {i}"),
             kind: LineKind::Normal,
             detail: None,
+                    tool_state: None,
         });
     }
     app.output_area = Some((0, 0, 100, 10));
@@ -1140,6 +1422,7 @@ fn mouse_drag_up_normalizes_selection() {
             text: format!("line {i}"),
             kind: LineKind::Normal,
             detail: None,
+                    tool_state: None,
         });
     }
     app.output_area = Some((0, 0, 100, 10));
@@ -1158,6 +1441,7 @@ fn click_outside_output_clears_selection() {
         text: "x".into(),
         kind: LineKind::Normal,
         detail: None,
+            tool_state: None,
     });
     app.output_area = Some((0, 0, 10, 5));
     app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 0, 10, 5);
@@ -1175,6 +1459,7 @@ fn selection_text_clamps_stale_indices() {
         text: "a".into(),
         kind: LineKind::Normal,
         detail: None,
+            tool_state: None,
     });
     app.selection_state.selection = Some(Selection { anchor: 0, head: 5 });
     assert_eq!(app.selection_text(), "a");
@@ -1251,6 +1536,7 @@ fn right_click_opens_menu_and_enter_copies() {
         text: "x".into(),
         kind: LineKind::Normal,
         detail: None,
+            tool_state: None,
     });
     app.output_area = Some((0, 0, 10, 10));
     app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 0, 20, 20);
@@ -1279,6 +1565,7 @@ fn context_menu_arrows_move_highlight_and_esc_closes() {
         text: "x".into(),
         kind: LineKind::Normal,
         detail: None,
+            tool_state: None,
     });
     app.output_area = Some((0, 0, 10, 10));
     app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 0, 20, 20);
@@ -1302,6 +1589,7 @@ fn clicking_menu_copy_item_copies_and_closes() {
         text: "x".into(),
         kind: LineKind::Normal,
         detail: None,
+            tool_state: None,
     });
     app.output_area = Some((0, 0, 10, 10));
     app.selection_state.selection = Some(Selection { anchor: 0, head: 0 });
@@ -1330,6 +1618,7 @@ fn clicking_menu_cancel_item_closes_without_copy() {
         text: "x".into(),
         kind: LineKind::Normal,
         detail: None,
+            tool_state: None,
     });
     app.output_area = Some((0, 0, 10, 10));
     app.selection_state.selection = Some(Selection { anchor: 0, head: 0 });
@@ -1353,6 +1642,7 @@ fn clicking_outside_menu_closes_it_and_restarts_selection() {
         text: "x".into(),
         kind: LineKind::Normal,
         detail: None,
+            tool_state: None,
     });
     app.output_area = Some((0, 0, 10, 10));
     app.selection_state.selection = Some(Selection { anchor: 0, head: 0 });
@@ -1794,7 +2084,10 @@ fn edit_file_produces_diff_detail() {
 }
 
 #[test]
-fn write_file_produces_all_add_diff() {
+fn write_file_create_folds_the_written_content() {
+    // A create is an artifact, not a transformation: the content rides the
+    // preview ladder as a folded block. It is NOT an all-Add diff — that
+    // rendering made a 10k-line write a 10k-line wall of green `+`.
     let mut app = App::new();
     let args = serde_json::json!({
         "path": "src/new.rs",
@@ -1810,16 +2103,67 @@ fn write_file_produces_all_add_diff() {
 
     let tool_line = app.transcript.output.last().expect("tool line present");
     match &tool_line.detail {
-        Some(LineDetail::Diff { path, hunks }) => {
-            assert_eq!(path, "src/new.rs");
-            let all_lines: Vec<_> = hunks.iter().flat_map(|h| h.lines.iter()).collect();
-            assert!(
-                all_lines.iter().all(|l| l.kind == DiffLineKind::Add),
-                "write_file should produce all-Add lines"
-            );
+        Some(LineDetail::Folded { raw, line_count, .. }) => {
+            assert_eq!(raw, "fn hello() {\n    println!(\"hi\");\n}\n");
+            assert_eq!(*line_count, 3);
         }
-        other => panic!("expected LineDetail::Diff, got {other:?}"),
+        other => panic!("expected LineDetail::Folded, got {other:?}"),
     }
+}
+
+#[test]
+fn write_file_overwrite_becomes_a_real_diff() {
+    // An overwrite *is* a transformation, so once the tool reports the old
+    // content the staged written-content block is swapped for an old→new diff —
+    // the same always-full evidence treatment an edit_file gets.
+    let mut app = App::new();
+    let args = serde_json::json!({
+        "path": "src/new.rs",
+        "content": "fn hello() {\n    println!(\"bye\");\n}\n",
+        "overwrite": true
+    });
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallStarted {
+        session_id: SessionId::new(1),
+        tool_name: "write_file".to_string(),
+        args_json: args.to_string(),
+        agent_id: None,
+        trace_id: None,
+    }));
+    // Pre-swap: folded content.
+    assert!(matches!(
+        app.transcript.output.last().unwrap().detail,
+        Some(LineDetail::Folded { .. })
+    ));
+
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallFinished {
+        session_id: SessionId::new(1),
+        tool_name: "write_file".to_string(),
+        summary: "Updated file: src/new.rs".to_string(),
+        agent_id: None,
+        trace_id: None,
+        denied: false,
+        details: Some(serde_json::json!({
+            "write_mode": "overwrite",
+            "old_content": "fn hello() {\n    println!(\"hi\");\n}\n",
+        })),
+    }));
+
+    let tool_line = app
+        .transcript
+        .output
+        .iter()
+        .find(|l| l.kind == LineKind::Tool)
+        .expect("tool line present");
+    match &tool_line.detail {
+        Some(LineDetail::Diff { hunks, .. }) => {
+            let all: Vec<_> = hunks.iter().flat_map(|h| h.lines.iter()).collect();
+            assert!(all.iter().any(|l| l.kind == DiffLineKind::Del));
+            assert!(all.iter().any(|l| l.kind == DiffLineKind::Add));
+        }
+        other => panic!("expected LineDetail::Diff after overwrite, got {other:?}"),
+    }
+    // Settled in place — the marker slot is redrawn from this.
+    assert_eq!(tool_line.tool_state, Some(ToolState::Done));
 }
 
 #[test]

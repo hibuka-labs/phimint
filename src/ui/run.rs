@@ -503,6 +503,7 @@ pub async fn run_tui(
                                             Some(
                                                 &session_dir.file_name().unwrap().to_string_lossy(),
                                             ),
+                                            app.scheme(),
                                         )?;
                                         if let Some(picked_dir) = picked {
                                             outcome = Some(TuiOutcome::SwitchSession(picked_dir));
@@ -1246,6 +1247,7 @@ fn replay_messages_to_transcript(app: &mut super::app::App, messages: &[ChatMess
                             kind: LineKind::Normal,
                             spans: None,
                             detail: None,
+                                                    tool_state: None,
                         });
                     }
                 }
@@ -1258,6 +1260,7 @@ fn replay_messages_to_transcript(app: &mut super::app::App, messages: &[ChatMess
                             spans: None,
                             original: None,
                             detail: None,
+                                                    tool_state: None,
                         });
                     }
                 }
@@ -1279,6 +1282,7 @@ fn replay_messages_to_transcript(app: &mut super::app::App, messages: &[ChatMess
                     spans: None,
                     original: None,
                     detail: None,
+                                    tool_state: None,
                 });
             }
             _ => {} // System / Custom — already filtered, skip.

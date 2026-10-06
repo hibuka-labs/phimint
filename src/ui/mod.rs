@@ -7,6 +7,7 @@
 //! - `handlers`: `RuntimeEvent` / keyboard / mouse input handling
 //! - `child_results`: fan-in result routing decisions (unit-tested)
 //! - `bg_wake`: background-task auto-wake policy (unit-tested)
+//! - `theme`: semantic color slots, Dark/Light palettes (unit-tested)
 //! - `frame_log`: session logs (frames.txt / perf.log / composer.log)
 //! - `run`: the main loop — terminal setup, channels, agent-side turn runner
 
@@ -25,5 +26,6 @@ pub mod render;
 mod run;
 pub mod session_state;
 mod task_panel;
+mod theme;
 
 pub use run::run_tui;

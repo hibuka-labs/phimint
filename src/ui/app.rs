@@ -14,9 +14,11 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyCode, KeyModifiers};
 use phi_agent::{ApprovalDecision, ApprovalRequest, RegistrySnapshot, RuntimeEvent};
 use phi_kernel_tools::background_shell::{BackgroundTaskRegistry, BackgroundTaskStatus};
+use ratatui::style::{Modifier, Style};
 
 use crate::approval::ApprovalItem;
 use crate::banner::{BannerRow, BannerStyle, ColorScheme};
+use crate::ui::theme;
 use phi_tui::completer::{CompleterAction, MentionCompleter, SlashCompleter};
 use phi_tui::input::Composer;
 use phi_tui::lines::{LineKind, OutputLine};
@@ -183,6 +185,36 @@ impl Default for TaskPanel {
     }
 }
 
+/// How much of a folded tool block is on screen (Ctrl+E cycles these).
+///
+/// The three tiers are a *preview ladder*, not three different payloads: every
+/// tier draws from the same `LineDetail::Folded.raw`, so scrolling stays cheap
+/// while the full text is always one keypress away. Diff blocks are deliberately
+/// outside this ladder — an edit is a transformation and its evidence is never
+/// previewed away.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ResultTier {
+    /// Meta line + `... +N lines`. The scrolling default: you see what ran and
+    /// how much came back, without the payload competing for the pane.
+    #[default]
+    Compact,
+    /// Meta line + 2 preview rows + the overflow hint.
+    Default,
+    /// The whole block. What you switch to when reading one result closely.
+    Expanded,
+}
+
+impl ResultTier {
+    /// Next tier in the Ctrl+E cycle: compact → default → expanded → compact.
+    pub(crate) fn next(self) -> Self {
+        match self {
+            Self::Compact => Self::Default,
+            Self::Default => Self::Expanded,
+            Self::Expanded => Self::Compact,
+        }
+    }
+}
+
 /// A user action surfaced from key handling, consumed by the TUI loop.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Action {
@@ -287,6 +319,15 @@ pub struct App {
     /// Latest live tool-progress line (e.g. streaming `execute_command` output),
     /// shown in the status bar and cleared when the tool call finishes.
     pub(crate) live_progress: Option<String>,
+    /// Tool calls the model is still writing arguments for, keyed by the
+    /// call's stream index → `(function name, args chars so far)`. Root only.
+    ///
+    /// A turn's tool calls only materialize once the whole stream drains, so
+    /// during a long argument dump (a `spawn_agent` task brief can run past
+    /// 3K chars) this map is the only liveness signal — see
+    /// `RuntimeEvent::ToolCallDraft` and `draft_status_text`. Cleared when the
+    /// calls materialize (root `ToolCallStarted`) or the turn settles.
+    pub(crate) tool_drafts: HashMap<usize, (String, usize)>,
     /// Transient status-bar notice (e.g. "📋 copied …"), cleared on the next key.
     pub(crate) notice: Option<String>,
     /// Persistent upgrade hint (e.g. "⬆ phimint 0.2.0 available — type /upgrade").
@@ -304,6 +345,11 @@ pub struct App {
     /// render-time decision — `OutputLine` always carries the full text.
     /// Consumed by the thought-fold renderer (render.rs).
     pub(crate) show_thoughts: bool,
+    /// How much of a folded tool block (result text, written file content) is
+    /// shown. Cycled by Ctrl+E. Render-time only — the line always carries the
+    /// full text in `LineDetail::Folded.raw`, so the transcript, selection and
+    /// frame capture are unaffected by the tier.
+    pub(crate) result_tier: ResultTier,
     /// When each stream's current pending thought segment began, keyed by
     /// agent path (`""` = the root stream, matching the `agent_id` routing
     /// convention). A segment's first delta inserts, its owning flush
@@ -346,10 +392,12 @@ impl App {
             stream: StreamState::new(DEFAULT_WRAP_WIDTH),
             child_streams: BTreeMap::new(),
             live_progress: None,
+            tool_drafts: HashMap::new(),
             notice: None,
             upgrade_hint: None,
             activity_since: None,
             show_thoughts: false,
+            result_tier: ResultTier::default(),
             thinking_since: HashMap::new(),
             background_registry: None,
             background_tasks: BTreeMap::new(),
@@ -394,9 +442,19 @@ impl App {
         self.popup_style = style;
     }
 
-    /// The `@`/`/` popup band style.
+    /// The `@`/`/` popup band style, with the selection highlight painted for
+    /// the active scheme. The stored style only knows chrome (frame, width,
+    /// height, separator) — its `highlight` is the widget default, and a
+    /// default built for dark reads as no highlight at all on light. The
+    /// background comes from `theme`; the foreground stays unset so rows keep
+    /// their own two-tone foregrounds (the `/` popup's name/description split).
     pub fn popup_style(&self) -> PopupStyle {
-        self.popup_style
+        PopupStyle {
+            highlight: Style::default()
+                .bg(theme::selection_bg(self.scheme))
+                .add_modifier(Modifier::BOLD),
+            ..self.popup_style
+        }
     }
 
     /// Update the output wrap width to match the terminal's content area.
@@ -469,6 +527,7 @@ impl App {
                 detail: None,
                 text: line,
                 kind: LineKind::Error,
+                            tool_state: None,
             });
         }
     }
@@ -505,6 +564,7 @@ impl App {
                     detail: None,
                     text,
                     kind: LineKind::System,
+                                    tool_state: None,
                 });
             }
         } else if show_done_marker {
@@ -514,6 +574,7 @@ impl App {
                 detail: None,
                 text: "✅ done".to_string(),
                 kind: LineKind::Done,
+                            tool_state: None,
             });
         }
         // Daemon-only settlement: the agent IS done — say so plainly, then
@@ -527,6 +588,7 @@ impl App {
                     "🟢 {daemons} daemon(s) running (always-on; you're notified on abnormal exit)"
                 ),
                 kind: LineKind::System,
+                            tool_state: None,
             });
         }
         self.running = false;
@@ -544,6 +606,8 @@ impl App {
     /// never be dropped on the floor as `Idle` — the user would see "done"
     /// while the task is still working.
     pub(crate) fn settle_status_from_inflight(&mut self) -> bool {
+        // Turn-end: any call still being drafted can no longer arrive.
+        self.tool_drafts.clear();
         let running = self.running_sub_agents();
         let (bounded, daemons) = self.bg_running_split();
         if running > 0 || bounded > 0 {
@@ -844,6 +908,21 @@ impl App {
         !matches!(self.status, AgentStatus::Idle)
     }
 
+    /// Start the activity stretch's clock if it is not already running.
+    ///
+    /// The spinner and the status bar's elapsed suffix both read
+    /// `activity_since`, so every path that turns the root busy must call
+    /// this — the user-send shortcut, streaming events, an approval that was
+    /// just granted. Idempotent on purpose: phase changes inside one stretch
+    /// keep the stretch's origin (the wait after a spawn belongs to the same
+    /// stretch as the send), and only [`Self::settle_status_from_inflight`]
+    /// settling to Idle stops the clock.
+    pub(crate) fn begin_activity(&mut self) {
+        if self.activity_since.is_none() {
+            self.activity_since = Some(std::time::Instant::now());
+        }
+    }
+
     /// Braille spinner frame for the current activity stretch (advances every
     /// 120 ms). Static when idle.
     pub(crate) fn spinner_char(&self) -> &'static str {
@@ -868,6 +947,28 @@ impl App {
         match self.activity_since {
             Some(t) => format!(" - {}", Self::fmt_elapsed(t.elapsed().as_secs() + 1)),
             None => String::new(),
+        }
+    }
+
+    /// Status-strip text for tool calls whose arguments are still streaming
+    /// in — the calls themselves only materialize when the turn's stream
+    /// drains, so this is what the user sees during that window (session
+    /// 20261006_9264ba3e: four `spawn_agent` briefs, ~3.2K chars, ~25 s of
+    /// visible nothing). `None` while no draft is pending.
+    fn draft_status_text(&self) -> Option<String> {
+        if self.tool_drafts.is_empty() {
+            return None;
+        }
+        let chars: usize = self.tool_drafts.values().map(|(_, n)| n).sum();
+        if self.tool_drafts.len() == 1 {
+            let (name, _) = self.tool_drafts.values().next().expect("len == 1");
+            let tool = if name.is_empty() { "tool call" } else { name.as_str() };
+            Some(format!("writing {tool} ({chars} chars)..."))
+        } else {
+            Some(format!(
+                "writing {} tool calls ({chars} chars)...",
+                self.tool_drafts.len()
+            ))
         }
     }
 
@@ -926,13 +1027,21 @@ impl App {
                         self.elapsed_suffix()
                     )
                 }
-                Phase::Streaming => {
-                    format!(
+                Phase::Streaming => match self.draft_status_text() {
+                    // While tool-call args are being written there is no
+                    // delta to stream — report the draft instead of a bare
+                    // "streaming...", so the stretch reads as busy, not hung.
+                    Some(draft) => format!(
+                        "{} {draft}{} (Ctrl+C cancel)",
+                        self.spinner_char(),
+                        self.elapsed_suffix()
+                    ),
+                    None => format!(
                         "{} streaming...{} (Ctrl+C cancel)",
                         self.spinner_char(),
                         self.elapsed_suffix()
-                    )
-                }
+                    ),
+                },
                 Phase::ToolCall { tool } => match &self.live_progress {
                     Some(p) => {
                         format!(

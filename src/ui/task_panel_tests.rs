@@ -270,7 +270,7 @@ fn sub_agent_tool_calls_route_to_transcript() {
     let sub_lines = app.sub_agent_transcripts.get("root/auth").unwrap();
     assert_eq!(sub_lines.len(), 2);
     assert!(sub_lines[0].text.contains("read_file"));
-    assert!(sub_lines[1].text.contains("+"));
+    assert!(sub_lines[1].text.contains("<"));
 }
 
 #[test]
@@ -332,6 +332,7 @@ fn cleanup_removes_corresponding_transcripts() {
             spans: None,
             original: None,
             detail: None,
+                    tool_state: None,
         }],
     );
 
@@ -726,6 +727,7 @@ fn cleanup_skipped_while_root_waiting() {
             spans: None,
             original: None,
             detail: None,
+                    tool_state: None,
         }],
     );
     app.status = AgentStatus::Waiting { running: 2, bg: 0 };

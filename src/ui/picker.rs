@@ -18,10 +18,13 @@ use ratatui::{
     Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Layout},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState},
 };
+
+use crate::banner::ColorScheme;
+use crate::ui::theme;
 
 /// Show the picker from within an active TUI session.
 ///
@@ -30,6 +33,7 @@ use ratatui::{
 pub fn show_picker_from_tui(
     base_dir: &Path,
     current_session_id: Option<&str>,
+    scheme: ColorScheme,
 ) -> io::Result<Option<PathBuf>> {
     let entries = phi_agent::list_sessions(base_dir, current_session_id);
     if entries.is_empty() {
@@ -47,7 +51,7 @@ pub fn show_picker_from_tui(
         let mut terminal = Terminal::new(backend)?;
         let mut state = ListState::default();
         state.select(Some(0));
-        let r = picker_loop(&mut terminal, &entries, &mut state);
+        let r = picker_loop(&mut terminal, &entries, &mut state, scheme);
         disable_raw_mode()?;
         execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
         r
@@ -67,6 +71,7 @@ pub fn show_picker_from_tui(
 pub fn show_picker(
     base_dir: &Path,
     current_session_id: Option<&str>,
+    scheme: ColorScheme,
 ) -> io::Result<Option<PathBuf>> {
     let entries = phi_agent::list_sessions(base_dir, current_session_id);
 
@@ -85,7 +90,7 @@ pub fn show_picker(
     let mut state = ListState::default();
     state.select(Some(0));
 
-    let result = picker_loop(&mut terminal, &entries, &mut state);
+    let result = picker_loop(&mut terminal, &entries, &mut state, scheme);
 
     // Clean up terminal.
     disable_raw_mode()?;
@@ -99,6 +104,7 @@ fn picker_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     entries: &[SessionInfo],
     state: &mut ListState,
+    scheme: ColorScheme,
 ) -> io::Result<Option<PathBuf>> {
     loop {
         terminal.draw(|frame| {
@@ -119,7 +125,7 @@ fn picker_loop(
                     let line = Line::from(vec![
                         Span::styled(
                             format!("  {}  ", date),
-                            Style::default().fg(Color::DarkGray),
+                            Style::default().fg(theme::faint(scheme)),
                         ),
                         Span::raw(&e.title),
                     ]);
@@ -132,12 +138,12 @@ fn picker_loop(
                     Block::default()
                         .title(" Resume Session ")
                         .borders(Borders::ALL)
-                        .border_style(Style::default().fg(Color::DarkGray)),
+                        .border_style(Style::default().fg(theme::faint(scheme))),
                 )
                 .highlight_style(
                     Style::default()
-                        .bg(Color::DarkGray)
-                        .fg(Color::White)
+                        .bg(theme::selection_bg(scheme))
+                        .fg(theme::selection_fg(scheme))
                         .add_modifier(Modifier::BOLD),
                 )
                 .highlight_symbol("> ");
@@ -147,7 +153,7 @@ fn picker_loop(
             // Footer hint.
             let hint = Span::styled(
                 " ↑↓ navigate  Enter select  Esc cancel ",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme::faint(scheme)),
             );
             frame.render_widget(ratatui::widgets::Paragraph::new(hint), chunks[1]);
         })?;
