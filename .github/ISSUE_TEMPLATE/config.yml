@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 💬 Discussions
+    url: https://github.com/hibuka-labs/phimint/discussions
+    about: Ask questions, share ideas, or discuss use cases
+  - name: 📖 phi-agent framework
+    url: https://github.com/hibuka-labs/phi-agent
+    about: Framework-level questions belong in the phi-agent repo

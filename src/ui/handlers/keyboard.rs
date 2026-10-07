@@ -58,12 +58,12 @@ impl App {
             if self.running || !self.approval_queue.is_empty() {
                 // A cancel was already requested recently and the agent is
                 // still stuck: force-quit instead of sending a no-op cancel.
-                if let Some(at) = self.quit_hint_at {
-                    if at.elapsed() < DOUBLE_PRESS_TIMEOUT {
-                        tracing::info!("ctrl+c: stuck after cancel -> force quit");
-                        self.quit_hint_at = None;
-                        return Some(Action::Quit);
-                    }
+                if let Some(at) = self.quit_hint_at
+                    && at.elapsed() < DOUBLE_PRESS_TIMEOUT
+                {
+                    tracing::info!("ctrl+c: stuck after cancel -> force quit");
+                    self.quit_hint_at = None;
+                    return Some(Action::Quit);
                 }
                 tracing::info!("ctrl+c: running/approval -> cancel");
                 self.quit_hint_at = Some(Instant::now());
@@ -89,12 +89,12 @@ impl App {
             }
             // Double-press to quit: first press shows hint, second press
             // within timeout actually quits.
-            if let Some(at) = self.quit_hint_at {
-                if at.elapsed() < DOUBLE_PRESS_TIMEOUT {
-                    tracing::info!("ctrl+c: hint active -> quit");
-                    self.quit_hint_at = None;
-                    return Some(Action::Quit);
-                }
+            if let Some(at) = self.quit_hint_at
+                && at.elapsed() < DOUBLE_PRESS_TIMEOUT
+            {
+                tracing::info!("ctrl+c: hint active -> quit");
+                self.quit_hint_at = None;
+                return Some(Action::Quit);
             }
             tracing::info!("ctrl+c: idle -> show quit hint");
             self.quit_hint_at = Some(Instant::now());

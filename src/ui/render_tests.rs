@@ -22,7 +22,7 @@ fn populated_app() -> App {
             detail: None,
             text: format!("streamed line {i}"),
             kind: LineKind::Normal,
-                    tool_state: None,
+            tool_state: None,
         });
     }
     app.transcript.push(OutputLine {
@@ -31,7 +31,7 @@ fn populated_app() -> App {
         detail: None,
         text: "* [sub/1] read_file {\"path\":\"src/lib.rs\"}".into(),
         kind: LineKind::Tool,
-            tool_state: None,
+        tool_state: None,
     });
     app.transcript.push(OutputLine {
         spans: None,
@@ -39,7 +39,7 @@ fn populated_app() -> App {
         detail: None,
         text: "  ⛔ execute_command denied".into(),
         kind: LineKind::Error,
-            tool_state: None,
+        tool_state: None,
     });
     app.composer.insert_str("hello\nworld");
     app.running = true;
@@ -77,7 +77,7 @@ fn draw_empty_and_scrolled_states() {
             detail: None,
             text: format!("long line {i}"),
             kind: LineKind::Normal,
-                    tool_state: None,
+            tool_state: None,
         });
     }
     app.viewport.follow_bottom = false;
@@ -205,7 +205,7 @@ fn window_range_shifts_by_scroll_offset() {
             text: format!("line {i}"),
             kind: LineKind::Normal,
             detail: None,
-                    tool_state: None,
+            tool_state: None,
         });
     }
     assert_eq!(app.viewport.window_range(100, 30), 70..100);
@@ -365,7 +365,7 @@ fn draw_with_selection_and_context_menu_does_not_panic() {
             detail: None,
             text: format!("line {i}"),
             kind: LineKind::Normal,
-                    tool_state: None,
+            tool_state: None,
         });
     }
     app.output_area = Some((0, 0, 80, 20));
@@ -527,7 +527,11 @@ fn block_spacers_are_render_time_only() {
             .iter()
             .all(|l| !l.text.trim().is_empty()),
         "blank line in history: {:?}",
-        app.transcript.output.iter().map(|l| &l.text).collect::<Vec<_>>()
+        app.transcript
+            .output
+            .iter()
+            .map(|l| &l.text)
+            .collect::<Vec<_>>()
     );
 
     let rows: Vec<&str> = text.lines().collect();
@@ -978,7 +982,7 @@ fn committed_thought_folds_and_expands() {
         }),
         text: "line one".into(),
         kind: LineKind::Thought,
-            tool_state: None,
+        tool_state: None,
     });
     let text = snapshot_text(&mut app, 80, 24);
     // Line count + estimate (spec: the summary carries a line count and an
@@ -1205,7 +1209,7 @@ fn expanded_thought_rewraps_at_current_width() {
         }),
         text: "line one".into(),
         kind: LineKind::Thought,
-            tool_state: None,
+        tool_state: None,
     });
     app.show_thoughts = true;
     let text = snapshot_text(&mut app, 80, 24);
@@ -1246,7 +1250,7 @@ fn history_head_survives_fold_reflow_above_viewport() {
         }),
         text: "thought line 0".into(),
         kind: LineKind::Thought,
-            tool_state: None,
+        tool_state: None,
     });
     for i in 0..60 {
         app.transcript.push(OutputLine {
@@ -1255,7 +1259,7 @@ fn history_head_survives_fold_reflow_above_viewport() {
             detail: None,
             text: format!("filler row {i}"),
             kind: LineKind::Normal,
-                    tool_state: None,
+            tool_state: None,
         });
     }
     let _ = snapshot_text(&mut app, 80, 24); // establish viewport sizes
@@ -1310,7 +1314,7 @@ fn expanded_thought_with_tail() -> App {
         }),
         text: "thought line 0".into(),
         kind: LineKind::Thought,
-            tool_state: None,
+        tool_state: None,
     });
     for i in 0..6 {
         app.transcript.push(OutputLine {
@@ -1319,7 +1323,7 @@ fn expanded_thought_with_tail() -> App {
             detail: None,
             text: format!("filler row {i}"),
             kind: LineKind::Normal,
-                    tool_state: None,
+            tool_state: None,
         });
     }
     let _ = snapshot_text(&mut app, 80, 24); // establish viewport sizes

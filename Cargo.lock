@@ -10,7 +10,9 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agent-base"
-version = "0.6.0"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "949439c21d6d499c293eeab5815e2a9f0d3f1d904e6051014650dfc577431b89"
 dependencies = [
  "agent-types",
  "anyhow",
@@ -35,9 +37,9 @@ dependencies = [
 
 [[package]]
 name = "agent-types"
-version = "0.1.1"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "815ce2f7a8352e0805ece7bb1e9633eac9fb3b256876ef87ecf71302532971a9"
+checksum = "c74182e96d19f6ccdd9c6a1298ee55002c4449eb56b4d67838a4f62d2d41df53"
 dependencies = [
  "llm-trait",
  "serde",
@@ -46,7 +48,9 @@ dependencies = [
 
 [[package]]
 name = "agent-works"
-version = "0.7.0"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4f3c5c1e60b94db95cdad653d5527d347d45f7f571b441733fa4dcd9e8dc2c07"
 dependencies = [
  "agent-base",
  "async-trait",
@@ -449,6 +453,8 @@ dependencies = [
 [[package]]
 name = "code-intel"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "19efc0690d5c07cf8822653f009916bc96a5cb4832bcc4acf54e773e25ebd3bb"
 dependencies = [
  "lsp-types",
  "serde_json",
@@ -1690,6 +1696,8 @@ checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 [[package]]
 name = "llm-trait"
 version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "28f415524d0efc33e8d687420d5d8a341d520cf9bb52c9d55e546aacdbe40f6d"
 dependencies = [
  "async-trait",
  "bytes",
@@ -1705,6 +1713,8 @@ dependencies = [
 [[package]]
 name = "llm-unified"
 version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "855576cf2b3ae5cb718dd7a873a8e2a7fc20d16738cb1e1d9a7c6e5aa2735673"
 dependencies = [
  "async-trait",
  "clap",
@@ -1737,23 +1747,9 @@ checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 
 [[package]]
 name = "log-core"
-version = "0.1.3"
-dependencies = [
- "anyhow",
- "async-trait",
- "chrono",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "log-core"
-version = "0.1.3"
+version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e185c302381abe7a6d1945a2b34394a4b91de13f15e3556320526972d6f8679c"
+checksum = "733f5089a46d1eee24471d558fb6183cc5bbacfa04985783972d42f7a05baa08"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1854,6 +1850,12 @@ name = "minimal-lexical"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
+
+[[package]]
+name = "minisign-verify"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22f9645cb765ea72b8111f36c522475d2daa0d22c957a9826437e97534bc4e9e"
 
 [[package]]
 name = "miniz_oxide"
@@ -2227,7 +2229,9 @@ dependencies = [
 
 [[package]]
 name = "phi-agent"
-version = "0.15.0"
+version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "44839aedc529769bac75b965a31ad1dc8c01a960f80954ee2505966da5b0d48e"
 dependencies = [
  "agent-base",
  "agent-works",
@@ -2240,9 +2244,9 @@ dependencies = [
  "dyn-clone",
  "fs2",
  "llm-unified",
- "log-core 0.1.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "log-core",
  "phi-kernel-tools",
- "phi-telemetry 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "phi-telemetry",
  "regex",
  "rustyline",
  "serde",
@@ -2257,7 +2261,9 @@ dependencies = [
 
 [[package]]
 name = "phi-kernel-tools"
-version = "0.7.0"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d249723f45557232adf55e2f5d208865562ff64049eb215dad64ba489d4ed23f"
 dependencies = [
  "agent-base",
  "agent-works",
@@ -2276,22 +2282,9 @@ dependencies = [
 
 [[package]]
 name = "phi-telemetry"
-version = "0.5.0"
-dependencies = [
- "agent-base",
- "anyhow",
- "chrono",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "phi-telemetry"
-version = "0.5.0"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6c69ac974039cebde96aca737bded23cf1aa30ff56f9b11f5890dc647f4de3f5"
+checksum = "4c65e873e00cb00241433ba83375f26e743d1754da09a2c8d6f3f044c53fa647"
 dependencies = [
  "agent-base",
  "anyhow",
@@ -2304,7 +2297,9 @@ dependencies = [
 
 [[package]]
 name = "phi-tui"
-version = "0.1.0"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3c8dca5d3ddc413e5a6df38d3a6772f66c4191b12091b841399f78d2b003ee70"
 dependencies = [
  "crossterm 0.28.1",
  "pulldown-cmark",
@@ -2328,13 +2323,16 @@ dependencies = [
  "fs2",
  "futures-util",
  "json5",
- "log-core 0.1.3",
+ "log-core",
+ "minisign-verify",
  "phi-agent",
  "phi-kernel-tools",
- "phi-telemetry 0.5.0",
+ "phi-telemetry",
  "phi-tui",
  "pulldown-cmark",
  "ratatui",
+ "reqwest",
+ "semver",
  "serde",
  "serde_json",
  "tempfile",

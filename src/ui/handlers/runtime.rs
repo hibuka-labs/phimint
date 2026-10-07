@@ -77,9 +77,9 @@ fn build_tool_detail(tool_name: &str, args_json: &str) -> Option<LineDetail> {
             meta_head,
         });
     }
-    let path = match args.get("path").and_then(|v| v.as_str()) {
-        Some(p) => p.to_string(),
-        None => return None,
+    let path = {
+        let p = args.get("path").and_then(|v| v.as_str())?;
+        p.to_string()
     };
 
     match tool_name {
@@ -298,7 +298,7 @@ fn spawn_result_label(summary: &str) -> Option<String> {
         facts.push("degraded to read-only");
     } else if let Some(cap) = msg
         .split_once("(tools: ")
-        .and_then(|(_, rest)| rest.split(|c| c == ';' || c == ')').next())
+        .and_then(|(_, rest)| rest.split([';', ')']).next())
         .map(str::trim)
         .filter(|c| !c.is_empty())
     {
@@ -349,10 +349,16 @@ fn settle_tool_call(
     if det.get("write_mode").and_then(|v| v.as_str()) != Some("overwrite") {
         return adjacent;
     }
-    let Some(LineDetail::Folded { raw: new_content, .. }) = inv.detail.clone() else {
+    let Some(LineDetail::Folded {
+        raw: new_content, ..
+    }) = inv.detail.clone()
+    else {
         return adjacent;
     };
-    let old = det.get("old_content").and_then(|v| v.as_str()).unwrap_or("");
+    let old = det
+        .get("old_content")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     let path = det
         .get("path")
         .and_then(|v| v.as_str())
@@ -371,7 +377,7 @@ impl App {
     /// the root is Waiting/Idle; they must not flip the root's state back to
     /// Running.
     fn note_activity(&mut self, agent_id: Option<&str>, phase: Phase) {
-        if agent_id.map_or(true, |id| id.is_empty()) {
+        if agent_id.is_none_or(|id| id.is_empty()) {
             // Start the stretch's clock on the first busy signal — not only on
             // Idle → Running: the user-send path and an approval grant set the
             // status directly, and a stretch that never started its clock
@@ -501,15 +507,15 @@ impl App {
                 self.track_agent(agent_id.as_deref());
                 let prefix = agent_prefix(agent_id.as_deref());
                 // Update SubAgentState events
-                if let Some(id) = agent_id.as_deref() {
-                    if let Some(state) = self.sub_agents.get_mut(id) {
-                        state.last_tool_at = Instant::now();
-                        state.events.push(ToolEvent {
-                            tool_name: tool_name.clone(),
-                            summary: String::new(),
-                            is_finished: false,
-                        });
-                    }
+                if let Some(id) = agent_id.as_deref()
+                    && let Some(state) = self.sub_agents.get_mut(id)
+                {
+                    state.last_tool_at = Instant::now();
+                    state.events.push(ToolEvent {
+                        tool_name: tool_name.clone(),
+                        summary: String::new(),
+                        is_finished: false,
+                    });
                 }
                 // `update_plan` renders as a plan block (see `PlanUpdated`), so both
                 // its invocation line (raw JSON args) and result line are noise —
@@ -561,16 +567,15 @@ impl App {
                 let prefix = agent_prefix(agent_id.as_deref());
 
                 // Update SubAgentState events
-                if let Some(id) = agent_id.as_deref() {
-                    if let Some(state) = self.sub_agents.get_mut(id) {
-                        // Find the last unfinished event and mark it as finished
-                        if let Some(event) = state.events.iter_mut().rev().find(|e| !e.is_finished)
-                        {
-                            event.summary = summary.clone();
-                            event.is_finished = true;
-                        }
-                        state.last_tool_at = Instant::now();
+                if let Some(id) = agent_id.as_deref()
+                    && let Some(state) = self.sub_agents.get_mut(id)
+                {
+                    // Find the last unfinished event and mark it as finished
+                    if let Some(event) = state.events.iter_mut().rev().find(|e| !e.is_finished) {
+                        event.summary = summary.clone();
+                        event.is_finished = true;
                     }
+                    state.last_tool_at = Instant::now();
                 }
 
                 // Fill the invocation line's state in place (the marker slot is
@@ -619,11 +624,7 @@ impl App {
                             // The meta row is a label, not the payload's head.
                             meta_head: MetaHead::None,
                         });
-                        (
-                            format!("  {prefix}< {body}"),
-                            LineKind::ToolResult,
-                            detail,
-                        )
+                        (format!("  {prefix}< {body}"), LineKind::ToolResult, detail)
                     } else {
                         let max_cols = self.transcript.wrap_width().saturating_sub(20).max(40);
                         // The result text is the tool's own answer and is never
@@ -706,57 +707,45 @@ impl App {
                     }
                 }
                 // Apply real file line numbers from tool metadata (edit_file returns edit_lines)
-                if let Some(ref det) = details {
-                    if let Some(edit_lines) = det.get("edit_lines").and_then(|v| v.as_array()) {
-                        let offsets: Vec<u32> = edit_lines
-                            .iter()
-                            .filter_map(|v| v.as_u64().map(|n| n as u32))
-                            .collect();
-                        // Find the most recent Diff in the transcript for this tool call
-                        for line in self.transcript.output.iter_mut().rev() {
-                            if let Some(LineDetail::Diff { hunks, .. }) = &mut line.detail {
-                                for hunk in hunks.iter_mut() {
-                                    if let Some(&base) = offsets.get(hunk.edit_index) {
-                                        if base > 0 {
-                                            let off = base - 1; // convert 1-based to offset
-                                            for dl in &mut hunk.lines {
-                                                if let Some(ref mut n) = dl.old_line {
-                                                    *n += off;
-                                                }
-                                                if let Some(ref mut n) = dl.new_line {
-                                                    *n += off;
-                                                }
-                                            }
-                                            // Rebuild header with real line numbers
-                                            let old_start = hunk
-                                                .lines
-                                                .iter()
-                                                .find_map(|l| l.old_line)
-                                                .unwrap_or(1);
-                                            let new_start = hunk
-                                                .lines
-                                                .iter()
-                                                .find_map(|l| l.new_line)
-                                                .unwrap_or(1);
-                                            let old_count = hunk
-                                                .lines
-                                                .iter()
-                                                .filter(|l| l.old_line.is_some())
-                                                .count();
-                                            let new_count = hunk
-                                                .lines
-                                                .iter()
-                                                .filter(|l| l.new_line.is_some())
-                                                .count();
-                                            hunk.header = format!(
-                                                "@@ -{},{} +{},{} @@",
-                                                old_start, old_count, new_start, new_count
-                                            );
+                if let Some(ref det) = details
+                    && let Some(edit_lines) = det.get("edit_lines").and_then(|v| v.as_array())
+                {
+                    let offsets: Vec<u32> = edit_lines
+                        .iter()
+                        .filter_map(|v| v.as_u64().map(|n| n as u32))
+                        .collect();
+                    // Find the most recent Diff in the transcript for this tool call
+                    for line in self.transcript.output.iter_mut().rev() {
+                        if let Some(LineDetail::Diff { hunks, .. }) = &mut line.detail {
+                            for hunk in hunks.iter_mut() {
+                                if let Some(&base) = offsets.get(hunk.edit_index)
+                                    && base > 0
+                                {
+                                    let off = base - 1; // convert 1-based to offset
+                                    for dl in &mut hunk.lines {
+                                        if let Some(ref mut n) = dl.old_line {
+                                            *n += off;
+                                        }
+                                        if let Some(ref mut n) = dl.new_line {
+                                            *n += off;
                                         }
                                     }
+                                    // Rebuild header with real line numbers
+                                    let old_start =
+                                        hunk.lines.iter().find_map(|l| l.old_line).unwrap_or(1);
+                                    let new_start =
+                                        hunk.lines.iter().find_map(|l| l.new_line).unwrap_or(1);
+                                    let old_count =
+                                        hunk.lines.iter().filter(|l| l.old_line.is_some()).count();
+                                    let new_count =
+                                        hunk.lines.iter().filter(|l| l.new_line.is_some()).count();
+                                    hunk.header = format!(
+                                        "@@ -{},{} +{},{} @@",
+                                        old_start, old_count, new_start, new_count
+                                    );
                                 }
-                                break; // only the most recent Diff
                             }
+                            break; // only the most recent Diff
                         }
                     }
                 }
@@ -791,7 +780,7 @@ impl App {
                         detail: None,
                         text,
                         kind: LineKind::Plan,
-                                            tool_state: None,
+                        tool_state: None,
                     });
                 }
                 for item in &plan {
@@ -806,7 +795,7 @@ impl App {
                         detail: None,
                         text: format!("   {marker} {}", item.step),
                         kind: LineKind::Plan,
-                                            tool_state: None,
+                        tool_state: None,
                     });
                 }
                 if let Some(exp) = &explanation {
@@ -827,7 +816,7 @@ impl App {
                                 detail: None,
                                 text,
                                 kind: LineKind::Plan,
-                                                            tool_state: None,
+                                tool_state: None,
                             });
                         }
                     }
@@ -847,7 +836,7 @@ impl App {
                     detail: None,
                     text: format!("!! approval: {}", request.title),
                     kind: LineKind::Approval,
-                                    tool_state: None,
+                    tool_state: None,
                 });
                 self.transcript.push(OutputLine {
                     spans: None,
@@ -855,7 +844,7 @@ impl App {
                     detail: None,
                     text: format!("     {}", request.message),
                     kind: LineKind::Approval,
-                                    tool_state: None,
+                    tool_state: None,
                 });
                 self.begin_activity();
                 self.status = AgentStatus::Running {
@@ -889,7 +878,7 @@ impl App {
                                 detail: None,
                                 text: format!("+ [{p}] done"),
                                 kind: LineKind::Done,
-                                                            tool_state: None,
+                                tool_state: None,
                             });
                     }
                     _ => {
@@ -936,7 +925,7 @@ impl App {
                                 detail: None,
                                 text: format!("+ [{p}] done"),
                                 kind: LineKind::Done,
-                                                            tool_state: None,
+                                tool_state: None,
                             });
                     }
                     _ => {
@@ -946,7 +935,7 @@ impl App {
                             detail: None,
                             text: "⏹ cancelled".to_string(),
                             kind: LineKind::Cancelled,
-                                                    tool_state: None,
+                            tool_state: None,
                         });
                         // `running` clears via the turn's terminal event
                         // (settle_after_turn) — see the RunFinished note.
@@ -1006,11 +995,9 @@ impl App {
                 args_len,
                 agent_id,
                 ..
-            } => {
-                if agent_id.as_deref().filter(|id| !id.is_empty()).is_none() {
-                    self.tool_drafts.insert(index, (name, args_len));
-                    self.note_activity(None, Phase::Streaming);
-                }
+            } if agent_id.as_deref().filter(|id| !id.is_empty()).is_none() => {
+                self.tool_drafts.insert(index, (name, args_len));
+                self.note_activity(None, Phase::Streaming);
             }
             _ => {}
         }

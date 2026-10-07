@@ -324,16 +324,19 @@ pub fn build_approval(mode: &str) -> (Arc<dyn ApprovalHandler>, Option<Arc<dyn T
     }
 }
 
+/// `build_queued_approval` output: handler, policy, and the TUI-side receiver.
+pub type QueuedApprovalBuild = (
+    Arc<dyn ApprovalHandler>,
+    Option<Arc<dyn ToolPolicy>>,
+    mpsc::UnboundedReceiver<ApprovalItem>,
+);
+
 /// Build the queued approval handler + policy for `ask` mode (Phase 5b).
 ///
 /// The handler enqueues requests instead of reading stdin; the caller keeps the
 /// returned receiver and feeds it to the TUI popup, which drains it and renders
 /// one prompt at a time.
-pub fn build_queued_approval() -> (
-    Arc<dyn ApprovalHandler>,
-    Option<Arc<dyn ToolPolicy>>,
-    mpsc::UnboundedReceiver<ApprovalItem>,
-) {
+pub fn build_queued_approval() -> QueuedApprovalBuild {
     let (queue_tx, queue_rx) = mpsc::unbounded_channel();
     (
         Arc::new(QueuedApprovalHandler::new(queue_tx)),

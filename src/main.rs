@@ -6,7 +6,7 @@
 // Modules live in the lib crate (src/lib.rs) so tests/ can exercise them.
 use phimint::{agent, approval, banner, config, model_store, router, skills, title_gen, ui};
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -258,8 +258,8 @@ async fn main() -> Result<()> {
     // Session is resolved BEFORE agent::build so that token_budget_opts
     // (which needs session_id for history/notes stores) is available.
     let session_ctx = if cli.resume {
-        let picked_dir = ui::picker::show_picker(&base_dir, None, scheme)?
-            .context("No session selected")?;
+        let picked_dir =
+            ui::picker::show_picker(&base_dir, None, scheme)?.context("No session selected")?;
         let picked_id = picked_dir
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -347,7 +347,7 @@ fn sessions_base_dir() -> PathBuf {
 ///
 /// Removes history/ and notes/ subdirectories for sessions older than
 /// `retention_days`, and delegates session directory cleanup to phi-agent.
-fn cleanup_expired_data(base_dir: &PathBuf, retention_days: i64) {
+fn cleanup_expired_data(base_dir: &Path, retention_days: i64) {
     // Cleanup history and notes directories
     for subdir in &["history", "notes"] {
         let dir = base_dir.join(subdir);
@@ -364,24 +364,24 @@ fn cleanup_expired_data(base_dir: &PathBuf, retention_days: i64) {
                 continue;
             }
             // Check directory age via metadata modification time
-            if let Ok(meta) = std::fs::metadata(&path) {
-                if let Ok(modified) = meta.modified() {
-                    let age = std::time::SystemTime::now()
-                        .duration_since(modified)
-                        .unwrap_or_default();
-                    if age.as_secs() > (retention_days as u64) * 86400 {
-                        if let Err(e) = std::fs::remove_dir_all(&path) {
-                            tracing::warn!(
-                                path = %path.display(),
-                                error = %e,
-                                "failed to remove expired directory"
-                            );
-                        } else {
-                            tracing::info!(
-                                path = %path.display(),
-                                "removed expired data directory"
-                            );
-                        }
+            if let Ok(meta) = std::fs::metadata(&path)
+                && let Ok(modified) = meta.modified()
+            {
+                let age = std::time::SystemTime::now()
+                    .duration_since(modified)
+                    .unwrap_or_default();
+                if age.as_secs() > (retention_days as u64) * 86400 {
+                    if let Err(e) = std::fs::remove_dir_all(&path) {
+                        tracing::warn!(
+                            path = %path.display(),
+                            error = %e,
+                            "failed to remove expired directory"
+                        );
+                    } else {
+                        tracing::info!(
+                            path = %path.display(),
+                            "removed expired data directory"
+                        );
                     }
                 }
             }

@@ -244,7 +244,9 @@ fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
                             let (sign, color) = match dl.kind {
                                 phi_tui::lines::DiffLineKind::Add => ("+", Color::Green),
                                 phi_tui::lines::DiffLineKind::Del => ("-", Color::Red),
-                                phi_tui::lines::DiffLineKind::Context => (" ", theme::faint(scheme)),
+                                phi_tui::lines::DiffLineKind::Context => {
+                                    (" ", theme::faint(scheme))
+                                }
                             };
                             // Line number: prefer old_line for context/del, new_line for add
                             let line_num = match dl.kind {
@@ -657,32 +659,32 @@ fn render_composer(f: &mut Frame, app: &App, area: Rect) {
         };
 
         for (j, row) in wrapped.iter().enumerate() {
-            if let Some((vis_row, vis_col)) = cursor_pos {
-                if j == vis_row {
-                    // Byte offset into the wrapped row for the cursor.
-                    let mut b = 0usize;
-                    let mut c = 0usize;
-                    for ch in row.chars() {
-                        if c >= vis_col {
-                            break;
-                        }
-                        c += UnicodeWidthChar::width(ch).unwrap_or(0);
-                        b += ch.len_utf8();
+            if let Some((vis_row, vis_col)) = cursor_pos
+                && j == vis_row
+            {
+                // Byte offset into the wrapped row for the cursor.
+                let mut b = 0usize;
+                let mut c = 0usize;
+                for ch in row.chars() {
+                    if c >= vis_col {
+                        break;
                     }
-                    let before = &row[..b];
-                    let at = row[b..].chars().next();
-                    let after_start = b + at.map(|ch| ch.len_utf8()).unwrap_or(0);
-                    let after = &row[after_start..];
-                    let cursor_style = Style::default().add_modifier(Modifier::REVERSED);
-                    let mut spans = vec![Span::raw(before.to_string())];
-                    match at {
-                        Some(ch) => spans.push(Span::styled(ch.to_string(), cursor_style)),
-                        None => spans.push(Span::styled(" ".to_string(), cursor_style)),
-                    }
-                    spans.push(Span::raw(after.to_string()));
-                    items.push(Line::from(spans));
-                    continue;
+                    c += UnicodeWidthChar::width(ch).unwrap_or(0);
+                    b += ch.len_utf8();
                 }
+                let before = &row[..b];
+                let at = row[b..].chars().next();
+                let after_start = b + at.map(|ch| ch.len_utf8()).unwrap_or(0);
+                let after = &row[after_start..];
+                let cursor_style = Style::default().add_modifier(Modifier::REVERSED);
+                let mut spans = vec![Span::raw(before.to_string())];
+                match at {
+                    Some(ch) => spans.push(Span::styled(ch.to_string(), cursor_style)),
+                    None => spans.push(Span::styled(" ".to_string(), cursor_style)),
+                }
+                spans.push(Span::raw(after.to_string()));
+                items.push(Line::from(spans));
+                continue;
             }
             items.push(Line::from(row.clone()));
         }
@@ -716,19 +718,16 @@ fn format_files(files: &[String], max_width: usize) -> String {
         return String::new();
     }
     let mut result = String::new();
-    let mut count = 0;
-    for file in files {
-        if count >= 2 {
-            result.push_str("...");
-            break;
-        }
+    for file in files.iter().take(2) {
         if !result.is_empty() {
             result.push_str(", ");
         }
         // Show just the filename, not the full path
-        let name = file.split('/').last().unwrap_or(file);
+        let name = file.split('/').next_back().unwrap_or(file);
         result.push_str(name);
-        count += 1;
+    }
+    if files.len() > 2 {
+        result.push_str("...");
     }
     // Truncate to the column budget. `&result[..n]` is a BYTE slice and panics
     // mid-char on a multi-byte basename ("end byte index N is not a char

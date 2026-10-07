@@ -121,7 +121,7 @@ mod tests {
 
         router.set_focus_mode(true);
         assert_eq!(router.route("main_chat"), "lite");
-        assert_eq!(router.is_focus_mode(), true);
+        assert!(router.is_focus_mode());
 
         router.set_focus_mode(false);
         assert_eq!(router.route("main_chat"), "main");

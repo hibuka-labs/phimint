@@ -28,8 +28,9 @@ phimint runs the full coding loop — understand the request, read the code, cha
 
 - Rust toolchain (edition 2024)
 - An API key for any supported model provider (OpenAI / Anthropic / DeepSeek / Aliyun / Moonshot / Gemini / Ollama …)
-- Sibling checkouts of the family crates next to this repo (dependencies are local `path` references): `phi-agent`, `phi-tui`, `code-intel`, `phi-telemetry`, `log-core`, plus `agent-base`, `agent-works`, `phi-kernel-tools`, `llm-providers` pinned via `[patch.crates-io]`
 - (Optional) language servers on `PATH`; `cargo` / `npm` / `make` and friends
+
+Everything else comes from crates.io — `cargo build` needs no sibling checkouts.
 
 ### Configure
 
@@ -64,9 +65,10 @@ cargo run -- --model gpt-5.4-mini --base-url https://api.openai.com/v1 --api-key
 ### Run
 
 ```bash
-./install.sh                       # build + install to ~/.cargo/bin
-cargo run                          # or run straight from the source tree
-cargo run -- -w ../some-project    # point at another workspace
+cargo install phimint                # from crates.io
+./install.sh                         # or build + install from this source tree
+cargo run                            # or run straight from the source tree
+cargo run -- -w ../some-project      # point at another workspace
 ```
 
 ## Usage
@@ -219,7 +221,7 @@ cargo clippy           # lint
 
 Tests are split from business code (module-separated tests): `app.rs`, `render.rs` and friends hold logic only; tests sit in `app_tests.rs` etc., `#[cfg(test)]`-isolated from production builds but still inside the crate, so `pub(crate)` members are reachable.
 
-Sibling crates are `path` dependencies — `cargo test` in any crate uses the local sources directly. Design notes live in `notes/` (local, not committed); `docs/` holds public-facing documentation and assets.
+Dependencies are pure crates.io version references. To hack on a sibling crate (phi-agent, phi-tui, …) at the same time, add an uncommitted `[patch.crates-io]` path override (see [CONTRIBUTING.md](CONTRIBUTING.md)). Design notes live in `notes/` (local, not committed); `docs/` holds public-facing documentation and assets.
 
 The README demo GIF is rebuilt from a recorded session: `cargo test frame_reel -- --ignored` writes ANSI frames to `target/reel/`, then `python3 scripts/readme_reel.py` renders them to `docs/assets/readme-demo.gif`.
 

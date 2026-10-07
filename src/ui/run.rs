@@ -70,6 +70,9 @@ const UI_TICK: Duration = Duration::from_millis(250);
 ///
 /// Takes ownership of the agent/session because the turn runner lives in a
 /// spawned task for the whole lifetime of the TUI.
+// Wire-up signature: everything the shell needs to boot. A params struct is a
+// post-release refactor, not a gate on the open-source release.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_tui(
     agent: PhiAgent,
     skill_resolver: Arc<SkillResolver>,
@@ -389,10 +392,9 @@ pub async fn run_tui(
                     if let ChildResultEvent::Progress {
                         agent_path, status, ..
                     } = &cr
+                        && status != "running"
                     {
-                        if status != "running" {
-                            app.mark_sub_agent_finished(agent_path);
-                        }
+                        app.mark_sub_agent_finished(agent_path);
                     }
                     let route = child_results.on_event(app.running, cr);
                     tracing::info!(
@@ -419,18 +421,17 @@ pub async fn run_tui(
 
             // The turn just ended and results arrived while it was running —
             // inject them now as one synthetic run.
-            if !app.running {
-                if let Some(ChildResultRoute::Inject { notice, input }) =
+            if !app.running
+                && let Some(ChildResultRoute::Inject { notice, input }) =
                     child_results.flush_when_idle()
-                {
-                    tracing::info!("tui: flush_when_idle -> injecting batch");
-                    app.mark_all_sub_agents_finished();
-                    app.push_system(&notice);
-                    if cmd_tx.send(Cmd::Run(input)).is_ok() {
-                        app.running = true;
-                    }
-                    dirty = true;
+            {
+                tracing::info!("tui: flush_when_idle -> injecting batch");
+                app.mark_all_sub_agents_finished();
+                app.push_system(&notice);
+                if cmd_tx.send(Cmd::Run(input)).is_ok() {
+                    app.running = true;
                 }
+                dirty = true;
             }
 
             // Background-task auto-wake (the bg sibling of the fan-in batch):
@@ -631,12 +632,11 @@ pub async fn run_tui(
                         let size = terminal.size()?;
                         if let Some(action) =
                             app.handle_mouse(kind, column, row, size.width, size.height)
+                            && let Action::CopySelection = action
                         {
-                            if let Action::CopySelection = action {
-                                let text = app.selection_text();
-                                copy_text(&mut app, &mut clipboard, text);
-                                app.clear_selection();
-                            }
+                            let text = app.selection_text();
+                            copy_text(&mut app, &mut clipboard, text);
+                            app.clear_selection();
                         }
                     }
                     Event::Paste(text) => {
@@ -727,9 +727,9 @@ pub async fn run_tui(
         let _ = agent_task.await;
 
         tracing::info!("tui: agent task joined, flushing logs");
-        let _ = frames.flush();
-        let _ = perf_log.flush();
-        let _ = composer_log.flush();
+        frames.flush();
+        perf_log.flush();
+        composer_log.flush();
 
         tracing::info!("tui: logs flushed, entering outcome match");
         match outcome.unwrap_or(TuiOutcome::Quit) {
@@ -821,6 +821,8 @@ fn copy_text(app: &mut App, clipboard: &mut Option<arboard::Clipboard>, text: St
 
 /// The agent-side task: run turns on command, forward events to the TUI, and
 /// persist per-turn JSONL logs exactly like the REPL path does.
+// Same wire-up signature as `run_tui`; grouped with the allow there.
+#[allow(clippy::too_many_arguments)]
 async fn agent_loop(
     agent: Arc<PhiAgent>,
     skill_resolver: Arc<SkillResolver>,
@@ -915,7 +917,7 @@ async fn agent_loop(
                 // custom (via set_session_custom post-turn).
                 {
                     let turn_skill_snap = skill_telemetry.snapshot_and_reset();
-                    if !turn_skill_snap.as_object().map_or(true, |m| m.is_empty()) {
+                    if !turn_skill_snap.as_object().is_none_or(|m| m.is_empty()) {
                         telemetry.set_turn_custom(turn_skill_snap);
                     }
                 }
@@ -1015,10 +1017,10 @@ async fn agent_loop(
                 }
 
                 // Snapshot current window messages for resume support.
-                if let Ok(msgs) = agent.runtime().get_messages(&session).await {
-                    if let Err(e) = persist_window_messages(&session_ctx.session_dir, &msgs) {
-                        tracing::warn!(error = %e, "failed to persist window messages");
-                    }
+                if let Ok(msgs) = agent.runtime().get_messages(&session).await
+                    && let Err(e) = persist_window_messages(&session_ctx.session_dir, &msgs)
+                {
+                    tracing::warn!(error = %e, "failed to persist window messages");
                 }
 
                 // Post-turn telemetry: model-triggered skill events (recorded by
@@ -1238,18 +1240,18 @@ fn replay_messages_to_transcript(app: &mut super::app::App, messages: &[ChatMess
                 // `rewrap_output` keeps Normal lines whole for exactly that
                 // reason. Pre-wrapping here froze the resume-time width into
                 // the transcript, so a resized terminal kept stale breaks.
-                if let Some(text) = content {
-                    if !text.is_empty() {
-                        let text = text.clone();
-                        app.transcript.push(OutputLine {
-                            original: Some(text.clone()),
-                            text,
-                            kind: LineKind::Normal,
-                            spans: None,
-                            detail: None,
-                                                    tool_state: None,
-                        });
-                    }
+                if let Some(text) = content
+                    && !text.is_empty()
+                {
+                    let text = text.clone();
+                    app.transcript.push(OutputLine {
+                        original: Some(text.clone()),
+                        text,
+                        kind: LineKind::Normal,
+                        spans: None,
+                        detail: None,
+                        tool_state: None,
+                    });
                 }
                 // Push tool call markers.
                 if let Some(tcs) = tool_calls {
@@ -1260,7 +1262,7 @@ fn replay_messages_to_transcript(app: &mut super::app::App, messages: &[ChatMess
                             spans: None,
                             original: None,
                             detail: None,
-                                                    tool_state: None,
+                            tool_state: None,
                         });
                     }
                 }
@@ -1282,7 +1284,7 @@ fn replay_messages_to_transcript(app: &mut super::app::App, messages: &[ChatMess
                     spans: None,
                     original: None,
                     detail: None,
-                                    tool_state: None,
+                    tool_state: None,
                 });
             }
             _ => {} // System / Custom — already filtered, skip.

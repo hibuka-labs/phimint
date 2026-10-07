@@ -203,7 +203,7 @@ impl ComposerLog {
             .sum();
         let scroll = vis_rows.saturating_sub(inner_h);
         let t0: String = lines
-            .get(0)
+            .first()
             .unwrap_or(&String::new())
             .chars()
             .take(30)

@@ -8,10 +8,21 @@
 # superpowers visual-companion session artifacts
 .superpowers/
 
+# local Claude Code session state
+.claude/
 
 # internal design notes / session analyses (not shipped; docs/ holds the site)
 notes/
 
+# local release tooling, progress history, internal planning — never public
+deploy/
+
+# personal local instructions (skill routing etc.; CLAUDE.md is the public one)
+CLAUDE.local.md
+
 # local phimint data dir (sessions/logs created by in-repo runs)
 .phimint/
 .gstack/
+
+# readme_reel.py intermediate PNGs (frames are the source of truth)
+docs/assets/_reel_png/

@@ -69,11 +69,11 @@ impl App {
     /// A sub-agent finished (watcher Progress event): mark it done in the task
     /// panel and, while in the `Waiting` state, refresh the remaining count.
     pub fn mark_sub_agent_finished(&mut self, agent_path: &str) {
-        if let Some(state) = self.sub_agents.get_mut(agent_path) {
-            if state.status == SubAgentStatus::Running {
-                state.status = SubAgentStatus::Done;
-                state.completed_at = Some(std::time::Instant::now());
-            }
+        if let Some(state) = self.sub_agents.get_mut(agent_path)
+            && state.status == SubAgentStatus::Running
+        {
+            state.status = SubAgentStatus::Done;
+            state.completed_at = Some(std::time::Instant::now());
         }
         self.refresh_waiting_count();
     }
@@ -124,7 +124,7 @@ impl App {
             // it before the `started` marker to keep transcript order correct.
             self.flush_pending();
             // Extract task name from agent_id (format: "root/<task_name>")
-            let name = p.split('/').last().unwrap_or(p).to_string();
+            let name = p.split('/').next_back().unwrap_or(p).to_string();
             self.sub_agents.insert(
                 p.to_string(),
                 SubAgentState {
@@ -143,7 +143,7 @@ impl App {
                 detail: None,
                 text: format!("* [{p}] started"),
                 kind: LineKind::Tool,
-                            tool_state: None,
+                tool_state: None,
             });
         }
     }
@@ -200,7 +200,7 @@ impl App {
                 && snap.status != BackgroundTaskStatus::Running
                 && snap
                     .finished_at
-                    .map_or(false, |at| at.elapsed() >= BACKGROUND_REAP_AFTER)
+                    .is_some_and(|at| at.elapsed() >= BACKGROUND_REAP_AFTER)
             {
                 continue;
             }
@@ -279,7 +279,7 @@ impl App {
                 .filter(|(_, t)| {
                     t.status != BackgroundTaskStatus::Running
                         && t.finished_at
-                            .map_or(false, |at| now.duration_since(at) >= BACKGROUND_REAP_AFTER)
+                            .is_some_and(|at| now.duration_since(at) >= BACKGROUND_REAP_AFTER)
                         && may_reap(t)
                 })
                 .map(|(id, _)| id.clone())
@@ -373,7 +373,7 @@ impl App {
                 state.status == SubAgentStatus::Done
                     && state
                         .completed_at
-                        .map_or(false, |at| now.duration_since(at).as_secs() >= 3)
+                        .is_some_and(|at| now.duration_since(at).as_secs() >= 3)
             })
             .map(|(id, _)| id.clone())
             .collect();
@@ -389,14 +389,14 @@ impl App {
         // Reset focus if it's now out of bounds. The panel lists sub-agents
         // only — background tasks are not focusable rows.
         let total = self.sub_agents.len();
-        if let FocusTarget::TaskList(index) = &self.task_panel.focus {
-            if *index >= total {
-                self.task_panel.focus = if total == 0 {
-                    FocusTarget::Input
-                } else {
-                    FocusTarget::TaskList(total - 1)
-                };
-            }
+        if let FocusTarget::TaskList(index) = &self.task_panel.focus
+            && *index >= total
+        {
+            self.task_panel.focus = if total == 0 {
+                FocusTarget::Input
+            } else {
+                FocusTarget::TaskList(total - 1)
+            };
         }
 
         removed

@@ -159,31 +159,30 @@ fn picker_loop(
         })?;
 
         // Handle key events.
-        if event::poll(std::time::Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()?
-                && key.kind == KeyEventKind::Press
-            {
-                match key.code {
-                    KeyCode::Up => {
-                        let selected = state.selected().unwrap_or(0);
-                        if selected > 0 {
-                            state.select(Some(selected - 1));
-                        }
+        if event::poll(std::time::Duration::from_millis(100))?
+            && let Event::Key(key) = event::read()?
+            && key.kind == KeyEventKind::Press
+        {
+            match key.code {
+                KeyCode::Up => {
+                    let selected = state.selected().unwrap_or(0);
+                    if selected > 0 {
+                        state.select(Some(selected - 1));
                     }
-                    KeyCode::Down => {
-                        let selected = state.selected().unwrap_or(0);
-                        if selected + 1 < entries.len() {
-                            state.select(Some(selected + 1));
-                        }
-                    }
-                    KeyCode::Enter => {
-                        if let Some(idx) = state.selected() {
-                            return Ok(Some(entries[idx].session_dir.clone()));
-                        }
-                    }
-                    KeyCode::Esc => return Ok(None),
-                    _ => {}
                 }
+                KeyCode::Down => {
+                    let selected = state.selected().unwrap_or(0);
+                    if selected + 1 < entries.len() {
+                        state.select(Some(selected + 1));
+                    }
+                }
+                KeyCode::Enter => {
+                    if let Some(idx) = state.selected() {
+                        return Ok(Some(entries[idx].session_dir.clone()));
+                    }
+                }
+                KeyCode::Esc => return Ok(None),
+                _ => {}
             }
         }
     }

@@ -260,10 +260,10 @@ pub fn shorten_home_with(path: &Path, home: Option<&Path>) -> String {
     if s == hs {
         return "~".to_string();
     }
-    if let Some(rest) = s.strip_prefix(hs.as_ref()) {
-        if rest.starts_with('/') {
-            return format!("~{rest}");
-        }
+    if let Some(rest) = s.strip_prefix(hs.as_ref())
+        && rest.starts_with('/')
+    {
+        return format!("~{rest}");
     }
     s.into_owned()
 }

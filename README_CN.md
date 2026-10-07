@@ -30,8 +30,9 @@ phimint 跑「理解需求 → 读码 → 多文件改 → 编译/测试 → 报
 
 - Rust 工具链（edition 2024）
 - 任一受支持的模型 provider 的 API key（OpenAI / Anthropic / DeepSeek / Aliyun / Moonshot / Gemini / Ollama …）
-- 本仓库同级的家族 crates 检出（`Cargo.toml` 以 `path` 引用）：直接依赖 `phi-agent` / `phi-tui` / `code-intel` / `phi-telemetry` / `log-core`；`agent-base` / `agent-works` / `phi-kernel-tools` / `llm-*` 经 `[patch.crates-io]` 钉到本地源
 - （可选）各语言的 LSP server 在 `PATH` 上；`cargo` / `npm` / `make` 等构建工具
+
+其余依赖全部来自 crates.io——`cargo build` 不需要同级检出任何兄弟仓库。
 
 ### 配置
 
@@ -66,9 +67,10 @@ cargo run -- --model gpt-5.4-mini --base-url https://api.openai.com/v1 --api-key
 ### 运行
 
 ```bash
-./install.sh                       # 构建并安装到 ~/.cargo/bin
-cargo run                          # 或直接从源码树启动
-cargo run -- -w ../some-project    # 指定工作区目录
+cargo install phimint                # 从 crates.io 安装
+./install.sh                         # 或从源码树构建并安装到 ~/.cargo/bin
+cargo run                            # 或直接从源码树启动
+cargo run -- -w ../some-project      # 指定工作区目录
 ```
 
 ## 使用
@@ -223,7 +225,7 @@ cargo clippy           # lint
 
 **模块分离测试**模式：业务代码（`app.rs`、`render.rs` 等）只含业务逻辑，测试放独立文件（`app_tests.rs` 等），`#[cfg(test)]` 隔离出生产构建；测试仍在 crate 内部，可访问 `pub(crate)` 成员。
 
-依赖的 sibling crates 用 `path` 引用，任一 crate 里 `cargo test` 直接吃本地源。设计笔记在 `notes/`（本地目录，不进版本库）；`docs/` 放对外文档与素材。
+依赖全部为 crates.io 纯版本引用。若要同时改动兄弟 crate（phi-agent、phi-tui 等），在 `Cargo.toml` 加一段不提交的 `[patch.crates-io]` path 覆盖（见 [CONTRIBUTING.md](CONTRIBUTING.md)）。设计笔记在 `notes/`（本地目录，不进版本库）；`docs/` 放对外文档与素材。
 
 README 演示 GIF 由录帧重建：`cargo test frame_reel -- --ignored` 把 ANSI 帧写到 `target/reel/`，再用 `python3 scripts/readme_reel.py` 渲染成 `docs/assets/readme-demo.gif`。
 

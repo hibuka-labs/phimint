@@ -247,7 +247,7 @@ fn sub_agent_thought_routes_to_transcript() {
     app.handle_event(TuiEvent::Runtime(sub_run_finished("root/auth")));
 
     let sub_lines = app.sub_agent_transcripts.get("root/auth").unwrap();
-    assert!(sub_lines.len() >= 1);
+    assert!(!sub_lines.is_empty());
     assert_eq!(sub_lines[0].kind, LineKind::Thought);
 }
 
@@ -332,7 +332,7 @@ fn cleanup_removes_corresponding_transcripts() {
             spans: None,
             original: None,
             detail: None,
-                    tool_state: None,
+            tool_state: None,
         }],
     );
 
@@ -727,7 +727,7 @@ fn cleanup_skipped_while_root_waiting() {
             spans: None,
             original: None,
             detail: None,
-                    tool_state: None,
+            tool_state: None,
         }],
     );
     app.status = AgentStatus::Waiting { running: 2, bg: 0 };

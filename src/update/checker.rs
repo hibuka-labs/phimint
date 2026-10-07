@@ -164,7 +164,7 @@ mod tests {
         let manifest = make_manifest("0.2.0", "https://example.com/0.2.0");
         let state = UpdateState::default();
         let result = compare(&current, &manifest, "linux-x86_64", &state).unwrap();
-        assert!(matches!(result, None));
+        assert!(result.is_none());
     }
 
     #[test]
@@ -173,7 +173,7 @@ mod tests {
         let manifest = make_manifest("0.2.0", "https://example.com/0.2.0");
         let state = UpdateState::default();
         let result = compare(&current, &manifest, "linux-x86_64", &state).unwrap();
-        assert!(matches!(result, None));
+        assert!(result.is_none());
     }
 
     #[test]
@@ -185,7 +185,7 @@ mod tests {
             ..Default::default()
         };
         let result = compare(&current, &manifest, "linux-x86_64", &state).unwrap();
-        assert!(matches!(result, None));
+        assert!(result.is_none());
     }
 
     #[test]
@@ -207,6 +207,6 @@ mod tests {
         let manifest = make_manifest("0.2.0", "https://example.com/0.2.0");
         let state = UpdateState::default();
         let result = compare(&current, &manifest, "darwin-aarch64", &state).unwrap();
-        assert!(matches!(result, None));
+        assert!(result.is_none());
     }
 }

@@ -506,7 +506,10 @@ fn tool_call_drafts_narrate_writing_and_clear_when_calls_materialize() {
 
     // The calls materializing (stream drained) ends the drafting window.
     app.handle_event(TuiEvent::Runtime(tool_started("spawn_agent")));
-    assert!(app.tool_drafts.is_empty(), "materialized calls clear drafts");
+    assert!(
+        app.tool_drafts.is_empty(),
+        "materialized calls clear drafts"
+    );
     let line = app.status_line();
     assert!(!line.contains("writing "), "got: {line}");
 }
@@ -576,9 +579,7 @@ fn spawn_task_brief_rides_the_preview_ladder() {
         last.text
     );
     match &last.detail {
-        Some(LineDetail::Folded {
-            raw, meta_head, ..
-        }) => {
+        Some(LineDetail::Folded { raw, meta_head, .. }) => {
             assert_eq!(raw, task, "the full brief rides the ladder, whole");
             assert_eq!(*meta_head, MetaHead::Whole);
         }
@@ -642,9 +643,7 @@ fn spawn_result_is_humanized_with_raw_preserved() {
     let last = app.transcript.output.last().unwrap();
     assert_eq!(last.text, "  < spawned root/analyze-pi (read_only)");
     match &last.detail {
-        Some(LineDetail::Folded {
-            raw, meta_head, ..
-        }) => {
+        Some(LineDetail::Folded { raw, meta_head, .. }) => {
             assert_eq!(
                 raw, &summary,
                 "summary is display-only — raw rides the fold, never rewritten"
@@ -696,7 +695,10 @@ fn spawn_result_label_keeps_recycled_and_degraded_facts() {
         &mut app,
         "Agent spawned successfully (tools degraded to read-only: sandbox policy)",
     );
-    assert_eq!(text, "  < spawned root/t (degraded to read-only)", "got: {text}");
+    assert_eq!(
+        text, "  < spawned root/t (degraded to read-only)",
+        "got: {text}"
+    );
 }
 
 #[test]
@@ -715,9 +717,7 @@ fn write_file_content_head_is_never_restored() {
     }));
     let last = app.transcript.output.last().unwrap();
     match &last.detail {
-        Some(LineDetail::Folded {
-            raw, meta_head, ..
-        }) => {
+        Some(LineDetail::Folded { raw, meta_head, .. }) => {
             assert_eq!(raw, content);
             assert_eq!(*meta_head, MetaHead::None);
         }
@@ -828,7 +828,7 @@ fn scroll_up_steps_from_bottom_not_noop() {
             text: format!("line {i}"),
             kind: LineKind::Normal,
             detail: None,
-                    tool_state: None,
+            tool_state: None,
         });
     }
     app.scroll_up();
@@ -846,7 +846,7 @@ fn scroll_down_reenters_follow_bottom() {
             text: format!("line {i}"),
             kind: LineKind::Normal,
             detail: None,
-                    tool_state: None,
+            tool_state: None,
         });
     }
     let step = app.viewport.page_step();
@@ -871,7 +871,7 @@ fn wheel_step_is_small_so_a_swipe_composes_smoothly() {
             text: format!("line {i}"),
             kind: LineKind::Normal,
             detail: None,
-                    tool_state: None,
+            tool_state: None,
         });
     }
     // A few wheel ticks walk a few lines each — not half a screen per tick.
@@ -897,7 +897,7 @@ fn keyboard_page_step_stays_half_screen_despite_wheel_step() {
             text: format!("line {i}"),
             kind: LineKind::Normal,
             detail: None,
-                    tool_state: None,
+            tool_state: None,
         });
     }
     app.viewport.set_visible(1000, 40); // a real render: 40-row pane
@@ -1399,7 +1399,7 @@ fn mouse_drag_selects_line_range() {
             text: format!("line {i}"),
             kind: LineKind::Normal,
             detail: None,
-                    tool_state: None,
+            tool_state: None,
         });
     }
     app.output_area = Some((0, 0, 100, 10));
@@ -1422,7 +1422,7 @@ fn mouse_drag_up_normalizes_selection() {
             text: format!("line {i}"),
             kind: LineKind::Normal,
             detail: None,
-                    tool_state: None,
+            tool_state: None,
         });
     }
     app.output_area = Some((0, 0, 100, 10));
@@ -1441,7 +1441,7 @@ fn click_outside_output_clears_selection() {
         text: "x".into(),
         kind: LineKind::Normal,
         detail: None,
-            tool_state: None,
+        tool_state: None,
     });
     app.output_area = Some((0, 0, 10, 5));
     app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 0, 10, 5);
@@ -1459,7 +1459,7 @@ fn selection_text_clamps_stale_indices() {
         text: "a".into(),
         kind: LineKind::Normal,
         detail: None,
-            tool_state: None,
+        tool_state: None,
     });
     app.selection_state.selection = Some(Selection { anchor: 0, head: 5 });
     assert_eq!(app.selection_text(), "a");
@@ -1536,7 +1536,7 @@ fn right_click_opens_menu_and_enter_copies() {
         text: "x".into(),
         kind: LineKind::Normal,
         detail: None,
-            tool_state: None,
+        tool_state: None,
     });
     app.output_area = Some((0, 0, 10, 10));
     app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 0, 20, 20);
@@ -1565,7 +1565,7 @@ fn context_menu_arrows_move_highlight_and_esc_closes() {
         text: "x".into(),
         kind: LineKind::Normal,
         detail: None,
-            tool_state: None,
+        tool_state: None,
     });
     app.output_area = Some((0, 0, 10, 10));
     app.handle_mouse(MouseEventKind::Down(MouseButton::Left), 0, 0, 20, 20);
@@ -1589,7 +1589,7 @@ fn clicking_menu_copy_item_copies_and_closes() {
         text: "x".into(),
         kind: LineKind::Normal,
         detail: None,
-            tool_state: None,
+        tool_state: None,
     });
     app.output_area = Some((0, 0, 10, 10));
     app.selection_state.selection = Some(Selection { anchor: 0, head: 0 });
@@ -1618,7 +1618,7 @@ fn clicking_menu_cancel_item_closes_without_copy() {
         text: "x".into(),
         kind: LineKind::Normal,
         detail: None,
-            tool_state: None,
+        tool_state: None,
     });
     app.output_area = Some((0, 0, 10, 10));
     app.selection_state.selection = Some(Selection { anchor: 0, head: 0 });
@@ -1642,7 +1642,7 @@ fn clicking_outside_menu_closes_it_and_restarts_selection() {
         text: "x".into(),
         kind: LineKind::Normal,
         detail: None,
-            tool_state: None,
+        tool_state: None,
     });
     app.output_area = Some((0, 0, 10, 10));
     app.selection_state.selection = Some(Selection { anchor: 0, head: 0 });
@@ -2103,7 +2103,9 @@ fn write_file_create_folds_the_written_content() {
 
     let tool_line = app.transcript.output.last().expect("tool line present");
     match &tool_line.detail {
-        Some(LineDetail::Folded { raw, line_count, .. }) => {
+        Some(LineDetail::Folded {
+            raw, line_count, ..
+        }) => {
             assert_eq!(raw, "fn hello() {\n    println!(\"hi\");\n}\n");
             assert_eq!(*line_count, 3);
         }
@@ -2458,10 +2460,7 @@ fn daemon_only_settle_is_done_plus_service_note_not_waiting() {
         .iter()
         .map(|l| l.text.as_str())
         .collect();
-    assert!(
-        texts.iter().any(|t| *t == "✅ done"),
-        "work is done: {texts:?}"
-    );
+    assert!(texts.contains(&"✅ done"), "work is done: {texts:?}");
     assert!(
         texts
             .iter()

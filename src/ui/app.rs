@@ -527,7 +527,7 @@ impl App {
                 detail: None,
                 text: line,
                 kind: LineKind::Error,
-                            tool_state: None,
+                tool_state: None,
             });
         }
     }
@@ -564,7 +564,7 @@ impl App {
                     detail: None,
                     text,
                     kind: LineKind::System,
-                                    tool_state: None,
+                    tool_state: None,
                 });
             }
         } else if show_done_marker {
@@ -574,7 +574,7 @@ impl App {
                 detail: None,
                 text: "✅ done".to_string(),
                 kind: LineKind::Done,
-                            tool_state: None,
+                tool_state: None,
             });
         }
         // Daemon-only settlement: the agent IS done — say so plainly, then
@@ -588,7 +588,7 @@ impl App {
                     "🟢 {daemons} daemon(s) running (always-on; you're notified on abnormal exit)"
                 ),
                 kind: LineKind::System,
-                            tool_state: None,
+                tool_state: None,
             });
         }
         self.running = false;
@@ -720,9 +720,7 @@ impl App {
         modifiers: KeyModifiers,
     ) -> Option<Action> {
         let _ = modifiers;
-        let Some(m) = self.mention.as_mut() else {
-            return None;
-        };
+        let m = self.mention.as_mut()?;
 
         // Save old prefix to detect directory navigation
         let old_prefix = m.prefix().to_string();
@@ -812,9 +810,7 @@ impl App {
         modifiers: KeyModifiers,
     ) -> Option<Action> {
         let _ = modifiers;
-        let Some(s) = self.slash.as_mut() else {
-            return None;
-        };
+        let s = self.slash.as_mut()?;
 
         // Capture old prefix BEFORE handle_key modifies it (same pattern as handle_mention_key)
         let old_prefix = s.prefix().to_string();
@@ -962,7 +958,11 @@ impl App {
         let chars: usize = self.tool_drafts.values().map(|(_, n)| n).sum();
         if self.tool_drafts.len() == 1 {
             let (name, _) = self.tool_drafts.values().next().expect("len == 1");
-            let tool = if name.is_empty() { "tool call" } else { name.as_str() };
+            let tool = if name.is_empty() {
+                "tool call"
+            } else {
+                name.as_str()
+            };
             Some(format!("writing {tool} ({chars} chars)..."))
         } else {
             Some(format!(

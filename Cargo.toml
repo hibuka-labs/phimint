@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 description = "phimint — an AI coding agent built on phi-agent, used to stress-test the framework by writing code."
 license = "MIT"
+repository = "https://github.com/hibuka-labs/phimint"
+keywords = ["ai", "agent", "tui", "coding-assistant", "llm"]
+categories = ["command-line-interface", "development-tools"]
 
 [[bin]]
 name = "phimint"
@@ -18,16 +21,16 @@ path = "src/main.rs"
 # everything else the product needs (llm_trait, create_provider, guard,
 # max_turns_nudge, registry snapshots, fan-in router) — no direct deps on
 # agent-base / agent-works / phi-kernel-tools / llm-unified.
-phi-agent = { path = "../phi-agent", features = ["shell", "multi-agent", "skill", "memory"] }
+phi-agent = { version = "0.18.0", features = ["shell", "multi-agent", "skill", "memory"] }
 # Context rotation tools (notes, history, handoff) — the I/O layer.
-phi-kernel-tools = { path = "../phi-kernel-tools", features = ["context", "shell"] }
+phi-kernel-tools = { version = "0.9.1", features = ["context", "shell"] }
 # Chat-style TUI components (lines/transcript/stream/markdown/completion/…),
 # extracted from src/ui/ — the product keeps only the shell (app/render/handlers).
-phi-tui = { path = "../phi-tui" }
+phi-tui = "0.2.0"
 # Language intelligence (lsp/lang/repomap/ripgrep/diagnostics cores), extracted
 # from src/lsp.rs + src/lang.rs + src/tools cores — the product keeps the Tool
 # shells. Features declared explicitly per the distillation plan.
-code-intel = { path = "../code-intel", default-features = false, features = ["lsp", "repomap"] }
+code-intel = { version = "0.1.0", default-features = false, features = ["lsp", "repomap"] }
 
 tokio = { version = "1", features = ["full"] }
 # CancellationToken for the interactive approval handler's `approve` signature.
@@ -61,27 +64,15 @@ arboard = "3"
 # session.log file (via log-core's LogCoreLayer) and per-turn event JSONL
 # (via phi_agent::save_turn_log).
 # phi-telemetry: per-turn token usage → session_metrics.json
-phi-telemetry = { path = "../phi-telemetry" }
-log-core = { path = "../log-core" }
+phi-telemetry = "0.7.1"
+log-core = "0.1.4"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 json5 = "1.3.1"
 
 [dev-dependencies]
-# 临时目录测试（skills 测试需要创建临时 SKILL.md 文件结构）。
+# Temp-dir tests (skills tests create temp SKILL.md file structures).
 tempfile = "3"
-# mock LLM 的流式响应构造（prompt 守卫测试 / 集成测试）。
+# Streaming response construction for mock LLM (prompt guard tests / integration tests).
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
-# Force all transitive agent-base deps (e.g. agent-works from crates.io)
-# to resolve to the local source so types stay compatible.
-[patch.crates-io]
-agent-base = { path = "../agent-base" }
-agent-works = { path = "../agent-works" }
-# 统一 llm 类型到本地源(否则 agent-base 链上的 llm-trait 与本地
-# llm-providers/llm-trait 是两套 crate,LlmProvider 类型不匹配)
-llm-unified = { path = "../llm-providers" }
-llm-trait = { path = "../llm-providers/llm-trait" }
-# 统一 phi-kernel-tools 到本地源（phi-agent 通过 crates.io 拉的旧版
-# 没有 background_shell 模块，patch 确保类型一致）
-phi-kernel-tools = { path = "../phi-kernel-tools" }

@@ -233,6 +233,14 @@ fn child_multi_agent_config(has_policy: bool) -> MultiAgentConfig {
 
 /// Build a phimint agent bound to `workspace_root`.
 ///
+/// `build` output: the agent plus the shared handles the shell keeps alive.
+pub type BuildOutput = (
+    PhiAgent,
+    Arc<SkillResolver>,
+    Arc<SkillTelemetry>,
+    Arc<BackgroundTaskRegistry>,
+);
+
 /// `base_agent_builder` already registers the file tools (read/write/edit/list).
 /// We add the shell, search, and repo-map tools ourselves — none of them
 /// are part of `base_agent_builder` (the phi CLI registers shell manually too).
@@ -243,6 +251,8 @@ fn child_multi_agent_config(has_policy: bool) -> MultiAgentConfig {
 ///
 /// Returns `(PhiAgent, SkillResolver)` — the resolver powers the `/skill` slash
 /// command in the TUI loop.
+// Builder-style constructor: a params struct is a post-release refactor.
+#[allow(clippy::too_many_arguments)]
 pub fn build(
     llm_client: Arc<dyn phi_agent::llm_trait::LlmProvider>,
     approval: Arc<dyn ApprovalHandler>,
@@ -255,12 +265,7 @@ pub fn build(
     model: String,
     skill_dirs: Vec<PathBuf>,
     token_budget_opts: Option<TokenBudgetOptions>,
-) -> Result<(
-    PhiAgent,
-    Arc<SkillResolver>,
-    Arc<SkillTelemetry>,
-    Arc<BackgroundTaskRegistry>,
-)> {
+) -> Result<BuildOutput> {
     // Skills catalog (skill-injection design D1): the resolver must exist
     // BEFORE the builder — the catalog joins the system prompt at build time,
     // not after the agent is constructed. Wrapped in Arc so the `skill` tool
