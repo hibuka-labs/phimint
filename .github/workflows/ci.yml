@@ -40,6 +40,10 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # ripgrep/repomap tests shell out to `rg`
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
+
       - name: Build
         run: cargo build --verbose
 
@@ -75,6 +79,10 @@ jobs:
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
+
+      # ripgrep/repomap tests shell out to `rg`
+      - name: Install ripgrep
+        run: sudo apt-get update && sudo apt-get install -y ripgrep
 
       # Line-coverage gate on the binary crate. Threshold set with headroom
       # for CI variance; ratchet upward as coverage improves.
