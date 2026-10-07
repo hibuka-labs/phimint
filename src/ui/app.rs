@@ -75,7 +75,7 @@ pub struct BackgroundTaskEntry {
     pub id: String,
     pub command: String,
     /// Per-call timeout fuse in ms — mirrors the registry's snapshot. The
-    /// sole classifier for [`Self::is_indefinite`]: `0` means the task was
+    /// sole classifier for `Self::is_indefinite`: `0` means the task was
     /// launched daemon-style (no fuse), not that a fuse is pending.
     pub timeout_ms: u64,
     pub status: BackgroundTaskStatus,
@@ -265,7 +265,7 @@ pub struct App {
     /// True while a root turn is in flight or queued (gates submitting
     /// another task). Set at every `Cmd::Run` send site — synthetic turns
     /// (background wake / child fan-in) included — and cleared only by
-    /// [`App::settle_after_turn`] (i.e. exactly one TurnDone/TurnError per
+    /// `settle_after_turn` (i.e. exactly one TurnDone/TurnError per
     /// turn), so a late engine event can never clear the next turn's flag.
     pub running: bool,
     /// Scrollable output viewport (offset + follow-bottom + rendered size).

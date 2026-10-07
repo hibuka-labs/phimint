@@ -1183,7 +1183,7 @@ fn style_for(kind: LineKind, scheme: ColorScheme) -> Style {
 
 /// Split a tool invocation body into `(who, args)`.
 ///
-/// [`runtime::tool_invocation_text`] joins the tool name (plus any sub-agent
+/// `runtime::tool_invocation_text` joins the tool name (plus any sub-agent
 /// prefix) to its readable arguments with **two** spaces, and emits the name
 /// alone when there is nothing worth naming. Two spaces is the contract — a
 /// tool name never contains a double space, so the split is unambiguous.

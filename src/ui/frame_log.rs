@@ -123,14 +123,14 @@ impl PerfLog {
     }
 
     /// Append one row. Dirty frames always land (full fidelity where it
-    /// matters); idle frames are sampled to [`IDLE_HEARTBEAT`] so an idle
+    /// matters); idle frames are sampled to `IDLE_HEARTBEAT` so an idle
     /// session proves it was alive without a row per tick. CSV schema
     /// unchanged — only which rows reach the file changes.
     pub fn record(&mut self, row: &PerfRow<'_>) {
         self.record_at(row, Instant::now());
     }
 
-    /// [`record`] under an explicit clock — the sampling gate is time-based,
+    /// [`Self::record`] under an explicit clock — the sampling gate is time-based,
     /// so tests pin the 1 Hz boundary without sleeping.
     fn record_at(&mut self, row: &PerfRow<'_>, now: Instant) {
         if !row.dirty {

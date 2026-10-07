@@ -48,7 +48,7 @@ fn notice_line(source: &str, text: &str) -> String {
 /// - `write_file` → [`LineDetail::Folded`] holding the content being written.
 ///   A create is an *artifact*, not a transformation: the useful facts are
 ///   "what shape, how big", so it rides the preview ladder. If the call turns
-///   out to be an overwrite, [`App::handle_runtime_event`] swaps this for a
+///   out to be an overwrite, [`App::handle_runtime`] swaps this for a
 ///   real old→new diff — an overwrite *is* a transformation.
 /// - `spawn_agent` → [`LineDetail::Folded`] holding the task brief. Also an
 ///   artifact (a briefing, not a change): the row keeps a gist of the head,
