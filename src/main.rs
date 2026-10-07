@@ -114,11 +114,33 @@ struct Cli {
     /// Skip the automatic update check on startup.
     #[arg(long)]
     no_update_check: bool,
+
+    /// Subcommands (`phimint update`) that run without starting the TUI.
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(clap::Subcommand)]
+enum Commands {
+    /// Check for a new phimint version and update this binary.
+    ///
+    /// Standalone installs (curl installer) self-replace; installs owned by
+    /// brew/npm/cargo print their package manager's upgrade command instead.
+    Update {
+        /// Only report whether an update is available; never download.
+        #[arg(long)]
+        check: bool,
+    },
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    // `phimint update` runs the update cycle and exits — no workspace, no TUI.
+    if let Some(Commands::Update { check }) = cli.command {
+        return run_update_command(check, cli.config.as_deref()).await;
+    }
 
     // Resolve the workspace to an absolute path and `cd` into it, so that both
     // the file tools (workspace-relative) and the shell tool (process cwd)
@@ -441,4 +463,75 @@ async fn init_logging(
     tracing::info!(path = %session_log_path.display(), "logging initialized");
 
     Ok(sink_handle)
+}
+
+/// `phimint update` — check for a new version; self-replace when this is a
+/// standalone install, otherwise print the channel's own upgrade command.
+///
+/// Never writes over a package-manager-owned binary (brew checksums break).
+async fn run_update_command(check_only: bool, config_path: Option<&str>) -> Result<()> {
+    use phimint::update::checker::{self, CheckResult};
+    use phimint::update::install_source;
+
+    // Endpoints: user config when present, else the built-in GitHub→Gitee pair.
+    let endpoints = match config_path {
+        Some(p) => {
+            config::ModelConfig::from_file(&PathBuf::from(p))?
+                .update
+                .endpoints
+        }
+        None => match config::ModelConfig::from_default_location() {
+            Ok(Some(c)) => c.update.endpoints,
+            _ => config::UpdateConfig::default().endpoints,
+        },
+    };
+
+    let current = env!("CARGO_PKG_VERSION");
+    let source = install_source::detect();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()?;
+
+    let result = checker::check(
+        &client,
+        &endpoints,
+        &phimint::update::state::load(),
+        current,
+    )
+    .await?;
+
+    let Some(CheckResult::UpgradeAvailable {
+        version,
+        download_url,
+        sha256,
+        ..
+    }) = result
+    else {
+        println!("phimint {current} is up to date.");
+        return Ok(());
+    };
+
+    println!("phimint {version} available (current: {current}).");
+    if check_only || !source.supports_self_update() {
+        // Managed installs (brew/npm/cargo) are upgraded by their manager.
+        println!("Upgrade with: {}", source.upgrade_command());
+        return Ok(());
+    }
+    if cfg!(windows) {
+        // Replacing a running Windows executable needs the installer dance;
+        // point at the installer instead of half-working.
+        println!("Self-update on Windows is not supported yet. Run:");
+        println!(
+            "  irm https://github.com/hibuka-labs/phimint/releases/latest/download/install.ps1 | iex"
+        );
+        return Ok(());
+    }
+
+    println!("Downloading {download_url} ...");
+    let path =
+        phimint::update::apply::download_and_replace(&client, &download_url, sha256.as_deref())
+            .await?;
+    println!("Updated to {version}: {}", path.display());
+    println!("Restart phimint to use the new version.");
+    Ok(())
 }

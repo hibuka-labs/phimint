@@ -260,7 +260,11 @@ impl Default for UpdateConfig {
 
 fn default_endpoints() -> Vec<String> {
     vec![
+        // Primary: GitHub (global). Fallback: Gitee (mainland China).
+        // The checker tries endpoints in order, 3s timeout each.
         "https://github.com/hibuka-labs/phimint/releases/latest/download/manifest.json".to_string(),
+        "https://gitee.com/chenkangzeng_admin/phimint/raw/release-metadata/manifest.json"
+            .to_string(),
     ]
 }
 

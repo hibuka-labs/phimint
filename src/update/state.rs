@@ -20,6 +20,10 @@ pub struct UpdateState {
     /// Version the user chose to skip (None if no version is skipped).
     #[serde(default)]
     pub skipped_version: Option<String>,
+    /// Where the binary came from ("brew"/"npm"/"cargo"/"standalone").
+    /// Written by the installer; overrides the path heuristic when set.
+    #[serde(default)]
+    pub install_source: Option<String>,
 }
 
 fn state_path() -> PathBuf {
@@ -82,11 +86,13 @@ mod tests {
         let state = UpdateState {
             last_check_at: Some("2026-09-20T12:00:00Z".to_string()),
             skipped_version: Some("0.1.5".to_string()),
+            install_source: Some("standalone".to_string()),
         };
         let json = serde_json::to_string_pretty(&state).unwrap();
         let loaded: UpdateState = serde_json::from_str(&json).unwrap();
         assert_eq!(loaded.last_check_at, state.last_check_at);
         assert_eq!(loaded.skipped_version, state.skipped_version);
+        assert_eq!(loaded.install_source, state.install_source);
     }
 
     #[test]

@@ -62,19 +62,53 @@ Or pass everything on the command line (see `config.json.example` for the full s
 cargo run -- --model gpt-5.4-mini --base-url https://api.openai.com/v1 --api-key sk-xxx
 ```
 
-### Run
+### Install
+
+Prebuilt binaries ship with every release (macOS / Linux / Windows, arm64 + x64).
+One-liner (downloads to `~/.local/bin`; mainland China: use the Gitee line):
 
 ```bash
-cargo install phimint                # from crates.io
-./install.sh                         # or build + install from this source tree
-cargo run                            # or run straight from the source tree
-cargo run -- -w ../some-project      # point at another workspace
+curl -fsSL https://github.com/hibuka-labs/phimint/releases/latest/download/install.sh | bash   # GitHub
+curl -fsSL https://gitee.com/chenkangzeng_admin/phimint/raw/release-metadata/install.sh | bash  # Gitee (China)
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://github.com/hibuka-labs/phimint/releases/latest/download/install.ps1 | iex   # GitHub
+irm https://gitee.com/chenkangzeng_admin/phimint/raw/release-metadata/install.ps1 | iex  # Gitee (China)
+```
+
+Or use a package manager:
+
+```bash
+brew install phimint                     # macOS / Linux (Homebrew)
+npm install -g phimint                   # also: pnpm add -g phimint / yarn global add phimint
+cargo install phimint                    # from crates.io
+```
+
+Upgrade: `phimint update` for one-liner installs, or `brew upgrade phimint` /
+`npm install -g phimint@latest` / `cargo install phimint --force` — matching how
+you installed. Mainland China users can download from
+[Gitee Releases](https://gitee.com/chenkangzeng_admin/phimint/releases);
+the updater falls back to the Gitee mirror automatically.
+
+Or run from this source tree:
+
+```bash
+cargo run                                # run straight from the source tree
+cargo run -- -w ../some-project          # point at another workspace
 ```
 
 ## Usage
 
 ```
-phimint [OPTIONS]
+phimint [OPTIONS] [COMMAND]
+
+Commands:
+  update             upgrade to the latest release (self-replaces standalone
+                     installs; brew/npm/cargo installs get the matching upgrade
+                     command instead). `phimint update --check` reports only.
 
   -w, --workspace <PATH>       workspace directory (default: current directory)
       --model <NAME>           main model (overrides config.json)

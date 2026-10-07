@@ -17,6 +17,12 @@ pub struct PlatformEntry {
     pub signature: String,
     /// Download URL for the binary.
     pub url: String,
+    /// Optional SHA-256 (lowercase hex) of the archive at `url`.
+    ///
+    /// Not part of manifest v1's required shape: older clients ignore it
+    /// (serde drops unknown fields), `phimint update` verifies it when present.
+    #[serde(default)]
+    pub sha256: Option<String>,
 }
 
 /// The family upgrade manifest (v1).

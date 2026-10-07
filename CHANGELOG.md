@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-10-07
+
+Distribution release — install phimint without a Rust toolchain, on every
+major platform, with mainland-China mirrors.
+
+### Added
+
+- Prebuilt binaries on every release: macOS (arm64 / x64), Linux (x64 /
+  arm64) and Windows (x64), published via GitHub Releases
+- One-click installers for machines without Rust: `install.sh` (Unix) and
+  `install.ps1` (Windows) — download, checksum-verify and install to
+  `~/.local/bin`, no build step
+- Dual-source distribution: GitHub + Gitee mirror for mainland China.
+  Installers, release assets and the update manifest all fall back to Gitee;
+  `PHIMINT_MIRROR=gitee|github` forces a side
+- Homebrew support: `brew install phimint` from the `hibuka-labs/phimint` tap
+- npm support: `npm install -g phimint` (pnpm / yarn work too) — esbuild-style
+  platform packages with no postinstall scripts, so registry mirrors pick
+  them up automatically
+- `phimint update` — upgrade from inside the app: self-replaces standalone
+  installs (sha256-verified download + atomic replace), or prints the right
+  upgrade command for brew / npm / cargo installs. `phimint update --check`
+  reports without upgrading
+- Release manifest v1 extended with per-platform `sha256` (older clients
+  ignore the field); update checker falls back across manifest endpoints
+- Windows support as a first-class target (installer, binaries, self-update
+  guidance)
+
+### Changed
+
+- `install.sh` now installs prebuilt binaries instead of building from source
+
 ## [0.1.0] — 2026-10-07
 
 First public release — a terminal AI coding agent built on phi-agent.

@@ -508,7 +508,10 @@ impl App {
                 self.settle_after_turn(true);
             }
             TuiEvent::UpdateAvailable { version, .. } => {
-                self.upgrade_hint = Some(format!("⬆ phimint {version} available - type /upgrade"));
+                // Channel-aware: brew/npm/cargo own their upgrades, standalone
+                // self-replaces via `phimint update` (see update::install_source).
+                let cmd = crate::update::install_source::detect().upgrade_command();
+                self.upgrade_hint = Some(format!("⬆ phimint {version} available - run: {cmd}"));
                 tracing::info!(version = %version, "upgrade available");
             }
         }

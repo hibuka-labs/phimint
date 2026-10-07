@@ -20,6 +20,8 @@ pub enum CheckResult {
         version: String,
         download_url: String,
         notes: Option<String>,
+        /// Expected SHA-256 of the archive, when the manifest carries one.
+        sha256: Option<String>,
     },
 }
 
@@ -106,6 +108,7 @@ fn compare(
             version: manifest.version.clone(),
             download_url: entry.url.clone(),
             notes: manifest.notes.clone(),
+            sha256: entry.sha256.clone(),
         }));
     }
 
@@ -115,6 +118,7 @@ fn compare(
             version: manifest.version.clone(),
             download_url: entry.url.clone(),
             notes: manifest.notes.clone(),
+            sha256: entry.sha256.clone(),
         }));
     }
 
@@ -134,6 +138,7 @@ mod tests {
             PlatformEntry {
                 signature: "sig".to_string(),
                 url: platform_url.to_string(),
+                sha256: None,
             },
         );
         Manifest {

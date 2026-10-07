@@ -1,6 +1,6 @@
 [package]
 name = "phimint"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "phimint — an AI coding agent built on phi-agent, used to stress-test the framework by writing code."
 license = "MIT"
@@ -45,10 +45,14 @@ thiserror = "2"
 fs2 = "0.4"
 chrono = { version = "0.4", features = ["serde"] }
 
-# Update module: manifest fetch, semver compare (Phase 2: minisign verify)
+# Update module: manifest fetch, semver compare, self-update apply
+# (sha256 verify + tar.gz extract for `phimint update`; minisign is Phase 2).
 reqwest = { version = "0.13", features = ["json", "stream"] }
 semver = "1"
 minisign-verify = "0.2"
+sha2 = "0.10"
+tar = "0.4"
+flate2 = "1"
 
 # UI: ratatui for the TUI, crossterm as its backend + raw-mode key/paste input.
 ratatui = "0.30"
@@ -75,4 +79,5 @@ json5 = "1.3.1"
 tempfile = "3"
 # Streaming response construction for mock LLM (prompt guard tests / integration tests).
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
+
 

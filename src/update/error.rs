@@ -24,4 +24,10 @@ pub enum UpdateError {
 
     #[error("serde error: {0}")]
     Serde(#[from] serde_json::Error),
+
+    #[error("checksum mismatch: expected {expected}, got {actual}")]
+    ChecksumMismatch { expected: String, actual: String },
+
+    #[error("archive error: {0}")]
+    Archive(String),
 }

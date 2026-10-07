@@ -1,0 +1,120 @@
+# Release pipeline: build all platform archives on a v* tag, then publish
+# them as a GitHub Release with the update manifest and installers.
+#
+# Asset contract (consumed by install.sh / install.ps1 / Formula/phimint.rb /
+# npm packages / src/update/ — keep in sync with scripts/gen-manifest.py):
+#   phimint-{version}-{os}-{arch}.tar.gz   (flat: one `phimint` binary)
+#   phimint-{version}-windows-x86_64.zip   (flat: one `phimint.exe`)
+#   manifest.json / manifest-gitee.json / sha256sums.txt
+#   install.sh / install.ps1
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build (${{ matrix.asset_key }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+            asset_key: darwin-aarch64
+            archive: tar.gz
+          - os: macos-14
+            target: x86_64-apple-darwin
+            asset_key: darwin-x86_64
+            archive: tar.gz
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            asset_key: linux-x86_64
+            archive: tar.gz
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            asset_key: linux-aarch64
+            archive: tar.gz
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+            asset_key: windows-x86_64
+            archive: zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package archive (unix)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          NAME="phimint-${VERSION}-${{ matrix.asset_key }}.tar.gz"
+          mkdir -p dist
+          # Flat layout: the archive holds just the binary — brew, the
+          # installers and `phimint update` all extract it from the root.
+          tar -czf "dist/${NAME}" -C "target/${{ matrix.target }}/release" phimint
+          ls -la dist/
+
+      - name: Package archive (windows)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          $version = "${env:GITHUB_REF_NAME}".TrimStart("v")
+          $name = "phimint-$version-${{ matrix.asset_key }}.zip"
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Compress-Archive -Path "target/${{ matrix.target }}/release/phimint.exe" -DestinationPath "dist/$name"
+          Get-ChildItem dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: phimint-${{ matrix.asset_key }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate manifests + checksums
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          python3 scripts/gen-manifest.py \
+            --version "$VERSION" \
+            --dist-dir dist \
+            --github-base "https://github.com/hibuka-labs/phimint/releases/download/${GITHUB_REF_NAME}" \
+            --gitee-base "https://gitee.com/chenkangzeng_admin/phimint/releases/download/${GITHUB_REF_NAME}"
+          cp install.sh install.ps1 dist/
+          ls -la dist/
+
+      - name: Create GitHub Release (or upload on re-run)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" --repo hibuka-labs/phimint >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber --repo hibuka-labs/phimint
+          else
+            gh release create "$GITHUB_REF_NAME" --repo hibuka-labs/phimint \
+              --title "$GITHUB_REF_NAME" --generate-notes dist/*
+          fi

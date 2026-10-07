@@ -1,0 +1,29 @@
+{
+  "name": "phimint",
+  "version": "0.1.0",
+  "description": "phimint — a terminal AI coding agent built on phi-agent",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hibuka-labs/phimint.git"
+  },
+  "homepage": "https://github.com/hibuka-labs/phimint",
+  "keywords": ["ai", "agent", "tui", "coding-assistant", "llm", "cli"],
+  "bin": {
+    "phimint": "bin/phimint.js"
+  },
+  "files": [
+    "bin/phimint.js",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=16"
+  },
+  "optionalDependencies": {
+    "phimint-darwin-arm64": "0.1.0",
+    "phimint-darwin-x64": "0.1.0",
+    "phimint-linux-x64": "0.1.0",
+    "phimint-linux-arm64": "0.1.0",
+    "phimint-win32-x64": "0.1.0"
+  }
+}

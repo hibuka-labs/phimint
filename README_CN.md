@@ -64,19 +64,52 @@ phimint 跑「理解需求 → 读码 → 多文件改 → 编译/测试 → 报
 cargo run -- --model gpt-5.4-mini --base-url https://api.openai.com/v1 --api-key sk-xxx
 ```
 
-### 运行
+### 安装
+
+每个版本都提供预编译二进制（macOS / Linux / Windows，arm64 + x64）。
+一键安装（装到 `~/.local/bin`；国内用户直接用 Gitee 那行）：
 
 ```bash
-cargo install phimint                # 从 crates.io 安装
-./install.sh                         # 或从源码树构建并安装到 ~/.cargo/bin
-cargo run                            # 或直接从源码树启动
-cargo run -- -w ../some-project      # 指定工作区目录
+curl -fsSL https://github.com/hibuka-labs/phimint/releases/latest/download/install.sh | bash   # GitHub
+curl -fsSL https://gitee.com/chenkangzeng_admin/phimint/raw/release-metadata/install.sh | bash  # Gitee（国内）
+```
+
+Windows（PowerShell）：
+
+```powershell
+irm https://github.com/hibuka-labs/phimint/releases/latest/download/install.ps1 | iex   # GitHub
+irm https://gitee.com/chenkangzeng_admin/phimint/raw/release-metadata/install.ps1 | iex  # Gitee（国内）
+```
+
+或使用包管理器：
+
+```bash
+brew install phimint                     # macOS / Linux（Homebrew）
+npm install -g phimint                   # 也支持 pnpm add -g / yarn global add
+cargo install phimint                    # 从 crates.io
+```
+
+升级：一键脚本安装的用 `phimint update`；其余按安装方式选
+`brew upgrade phimint` / `npm install -g phimint@latest` / `cargo install phimint --force`。
+国内下载走 [Gitee Releases](https://gitee.com/chenkangzeng_admin/phimint/releases)，
+更新检查器会自动兜底到 Gitee 镜像。
+
+或直接从源码树运行：
+
+```bash
+cargo run                                # 从源码树启动
+cargo run -- -w ../some-project          # 指定工作区目录
 ```
 
 ## 使用
 
 ```
-phimint [OPTIONS]
+phimint [OPTIONS] [COMMAND]
+
+Commands:
+  update             升级到最新版本（一键脚本安装的自替换二进制；
+                     brew/npm/cargo 安装的给出对应升级命令）。
+                     `phimint update --check` 仅检查不升级。
 
   -w, --workspace <PATH>    工作区目录（默认：当前目录）
       --model <NAME>        主模型名（覆盖 config.json）
