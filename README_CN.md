@@ -71,14 +71,14 @@ cargo run -- --model gpt-5.4-mini --base-url https://api.openai.com/v1 --api-key
 
 ```bash
 curl -fsSL https://github.com/hibuka-labs/phimint/releases/latest/download/install.sh | bash   # GitHub
-curl -fsSL https://gitee.com/chenkangzeng_admin/phimint/raw/release-metadata/install.sh | bash  # Gitee（国内）
+curl -fsSL https://gitee.com/chenkangzeng_admin/phimint/releases/download/latest/install.sh | PHIMINT_MIRROR=gitee bash  # Gitee（国内）
 ```
 
 Windows（PowerShell）：
 
 ```powershell
 irm https://github.com/hibuka-labs/phimint/releases/latest/download/install.ps1 | iex   # GitHub
-irm https://gitee.com/chenkangzeng_admin/phimint/raw/release-metadata/install.ps1 | iex  # Gitee（国内）
+$env:PHIMINT_MIRROR='gitee'; irm https://gitee.com/chenkangzeng_admin/phimint/releases/download/latest/install.ps1 | iex  # Gitee（国内）
 ```
 
 或使用包管理器：

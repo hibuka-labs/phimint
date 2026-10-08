@@ -4,7 +4,7 @@
 # Installs a prebuilt binary; no Rust toolchain required.
 #
 #   curl -fsSL https://github.com/hibuka-labs/phimint/releases/latest/download/install.sh | bash
-#   curl -fsSL https://gitee.com/chenkangzeng_admin/phimint/raw/release-metadata/install.sh | bash   # mainland China
+#   curl -fsSL https://gitee.com/chenkangzeng_admin/phimint/releases/download/latest/install.sh | PHIMINT_MIRROR=gitee bash   # mainland China
 #
 # Env:
 #   PHIMINT_MIRROR=gitee|github   force a download mirror (default: try both)

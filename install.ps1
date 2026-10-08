@@ -1,7 +1,7 @@
 # install.ps1 — phimint installer (Windows)
 #
 #   irm https://github.com/hibuka-labs/phimint/releases/latest/download/install.ps1 | iex
-#   irm https://gitee.com/chenkangzeng_admin/phimint/raw/release-metadata/install.ps1 | iex   # mainland China
+#   $env:PHIMINT_MIRROR='gitee'; irm https://gitee.com/chenkangzeng_admin/phimint/releases/download/latest/install.ps1 | iex   # mainland China
 #
 # Env:
 #   $env:PHIMINT_MIRROR = "gitee"|"github"   force a download mirror

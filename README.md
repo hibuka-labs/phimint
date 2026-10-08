@@ -69,14 +69,14 @@ One-liner (downloads to `~/.local/bin`; mainland China: use the Gitee line):
 
 ```bash
 curl -fsSL https://github.com/hibuka-labs/phimint/releases/latest/download/install.sh | bash   # GitHub
-curl -fsSL https://gitee.com/chenkangzeng_admin/phimint/raw/release-metadata/install.sh | bash  # Gitee (China)
+curl -fsSL https://gitee.com/chenkangzeng_admin/phimint/releases/download/latest/install.sh | PHIMINT_MIRROR=gitee bash  # Gitee (China)
 ```
 
 Windows (PowerShell):
 
 ```powershell
 irm https://github.com/hibuka-labs/phimint/releases/latest/download/install.ps1 | iex   # GitHub
-irm https://gitee.com/chenkangzeng_admin/phimint/raw/release-metadata/install.ps1 | iex  # Gitee (China)
+$env:PHIMINT_MIRROR='gitee'; irm https://gitee.com/chenkangzeng_admin/phimint/releases/download/latest/install.ps1 | iex  # Gitee (China)
 ```
 
 Or use a package manager:
