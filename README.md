@@ -8,6 +8,8 @@
 
 ![phimint demo](docs/assets/readme-demo.gif)
 
+*phimint needs one API key in `~/.phimint/config.json` — a one-minute step, see [Quick start](#quick-start).*
+
 phimint runs the full coding loop — understand the request, read the code, change multiple files, compile and test, iterate on failures. The design goal is **verify-before-deliver**: changes are verified before they are reported. That discipline is currently carried by the system prompt (compile/tests must pass before shipping); a hard enforcement gate is implemented but deliberately parked (see [Roadmap](#roadmap)).
 
 ## Features
@@ -60,8 +62,8 @@ the updater falls back to the Gitee mirror automatically.
 
 ### 2. Configure
 
-You need an API key for any supported model provider (OpenAI / Anthropic /
-DeepSeek / Aliyun / Moonshot / Gemini / Ollama …).
+A one-minute step: you need an API key for any supported model provider
+(OpenAI / Anthropic / DeepSeek / Aliyun / Moonshot / Gemini / Ollama …).
 
 Create `~/.phimint/config.json` (JSON5 — comments and trailing commas welcome):
 

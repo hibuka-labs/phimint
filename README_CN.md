@@ -8,6 +8,8 @@
 
 ![phimint demo](docs/assets/readme-demo.gif)
 
+*phimint 只需在 `~/.phimint/config.json` 里配一个 API key——一分钟的事，见[快速开始](#快速开始)。*
+
 > 基于 [phi-agent](https://github.com/hibuka-labs/phi-agent) 的终端 AI 编码 agent —— **「产品优先」**，同时是 phi-agent 框架的真实压测场。
 
 phimint 跑「理解需求 → 读码 → 多文件改 → 编译/测试 → 报错迭代」的完整编码链路。设计目标是**「先验再交」**：改完先验、验过才交付——目前这一纪律由 system prompt 承载（交前编译/测试必须过），强制闸门已实现但暂缓接线（见「路线图」）。
@@ -60,8 +62,8 @@ cargo install phimint                    # 从 crates.io
 
 ### 2. 配置
 
-需要任一受支持的模型 provider 的 API key（OpenAI / Anthropic / DeepSeek /
-Aliyun / Moonshot / Gemini / Ollama …）。
+一分钟的事：需要任一受支持的模型 provider 的 API key（OpenAI / Anthropic /
+DeepSeek / Aliyun / Moonshot / Gemini / Ollama …）。
 
 创建 `~/.phimint/config.json`（JSON5，允许注释与尾逗号）：
 
