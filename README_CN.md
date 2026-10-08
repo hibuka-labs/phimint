@@ -26,45 +26,9 @@ phimint 跑「理解需求 → 读码 → 多文件改 → 编译/测试 → 报
 
 ## 快速开始
 
-### 前置条件
+三步跑起来：装上预编译二进制（**不需要 Rust**）、配上 API key、运行。
 
-- Rust 工具链（edition 2024）
-- 任一受支持的模型 provider 的 API key（OpenAI / Anthropic / DeepSeek / Aliyun / Moonshot / Gemini / Ollama …）
-- （可选）各语言的 LSP server 在 `PATH` 上；`cargo` / `npm` / `make` 等构建工具
-
-其余依赖全部来自 crates.io——`cargo build` 不需要同级检出任何兄弟仓库。
-
-### 配置
-
-创建 `~/.phimint/config.json`（JSON5，允许注释与尾逗号）：
-
-```json
-{
-  "base_url": "https://api.openai.com/v1",
-  "api_key": "sk-xxx",
-  "main": "gpt-5.4-mini",
-  "lite": "gpt-4o-mini",
-  "advanced": "o1-preview"
-}
-```
-
-不同 provider 分层配置：
-
-```json
-{
-  "main": { "model": "gpt-5.4-mini", "base_url": "https://api.openai.com/v1", "api_key": "sk-openai" },
-  "lite": { "model": "deepseek-chat", "base_url": "https://api.deepseek.com/v1", "api_key": "sk-deepseek" },
-  "advanced": { "model": "claude-opus-4", "base_url": "https://api.anthropic.com", "api_key": "sk-ant" }
-}
-```
-
-或使用 CLI 参数（完整字段见 `config.json.example`）：
-
-```bash
-cargo run -- --model gpt-5.4-mini --base-url https://api.openai.com/v1 --api-key sk-xxx
-```
-
-### 安装
+### 1. 安装
 
 每个版本都提供预编译二进制（macOS / Linux / Windows，arm64 + x64）。
 一键安装（装到 `~/.local/bin`；国内用户直接用 Gitee 那行）：
@@ -94,7 +58,54 @@ cargo install phimint                    # 从 crates.io
 国内下载走 [Gitee Releases](https://gitee.com/chenkangzeng_admin/phimint/releases)，
 更新检查器会自动兜底到 Gitee 镜像。
 
-或直接从源码树运行：
+### 2. 配置
+
+需要任一受支持的模型 provider 的 API key（OpenAI / Anthropic / DeepSeek /
+Aliyun / Moonshot / Gemini / Ollama …）。
+
+创建 `~/.phimint/config.json`（JSON5，允许注释与尾逗号）：
+
+```json
+{
+  "base_url": "https://api.openai.com/v1",
+  "api_key": "sk-xxx",
+  "main": "gpt-5.4-mini",
+  "lite": "gpt-4o-mini",
+  "advanced": "o1-preview"
+}
+```
+
+不同 provider 分层配置：
+
+```json
+{
+  "main": { "model": "gpt-5.4-mini", "base_url": "https://api.openai.com/v1", "api_key": "sk-openai" },
+  "lite": { "model": "deepseek-chat", "base_url": "https://api.deepseek.com/v1", "api_key": "sk-deepseek" },
+  "advanced": { "model": "claude-opus-4", "base_url": "https://api.anthropic.com", "api_key": "sk-ant" }
+}
+```
+
+或使用 CLI 参数（完整字段见 `config.json.example`）：
+
+```bash
+phimint --model gpt-5.4-mini --base-url https://api.openai.com/v1 --api-key sk-xxx
+```
+
+### 3. 运行
+
+```bash
+cd your-project && phimint
+```
+
+在输入栏发一个任务——比如 `帮我在 lib 里加一个带缓存的 get_user 函数`——
+它会读代码、改代码、编译、跑测试直到全绿。按键、审批模式与完整走读见[使用](#使用)。
+
+### 从源码运行
+
+需要 Rust 工具链（edition 2024）。可选：各语言 LSP server 在 `PATH` 上以启用
+LSP 快速内环（rust-analyzer / typescript-language-server / clangd）；被指向的项目
+还需要 `cargo` / `npm` / `make` 等构建工具。其余依赖全部来自 crates.io——
+`cargo build` 不需要同级检出任何兄弟仓库。
 
 ```bash
 cargo run                                # 从源码树启动

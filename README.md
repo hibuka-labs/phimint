@@ -24,45 +24,10 @@ phimint runs the full coding loop — understand the request, read the code, cha
 
 ## Quick start
 
-### Prerequisites
+Three steps to a running agent: install a prebuilt binary (**no Rust required**),
+add an API key, run.
 
-- Rust toolchain (edition 2024)
-- An API key for any supported model provider (OpenAI / Anthropic / DeepSeek / Aliyun / Moonshot / Gemini / Ollama …)
-- (Optional) language servers on `PATH`; `cargo` / `npm` / `make` and friends
-
-Everything else comes from crates.io — `cargo build` needs no sibling checkouts.
-
-### Configure
-
-Create `~/.phimint/config.json` (JSON5 — comments and trailing commas welcome):
-
-```json
-{
-  "base_url": "https://api.openai.com/v1",
-  "api_key": "sk-xxx",
-  "main": "gpt-5.4-mini",
-  "lite": "gpt-4o-mini",
-  "advanced": "o1-preview"
-}
-```
-
-Different provider per tier:
-
-```json
-{
-  "main": { "model": "gpt-5.4-mini", "base_url": "https://api.openai.com/v1", "api_key": "sk-openai" },
-  "lite": { "model": "deepseek-chat", "base_url": "https://api.deepseek.com/v1", "api_key": "sk-deepseek" },
-  "advanced": { "model": "claude-opus-4", "base_url": "https://api.anthropic.com", "api_key": "sk-ant" }
-}
-```
-
-Or pass everything on the command line (see `config.json.example` for the full schema):
-
-```bash
-cargo run -- --model gpt-5.4-mini --base-url https://api.openai.com/v1 --api-key sk-xxx
-```
-
-### Install
+### 1. Install
 
 Prebuilt binaries ship with every release (macOS / Linux / Windows, arm64 + x64).
 One-liner (downloads to `~/.local/bin`; mainland China: use the Gitee line):
@@ -93,7 +58,55 @@ you installed. Mainland China users can download from
 [Gitee Releases](https://gitee.com/chenkangzeng_admin/phimint/releases);
 the updater falls back to the Gitee mirror automatically.
 
-Or run from this source tree:
+### 2. Configure
+
+You need an API key for any supported model provider (OpenAI / Anthropic /
+DeepSeek / Aliyun / Moonshot / Gemini / Ollama …).
+
+Create `~/.phimint/config.json` (JSON5 — comments and trailing commas welcome):
+
+```json
+{
+  "base_url": "https://api.openai.com/v1",
+  "api_key": "sk-xxx",
+  "main": "gpt-5.4-mini",
+  "lite": "gpt-4o-mini",
+  "advanced": "o1-preview"
+}
+```
+
+Different provider per tier:
+
+```json
+{
+  "main": { "model": "gpt-5.4-mini", "base_url": "https://api.openai.com/v1", "api_key": "sk-openai" },
+  "lite": { "model": "deepseek-chat", "base_url": "https://api.deepseek.com/v1", "api_key": "sk-deepseek" },
+  "advanced": { "model": "claude-opus-4", "base_url": "https://api.anthropic.com", "api_key": "sk-ant" }
+}
+```
+
+Or pass everything on the command line (see `config.json.example` for the full schema):
+
+```bash
+phimint --model gpt-5.4-mini --base-url https://api.openai.com/v1 --api-key sk-xxx
+```
+
+### 3. Run
+
+```bash
+cd your-project && phimint
+```
+
+Type a task at the composer — e.g. `add a cached get_user function to the lib` —
+and watch it read the code, edit, compile, and test until green. Keys, approval
+modes, and a full walkthrough live under [Usage](#usage).
+
+### Run from source
+
+Requires a Rust toolchain (edition 2024). Optional: language servers on `PATH`
+(rust-analyzer, typescript-language-server, clangd) for the LSP fast loop;
+`cargo` / `npm` / `make` and friends for whatever project you point it at.
+Everything else comes from crates.io — `cargo build` needs no sibling checkouts.
 
 ```bash
 cargo run                                # run straight from the source tree
