@@ -1,0 +1,1041 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title data-en="phimint — open-source AI coding agent">phimint — 开源 AI 编程智能体</title>
+<meta name="description" content="phimint 是开源 AI 编程智能体：读懂需求、生成代码、编译测试，可以接任意模型，MIT 开源。" data-en="phimint is an open-source AI coding agent: it understands the request, writes the code, compiles and tests — with any model you like. MIT licensed.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Noto+Sans+SC:wght@400;500;700;900&display=swap" rel="stylesheet">
+<script>
+  (function () {
+    try {
+      var m = localStorage.getItem("phimint-theme");
+      if (m !== "light" && m !== "dark" && m !== "auto") m = "auto";
+      var r = m === "auto"
+        ? (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark")
+        : m;
+      document.documentElement.setAttribute("data-theme", r);
+    } catch (e) {
+      document.documentElement.setAttribute("data-theme", "dark");
+    }
+  })();
+</script>
+<style>
+  /* ============ Design tokens (from phimint banner: warm gradient #FF6A3D→#FFC15E) ============ */
+  :root {
+    --bg:        #2b2f2d;
+    --bg-soft:   #303632;
+    --panel:     #373d39;
+    --panel-2:   #3f4541;
+    --line:      #525c56;
+    --line-soft: #414943;
+    --text:      #ecf2ed;
+    --muted:     #a9baaf;
+    --dim:       #84978c;
+    --mint:      #4ade80;
+    --mint-deep: #34d399;
+    --warm-1:    #ff6a3d;
+    --warm-2:    #ffc15e;
+    --on-mint:   #062412;
+    --header-bg: rgba(43, 47, 45, .82);
+    --tag-bg:    rgba(55, 61, 57, .6);
+    --card-grad: rgba(63, 69, 65, .45);
+    --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --sans: "Noto Sans SC", -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    --radius: 12px;
+    --wrap: 1120px;
+    color-scheme: dark;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; scroll-padding-top: 84px; }
+  html[lang="en"] .zh-only { display: none; }
+  html[lang="zh-CN"] .en-only { display: none; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.75;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+  ::selection { background: rgba(74, 222, 128, .25); }
+  a { color: inherit; text-decoration: none; }
+  .wrap { max-width: var(--wrap); margin: 0 auto; padding: 0 24px; }
+
+  /* ============ Nav ============ */
+  header {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 50;
+    backdrop-filter: blur(14px);
+    background: var(--header-bg);
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .nav {
+    display: flex; align-items: center; gap: 32px;
+    height: 64px;
+  }
+  .logo {
+    font-family: var(--mono); font-weight: 700; font-size: 19px;
+    letter-spacing: .5px;
+    background: linear-gradient(90deg, var(--warm-1), var(--warm-2));
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent; color: transparent;
+  }
+  .logo .cursor {
+    -webkit-text-fill-color: var(--mint); color: var(--mint);
+    animation: blink 1.1s steps(1) infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+  .nav-links { display: flex; gap: 26px; margin-left: 8px; }
+  .nav-links a { color: var(--muted); font-size: 14.5px; transition: color .15s; }
+  .nav-links a:hover { color: var(--text); }
+  .nav-right { margin-left: auto; display: flex; align-items: center; gap: 18px; }
+  .nav-right .gh { color: var(--muted); font-size: 14px; display: flex; align-items: center; gap: 6px; }
+  .nav-right .gh:hover { color: var(--text); }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-family: var(--mono); font-size: 14px; font-weight: 500;
+    padding: 9px 20px; border-radius: 8px;
+    border: 1px solid transparent; cursor: pointer;
+    transition: transform .12s, box-shadow .15s, background .15s;
+  }
+  .btn-primary {
+    background: var(--mint); color: var(--on-mint);
+    box-shadow: 0 0 0 0 rgba(74, 222, 128, .4);
+  }
+  .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 6px 24px -6px rgba(74, 222, 128, .45); }
+  .btn-ghost { border-color: var(--line); color: var(--text); background: transparent; }
+  .btn-ghost:hover { border-color: var(--mint); color: var(--mint); }
+
+  /* ============ Hero ============ */
+  .hero {
+    position: relative;
+    padding: 168px 0 40px;
+    text-align: center;
+    overflow: hidden;
+  }
+  .hero::before {
+    content: ""; position: absolute; inset: -200px 0 auto 0; height: 720px;
+    background:
+      radial-gradient(ellipse 60% 50% at 50% 0%, rgba(255, 106, 61, .10), transparent 65%),
+      radial-gradient(ellipse 45% 45% at 50% 12%, rgba(74, 222, 128, .07), transparent 70%);
+    pointer-events: none;
+  }
+  .hero .tag {
+    display: inline-flex; align-items: center; gap: 10px;
+    font-family: var(--mono); font-size: 12.5px; color: var(--muted);
+    border: 1px solid var(--line); border-radius: 999px;
+    padding: 6px 16px; margin-bottom: 34px;
+    background: var(--tag-bg);
+  }
+  .hero .tag .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--mint); box-shadow: 0 0 10px var(--mint); }
+  h1.wordmark {
+    font-family: var(--mono);
+    font-size: clamp(56px, 9vw, 108px);
+    font-weight: 700; letter-spacing: -2px; line-height: 1.05;
+    background: linear-gradient(100deg, var(--warm-1) 0%, var(--warm-2) 55%, var(--warm-1) 100%);
+    background-size: 200% 100%;
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent; color: transparent;
+    animation: shimmer 9s ease-in-out infinite;
+  }
+  @keyframes shimmer { 0%, 100% { background-position: 0% 0; } 50% { background-position: 100% 0; } }
+  .hero .tagline {
+    margin: 18px auto 0;
+    font-size: clamp(20px, 2.6vw, 27px);
+    font-weight: 700; letter-spacing: .02em;
+    max-width: 640px;
+  }
+  .hero .tagline em {
+    font-style: normal;
+    color: var(--mint);
+  }
+  .hero .nb { white-space: nowrap; }
+.sub {
+    margin: 16px auto 0; max-width: 560px;
+    color: var(--muted); font-size: 16.5px; line-height: 1.9;
+  }
+
+  /* ---- Install tabs ---- */
+  .install {
+    margin: 42px auto 0; max-width: 640px; text-align: left;
+  }
+  .install-tabs {
+    display: flex; gap: 4px; padding: 5px 5px 0;
+    background: var(--panel); border: 1px solid var(--line);
+    border-bottom: none; border-radius: 12px 12px 0 0;
+  }
+  .install-tabs button {
+    font-family: var(--mono); font-size: 13px; color: var(--dim);
+    background: transparent; border: none; cursor: pointer;
+    padding: 9px 18px; border-radius: 8px 8px 0 0;
+    transition: color .15s, background .15s;
+  }
+  .install-tabs button:hover { color: var(--muted); }
+  .install-tabs button.on {
+    color: var(--mint); background: var(--bg-soft);
+    box-shadow: inset 0 -2px 0 var(--mint);
+  }
+  .install-cmd {
+    display: flex; align-items: center; gap: 14px;
+    background: var(--bg-soft); border: 1px solid var(--line);
+    border-radius: 0 0 12px 12px;
+    padding: 18px 18px 18px 22px;
+  }
+  .install-cmd code {
+    flex: 1; font-family: var(--mono); font-size: 14.5px;
+    color: #c9e8d4; white-space: nowrap; overflow-x: auto;
+  }
+  .install-cmd code .p { color: var(--dim); user-select: none; }
+  .install-cmd code .hl { color: var(--mint); }
+  .copy {
+    font-family: var(--mono); font-size: 12px; color: var(--muted);
+    background: var(--panel-2); border: 1px solid var(--line);
+    border-radius: 7px; padding: 7px 13px; cursor: pointer; flex-shrink: 0;
+    transition: all .15s;
+  }
+  .copy:hover { color: var(--mint); border-color: var(--mint); }
+  .copy.done { color: var(--mint); border-color: var(--mint); }
+
+  .hero-facts {
+    margin: 22px auto 0;
+    display: flex; justify-content: center; gap: 26px; flex-wrap: wrap;
+    font-family: var(--mono); font-size: 12.5px; color: var(--dim);
+  }
+  .hero-facts span { display: inline-flex; align-items: center; gap: 7px; }
+  .hero-facts span::before { content: "▸"; color: var(--mint); font-size: 10px; }
+
+  /* ---- Terminal window (hero demo) ---- */
+  .term {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    overflow: hidden;
+    box-shadow: 0 32px 80px -24px rgba(0, 0, 0, .45), 0 0 0 1px rgba(255,255,255,.03) inset;
+    text-align: left;
+  }
+  .term-bar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 13px 18px;
+    background: var(--panel-2);
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .term-bar .lights { display: flex; gap: 7px; }
+  .term-bar .lights i { width: 11px; height: 11px; border-radius: 50%; display: block; }
+  .term-bar .lights i:nth-child(1) { background: #ff5f57; }
+  .term-bar .lights i:nth-child(2) { background: #febc2e; }
+  .term-bar .lights i:nth-child(3) { background: #28c840; }
+  .term-bar .title {
+    flex: 1; text-align: center;
+    font-family: var(--mono); font-size: 12px; color: var(--dim);
+    margin-right: 48px;
+  }
+  .hero-demo { margin: 56px auto 0; max-width: 980px; }
+  .hero-demo img {
+    display: block; width: 100%; height: auto;
+    background: #0c1210;
+  }
+
+  /* ============ Section shared ============ */
+  section { padding: 104px 0; position: relative; }
+  .kicker {
+    font-family: var(--mono); font-size: 14.5px; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--mint); margin-bottom: 18px;
+    display: flex; align-items: center; gap: 12px;
+  }
+  .kicker::before { content: ""; width: 32px; height: 2px; background: var(--mint); opacity: .65; }
+  h2 {
+    font-size: clamp(24px, 2.8vw, 32px); font-weight: 900;
+    letter-spacing: .01em; line-height: 1.35;
+    margin-bottom: 18px;
+  }
+  .lede { color: var(--muted); font-size: 17px; max-width: 620px; line-height: 1.95; }
+  .hl-mint { color: var(--mint); }
+  .hl-warm {
+    background: linear-gradient(90deg, var(--warm-1), var(--warm-2));
+    -webkit-background-clip: text; background-clip: text;
+    -webkit-text-fill-color: transparent; color: transparent;
+  }
+
+  /* ============ Trust strip ============ */
+  .trust {
+    padding: 34px 0;
+    border-top: 1px solid var(--line-soft);
+    border-bottom: 1px solid var(--line-soft);
+    background: var(--bg-soft);
+  }
+  .trust-row {
+    display: flex; justify-content: space-between; gap: 20px; flex-wrap: wrap;
+  }
+  .trust-item {
+    display: flex; flex-direction: column; gap: 3px; min-width: 140px;
+  }
+  .trust-item b {
+    font-family: var(--mono); font-size: 15px; font-weight: 700; color: var(--text);
+  }
+  .trust-item span { font-size: 12.5px; color: var(--dim); font-family: var(--mono); }
+
+  /* ============ Story blocks ============ */
+  .story { display: grid; grid-template-columns: 1fr 1.15fr; gap: 64px; align-items: center; }
+  .story + .story { margin-top: 112px; }
+  .story.rev .story-text { order: 2; }
+  .story.rev .story-visual { order: 1; }
+  .story-text h3 { font-size: 25px; font-weight: 800; margin-bottom: 14px; line-height: 1.5; }
+  .story-text p { color: var(--muted); font-size: 16px; line-height: 2; }
+  .story-text ul { list-style: none; margin-top: 20px; display: grid; gap: 11px; }
+  .story-text li {
+    display: flex; gap: 12px; align-items: baseline;
+    font-size: 14.5px; color: var(--muted);
+  }
+  .story-text li::before {
+    content: "✓"; color: var(--mint); font-family: var(--mono); font-size: 13px; flex-shrink: 0;
+  }
+  .story-text li b { color: var(--text); font-weight: 600; }
+
+  /* ---- TUI mock panels ---- */
+  .tui {
+    font-family: var(--mono); font-size: 12.5px; line-height: 1.85;
+    padding: 22px 24px; background: #0c1210; color: #b8cfc0;
+    min-height: 280px;
+  }
+  .tui .ok    { color: var(--mint); }
+  .tui .warn  { color: var(--warm-2); }
+  .tui .bad   { color: #f87171; }
+  .tui .dim   { color: var(--dim); }
+  .tui .usr   { color: #7dd3fc; }
+  .tui .line  { display: block; white-space: pre-wrap; word-break: break-word; }
+  .tui .gap   { display: block; height: 10px; }
+  .tui .badge {
+    display: inline-block; padding: 1px 8px; border-radius: 5px;
+    font-size: 11px; margin-right: 6px;
+  }
+  .tui .badge.auto { background: rgba(74,222,128,.15); color: var(--mint); }
+  .tui .badge.ask  { background: rgba(255,193,94,.15); color: var(--warm-2); }
+  .tui .badge.deny { background: rgba(248,113,113,.15); color: #f87171; }
+  .tui .panel-box {
+    border: 1px solid var(--line); border-radius: 8px;
+    padding: 10px 14px; margin: 8px 0;
+    background: rgba(18, 26, 22, .7);
+  }
+
+  /* ============ Why (positioning) ============ */
+  .feat-grid {
+    display: grid; grid-template-columns: repeat(2, 1fr); column-gap: 48px;
+    margin-top: 40px; border-top: 1px solid var(--line-soft);
+  }
+  .feat-item { padding: 20px 8px 20px 0; border-bottom: 1px solid var(--line-soft); }
+  .feat-item .fl { display: block; font-weight: 700; color: var(--text); margin-bottom: 6px; }
+  .feat-item .fl::before {
+    content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+    background: var(--mint); margin-right: 10px; vertical-align: middle; opacity: .85;
+  }
+  .feat-item p { color: var(--muted); font-size: 15px; margin: 0; }
+  .feat-item code, .why-card code { font-family: var(--mono); font-size: .92em; color: var(--text); }
+  @media (max-width: 860px) { .feat-grid { grid-template-columns: 1fr; } }
+  .why-grid {
+    display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; margin-top: 48px;
+  }
+  .why-card {
+    border: 1px solid var(--line); border-radius: var(--radius);
+    background: linear-gradient(180deg, var(--panel) 0%, var(--card-grad) 100%);
+    padding: 30px 30px 28px;
+    transition: border-color .2s, transform .2s;
+  }
+  .why-card:hover { border-color: rgba(74, 222, 128, .35); transform: translateY(-3px); }
+  .why-card .icon {
+    font-family: var(--mono); font-size: 13px; color: var(--mint);
+    margin-bottom: 16px;
+  }
+  .why-card h4 { font-size: 18.5px; font-weight: 800; margin-bottom: 10px; }
+  .why-card p { color: var(--muted); font-size: 14.5px; line-height: 1.95; }
+
+  /* ============ FAQ ============ */
+  .faq-list { margin-top: 44px; border-top: 1px solid var(--line); }
+  details { border-bottom: 1px solid var(--line); }
+  summary {
+    list-style: none; cursor: pointer;
+    display: flex; align-items: center; justify-content: space-between; gap: 20px;
+    padding: 24px 6px;
+    font-size: 17.5px; font-weight: 700;
+    transition: color .15s;
+  }
+  summary::-webkit-details-marker { display: none; }
+  summary:hover { color: var(--mint); }
+  summary .plus {
+    font-family: var(--mono); font-size: 20px; color: var(--dim);
+    transition: transform .25s, color .2s; flex-shrink: 0;
+  }
+  details[open] summary { color: var(--mint); }
+  details[open] summary .plus { transform: rotate(45deg); color: var(--mint); }
+  details .answer {
+    padding: 0 6px 26px; color: var(--muted); font-size: 15.5px; line-height: 2.05; max-width: 760px;
+  }
+  details .answer a { color: var(--mint); text-decoration: underline; text-underline-offset: 3px; }
+  details .answer code {
+    font-family: var(--mono); font-size: 13.5px;
+    background: var(--panel-2); border: 1px solid var(--line);
+    padding: 2px 7px; border-radius: 5px; color: var(--mint);
+  }
+
+  /* ============ Final CTA ============ */
+  .final {
+    text-align: center; padding: 110px 0 90px;
+    background:
+      radial-gradient(ellipse 55% 70% at 50% 100%, rgba(74, 222, 128, .09), transparent 70%),
+      radial-gradient(ellipse 45% 60% at 50% 110%, rgba(255, 106, 61, .08), transparent 70%);
+  }
+  .final h2 { margin-bottom: 14px; }
+  .final .lede { margin: 0 auto; }
+  .final .install { margin-top: 38px; }
+  .final-actions { margin-top: 26px; display: flex; justify-content: center; gap: 14px; flex-wrap: wrap; }
+
+  /* ============ Contact banner ============ */
+  .contact-banner {
+    border: 1px solid var(--line); border-radius: var(--radius);
+    background: linear-gradient(120deg, rgba(255, 106, 61, .08), rgba(74, 222, 128, .07));
+    padding: 30px 36px;
+    display: flex; align-items: center; gap: 32px; flex-wrap: wrap;
+  }
+  .contact-banner .cb-text { flex: 1; min-width: 260px; }
+  .contact-banner h4 { font-size: 19px; font-weight: 800; margin-bottom: 6px; }
+  .contact-banner p { color: var(--muted); font-size: 14.5px; line-height: 1.9; }
+  .contact-banner p a { color: var(--mint); text-decoration: underline; text-underline-offset: 3px; }
+  .qr {
+    display: flex; align-items: center; gap: 18px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 14px 18px;
+    text-decoration: none;
+  }
+  a.qr:hover { border-color: var(--mint); }
+  .qr svg { display: block; border-radius: 6px; background: #fff; padding: 5px; }
+  .qr .qr-label { font-family: var(--mono); font-size: 12px; color: var(--dim); line-height: 1.8; }
+  .qr .qr-label b { display: block; color: var(--text); font-size: 13px; }
+
+  /* ============ Footer ============ */
+  footer {
+    border-top: 1px solid var(--line-soft);
+    padding: 56px 0 42px;
+    background: var(--bg-soft);
+  }
+  .foot-grid {
+    display: grid; grid-template-columns: 1.6fr 1fr 1fr 1fr; gap: 40px;
+    padding-bottom: 42px;
+  }
+  .foot-brand .logo { font-size: 22px; }
+  .foot-brand p {
+    margin-top: 14px; color: var(--dim); font-size: 13.5px; line-height: 1.95; max-width: 280px;
+  }
+  .foot-col h5 {
+    font-family: var(--mono); font-size: 11.5px; letter-spacing: .16em;
+    text-transform: uppercase; color: var(--dim); margin-bottom: 18px;
+  }
+  .foot-col a {
+    display: block; color: var(--muted); font-size: 14px;
+    padding: 5px 0; transition: color .15s;
+  }
+  .foot-col a:hover { color: var(--mint); }
+  .foot-bottom {
+    border-top: 1px solid var(--line-soft); padding-top: 26px;
+    display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+    font-family: var(--mono); font-size: 12px; color: var(--dim);
+  }
+  .foot-prefs { display: flex; gap: 24px; flex-wrap: wrap; }
+  .foot-bottom .lang a { color: var(--dim); cursor: pointer; }
+  .foot-bottom .lang a.on { color: var(--mint); }
+  .foot-bottom .lang span { margin: 0 8px; opacity: .4; }
+
+  /* ============ Light theme (page shell flips; terminal islands stay dark) ============ */
+  :root[data-theme="light"] {
+    --bg:        #faf9f7;
+    --bg-soft:   #f2f0eb;
+    --panel:     #ffffff;
+    --panel-2:   #edeae4;
+    --line:      #e2ded6;
+    --line-soft: #eae7e0;
+    --text:      #1c211e;
+    --muted:     #5c665e;
+    --dim:       #8b958c;
+    --mint:      #15803d;
+    --mint-deep: #0f6b33;
+    --warm-1:    #e2592c;
+    --warm-2:    #d98a1f;
+    --on-mint:   #ffffff;
+    --header-bg: rgba(250, 249, 247, .82);
+    --tag-bg:    rgba(255, 255, 255, .7);
+    --card-grad: rgba(237, 234, 228, .55);
+    color-scheme: light;
+  }
+  /* brand islands: terminal window + install widget keep the dark palette */
+  :root[data-theme="light"] .term,
+  :root[data-theme="light"] .tui,
+  :root[data-theme="light"] .install {
+    --bg-soft:   #303632;
+    --panel:     #373d39;
+    --panel-2:   #3f4541;
+    --line:      #525c56;
+    --line-soft: #414943;
+    --text:      #ecf2ed;
+    --muted:     #a9baaf;
+    --dim:       #84978c;
+    --mint:      #4ade80;
+    --on-mint:   #062412;
+    color-scheme: dark;
+  }
+  :root[data-theme="light"] .hero::before {
+    background:
+      radial-gradient(ellipse 60% 50% at 50% 0%, rgba(226, 89, 44, .07), transparent 65%),
+      radial-gradient(ellipse 45% 45% at 50% 12%, rgba(21, 128, 61, .05), transparent 70%);
+  }
+  :root[data-theme="light"] .final {
+    background:
+      radial-gradient(ellipse 55% 70% at 50% 100%, rgba(21, 128, 61, .05), transparent 70%),
+      radial-gradient(ellipse 45% 60% at 50% 110%, rgba(226, 89, 44, .05), transparent 70%);
+  }
+  :root[data-theme="light"] .btn-primary:hover {
+    box-shadow: 0 6px 24px -6px rgba(21, 128, 61, .28);
+  }
+  :root[data-theme="light"] .term {
+    box-shadow: 0 32px 80px -24px rgba(28, 33, 30, .28), 0 0 0 1px rgba(255,255,255,.03) inset;
+  }
+
+  /* ============ Reveal animation ============ */
+  .reveal { opacity: 0; transform: translateY(18px); transition: opacity .7s ease, transform .7s ease; }
+  .reveal.in { opacity: 1; transform: none; }
+  @media (prefers-reduced-motion: reduce) {
+    .reveal { opacity: 1; transform: none; transition: none; }
+    h1.wordmark { animation: none; }
+    html { scroll-behavior: auto; }
+    .logo .cursor { animation: none; }
+  }
+
+  /* ============ Responsive ============ */
+  @media (max-width: 900px) {
+    .nav-links { display: none; }
+    .story { grid-template-columns: 1fr; gap: 36px; }
+    .story.rev .story-text, .story.rev .story-visual { order: unset; }
+    .why-grid { grid-template-columns: 1fr; }
+    .foot-grid { grid-template-columns: 1fr 1fr; gap: 32px; }
+    section { padding: 76px 0; }
+  }
+  @media (max-width: 520px) {
+    .hero { padding-top: 130px; }
+    .install-cmd code { font-size: 12px; }
+    .trust-row { gap: 18px; }
+    .trust-item { min-width: 42%; }
+    .foot-grid { grid-template-columns: 1fr; }
+    .contact-banner { padding: 24px; }
+    .hero-facts { gap: 14px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ============ NAV ============ -->
+<header>
+  <div class="wrap nav">
+    <a href="#" class="logo">phimint<span class="cursor">_</span></a>
+    <div class="nav-right">
+      <a class="gh" href="https://github.com/hibuka-labs/phimint#readme" target="_blank" rel="noopener" data-en="Docs">文档</a>
+      <a class="gh" href="https://github.com/hibuka-labs/phimint" target="_blank" rel="noopener">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+        GitHub
+      </a>
+      <a class="btn btn-primary" href="#install" data-en="Install">安装</a>
+    </div>
+  </div>
+</header>
+
+<main>
+
+<!-- ============ HERO ============ -->
+<section class="hero">
+  <div class="wrap">
+    <div class="tag reveal" data-en="&lt;span class=&quot;dot&quot;&gt;&lt;/span&gt; v0.2.0 released · MIT licensed · macOS / Linux / Windows">
+      <span class="dot"></span>
+      v0.2.0 已发布 · MIT 开源 · macOS / Linux / Windows
+    </div>
+    <h1 class="wordmark reveal">phimint</h1>
+    <p class="tagline reveal" data-en="Open-source AI coding agent">开源 AI 编程智能体</p>
+    <p class="sub reveal" data-pretext data-en="Hand the coding to a dependable colleague — light, steady, and lean over long runs. &lt;span class=&quot;nb&quot;&gt;Written in pure Rust&lt;/span&gt;.">
+      把编码的活交给一个靠谱的同事，轻巧、稳定、长跑不臃肿——<span class="nb">纯 Rust 实现</span>。
+    </p>
+
+    <!-- Install tabs -->
+    <div class="install reveal">
+      <div class="install-tabs" role="tablist">
+        <button class="on" data-cmd="curl" role="tab" aria-selected="true">curl</button>
+        <button data-cmd="brew" role="tab" aria-selected="false">brew</button>
+        <button data-cmd="npm" role="tab" aria-selected="false">npm</button>
+        <button data-cmd="cargo" role="tab" aria-selected="false">cargo</button>
+      </div>
+      <div class="install-cmd">
+        <code id="cmd-text"><span class="p">$ </span><span class="hl">curl -fsSL https://phimint.com/install.sh | bash</span></code>
+        <button class="copy" id="copy-btn" aria-label="复制安装命令" data-en="Copy" data-en-aria="Copy install command">复制</button>
+      </div>
+    </div>
+
+    <div class="hero-facts reveal">
+      <span data-en="Any model you like: OpenAI / Anthropic / DeepSeek / Moonshot / Ollama …">接任意模型：OpenAI / Anthropic / DeepSeek / Moonshot / Ollama …</span>
+      <span data-en="Open source on GitHub">GitHub &amp; Gitee 双源</span>
+      <span data-en="Skills-compatible · /resume session restore">Skills 兼容 · /resume 会话恢复</span>
+    </div>
+
+    <!-- Hero demo (REPLACE: demo.gif ↔ GUI 版录屏/短视频) -->
+    <div class="hero-demo reveal">
+      <div class="term">
+        <div class="term-bar">
+          <div class="lights"><i></i><i></i><i></i></div>
+          <div class="title" data-en="phimint — a full coding loop, recorded">phimint — 完整编码闭环实录</div>
+        </div>
+        <img src="demo.gif" alt="phimint 终端实录：完整编码闭环" data-en-alt="phimint recording: a full coding loop" loading="eager">
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ TRUST STRIP (hard facts, not vanity stats) ============ -->
+<div class="trust">
+  <div class="wrap trust-row">
+    <div class="trust-item reveal" data-en="&lt;b&gt;4 install channels&lt;/b&gt;&lt;span&gt;curl · brew · npm · cargo&lt;/span&gt;"><b>4 种安装渠道</b><span>curl · brew · npm · cargo</span></div>
+    <div class="trust-item reveal" data-en="&lt;b&gt;3 platforms&lt;/b&gt;&lt;span&gt;macOS · Linux · Windows&lt;/span&gt;"><b>3 大平台</b><span>macOS · Linux · Windows</span></div>
+    <div class="trust-item reveal" data-en="&lt;b&gt;MIT License&lt;/b&gt;&lt;span&gt;open source, you stay in control&lt;/span&gt;"><b>MIT License</b><span>开源可自控</span></div>
+    <div class="trust-item reveal" data-en="&lt;b&gt;Rust&lt;/b&gt;&lt;span&gt;edition 2024 · single binary&lt;/span&gt;"><b>Rust</b><span>edition 2024 · 单二进制</span></div>
+    <div class="trust-item reveal" data-en="&lt;b&gt;v0.2.0&lt;/b&gt;&lt;span&gt;2026-10 · shipping steadily&lt;/span&gt;"><b>v0.2.0</b><span>2026-10 · 持续迭代</span></div>
+  </div>
+</div>
+
+<!-- ============ STORY ×3 ============ -->
+<section id="features">
+  <div class="wrap">
+    <div class="kicker reveal" data-en="Capabilities">核心能力</div>
+    <h2 class="reveal" data-en="Not autocomplete for one line — it finishes the whole task.">不是补全一行代码，是把一个任务做完</h2>
+    <p class="lede reveal" data-pretext data-en="From a request to working changes, it runs the whole loop itself.">
+      从一个需求到一版能用的改动，它自己跑完整条路。
+    </p>
+
+    <!-- Story 1 -->
+    <div class="feat-grid">
+      <div class="feat-item reveal" data-en="&lt;span class=&quot;fl&quot;&gt;Multi-agent&lt;/span&gt;&lt;p&gt;Splits hard problems across sub-agents and brings back the full reports.&lt;/p&gt;">
+        <span class="fl">多 agent 协作</span>
+        <p>复杂问题派几个子 agent 分头调查，报告完整带回来。</p>
+      </div>
+      <div class="feat-item reveal" data-en="&lt;span class=&quot;fl&quot;&gt;LSP for the model&lt;/span&gt;&lt;p&gt;Attaches the right language server per project (rust-analyzer / TypeScript / clangd…); type errors land right after an edit — no full rebuild, the agent sees its own mistakes.&lt;/p&gt;">
+        <span class="fl">给模型接上 LSP</span>
+        <p>按项目自动接上对应的语言服务（rust-analyzer / TypeScript / clangd…），改完立刻拿到类型错误——不用等重新编译，agent 自己看得见对错。</p>
+      </div>
+      <div class="feat-item reveal" data-en="&lt;span class=&quot;fl&quot;&gt;Tokens where they matter&lt;/span&gt;&lt;p&gt;Searches and reads on demand instead of stuffing the repo into the conversation; token-heavy exploration runs in sub-agents that return only the report; long tasks roll into a fresh window with notes and a handoff — no lossy summarization.&lt;/p&gt;">
+        <span class="fl">token 花在刀刃上</span>
+        <p>该搜才搜、该读才读，不把仓库塞进对话；费上下文的探查丢给分身，只把报告带回来；长任务快撑爆就换一窗接着干，笔记和交接自动带着走——不靠有损摘要，token 少烧一截。</p>
+      </div>
+      <div class="feat-item reveal" data-en="&lt;span class=&quot;fl&quot;&gt;No spin, no drop&lt;/span&gt;&lt;p&gt;It corrects itself when it spins and wraps up on time; a guard even catches providers that lie about truncation — no stalling on your dime, the job gets to done.&lt;/p&gt;">
+        <span class="fl">不空转，不跑丢</span>
+        <p>空转了自己纠、到点自己收尾；厂商谎报截断也有守卫兜着——不瞎耗 token，活干到交卷。</p>
+      </div>
+      <div class="feat-item reveal" data-en="&lt;span class=&quot;fl&quot;&gt;No skimping on hard work, no waste on trivia&lt;/span&gt;&lt;p&gt;Advanced for hard problems, main for the day-to-day, lite for trivia — each tier can point at its own provider. You set the cost.&lt;/p&gt;">
+        <span class="fl">重活不将就，琐事不浪费</span>
+        <p>重活上 advanced、日常用 main、琐事丢 lite，三档还能各配各的厂商——成本自己拿捏。</p>
+      </div>
+      <div class="feat-item reveal" data-en="&lt;span class=&quot;fl&quot;&gt;Ultralight, and it&#x27;s just one file&lt;/span&gt;&lt;p&gt;One &lt;code&gt;curl&lt;/code&gt; line gets you a single executable — no Node, Python, or other runtime on the side, nothing bundled. Don&#x27;t want it anymore? Delete the file.&lt;/p&gt;">
+        <span class="fl">极致轻量，就一个文件</span>
+        <p><code>curl</code> 一行拿到一个可执行文件——不用先装 Node、Python 这些 runtime，不带依赖；不想要了，删掉它就是卸载。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ WHY ============ -->
+<section id="why" style="background: var(--bg-soft); border-top: 1px solid var(--line-soft); border-bottom: 1px solid var(--line-soft);">
+  <div class="wrap">
+    <div class="kicker reveal" data-en="Positioning">定位</div>
+    <h2 class="reveal" data-en="Light, steady, and lean over long runs.">轻巧、稳定、长跑不臃肿</h2>
+    <p class="lede reveal" data-pretext data-en="A dependable colleague isn&#x27;t just one that does good work — it&#x27;s one still going strong after an afternoon: no jank, no crashes, no bloat. Light and steady are compiled in — written in pure Rust. And everything stays yours: your models, your code.">
+      靠谱不光是活干得漂亮，还有连着干一下午也不掉链子：不卡、不崩、不越跑越臃肿。轻和稳是编译期锁住的——纯 Rust 实现。东西还是你的：模型你的，代码你的。
+    </p>
+
+    <div class="why-grid">
+      <div class="why-card reveal" data-en="&lt;div class=&quot;icon&quot;&gt;server|CI|container&lt;/div&gt;&lt;h4&gt;At home in harsh places&lt;/h4&gt;&lt;p&gt;A single static binary compiled from Rust — drop it into a server, a CI runner, a container and it runs, without hogging the system.&lt;/p&gt;">
+        <div class="icon">server|CI|container</div>
+        <h4>苛刻环境也从容</h4>
+        <p data-pretext>Rust 编出来的独立二进制，丢进服务器、CI、容器这些苛刻点的环境就能跑，本身不吃多少资源。</p>
+      </div>
+      <div class="why-card reveal" data-en="&lt;div class=&quot;icon&quot;&gt;no gc&lt;/div&gt;&lt;h4&gt;No jank, no crashes&lt;/h4&gt;&lt;p&gt;Typing, scrolling, token-by-token streaming all stay smooth — no GC pauses to surprise you. Memory and concurrency bugs are cleared at compile time by Rust, so it doesn&#x27;t drop the work halfway.&lt;/p&gt;">
+        <div class="icon">no gc</div>
+        <h4>不卡，也不崩</h4>
+        <p data-pretext>输入、滚动、逐 token 流式输出不卡帧，也没有 GC 停顿来打扰。内存和并发的低级错误，Rust 在编译期就替你清掉了，干活干到一半不掉链子。</p>
+      </div>
+      <div class="why-card reveal" data-en="&lt;div class=&quot;icon&quot;&gt;no bloat&lt;/div&gt;&lt;h4&gt;Hours in, still lean&lt;/h4&gt;&lt;p&gt;Hours-long sessions against big repos keep memory flat. It doesn&#x27;t get heavier the longer it runs.&lt;/p&gt;">
+        <div class="icon">no bloat</div>
+        <h4>跑一下午，不臃肿</h4>
+        <p data-pretext>连着开几个小时、对着大仓库，内存占用稳得住，不越用越沉。</p>
+      </div>
+      <div class="why-card reveal" data-en="&lt;div class=&quot;icon&quot;&gt;api_key&lt;/div&gt;&lt;h4&gt;Your models, your code&lt;/h4&gt;&lt;p&gt;Bring your own API key — switching providers is a one-line config change. Your code and keys stay on your machine, MIT licensed and yours to control.&lt;/p&gt;">
+        <div class="icon">api_key</div>
+        <h4>你的模型，你的代码</h4>
+        <p data-pretext>接你自己的 API key，换厂商只是改一行配置；代码和密钥都留在你的机器上，MIT 开源可自控。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ FAQ ============ -->
+<section id="faq">
+  <div class="wrap">
+    <div class="kicker reveal" data-en="FAQ">常见问题</div>
+    <h2 class="reveal" data-en="Still wondering?">还有一点疑虑？</h2>
+
+    <div class="faq-list">
+      <details class="reveal">
+        <summary data-en="What is phimint, and how is it different from Claude Code / codex?&lt;span class=&quot;plus&quot;&gt;+&lt;/span&gt;">phimint 是什么？和 Claude Code / codex 这类工具有什么不同？<span class="plus">+</span></summary>
+        <div class="answer" data-pretext data-en="phimint is an open-source AI coding agent that runs the full coding loop: understand the request, read the code, change multiple files, compile and test, iterate on failures. Three things set it apart: &lt;b&gt;multi-agent fan-out with full reports injected back&lt;/b&gt; (no polling, nothing dropped), &lt;b&gt;three approval modes&lt;/b&gt; (full auto / confirm writes / read-only, clear permission boundaries), and &lt;b&gt;no lock-in on models or code&lt;/b&gt; (any provider&#x27;s API, MIT-licensed, you stay in control).">
+          phimint 是一个开源的终端 AI 编程智能体，跑完整的编码闭环：理解需求、读代码、改多文件、编译测试、失败迭代。它的差异点在三处：<b>多 agent 扇出 + 报告全文回注</b>（不轮询、不丢结论）、<b>三档审批</b>（全自动 / 写操作需确认 / 只读，权限边界清晰）、<b>模型与代码都不被绑定</b>（接任意厂商的 API，MIT 开源可自控）。
+        </div>
+      </details>
+      <details class="reveal">
+        <summary data-en="Can I keep using my existing .claude/skills?&lt;span class=&quot;plus&quot;&gt;+&lt;/span&gt;">我现有的 .claude/skills 技能还能用吗？<span class="plus">+</span></summary>
+        <div class="answer" data-pretext data-en="Yes. Skills in &lt;code&gt;.claude/skills&lt;/code&gt; work as they are — call them with &lt;code&gt;/skill-name args&lt;/code&gt;. Coming from Claude Code means no rewrites.">
+          能。<code>.claude/skills</code> 里的技能直接用，<code>/skill-name args</code> 即可调用——从 Claude Code 搬过来不用重写。
+        </div>
+      </details>
+      <details class="reveal">
+        <summary data-en="Which models are supported? Do I need a dedicated subscription?&lt;span class=&quot;plus&quot;&gt;+&lt;/span&gt;">支持哪些模型？需要买专用订阅吗？<span class="plus">+</span></summary>
+        <div class="answer" data-pretext data-en="No dedicated subscription. phimint takes your own API key: OpenAI, Anthropic, DeepSeek, Alibaba Cloud, Moonshot, Gemini, local Ollama models, and more. The main / lite / advanced tiers can each point at a different provider — pick the right price-performance per task.">
+          不需要专用订阅。phimint 接你自己的 API key：OpenAI、Anthropic、DeepSeek、阿里云、Moonshot、Gemini、Ollama 本地模型等都支持。main / lite / advanced 三档可以分别配不同厂商的模型，按任务挑性价比。
+        </div>
+      </details>
+      <details class="reveal">
+        <summary data-en="Is it free?&lt;span class=&quot;plus&quot;&gt;+&lt;/span&gt;">收费吗？<span class="plus">+</span></summary>
+        <div class="answer" data-pretext data-en="phimint itself is free and open source (MIT). You only pay your model provider for API usage (or run a local model at zero cost). No hidden subscriptions.">
+          phimint 本身免费、开源（MIT）。你只需要为所选模型厂商的 API 用量付费（或用本地模型，那就是零成本）。没有隐藏订阅。
+        </div>
+      </details>
+      <details class="reveal">
+        <summary data-en="Which platforms are supported?&lt;span class=&quot;plus&quot;&gt;+&lt;/span&gt;">支持哪些平台？<span class="plus">+</span></summary>
+        <div class="answer" data-pretext data-en="macOS, Linux, and Windows. Install via script, Homebrew, npm, or &lt;code&gt;cargo install phimint&lt;/code&gt;.">
+          macOS、Linux、Windows。安装方式可选脚本、Homebrew、npm 或 <code>cargo install phimint</code>。国内用户推荐用 Gitee 镜像源的安装脚本。
+        </div>
+      </details>
+      <details class="reveal">
+        <summary data-en="Is my code or data uploaded?&lt;span class=&quot;plus&quot;&gt;+&lt;/span&gt;">我的代码和数据会被上传吗？<span class="plus">+</span></summary>
+        <div class="answer" data-pretext data-en="No. phimint runs on your machine, with config and keys under &lt;code&gt;~/.phimint/&lt;/code&gt;. Only the conversation and tool results go to your chosen model provider; phimint itself never stores or relays your code. Data-sensitive teams can run a local Ollama model for a fully closed loop.">
+          不会。phimint 在你本机运行，配置和密钥存放在 <code>~/.phimint/</code>。发往模型厂商的只有对话和工具结果（这由你选的模型厂商决定），phimint 自己不存你的代码、不做中转。对数据敏感的团队，可以配本地 Ollama 模型完全闭环。
+        </div>
+      </details>
+      <details class="reveal">
+        <summary data-en="Is Chinese supported?&lt;span class=&quot;plus&quot;&gt;+&lt;/span&gt;">界面支持中文吗？<span class="plus">+</span></summary>
+        <div class="answer" data-pretext data-en="Yes. Session titles follow the conversation language, and the Chinese experience is a full first-class citizen. Docs are bilingual.">
+          支持。会话标题跟随对话语言，中文对话体验是完整的一等公民。文档提供中英双语。
+        </div>
+      </details>
+      <details class="reveal">
+        <summary data-en="Can you do team customization, private deployment, or technical support?&lt;span class=&quot;plus&quot;&gt;+&lt;/span&gt;">可以为团队定制、私有化部署或提供技术支持吗？<span class="plus">+</span></summary>
+        <div class="answer" data-pretext data-en="Yes. phimint is open source. For private deployment, custom development, integration, or support, write to &lt;a href=&quot;mailto:phimint@hibuka.com&quot;&gt;phimint@hibuka.com&lt;/a&gt; or join the conversation on &lt;a href=&quot;https://github.com/hibuka-labs/phimint/discussions&quot; target=&quot;_blank&quot; rel=&quot;noopener&quot;&gt;GitHub Discussions&lt;/a&gt; — usually a reply within one business day.">
+          可以。phimint 是开源产品，团队有私有化部署、定制开发、接入集成或技术支持的需求，欢迎直接联系：<a href="mailto:phimint@hibuka.com">phimint@hibuka.com</a>，或页尾扫码进<a href="https://applink.feishu.cn/client/chat/chatter/add_by_link?link_token=2f0u8290-e767-40bb-b37c-5eae9efeea10" target="_blank" rel="noopener">飞书群</a>直接聊。
+        </div>
+      </details>
+      <details class="reveal">
+        <summary data-en="How do I contribute?&lt;span class=&quot;plus&quot;&gt;+&lt;/span&gt;">怎么参与贡献？<span class="plus">+</span></summary>
+        <div class="answer" data-pretext data-en="Issues and PRs are welcome on &lt;a href=&quot;https://github.com/hibuka-labs/phimint&quot; target=&quot;_blank&quot; rel=&quot;noopener&quot;&gt;GitHub&lt;/a&gt;. Feature ideas, bug reports, and doc improvements all count.">
+          欢迎提 Issue 和 PR：<a href="https://github.com/hibuka-labs/phimint" target="_blank" rel="noopener">GitHub</a> 与 <a href="https://gitee.com/chenkangzeng_admin/phimint" target="_blank" rel="noopener">Gitee</a> 双仓库均开放。功能想法、bug 报告、文档改进都算贡献。
+        </div>
+      </details>
+    </div>
+  </div>
+</section>
+
+<!-- ============ FINAL CTA ============ -->
+<section class="final" id="install">
+  <div class="wrap">
+    <h2 class="reveal" data-en="Install it. Give it a task.">装上它，交给它一个任务</h2>
+    <p class="lede reveal" data-en="Thirty seconds to install. Your next all-green delivery starts here.">三十秒安装。下一个编译测试全绿的交付，就从这里开始。</p>
+
+    <div class="install reveal" style="text-align: left;">
+      <div class="install-tabs" role="tablist">
+        <button class="on" data-cmd="curl" role="tab" aria-selected="true">curl</button>
+        <button data-cmd="brew" role="tab" aria-selected="false">brew</button>
+        <button data-cmd="npm" role="tab" aria-selected="false">npm</button>
+        <button data-cmd="cargo" role="tab" aria-selected="false">cargo</button>
+      </div>
+      <div class="install-cmd">
+        <code class="cmd-text"><span class="p">$ </span><span class="hl">curl -fsSL https://phimint.com/install.sh | bash</span></code>
+        <button class="copy" aria-label="复制安装命令" data-en="Copy" data-en-aria="Copy install command">复制</button>
+      </div>
+    </div>
+
+    <div class="final-actions reveal">
+      <a class="btn btn-ghost" href="https://github.com/hibuka-labs/phimint" target="_blank" rel="noopener">★ GitHub</a>
+      <a class="btn btn-ghost zh-only" href="https://gitee.com/chenkangzeng_admin/phimint" target="_blank" rel="noopener" data-en="Gitee mirror">Gitee 镜像</a>
+      <a class="btn btn-ghost" href="https://github.com/hibuka-labs/phimint#readme" target="_blank" rel="noopener" data-en="Read the docs">阅读文档</a>
+    </div>
+  </div>
+</section>
+
+<!-- ============ CONTACT BANNER ============ -->
+<section id="community" style="padding: 0 0 90px;">
+  <div class="wrap">
+    <div class="contact-banner reveal">
+      <div class="cb-text">
+        <h4 data-en="Need it tailored for your team?">需要为你的团队定制？</h4>
+        <p data-en="Private deployment, custom development, integration, support — write to &lt;a href=&quot;mailto:phimint@hibuka.com&quot;&gt;phimint@hibuka.com&lt;/a&gt;, or join the conversation on &lt;a href=&quot;https://github.com/hibuka-labs/phimint/discussions&quot; target=&quot;_blank&quot; rel=&quot;noopener&quot;&gt;GitHub Discussions&lt;/a&gt;. Usually a reply within one business day.">
+          私有化部署、定制开发、接入集成、技术支持——直接写信
+          <a href="mailto:phimint@hibuka.com">phimint@hibuka.com</a>，
+          或扫码进<a href="https://applink.feishu.cn/client/chat/chatter/add_by_link?link_token=2f0u8290-e767-40bb-b37c-5eae9efeea10" target="_blank" rel="noopener">飞书群</a>，通常一个工作日内回复。
+        </p>
+      </div>
+      <a class="qr zh-only" href="https://applink.feishu.cn/client/chat/chatter/add_by_link?link_token=2f0u8290-e767-40bb-b37c-5eae9efeea10" target="_blank" rel="noopener">
+        <svg width="108" height="108" viewBox="0 0 225 225" class="segno" aria-label="飞书群二维码"><g transform="scale(5)"><path fill="#fff" d="M0 0h45v45h-45z"/><path class="qrline" stroke="#0a0f0d" d="M2 2.5h7m3 0h2m4 0h1m1 0h2m1 0h3m4 0h1m3 0h1m1 0h7m-41 1h1m5 0h1m4 0h1m2 0h2m2 0h1m2 0h2m1 0h1m1 0h5m1 0h1m1 0h1m5 0h1m-41 1h1m1 0h3m1 0h1m1 0h5m1 0h2m5 0h2m1 0h1m1 0h3m1 0h2m2 0h1m1 0h3m1 0h1m-41 1h1m1 0h3m1 0h1m1 0h1m7 0h3m3 0h1m1 0h4m1 0h3m2 0h1m1 0h3m1 0h1m-41 1h1m1 0h3m1 0h1m1 0h1m1 0h2m2 0h1m4 0h2m2 0h3m2 0h1m2 0h2m1 0h1m1 0h3m1 0h1m-41 1h1m5 0h1m1 0h2m1 0h3m1 0h4m1 0h2m2 0h4m2 0h1m3 0h1m5 0h1m-41 1h7m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h1m1 0h7m-33 1h3m3 0h1m1 0h1m2 0h6m2 0h1m-28 1h1m1 0h5m2 0h2m1 0h1m1 0h2m1 0h1m1 0h1m2 0h1m1 0h3m2 0h1m1 0h1m2 0h5m-36 1h1m1 0h1m1 0h1m3 0h4m3 0h3m1 0h2m4 0h1m2 0h6m1 0h1m1 0h1m-41 1h4m2 0h2m1 0h2m1 0h1m4 0h2m3 0h1m4 0h2m1 0h1m1 0h2m1 0h1m3 0h1m-39 1h1m2 0h2m2 0h1m1 0h3m1 0h2m2 0h5m3 0h2m3 0h3m1 0h1m1 0h1m1 0h2m-40 1h2m1 0h3m3 0h2m2 0h2m1 0h1m1 0h2m1 0h1m1 0h3m1 0h2m1 0h1m3 0h1m1 0h2m-39 1h1m1 0h3m2 0h3m3 0h2m2 0h1m1 0h1m1 0h1m1 0h1m1 0h2m2 0h1m1 0h10m-40 1h1m3 0h4m1 0h2m2 0h2m4 0h3m2 0h5m2 0h2m-34 1h1m7 0h1m2 0h1m1 0h4m4 0h2m1 0h1m2 0h2m3 0h1m1 0h2m1 0h1m1 0h1m-34 1h1m1 0h1m1 0h3m4 0h1m2 0h1m2 0h1m1 0h1m3 0h1m1 0h1m1 0h1m1 0h1m2 0h1m1 0h1m-40 1h2m1 0h2m1 0h2m1 0h1m2 0h2m3 0h2m1 0h4m1 0h1m1 0h1m2 0h2m1 0h3m1 0h3m-40 1h2m3 0h3m2 0h4m3 0h1m1 0h1m1 0h1m1 0h1m1 0h5m5 0h2m-38 1h2m1 0h2m3 0h5m2 0h1m2 0h1m2 0h1m1 0h1m2 0h1m4 0h3m2 0h2m2 0h1m-41 1h3m1 0h1m1 0h1m1 0h2m1 0h2m1 0h1m3 0h3m1 0h1m2 0h2m2 0h3m1 0h1m1 0h1m2 0h2m-39 1h1m1 0h3m1 0h1m1 0h1m1 0h1m2 0h5m1 0h2m1 0h1m1 0h1m2 0h1m2 0h4m1 0h2m1 0h2m-41 1h1m2 0h1m2 0h5m2 0h1m2 0h2m7 0h1m1 0h2m1 0h1m1 0h1m1 0h1m1 0h3m-39 1h2m1 0h1m3 0h2m1 0h1m1 0h1m1 0h2m2 0h1m1 0h3m3 0h1m3 0h2m1 0h1m1 0h2m-36 1h1m2 0h1m1 0h1m6 0h2m2 0h2m3 0h1m1 0h2m1 0h1m1 0h1m5 0h1m2 0h3m-41 1h1m1 0h1m1 0h1m5 0h2m3 0h1m1 0h3m1 0h1m1 0h1m4 0h1m2 0h1m1 0h2m1 0h2m2 0h1m-38 1h1m1 0h4m3 0h1m2 0h2m1 0h1m1 0h2m2 0h1m1 0h2m4 0h2m1 0h1m3 0h1m-40 1h5m2 0h2m1 0h1m1 0h3m5 0h4m3 0h2m1 0h5m2 0h1m2 0h1m-41 1h1m3 0h6m1 0h2m2 0h1m6 0h1m2 0h2m2 0h3m5 0h2m-39 1h3m1 0h1m4 0h1m2 0h1m1 0h2m3 0h2m2 0h4m3 0h2m1 0h4m1 0h3m-41 1h1m2 0h1m1 0h4m4 0h1m1 0h2m3 0h2m4 0h3m4 0h5m-38 1h1m1 0h1m4 0h2m1 0h2m2 0h2m4 0h2m4 0h1m3 0h2m1 0h5m2 0h1m-41 1h1m2 0h2m1 0h1m1 0h1m4 0h1m2 0h3m1 0h1m3 0h2m1 0h1m1 0h1m2 0h5m1 0h1m1 0h1m-33 1h1m1 0h4m2 0h1m2 0h1m1 0h3m2 0h1m1 0h1m1 0h1m1 0h1m3 0h5m-41 1h7m2 0h1m2 0h3m1 0h1m1 0h1m2 0h2m1 0h1m2 0h3m1 0h2m1 0h1m1 0h1m1 0h1m-39 1h1m5 0h1m1 0h7m1 0h1m1 0h2m1 0h4m1 0h1m1 0h1m2 0h2m3 0h2m2 0h1m-41 1h1m1 0h3m1 0h1m1 0h1m1 0h3m3 0h1m1 0h1m3 0h1m1 0h3m2 0h1m2 0h5m1 0h1m1 0h1m-41 1h1m1 0h3m1 0h1m1 0h1m5 0h1m1 0h5m2 0h1m1 0h1m2 0h1m1 0h2m1 0h1m1 0h1m1 0h4m-41 1h1m1 0h3m1 0h1m1 0h1m2 0h1m1 0h1m2 0h3m2 0h1m2 0h5m1 0h1m1 0h6m-38 1h1m5 0h1m2 0h2m2 0h3m1 0h1m2 0h2m6 0h1m1 0h1m1 0h1m1 0h1m1 0h1m2 0h1m-40 1h7m1 0h1m2 0h2m1 0h5m1 0h1m1 0h1m1 0h3m2 0h1m1 0h1m2 0h5"/></g></svg>
+        <div class="qr-label" data-en="&lt;b&gt;Feishu community&lt;/b&gt;Scan or click to join&lt;br&gt;Questions · Requests · Help"><b>飞书社群</b>扫码或点击进群<br>提问 · 需求 · 问题解答</div>
+      </a>
+      <a class="qr en-only" href="https://github.com/hibuka-labs/phimint/discussions" target="_blank" rel="noopener">
+        <div class="qr-label" data-en="&lt;b&gt;GitHub Discussions&lt;/b&gt;Join the conversation&lt;br&gt;Questions · Requests · Help"><b>GitHub Discussions</b>加入讨论<br>提问 · 需求 · 问题解答</div>
+      </a>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<!-- ============ FOOTER ============ -->
+<footer>
+  <div class="wrap">
+    <div class="foot-grid">
+      <div class="foot-brand">
+        <div class="logo">phimint<span class="cursor" style="-webkit-text-fill-color: var(--mint); color: var(--mint);">_</span></div>
+        <p data-en="Open-source AI coding agent. MIT licensed.">开源 AI 编程智能体。MIT 开源。</p>
+      </div>
+      <div class="foot-col">
+        <h5 data-en="Contents">目录</h5>
+        <a href="#features" data-en="Capabilities">核心能力</a>
+        <a href="#why" data-en="Positioning">定位</a>
+        <a href="#faq" data-en="FAQ">FAQ</a>
+        <a href="#install" data-en="Install">安装</a>
+      </div>
+      <div class="foot-col">
+        <h5 data-en="Resources">资源</h5>
+        <a href="https://github.com/hibuka-labs/phimint#readme" target="_blank" rel="noopener" data-en="Docs">文档</a>
+        <a href="https://github.com/hibuka-labs/phimint" target="_blank" rel="noopener">GitHub</a>
+        <a class="zh-only" href="https://gitee.com/chenkangzeng_admin/phimint" target="_blank" rel="noopener">Gitee</a>
+        <a href="https://github.com/hibuka-labs/phimint/releases" target="_blank" rel="noopener">Releases</a>
+      </div>
+      <div class="foot-col">
+        <h5 data-en="Contact">联系</h5>
+        <a class="zh-only" href="https://applink.feishu.cn/client/chat/chatter/add_by_link?link_token=2f0u8290-e767-40bb-b37c-5eae9efeea10" target="_blank" rel="noopener">飞书社群</a>
+        <a class="en-only" href="https://github.com/hibuka-labs/phimint/discussions" target="_blank" rel="noopener" data-en="Discussions">讨论区</a>
+        <a href="mailto:phimint@hibuka.com" data-en="Custom work &amp; support">定制与支持</a>
+        <a href="mailto:phimint@hibuka.com">phimint@hibuka.com</a>
+        <a href="https://github.com/hibuka-labs/phimint/issues" target="_blank" rel="noopener" data-en="Report an issue">Issue 反馈</a>
+      </div>
+    </div>
+    <div class="foot-bottom">
+      <div>© 2026 phimint · MIT License · phimint.com</div>
+      <div class="foot-prefs">
+        <div class="lang theme-switch">
+          <a href="#" data-theme-opt="auto" class="on" data-en="Auto">自动</a><span>|</span><a href="#" data-theme-opt="light" data-en="Light">浅</a><span>|</span><a href="#" data-theme-opt="dark" data-en="Dark">深</a>
+        </div>
+        <div class="lang">
+          <a href="#" data-lang-opt="zh" class="on">中文</a><span>|</span><a href="#" data-lang-opt="en">English</a>
+        </div>
+      </div>
+    </div>
+  </div>
+</footer>
+
+<!-- Pretext runtime (inlined vendor) -->
+<script>var x0=["BN","BN","BN","BN","BN","BN","BN","BN","BN","S","B","S","WS","B","BN","BN","BN","BN","BN","BN","BN","BN","BN","BN","BN","BN","BN","BN","B","B","B","S","WS","ON","ON","ET","ET","ET","ON","ON","ON","ON","ON","ON","CS","ON","CS","ON","EN","EN","EN","EN","EN","EN","EN","EN","EN","EN","ON","ON","ON","ON","ON","ON","ON","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","ON","ON","ON","ON","ON","ON","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","ON","ON","ON","ON","BN","BN","BN","BN","BN","BN","B","BN","BN","BN","BN","BN","BN","BN","BN","BN","BN","BN","BN","BN","BN","BN","BN","BN","BN","BN","BN","BN","BN","BN","BN","BN","BN","CS","ON","ET","ET","ET","ET","ON","ON","ON","ON","L","ON","ON","ON","ON","ON","ET","ET","EN","EN","ON","L","ON","ON","ON","EN","L","ON","ON","ON","ON","ON","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","ON","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","L","ON","L","L","L","L","L","L","L","L"],g0=["AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","CS","AL","ON","ON","NSM","NSM","NSM","NSM","NSM","NSM","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","NSM","NSM","NSM","NSM","NSM","NSM","NSM","NSM","NSM","NSM","NSM","NSM","NSM","NSM","AL","AL","AL","AL","AL","AL","AL","AN","AN","AN","AN","AN","AN","AN","AN","AN","AN","ET","AN","AN","AL","AL","AL","NSM","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","NSM","NSM","NSM","NSM","NSM","NSM","NSM","NSM","NSM","NSM","NSM","NSM","NSM","NSM","NSM","NSM","NSM","NSM","NSM","ON","NSM","NSM","NSM","NSM","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL","AL"];function m0(O){if(O<=255)return x0[O];if(1424<=O&&O<=1524)return"R";if(1536<=O&&O<=1791)return g0[O&255];if(1792<=O&&O<=2220)return"AL";return"L"}function r0(O){let _=O.length;if(_===0)return null;let J=Array(_),Y=0;for(let V=0;V<_;V++){let $=m0(O.charCodeAt(V));if($==="R"||$==="AL"||$==="AN")Y++;J[V]=$}if(Y===0)return null;let X=_/Y<0.3?0:1,R=new Int8Array(_);for(let V=0;V<_;V++)R[V]=X;let Z=X&1?"R":"L",Q=Z,f=Q;for(let V=0;V<_;V++)if(J[V]==="NSM")J[V]=f;else f=J[V];f=Q;for(let V=0;V<_;V++){let $=J[V];if($==="EN")J[V]=f==="AL"?"AN":"EN";else if($==="R"||$==="L"||$==="AL")f=$}for(let V=0;V<_;V++)if(J[V]==="AL")J[V]="R";for(let V=1;V<_-1;V++){if(J[V]==="ES"&&J[V-1]==="EN"&&J[V+1]==="EN")J[V]="EN";if(J[V]==="CS"&&(J[V-1]==="EN"||J[V-1]==="AN")&&J[V+1]===J[V-1])J[V]=J[V-1]}for(let V=0;V<_;V++){if(J[V]!=="EN")continue;let $;for($=V-1;$>=0&&J[$]==="ET";$--)J[$]="EN";for($=V+1;$<_&&J[$]==="ET";$++)J[$]="EN"}for(let V=0;V<_;V++){let $=J[V];if($==="WS"||$==="ES"||$==="ET"||$==="CS")J[V]="ON"}f=Q;for(let V=0;V<_;V++){let $=J[V];if($==="EN")J[V]=f==="L"?"L":"EN";else if($==="R"||$==="L")f=$}for(let V=0;V<_;V++){if(J[V]!=="ON")continue;let $=V+1;while($<_&&J[$]==="ON")$++;let u=V>0?J[V-1]:Q,q=$<_?J[$]:Q,D=u!=="L"?"R":"L";if(D===(q!=="L"?"R":"L"))for(let K=V;K<$;K++)J[K]=D;V=$-1}for(let V=0;V<_;V++)if(J[V]==="ON")J[V]=Z;for(let V=0;V<_;V++){let $=J[V];if((R[V]&1)===0){if($==="R")R[V]++;else if($==="AN"||$==="EN")R[V]+=2}else if($==="L"||$==="AN"||$==="EN")R[V]++}return R}function u0(O,_){let J=r0(O);if(J===null)return null;let Y=new Int8Array(_.length);for(let X=0;X<_.length;X++)Y[X]=J[_[X]];return Y}var a0=/[ \t\n\r\f]+/g,s0=/[\t\n\r\f]| {2,}|^ | $/;function d0(O){let _=O??"normal";return _==="pre-wrap"?{mode:_,preserveOrdinarySpaces:!0,preserveHardBreaks:!0}:{mode:_,preserveOrdinarySpaces:!1,preserveHardBreaks:!1}}function i0(O){if(!s0.test(O))return O;let _=O.replace(a0," ");if(_.charCodeAt(0)===32)_=_.slice(1);if(_.length>0&&_.charCodeAt(_.length-1)===32)_=_.slice(0,-1);return _}function t0(O){if(!/[\r\f]/.test(O))return O.replace(/\r\n/g,`
+`);return O.replace(/\r\n/g,`
+`).replace(/[\r\f]/g,`
+`)}var d=null,V0;function n0(){if(d===null)d=new Intl.Segmenter(V0,{granularity:"word"});return d}function z0(){d=null}function j0(O){let _=O&&O.length>0?O:void 0;if(V0===_)return;V0=_,d=null}var e0=/\p{Script=Arabic}/u,O0=/\p{M}/u,b0=/\p{Nd}/u;function X0(O){return e0.test(O)}function p(O){for(let _ of O){let J=_.codePointAt(0);if(J>=19968&&J<=40959||J>=13312&&J<=19903||J>=131072&&J<=173791||J>=173824&&J<=177983||J>=177984&&J<=178207||J>=178208&&J<=183983||J>=183984&&J<=191471||J>=196608&&J<=201551||J>=63744&&J<=64255||J>=194560&&J<=195103||J>=12288&&J<=12351||J>=12352&&J<=12447||J>=12448&&J<=12543||J>=44032&&J<=55215||J>=65280&&J<=65519)return!0}return!1}var $0=new Set(["，","．","！","：","；","？","、","。","・","）","〕","〉","》","」","』","】","〗","〙","〛","ー","々","〻","ゝ","ゞ","ヽ","ヾ"]),i=new Set(['"',"(","[","{","“","‘","«","‹","（","〔","〈","《","「","『","【","〖","〘","〚"]),Q0=new Set(["'","’"]),r=new Set([".",",","!","?",":",";","،","؛","؟","।","॥","၊","။","၌","၍","၏",")","]","}","%",'"',"”","’","»","›","…"]),OO=new Set([":",".","،","؛"]),_O=new Set(["၏"]),JO=new Set(["”","’","»","›","」","』","】","》","〉","〕","）"]);function RO(O){if(q0(O))return!0;let _=!1;for(let J of O){if(r.has(J)){_=!0;continue}if(_&&O0.test(J))continue;return!1}return _}function VO(O){for(let _ of O)if(!$0.has(_)&&!r.has(_))return!1;return O.length>0}function XO(O){if(q0(O))return!0;for(let _ of O)if(!i.has(_)&&!Q0.has(_)&&!O0.test(_))return!1;return O.length>0}function q0(O){let _=!1;for(let J of O){if(J==="\\"||O0.test(J))continue;if(i.has(J)||r.has(J)||Q0.has(J)){_=!0;continue}return!1}return _}function YO(O){let _=Array.from(O),J=_.length;while(J>0){let Y=_[J-1];if(O0.test(Y)){J--;continue}if(i.has(Y)||Q0.has(Y)){J--;continue}break}if(J<=0||J===_.length)return null;return{head:_.slice(0,J).join(""),tail:_.slice(J).join("")}}function ZO(O,_){if(O.length===0)return!1;for(let J of O)if(J!==_)return!1;return!0}function $O(O){if(!X0(O)||O.length===0)return!1;return OO.has(O[O.length-1])}function QO(O){if(O.length===0)return!1;return _O.has(O[O.length-1])}function qO(O){if(O.length<2||O[0]!==" ")return null;let _=O.slice(1);if(/^\p{M}+$/u.test(_))return{space:" ",marks:_};return null}function D0(O){for(let _=O.length-1;_>=0;_--){let J=O[_];if(JO.has(J))return!0;if(!r.has(J))return!1}return!1}function DO(O,_){if(_.preserveOrdinarySpaces||_.preserveHardBreaks){if(O===" ")return"preserved-space";if(O==="\t")return"tab";if(_.preserveHardBreaks&&O===`
+`)return"hard-break"}if(O===" ")return"space";if(O===" "||O===" "||O==="⁠"||O==="\uFEFF")return"glue";if(O==="​")return"zero-width-break";if(O==="­")return"soft-hyphen";return"text"}function NO(O,_,J,Y){let X=[],R=null,Z="",Q=J,f=!1,V=0;for(let $ of O){let u=DO($,Y),q=u==="text"&&_;if(R!==null&&u===R&&q===f){Z+=$,V+=$.length;continue}if(R!==null)X.push({text:Z,isWordLike:f,kind:R,start:Q});R=u,Z=$,Q=J+V,f=q,V+=$.length}if(R!==null)X.push({text:Z,isWordLike:f,kind:R,start:Q});return X}function Y0(O){return O==="space"||O==="preserved-space"||O==="zero-width-break"||O==="hard-break"}var fO=/^[A-Za-z][A-Za-z0-9+.-]*:$/;function HO(O,_){let J=O.texts[_];if(J.startsWith("www."))return!0;return fO.test(J)&&_+1<O.len&&O.kinds[_+1]==="text"&&O.texts[_+1]==="//"}function UO(O){return O.includes("?")&&(O.includes("://")||O.startsWith("www."))}function MO(O){let _=O.texts.slice(),J=O.isWordLike.slice(),Y=O.kinds.slice(),X=O.starts.slice();for(let Z=0;Z<O.len;Z++){if(Y[Z]!=="text"||!HO(O,Z))continue;let Q=Z+1;while(Q<O.len&&!Y0(Y[Q])){_[Z]+=_[Q],J[Z]=!0;let f=_[Q].includes("?");if(Y[Q]="text",_[Q]="",Q++,f)break}}let R=0;for(let Z=0;Z<_.length;Z++){let Q=_[Z];if(Q.length===0)continue;if(R!==Z)_[R]=Q,J[R]=J[Z],Y[R]=Y[Z],X[R]=X[Z];R++}return _.length=R,J.length=R,Y.length=R,X.length=R,{len:R,texts:_,isWordLike:J,kinds:Y,starts:X}}function CO(O){let _=[],J=[],Y=[],X=[];for(let R=0;R<O.len;R++){let Z=O.texts[R];if(_.push(Z),J.push(O.isWordLike[R]),Y.push(O.kinds[R]),X.push(O.starts[R]),!UO(Z))continue;let Q=R+1;if(Q>=O.len||Y0(O.kinds[Q]))continue;let f="",V=O.starts[Q],$=Q;while($<O.len&&!Y0(O.kinds[$]))f+=O.texts[$],$++;if(f.length>0)_.push(f),J.push(!0),Y.push("text"),X.push(V),R=$-1}return{len:_.length,texts:_,isWordLike:J,kinds:Y,starts:X}}var FO=new Set([":","-","/","×",",",".","+","–","—"]),K0=/^[A-Za-z0-9_]+[,:;]*$/,vO=/[,:;]+$/;function E0(O){for(let _ of O)if(b0.test(_))return!0;return!1}function Z0(O){if(O.length===0)return!1;for(let _ of O){if(b0.test(_)||FO.has(_))continue;return!1}return!0}function uO(O){let _=[],J=[],Y=[],X=[];for(let R=0;R<O.len;R++){let Z=O.texts[R],Q=O.kinds[R];if(Q==="text"&&Z0(Z)&&E0(Z)){let f=Z,V=R+1;while(V<O.len&&O.kinds[V]==="text"&&Z0(O.texts[V]))f+=O.texts[V],V++;_.push(f),J.push(!0),Y.push("text"),X.push(O.starts[R]),R=V-1;continue}_.push(Z),J.push(O.isWordLike[R]),Y.push(Q),X.push(O.starts[R])}return{len:_.length,texts:_,isWordLike:J,kinds:Y,starts:X}}function KO(O){let _=[],J=[],Y=[],X=[];for(let R=0;R<O.len;R++){let Z=O.texts[R],Q=O.kinds[R],f=O.isWordLike[R];if(Q==="text"&&f&&K0.test(Z)){let V=Z,$=R+1;while(vO.test(V)&&$<O.len&&O.kinds[$]==="text"&&O.isWordLike[$]&&K0.test(O.texts[$]))V+=O.texts[$],$++;_.push(V),J.push(!0),Y.push("text"),X.push(O.starts[R]),R=$-1;continue}_.push(Z),J.push(f),Y.push(Q),X.push(O.starts[R])}return{len:_.length,texts:_,isWordLike:J,kinds:Y,starts:X}}function zO(O){let _=[],J=[],Y=[],X=[];for(let R=0;R<O.len;R++){let Z=O.texts[R];if(O.kinds[R]==="text"&&Z.includes("-")){let Q=Z.split("-"),f=Q.length>1;for(let V=0;V<Q.length;V++){let $=Q[V];if(!f)break;if($.length===0||!E0($)||!Z0($))f=!1}if(f){let V=0;for(let $=0;$<Q.length;$++){let u=Q[$],q=$<Q.length-1?`${u}-`:u;_.push(q),J.push(!0),Y.push("text"),X.push(O.starts[R]+V),V+=q.length}continue}}_.push(Z),J.push(O.isWordLike[R]),Y.push(O.kinds[R]),X.push(O.starts[R])}return{len:_.length,texts:_,isWordLike:J,kinds:Y,starts:X}}function jO(O){let _=[],J=[],Y=[],X=[],R=0;while(R<O.len){let Z=O.texts[R],Q=O.isWordLike[R],f=O.kinds[R],V=O.starts[R];if(f==="glue"){let $=Z,u=V;R++;while(R<O.len&&O.kinds[R]==="glue")$+=O.texts[R],R++;if(R<O.len&&O.kinds[R]==="text")Z=$+O.texts[R],Q=O.isWordLike[R],f="text",V=u,R++;else{_.push($),J.push(!1),Y.push("glue"),X.push(u);continue}}else R++;if(f==="text")while(R<O.len&&O.kinds[R]==="glue"){let $="";while(R<O.len&&O.kinds[R]==="glue")$+=O.texts[R],R++;if(R<O.len&&O.kinds[R]==="text"){Z+=$+O.texts[R],Q=Q||O.isWordLike[R],R++;continue}Z+=$}_.push(Z),J.push(Q),Y.push(f),X.push(V)}return{len:_.length,texts:_,isWordLike:J,kinds:Y,starts:X}}function bO(O){let _=O.texts.slice(),J=O.isWordLike.slice(),Y=O.kinds.slice(),X=O.starts.slice();for(let R=0;R<_.length-1;R++){if(Y[R]!=="text"||Y[R+1]!=="text")continue;if(!p(_[R])||!p(_[R+1]))continue;let Z=YO(_[R]);if(Z===null)continue;_[R]=Z.head,_[R+1]=Z.tail+_[R+1],X[R+1]=X[R]+Z.head.length}return{len:_.length,texts:_,isWordLike:J,kinds:Y,starts:X}}function EO(O,_,J){let Y=n0(),X=0,R=[],Z=[],Q=[],f=[];for(let q of Y.segment(O))for(let D of NO(q.segment,q.isWordLike??!1,q.index,J)){let b=D.kind==="text";if(_.carryCJKAfterClosingQuote&&b&&X>0&&Q[X-1]==="text"&&p(D.text)&&p(R[X-1])&&D0(R[X-1]))R[X-1]+=D.text,Z[X-1]=Z[X-1]||D.isWordLike;else if(b&&X>0&&Q[X-1]==="text"&&VO(D.text)&&p(R[X-1]))R[X-1]+=D.text,Z[X-1]=Z[X-1]||D.isWordLike;else if(b&&X>0&&Q[X-1]==="text"&&QO(R[X-1]))R[X-1]+=D.text,Z[X-1]=Z[X-1]||D.isWordLike;else if(b&&X>0&&Q[X-1]==="text"&&D.isWordLike&&X0(D.text)&&$O(R[X-1]))R[X-1]+=D.text,Z[X-1]=!0;else if(b&&!D.isWordLike&&X>0&&Q[X-1]==="text"&&D.text.length===1&&D.text!=="-"&&D.text!=="—"&&ZO(R[X-1],D.text))R[X-1]+=D.text;else if(b&&!D.isWordLike&&X>0&&Q[X-1]==="text"&&(RO(D.text)||D.text==="-"&&Z[X-1]))R[X-1]+=D.text;else R[X]=D.text,Z[X]=D.isWordLike,Q[X]=D.kind,f[X]=D.start,X++}for(let q=1;q<X;q++)if(Q[q]==="text"&&!Z[q]&&q0(R[q])&&Q[q-1]==="text")R[q-1]+=R[q],Z[q-1]=Z[q-1]||Z[q],R[q]="";for(let q=X-2;q>=0;q--)if(Q[q]==="text"&&!Z[q]&&XO(R[q])){let D=q+1;while(D<X&&R[D]==="")D++;if(D<X&&Q[D]==="text")R[D]=R[q]+R[D],f[D]=f[q],R[q]=""}let V=0;for(let q=0;q<X;q++){let D=R[q];if(D.length===0)continue;if(V!==q)R[V]=D,Z[V]=Z[q],Q[V]=Q[q],f[V]=f[q];V++}R.length=V,Z.length=V,Q.length=V,f.length=V;let $=jO({len:V,texts:R,isWordLike:Z,kinds:Q,starts:f}),u=bO(KO(zO(uO(CO(MO($))))));for(let q=0;q<u.len-1;q++){let D=qO(u.texts[q]);if(D===null)continue;if(u.kinds[q]!=="space"&&u.kinds[q]!=="preserved-space"||u.kinds[q+1]!=="text"||!X0(u.texts[q+1]))continue;u.texts[q]=D.space,u.isWordLike[q]=!1,u.kinds[q]=u.kinds[q]==="preserved-space"?"preserved-space":"space",u.texts[q+1]=D.marks+u.texts[q+1],u.starts[q+1]=u.starts[q]+D.space.length}return u}function GO(O,_){if(O.len===0)return[];if(!_.preserveHardBreaks)return[{startSegmentIndex:0,endSegmentIndex:O.len,consumedEndSegmentIndex:O.len}];let J=[],Y=0;for(let X=0;X<O.len;X++){if(O.kinds[X]!=="hard-break")continue;J.push({startSegmentIndex:Y,endSegmentIndex:X,consumedEndSegmentIndex:X+1}),Y=X+1}if(Y<O.len)J.push({startSegmentIndex:Y,endSegmentIndex:O.len,consumedEndSegmentIndex:O.len});return J}function N0(O,_,J="normal"){let Y=d0(J),X=Y.mode==="pre-wrap"?t0(O):i0(O);if(X.length===0)return{normalized:X,chunks:[],len:0,texts:[],isWordLike:[],kinds:[],starts:[]};let R=EO(X,_,Y);return{normalized:X,chunks:GO(R,Y),...R}}var a=null,f0=new Map,s=null,PO=/\p{Emoji_Presentation}/u,AO=/[\p{Emoji_Presentation}\p{Extended_Pictographic}\p{Regional_Indicator}\uFE0F\u20E3]/u,_0=null,H0=new Map;function U0(){if(a!==null)return a;if(typeof OffscreenCanvas<"u")return a=new OffscreenCanvas(1,1).getContext("2d"),a;if(typeof document<"u")return a=document.createElement("canvas").getContext("2d"),a;throw Error("Text measurement requires OffscreenCanvas or a DOM canvas context.")}function BO(O){let _=f0.get(O);if(!_)_=new Map,f0.set(O,_);return _}function x(O,_){let J=_.get(O);if(J===void 0)J={width:U0().measureText(O).width,containsCJK:p(O)},_.set(O,J);return J}function h(){if(s!==null)return s;if(typeof navigator>"u")return s={lineFitEpsilon:0.005,carryCJKAfterClosingQuote:!1,preferPrefixWidthsForBreakableRuns:!1,preferEarlySoftHyphenBreak:!1},s;let O=navigator.userAgent,J=navigator.vendor==="Apple Computer, Inc."&&O.includes("Safari/")&&!O.includes("Chrome/")&&!O.includes("Chromium/")&&!O.includes("CriOS/")&&!O.includes("FxiOS/")&&!O.includes("EdgiOS/"),Y=O.includes("Chrome/")||O.includes("Chromium/")||O.includes("CriOS/")||O.includes("Edg/");return s={lineFitEpsilon:J?0.015625:0.005,carryCJKAfterClosingQuote:Y,preferPrefixWidthsForBreakableRuns:J,preferEarlySoftHyphenBreak:J},s}function TO(O){let _=O.match(/(\d+(?:\.\d+)?)\s*px/);return _?parseFloat(_[1]):16}function M0(){if(_0===null)_0=new Intl.Segmenter(void 0,{granularity:"grapheme"});return _0}function wO(O){return PO.test(O)||O.includes("️")}function G0(O){return AO.test(O)}function yO(O,_){let J=H0.get(O);if(J!==void 0)return J;let Y=U0();Y.font=O;let X=Y.measureText("\uD83D\uDE00").width;if(J=0,X>_+0.5&&typeof document<"u"&&document.body!==null){let R=document.createElement("span");R.style.font=O,R.style.display="inline-block",R.style.visibility="hidden",R.style.position="absolute",R.textContent="\uD83D\uDE00",document.body.appendChild(R);let Z=R.getBoundingClientRect().width;if(document.body.removeChild(R),X-Z>0.5)J=X-Z}return H0.set(O,J),J}function LO(O){let _=0,J=M0();for(let Y of J.segment(O))if(wO(Y.segment))_++;return _}function WO(O,_){if(_.emojiCount===void 0)_.emojiCount=LO(O);return _.emojiCount}function g(O,_,J){if(J===0)return _.width;return _.width-WO(O,_)*J}function P0(O,_,J,Y){if(_.graphemeWidths!==void 0)return _.graphemeWidths;let X=[],R=M0();for(let Z of R.segment(O)){let Q=x(Z.segment,J);X.push(g(Z.segment,Q,Y))}return _.graphemeWidths=X.length>1?X:null,_.graphemeWidths}function A0(O,_,J,Y){if(_.graphemePrefixWidths!==void 0)return _.graphemePrefixWidths;let X=[],R=M0(),Z="";for(let Q of R.segment(O)){Z+=Q.segment;let f=x(Z,J);X.push(g(Z,f,Y))}return _.graphemePrefixWidths=X.length>1?X:null,_.graphemePrefixWidths}function B0(O,_){let J=U0();J.font=O;let Y=BO(O),X=TO(O),R=_?yO(O,X):0;return{cache:Y,fontSize:X,emojiCorrection:R}}function T0(){f0.clear(),H0.clear(),_0=null}function m(O){return O==="space"||O==="preserved-space"||O==="tab"||O==="zero-width-break"||O==="soft-hyphen"}function SO(O){return O==="space"}function w0(O,_){if(_<=0)return 0;let J=O%_;if(Math.abs(J)<=0.000001)return _;return _-J}function t(O,_,J,Y){if(!Y||_===null)return O[J];return _[J]-(J>0?_[J-1]:0)}function y0(O,_,J,Y,X,R){let Z=0,Q=_;while(Z<O.length){let f=R?_+O[Z]:Q+O[Z];if((Z+1<O.length?f+X:f)>J+Y)break;Q=f,Z++}return{fitCount:Z,fittedWidth:Q}}function L0(O,_){for(let J=0;J<O.chunks.length;J++){let Y=O.chunks[J];if(_<Y.consumedEndSegmentIndex)return J}return-1}function kO(O,_){let{segmentIndex:J,graphemeIndex:Y}=_;if(J>=O.widths.length)return null;if(Y>0)return _;let X=L0(O,J);if(X<0)return null;let R=O.chunks[X];if(R.startSegmentIndex===R.endSegmentIndex&&J===R.startSegmentIndex)return{segmentIndex:J,graphemeIndex:0};if(J<R.startSegmentIndex)J=R.startSegmentIndex;while(J<R.endSegmentIndex){let Z=O.kinds[J];if(Z!=="space"&&Z!=="zero-width-break"&&Z!=="soft-hyphen")return{segmentIndex:J,graphemeIndex:0};J++}if(R.consumedEndSegmentIndex>=O.widths.length)return null;return{segmentIndex:R.consumedEndSegmentIndex,graphemeIndex:0}}function W0(O,_){if(O.simpleLineWalkFastPath)return IO(O,_);return J0(O,_)}function IO(O,_){let{widths:J,kinds:Y,breakableWidths:X,breakablePrefixWidths:R}=O;if(J.length===0)return 0;let Z=h(),Q=Z.lineFitEpsilon,f=0,V=0,$=!1;function u(q){let D=J[q];if(D>_&&X[q]!==null){let b=X[q],K=R[q]??null;V=0;for(let j=0;j<b.length;j++){let B=t(b,K,j,Z.preferPrefixWidthsForBreakableRuns);if(V>0&&V+B>_+Q)f++,V=B;else{if(V===0)f++;V+=B}}}else V=D,f++;$=!0}for(let q=0;q<J.length;q++){let D=J[q],b=Y[q];if(!$){u(q);continue}let K=V+D;if(K>_+Q){if(SO(b))continue;V=0,$=!1,u(q);continue}V=K}if(!$)return f+1;return f}function cO(O,_,J){let{widths:Y,kinds:X,breakableWidths:R,breakablePrefixWidths:Z}=O;if(Y.length===0)return 0;let Q=h(),f=Q.lineFitEpsilon,V=0,$=0,u=!1,q=0,D=0,b=0,K=0,j=-1,B=0;function k(){j=-1,B=0}function y(H=b,z=K,W=$){V++,J?.({startSegmentIndex:q,startGraphemeIndex:D,endSegmentIndex:H,endGraphemeIndex:z,width:W}),$=0,u=!1,k()}function A(H,z){u=!0,q=H,D=0,b=H+1,K=0,$=z}function T(H,z,W){u=!0,q=H,D=z,b=H,K=z+1,$=W}function L(H,z){if(!u){A(H,z);return}$+=z,b=H+1,K=0}function C(H,z){if(!m(X[H]))return;j=H+1,B=$-z}function F(H){P(H,0)}function P(H,z){let W=R[H],c=Z[H]??null;for(let I=z;I<W.length;I++){let o=t(W,c,I,Q.preferPrefixWidthsForBreakableRuns);if(!u){T(H,I,o);continue}if($+o>_+f)y(),T(H,I,o);else $+=o,b=H,K=I+1}if(u&&b===H&&K===W.length)b=H+1,K=0}let E=0;while(E<Y.length){let H=Y[E],z=X[E];if(!u){if(H>_&&R[E]!==null)F(E);else A(E,H);C(E,H),E++;continue}if($+H>_+f){if(m(z)){L(E,H),y(E+1,0,$-H),E++;continue}if(j>=0){y(j,0,B);continue}if(H>_&&R[E]!==null){y(),F(E),E++;continue}y();continue}L(E,H),C(E,H),E++}if(u)y();return V}function J0(O,_,J){if(O.simpleLineWalkFastPath)return cO(O,_,J);let{widths:Y,lineEndFitAdvances:X,lineEndPaintAdvances:R,kinds:Z,breakableWidths:Q,breakablePrefixWidths:f,discretionaryHyphenWidth:V,tabStopAdvance:$,chunks:u}=O;if(Y.length===0||u.length===0)return 0;let q=h(),D=q.lineFitEpsilon,b=0,K=0,j=!1,B=0,k=0,y=0,A=0,T=-1,L=0,C=0,F=null;function P(){T=-1,L=0,C=0,F=null}function E(N=y,M=A,v=K){b++,J?.({startSegmentIndex:B,startGraphemeIndex:k,endSegmentIndex:N,endGraphemeIndex:M,width:v}),K=0,j=!1,P()}function H(N,M){j=!0,B=N,k=0,y=N+1,A=0,K=M}function z(N,M,v){j=!0,B=N,k=M,y=N,A=M+1,K=v}function W(N,M){if(!j){H(N,M);return}K+=M,y=N+1,A=0}function c(N,M){if(!m(Z[N]))return;let v=Z[N]==="tab"?0:X[N],w=Z[N]==="tab"?M:R[N];T=N+1,L=K-M+v,C=K-M+w,F=Z[N]}function I(N){o(N,0)}function o(N,M){let v=Q[N],w=f[N]??null;for(let G=M;G<v.length;G++){let l=t(v,w,G,q.preferPrefixWidthsForBreakableRuns);if(!j){z(N,G,l);continue}if(K+l>_+D)E(),z(N,G,l);else K+=l,y=N,A=G+1}if(j&&y===N&&A===v.length)y=N+1,A=0}function S(N){if(F!=="soft-hyphen")return!1;let M=Q[N];if(M===null)return!1;let v=q.preferPrefixWidthsForBreakableRuns?f[N]??M:M,w=v!==M,{fitCount:G,fittedWidth:l}=y0(v,K,_,D,V,w);if(G===0)return!1;if(K=l,y=N,A=G,P(),G===M.length)return y=N+1,A=0,!0;return E(N,G,l+V),o(N,G),!0}function U(N){b++,J?.({startSegmentIndex:N.startSegmentIndex,startGraphemeIndex:0,endSegmentIndex:N.consumedEndSegmentIndex,endGraphemeIndex:0,width:0}),P()}for(let N=0;N<u.length;N++){let M=u[N];if(M.startSegmentIndex===M.endSegmentIndex){U(M);continue}j=!1,K=0,B=M.startSegmentIndex,k=0,y=M.startSegmentIndex,A=0,P();let v=M.startSegmentIndex;while(v<M.endSegmentIndex){let w=Z[v],G=w==="tab"?w0(K,$):Y[v];if(w==="soft-hyphen"){if(j)y=v+1,A=0,T=v+1,L=K+V,C=K+V,F=w;v++;continue}if(!j){if(G>_&&Q[v]!==null)I(v);else H(v,G);c(v,G),v++;continue}if(K+G>_+D){let n=K+(w==="tab"?0:X[v]),e=K+(w==="tab"?G:R[v]);if(F==="soft-hyphen"&&q.preferEarlySoftHyphenBreak&&L<=_+D){E(T,0,C);continue}if(F==="soft-hyphen"&&S(v)){v++;continue}if(m(w)&&n<=_+D){W(v,G),E(v+1,0,e),v++;continue}if(T>=0&&L<=_+D){E(T,0,C);continue}if(G>_&&Q[v]!==null){E(),I(v),v++;continue}E();continue}W(v,G),c(v,G),v++}if(j){let w=T===M.consumedEndSegmentIndex?C:K;E(M.consumedEndSegmentIndex,0,w)}}return b}function S0(O,_,J){let Y=kO(O,_);if(Y===null)return null;if(O.simpleLineWalkFastPath)return oO(O,Y,J);let X=L0(O,Y.segmentIndex);if(X<0)return null;let R=O.chunks[X];if(R.startSegmentIndex===R.endSegmentIndex)return{startSegmentIndex:R.startSegmentIndex,startGraphemeIndex:0,endSegmentIndex:R.consumedEndSegmentIndex,endGraphemeIndex:0,width:0};let{widths:Z,lineEndFitAdvances:Q,lineEndPaintAdvances:f,kinds:V,breakableWidths:$,breakablePrefixWidths:u,discretionaryHyphenWidth:q,tabStopAdvance:D}=O,b=h(),K=b.lineFitEpsilon,j=0,B=!1,k=Y.segmentIndex,y=Y.graphemeIndex,A=k,T=y,L=-1,C=0,F=0,P=null;function E(){L=-1,C=0,F=0,P=null}function H(U=A,N=T,M=j){if(!B)return null;return{startSegmentIndex:k,startGraphemeIndex:y,endSegmentIndex:U,endGraphemeIndex:N,width:M}}function z(U,N){B=!0,A=U+1,T=0,j=N}function W(U,N,M){B=!0,A=U,T=N+1,j=M}function c(U,N){if(!B){z(U,N);return}j+=N,A=U+1,T=0}function I(U,N){if(!m(V[U]))return;let M=V[U]==="tab"?0:Q[U],v=V[U]==="tab"?N:f[U];L=U+1,C=j-N+M,F=j-N+v,P=V[U]}function o(U,N){let M=$[U],v=u[U]??null;for(let w=N;w<M.length;w++){let G=t(M,v,w,b.preferPrefixWidthsForBreakableRuns);if(!B){W(U,w,G);continue}if(j+G>J+K)return H();j+=G,A=U,T=w+1}if(B&&A===U&&T===M.length)A=U+1,T=0;return null}function S(U){if(P!=="soft-hyphen"||L<0)return null;let N=$[U]??null;if(N!==null){let M=b.preferPrefixWidthsForBreakableRuns?u[U]??N:N,v=M!==N,{fitCount:w,fittedWidth:G}=y0(M,j,J,K,q,v);if(w===N.length)return j=G,A=U+1,T=0,E(),null;if(w>0)return H(U,w,G+q)}if(C<=J+K)return H(L,0,F);return null}for(let U=Y.segmentIndex;U<R.endSegmentIndex;U++){let N=V[U],M=U===Y.segmentIndex?Y.graphemeIndex:0,v=N==="tab"?w0(j,D):Z[U];if(N==="soft-hyphen"&&M===0){if(B)A=U+1,T=0,L=U+1,C=j+q,F=j+q,P=N;continue}if(!B){if(M>0){let G=o(U,M);if(G!==null)return G}else if(v>J&&$[U]!==null){let G=o(U,0);if(G!==null)return G}else z(U,v);I(U,v);continue}if(j+v>J+K){let G=j+(N==="tab"?0:Q[U]),l=j+(N==="tab"?v:f[U]);if(P==="soft-hyphen"&&b.preferEarlySoftHyphenBreak&&C<=J+K)return H(L,0,F);let n=S(U);if(n!==null)return n;if(m(N)&&G<=J+K)return c(U,v),H(U+1,0,l);if(L>=0&&C<=J+K)return H(L,0,F);if(v>J&&$[U]!==null){let e=H();if(e!==null)return e;let v0=o(U,0);if(v0!==null)return v0}return H()}c(U,v),I(U,v)}if(L===R.consumedEndSegmentIndex&&T===0)return H(R.consumedEndSegmentIndex,0,F);return H(R.consumedEndSegmentIndex,0,j)}function oO(O,_,J){let{widths:Y,kinds:X,breakableWidths:R,breakablePrefixWidths:Z}=O,Q=h(),f=Q.lineFitEpsilon,V=0,$=!1,u=_.segmentIndex,q=_.graphemeIndex,D=u,b=q,K=-1,j=0;function B(C=D,F=b,P=V){if(!$)return null;return{startSegmentIndex:u,startGraphemeIndex:q,endSegmentIndex:C,endGraphemeIndex:F,width:P}}function k(C,F){$=!0,D=C+1,b=0,V=F}function y(C,F,P){$=!0,D=C,b=F+1,V=P}function A(C,F){if(!$){k(C,F);return}V+=F,D=C+1,b=0}function T(C,F){if(!m(X[C]))return;K=C+1,j=V-F}function L(C,F){let P=R[C],E=Z[C]??null;for(let H=F;H<P.length;H++){let z=t(P,E,H,Q.preferPrefixWidthsForBreakableRuns);if(!$){y(C,H,z);continue}if(V+z>J+f)return B();V+=z,D=C,b=H+1}if($&&D===C&&b===P.length)D=C+1,b=0;return null}for(let C=_.segmentIndex;C<Y.length;C++){let F=Y[C],P=X[C],E=C===_.segmentIndex?_.graphemeIndex:0;if(!$){if(E>0){let z=L(C,E);if(z!==null)return z}else if(F>J&&R[C]!==null){let z=L(C,0);if(z!==null)return z}else k(C,F);T(C,F);continue}if(V+F>J+f){if(m(P))return A(C,F),B(C+1,0,V-F);if(K>=0)return B(K,0,j);if(F>J&&R[C]!==null){let z=B();if(z!==null)return z;let W=L(C,0);if(W!==null)return W}return B()}A(C,F),T(C,F)}return B()}var R0=null,C0=new WeakMap;function I0(){if(R0===null)R0=new Intl.Segmenter(void 0,{granularity:"grapheme"});return R0}function lO(O){if(O)return{widths:[],lineEndFitAdvances:[],lineEndPaintAdvances:[],kinds:[],simpleLineWalkFastPath:!0,segLevels:null,breakableWidths:[],breakablePrefixWidths:[],discretionaryHyphenWidth:0,tabStopAdvance:0,chunks:[],segments:[]};return{widths:[],lineEndFitAdvances:[],lineEndPaintAdvances:[],kinds:[],simpleLineWalkFastPath:!0,segLevels:null,breakableWidths:[],breakablePrefixWidths:[],discretionaryHyphenWidth:0,tabStopAdvance:0,chunks:[]}}function c0(O,_,J){let Y=I0(),X=h(),{cache:R,emojiCorrection:Z}=B0(_,G0(O.normalized)),Q=g("-",x("-",R),Z),V=g(" ",x(" ",R),Z)*8;if(O.len===0)return lO(J);let $=[],u=[],q=[],D=[],b=O.chunks.length<=1,K=J?[]:null,j=[],B=[],k=J?[]:null,y=Array.from({length:O.len}),A=Array.from({length:O.len});function T(F,P,E,H,z,W,c,I){if(z!=="text"&&z!=="space"&&z!=="zero-width-break")b=!1;if($.push(P),u.push(E),q.push(H),D.push(z),K?.push(W),j.push(c),B.push(I),k!==null)k.push(F)}for(let F=0;F<O.len;F++){y[F]=$.length;let P=O.texts[F],E=O.isWordLike[F],H=O.kinds[F],z=O.starts[F];if(H==="soft-hyphen"){T(P,0,Q,Q,H,z,null,null),A[F]=$.length;continue}if(H==="hard-break"){T(P,0,0,0,H,z,null,null),A[F]=$.length;continue}if(H==="tab"){T(P,0,0,0,H,z,null,null),A[F]=$.length;continue}let W=x(P,R);if(H==="text"&&W.containsCJK){let S="",U=0;for(let N of Y.segment(P)){let M=N.segment;if(S.length===0){S=M,U=N.index;continue}if(i.has(S)||$0.has(M)||r.has(M)||X.carryCJKAfterClosingQuote&&p(M)&&D0(S)){S+=M;continue}let v=x(S,R),w=g(S,v,Z);T(S,w,w,w,"text",z+U,null,null),S=M,U=N.index}if(S.length>0){let N=x(S,R),M=g(S,N,Z);T(S,M,M,M,"text",z+U,null,null)}A[F]=$.length;continue}let c=g(P,W,Z),I=H==="space"||H==="preserved-space"||H==="zero-width-break"?0:c,o=H==="space"||H==="zero-width-break"?0:c;if(E&&P.length>1){let S=P0(P,W,R,Z),U=X.preferPrefixWidthsForBreakableRuns?A0(P,W,R,Z):null;T(P,c,I,o,H,z,S,U)}else T(P,c,I,o,H,z,null,null);A[F]=$.length}let L=hO(O.chunks,y,A),C=K===null?null:u0(O.normalized,K);if(k!==null)return{widths:$,lineEndFitAdvances:u,lineEndPaintAdvances:q,kinds:D,simpleLineWalkFastPath:b,segLevels:C,breakableWidths:j,breakablePrefixWidths:B,discretionaryHyphenWidth:Q,tabStopAdvance:V,chunks:L,segments:k};return{widths:$,lineEndFitAdvances:u,lineEndPaintAdvances:q,kinds:D,simpleLineWalkFastPath:b,segLevels:C,breakableWidths:j,breakablePrefixWidths:B,discretionaryHyphenWidth:Q,tabStopAdvance:V,chunks:L}}function hO(O,_,J){let Y=[];for(let X=0;X<O.length;X++){let R=O[X],Z=R.startSegmentIndex<_.length?_[R.startSegmentIndex]:J[J.length-1]??0,Q=R.endSegmentIndex<_.length?_[R.endSegmentIndex]:J[J.length-1]??0,f=R.consumedEndSegmentIndex<_.length?_[R.consumedEndSegmentIndex]:J[J.length-1]??0;Y.push({startSegmentIndex:Z,endSegmentIndex:Q,consumedEndSegmentIndex:f})}return Y}function o0(O,_,J,Y){let X=N0(O,h(),Y?.whiteSpace);return c0(X,_,J)}function V1(O,_,J){let Y=performance.now(),X=N0(O,h(),J?.whiteSpace),R=performance.now(),Z=c0(X,_,!1),Q=performance.now(),f=0;for(let V of Z.breakableWidths)if(V!==null)f++;return{analysisMs:R-Y,measureMs:Q-R,totalMs:Q-Y,analysisSegments:X.len,preparedSegments:Z.widths.length,breakableSegments:f}}function X1(O,_,J){return o0(O,_,!1,J)}function Y1(O,_,J){return o0(O,_,!0,J)}function F0(O){return O}function Z1(O,_,J){let Y=W0(F0(O),_);return{lineCount:Y,height:Y*J}}function k0(O,_,J){let Y=J.get(O);if(Y!==void 0)return Y;Y=[];let X=I0();for(let R of X.segment(_[O]))Y.push(R.segment);return J.set(O,Y),Y}function l0(O){let _=C0.get(O);if(_!==void 0)return _;return _=new Map,C0.set(O,_),_}function pO(O,_,J,Y){return Y>0&&O[Y-1]==="soft-hyphen"&&!(_===Y&&J>0)}function xO(O,_,J,Y,X,R,Z){let Q="",f=pO(_,Y,X,R);for(let V=Y;V<R;V++){if(_[V]==="soft-hyphen"||_[V]==="hard-break")continue;if(V===Y&&X>0)Q+=k0(V,O,J).slice(X).join("");else Q+=O[V]}if(Z>0){if(f)Q+="-";Q+=k0(R,O,J).slice(Y===R?X:0,Z).join("")}else if(f)Q+="-";return Q}function h0(O,_,J,Y,X,R,Z){return{text:xO(O.segments,O.kinds,_,Y,X,R,Z),width:J,start:{segmentIndex:Y,graphemeIndex:X},end:{segmentIndex:R,graphemeIndex:Z}}}function gO(O,_,J){return h0(O,_,J.width,J.startSegmentIndex,J.startGraphemeIndex,J.endSegmentIndex,J.endGraphemeIndex)}function p0(O){return{width:O.width,start:{segmentIndex:O.startSegmentIndex,graphemeIndex:O.startGraphemeIndex},end:{segmentIndex:O.endSegmentIndex,graphemeIndex:O.endGraphemeIndex}}}function mO(O,_,J){let Y=S0(O,_,J);if(Y===null)return null;return p0(Y)}function rO(O,_){return h0(O,l0(O),_.width,_.start.segmentIndex,_.start.graphemeIndex,_.end.segmentIndex,_.end.graphemeIndex)}function $1(O,_,J){if(O.widths.length===0)return 0;return J0(F0(O),_,(Y)=>{J(p0(Y))})}function Q1(O,_,J){let Y=mO(O,_,J);if(Y===null)return null;return rO(O,Y)}function q1(O,_,J){let Y=[];if(O.widths.length===0)return{lineCount:0,height:0,lines:Y};let X=l0(O),R=J0(F0(O),_,(Z)=>{Y.push(gO(O,X,Z))});return{lineCount:R,height:R*J,lines:Y}}function aO(){z0(),R0=null,C0=new WeakMap,T0()}function D1(O){j0(O),aO()}
+
+</script>
+
+<script>
+window.Pretext = {walkLineRanges:$1,setLocale:D1,profilePrepare:V1,prepareWithSegments:Y1,prepare:X1,layoutWithLines:q1,layoutNextLine:Q1,layout:Z1,clearCache:aO};
+(function () {
+  "use strict";
+
+  function L(zh, en) {
+    return document.documentElement.getAttribute("data-lang") === "en" ? en : zh;
+  }
+
+  /* ---------- Install tabs (both install blocks share behavior) ---------- */
+  var COMMANDS = {
+    curl:  "curl -fsSL https://phimint.com/install.sh | bash",
+    brew:  "brew install hibuka-labs/phimint/phimint",
+    npm:   "npm install -g phimint",
+    cargo: "cargo install phimint"
+  };
+  document.querySelectorAll(".install").forEach(function (block) {
+    var tabs = block.querySelectorAll(".install-tabs button");
+    var code = block.querySelector("code");
+    var btn  = block.querySelector(".copy");
+    tabs.forEach(function (tab) {
+      tab.addEventListener("click", function () {
+        tabs.forEach(function (t) { t.classList.remove("on"); t.setAttribute("aria-selected", "false"); });
+        tab.classList.add("on"); tab.setAttribute("aria-selected", "true");
+        var cmd = COMMANDS[tab.dataset.cmd];
+        code.innerHTML = '<span class="p">$ </span><span class="hl"></span>';
+        code.querySelector(".hl").textContent = cmd;
+        btn.classList.remove("done"); btn.textContent = L("复制", "Copy");
+      });
+    });
+    btn.addEventListener("click", function () {
+      var cmd = code.querySelector(".hl").textContent;
+      function ok() { btn.textContent = L("已复制 ✓", "Copied ✓"); btn.classList.add("done");
+        setTimeout(function () { btn.textContent = L("复制", "Copy"); btn.classList.remove("done"); }, 1800); }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(cmd).then(ok, ok);
+      } else {
+        var ta = document.createElement("textarea");
+        ta.value = cmd; document.body.appendChild(ta); ta.select();
+        try { document.execCommand("copy"); } catch (e) {}
+        document.body.removeChild(ta); ok();
+      }
+    });
+  });
+
+  /* ---------- Theme: 自动 / 浅 / 深 ---------- */
+  (function () {
+    var KEY = "phimint-theme";
+    var opts = document.querySelectorAll("[data-theme-opt]");
+    function apply(mode, persist) {
+      var resolved = mode === "auto"
+        ? (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark")
+        : mode;
+      document.documentElement.setAttribute("data-theme", resolved);
+      if (persist) { try { localStorage.setItem(KEY, mode); } catch (e) {} }
+      window.__phimintThemeMode = mode;
+      opts.forEach(function (a) {
+        a.classList.toggle("on", a.getAttribute("data-theme-opt") === mode);
+      });
+    }
+    var saved = "auto";
+    try {
+      var s = localStorage.getItem(KEY);
+      if (s === "light" || s === "dark" || s === "auto") saved = s;
+    } catch (e) {}
+    apply(saved, false);
+    opts.forEach(function (a) {
+      a.addEventListener("click", function (e) {
+        e.preventDefault();
+        apply(a.getAttribute("data-theme-opt"), true);
+      });
+    });
+    if (window.matchMedia) {
+      window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", function () {
+        if (window.__phimintThemeMode === "auto") apply("auto", false);
+      });
+    }
+  })();
+
+  /* ---------- Language: 中文 / English ---------- */
+  (function () {
+    var KEY = "phimint-lang";
+    var opts = document.querySelectorAll("[data-lang-opt]");
+    function detect() {
+      try {
+        var saved = localStorage.getItem(KEY);
+        if (saved === "zh" || saved === "en") return saved;
+      } catch (e) {}
+      var ls = navigator.languages || [navigator.language || ""];
+      for (var i = 0; i < ls.length; i++) {
+        if (/^zh/i.test(ls[i] || "")) return "zh";
+      }
+      return "en";
+    }
+    function apply(lang) {
+      document.documentElement.setAttribute("data-lang", lang);
+      document.documentElement.lang = lang === "en" ? "en" : "zh-CN";
+      document.querySelectorAll("[data-en]").forEach(function (el) {
+        if (!el.hasAttribute("data-zh")) el.setAttribute("data-zh", el.innerHTML);
+        el.innerHTML = lang === "en" ? el.getAttribute("data-en") : el.getAttribute("data-zh");
+      });
+      document.querySelectorAll("[data-en-aria]").forEach(function (el) {
+        if (!el.hasAttribute("data-zh-aria")) el.setAttribute("data-zh-aria", el.getAttribute("aria-label") || "");
+        el.setAttribute("aria-label", lang === "en" ? el.getAttribute("data-en-aria") : el.getAttribute("data-zh-aria"));
+      });
+      document.querySelectorAll("[data-en-alt]").forEach(function (el) {
+        if (!el.hasAttribute("data-zh-alt")) el.setAttribute("data-zh-alt", el.getAttribute("alt") || "");
+        el.setAttribute("alt", lang === "en" ? el.getAttribute("data-en-alt") : el.getAttribute("data-zh-alt"));
+      });
+      var title = document.querySelector("title[data-en]");
+      if (title) {
+        if (!title.hasAttribute("data-zh")) title.setAttribute("data-zh", title.textContent);
+        title.textContent = lang === "en" ? title.getAttribute("data-en") : title.getAttribute("data-zh");
+      }
+      var meta = document.querySelector('meta[name="description"][data-en]');
+      if (meta) {
+        if (!meta.hasAttribute("data-zh")) meta.setAttribute("data-zh", meta.getAttribute("content") || "");
+        meta.setAttribute("content", lang === "en" ? meta.getAttribute("data-en") : meta.getAttribute("data-zh"));
+      }
+      opts.forEach(function (a) {
+        a.classList.toggle("on", a.getAttribute("data-lang-opt") === lang);
+      });
+      window.__phimintLang = lang;
+      if (window.__phimintPretextRemeasure) window.__phimintPretextRemeasure();
+    }
+    apply(detect());
+    opts.forEach(function (a) {
+      a.addEventListener("click", function (e) {
+        e.preventDefault();
+        var lang = a.getAttribute("data-lang-opt");
+        try { localStorage.setItem(KEY, lang); } catch (err) {}
+        apply(lang);
+      });
+    });
+  })();
+
+  /* ---------- Reveal on scroll ---------- */
+  if ("IntersectionObserver" in window) {
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); }
+      });
+    }, { threshold: 0.12, rootMargin: "0px 0px -40px 0px" });
+    document.querySelectorAll(".reveal").forEach(function (el) { io.observe(el); });
+  } else {
+    document.querySelectorAll(".reveal").forEach(function (el) { el.classList.add("in"); });
+  }
+
+  /* ---------- Pretext: computed text heights (progressive enhancement) ---------- */
+  function wirePretext() {
+    if (!window.Pretext || !window.Pretext.prepare) return;
+    var prepare = window.Pretext.prepare, layout = window.Pretext.layout;
+    var prepared = new Map();
+    function measure(el) {
+      var font = getComputedStyle(el).font;
+      prepared.set(el, prepare(el.textContent, font));
+    }
+    function relayout() {
+      prepared.forEach(function (handle, el) {
+        var cs = getComputedStyle(el);
+        var r = layout(handle, el.clientWidth, parseFloat(cs.lineHeight));
+        if (r && r.height) el.style.minHeight = r.height + "px";
+      });
+    }
+    var els = document.querySelectorAll("[data-pretext]");
+    if (!els.length) return;
+    if (document.fonts && document.fonts.ready) {
+      document.fonts.ready.then(function () {
+        els.forEach(measure); relayout();
+      });
+    } else {
+      els.forEach(measure); relayout();
+    }
+    if ("ResizeObserver" in window) {
+      new ResizeObserver(relayout).observe(document.body);
+    } else {
+      window.addEventListener("resize", relayout);
+    }
+    window.__phimintPretextRemeasure = function () {
+      els.forEach(measure);
+      relayout();
+    };
+  }
+  wirePretext();
+})();
+</script>
+
+</body>
+</html>
