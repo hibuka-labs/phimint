@@ -571,7 +571,7 @@
         <button data-cmd="cargo" role="tab" aria-selected="false">cargo</button>
       </div>
       <div class="install-cmd">
-        <code id="cmd-text"><span class="p">$ </span><span class="hl">curl -fsSL https://phimint.com/install.sh | bash</span></code>
+        <code id="cmd-text"><span class="p">$ </span><span class="hl">curl -fsSL https://gitee.com/chenkangzeng_admin/phimint/releases/download/latest/install.sh | PHIMINT_MIRROR=gitee bash</span></code>
         <button class="copy" id="copy-btn" aria-label="复制安装命令" data-en="Copy" data-en-aria="Copy install command">复制</button>
       </div>
     </div>
@@ -758,7 +758,7 @@
         <button data-cmd="cargo" role="tab" aria-selected="false">cargo</button>
       </div>
       <div class="install-cmd">
-        <code class="cmd-text"><span class="p">$ </span><span class="hl">curl -fsSL https://phimint.com/install.sh | bash</span></code>
+        <code class="cmd-text"><span class="p">$ </span><span class="hl">curl -fsSL https://gitee.com/chenkangzeng_admin/phimint/releases/download/latest/install.sh | PHIMINT_MIRROR=gitee bash</span></code>
         <button class="copy" aria-label="复制安装命令" data-en="Copy" data-en-aria="Copy install command">复制</button>
       </div>
     </div>
@@ -861,11 +861,29 @@ window.Pretext = {walkLineRanges:$1,setLocale:D1,profilePrepare:V1,prepareWithSe
 
   /* ---------- Install tabs (both install blocks share behavior) ---------- */
   var COMMANDS = {
-    curl:  "curl -fsSL https://phimint.com/install.sh | bash",
+    curl:  function () {
+      return L(
+        "curl -fsSL https://gitee.com/chenkangzeng_admin/phimint/releases/download/latest/install.sh | PHIMINT_MIRROR=gitee bash",
+        "curl -fsSL https://github.com/hibuka-labs/phimint/releases/latest/download/install.sh | bash"
+      );
+    },
     brew:  "brew install hibuka-labs/phimint/phimint",
     npm:   "npm install -g phimint",
     cargo: "cargo install phimint"
   };
+  function resolveCmd(name) {
+    var v = COMMANDS[name];
+    return typeof v === "function" ? v() : v;
+  }
+  function refreshInstallCmds() {
+    document.querySelectorAll(".install").forEach(function (block) {
+      var active = block.querySelector(".install-tabs button.on");
+      var code = block.querySelector("code");
+      var hl = code && code.querySelector(".hl");
+      if (active && hl) hl.textContent = resolveCmd(active.dataset.cmd);
+    });
+  }
+  window.__phimintRefreshInstallCmd = refreshInstallCmds;
   document.querySelectorAll(".install").forEach(function (block) {
     var tabs = block.querySelectorAll(".install-tabs button");
     var code = block.querySelector("code");
@@ -874,7 +892,7 @@ window.Pretext = {walkLineRanges:$1,setLocale:D1,profilePrepare:V1,prepareWithSe
       tab.addEventListener("click", function () {
         tabs.forEach(function (t) { t.classList.remove("on"); t.setAttribute("aria-selected", "false"); });
         tab.classList.add("on"); tab.setAttribute("aria-selected", "true");
-        var cmd = COMMANDS[tab.dataset.cmd];
+        var cmd = resolveCmd(tab.dataset.cmd);
         code.innerHTML = '<span class="p">$ </span><span class="hl"></span>';
         code.querySelector(".hl").textContent = cmd;
         btn.classList.remove("done"); btn.textContent = L("复制", "Copy");
@@ -973,6 +991,7 @@ window.Pretext = {walkLineRanges:$1,setLocale:D1,profilePrepare:V1,prepareWithSe
         a.classList.toggle("on", a.getAttribute("data-lang-opt") === lang);
       });
       window.__phimintLang = lang;
+      if (window.__phimintRefreshInstallCmd) window.__phimintRefreshInstallCmd();
       if (window.__phimintPretextRemeasure) window.__phimintPretextRemeasure();
     }
     apply(detect());
