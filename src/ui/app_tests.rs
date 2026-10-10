@@ -223,7 +223,7 @@ fn text_deltas_coalesce_into_fewer_lines() {
     app.handle_event(TuiEvent::Runtime(text("hel")));
     app.handle_event(TuiEvent::Runtime(text("lo ")));
     app.handle_event(TuiEvent::Runtime(text("world")));
-    app.handle_event(TuiEvent::Runtime(tool_started("verify"))); // flush
+    app.handle_event(TuiEvent::Runtime(tool_started("build"))); // flush
     let normals: Vec<_> = app
         .transcript
         .output
@@ -238,7 +238,7 @@ fn text_deltas_coalesce_into_fewer_lines() {
 fn text_with_newline_splits_lines() {
     let mut app = App::new();
     app.handle_event(TuiEvent::Runtime(text("a\nb")));
-    app.handle_event(TuiEvent::Runtime(tool_started("verify")));
+    app.handle_event(TuiEvent::Runtime(tool_started("build")));
     let normals: Vec<_> = app
         .transcript
         .output
@@ -799,7 +799,7 @@ fn streaming_tail_exposes_uncommitted_text() {
     assert_eq!(kind, LineKind::Normal);
     // A structural event flushes the tail into committed output (and, for a
     // tool call, also appends an inline invocation line).
-    app.handle_event(TuiEvent::Runtime(tool_started("verify")));
+    app.handle_event(TuiEvent::Runtime(tool_started("build")));
     assert_eq!(app.streaming_tail_lines(), None);
     assert_eq!(app.transcript.output[0].text, "hello");
     assert_eq!(app.transcript.output[1].kind, LineKind::Tool);
@@ -1229,8 +1229,8 @@ fn last_reply_text_skips_tools_and_stops_at_previous_user() {
 
     app.push_user("turn two");
     app.handle_event(TuiEvent::Runtime(text("part one")));
-    app.handle_event(TuiEvent::Runtime(tool_started("verify")));
-    app.handle_event(TuiEvent::Runtime(tool_finished("verify", false)));
+    app.handle_event(TuiEvent::Runtime(tool_started("build")));
+    app.handle_event(TuiEvent::Runtime(tool_finished("build", false)));
     app.handle_event(TuiEvent::Runtime(text("part two")));
     app.handle_event(TuiEvent::Runtime(run_finished(None)));
 

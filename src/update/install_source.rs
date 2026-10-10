@@ -61,6 +61,26 @@ impl InstallSource {
     pub fn supports_self_update(&self) -> bool {
         matches!(self, InstallSource::Standalone)
     }
+
+    /// The uninstall command for this channel.
+    ///
+    /// Mirrors [`Self::upgrade_command`]: managed installs are removed by their
+    /// own package manager (and we must never delete their binary ourselves),
+    /// while a standalone install owns its file outright.
+    pub fn uninstall_command(&self) -> &'static str {
+        match self {
+            InstallSource::Brew => "brew uninstall phimint",
+            InstallSource::Npm => "npm uninstall -g phimint",
+            InstallSource::Cargo => "cargo uninstall phimint",
+            // Self-removal: `phimint uninstall` deletes its own executable.
+            InstallSource::Standalone => "phimint uninstall",
+        }
+    }
+
+    /// Whether a package manager owns this binary and therefore owns removing it.
+    pub fn is_managed(&self) -> bool {
+        !matches!(self, InstallSource::Standalone)
+    }
 }
 
 /// Classify an install source from the executable path.
@@ -195,5 +215,33 @@ mod tests {
             InstallSource::Standalone.upgrade_command(),
             "phimint update"
         );
+    }
+
+    #[test]
+    fn uninstall_commands_match_channel_owner() {
+        assert_eq!(
+            InstallSource::Brew.uninstall_command(),
+            "brew uninstall phimint"
+        );
+        assert_eq!(
+            InstallSource::Npm.uninstall_command(),
+            "npm uninstall -g phimint"
+        );
+        assert_eq!(
+            InstallSource::Cargo.uninstall_command(),
+            "cargo uninstall phimint"
+        );
+    }
+
+    #[test]
+    fn managed_is_the_inverse_of_standalone() {
+        for src in [
+            InstallSource::Brew,
+            InstallSource::Npm,
+            InstallSource::Cargo,
+            InstallSource::Standalone,
+        ] {
+            assert_eq!(src.is_managed(), !src.supports_self_update());
+        }
     }
 }

@@ -28,9 +28,9 @@ pub use phi_agent::ApprovalItem;
 
 // ── Command risk classification ─────────────────────────────────────────────
 
-/// Read-only / verification commands that are safe to auto-approve.
+/// Read-only / build commands that are safe to auto-approve.
 ///
-/// `cargo check/build/test/run/…` is the agent's verify loop — it must stay
+/// `cargo check/build/test/run/…` is the agent's build loop — it must stay
 /// frictionless or the coding loop stalls on every compile. Destructive
 /// patterns are matched *first*, so `cargo install` (see below) still prompts.
 const SAFE_PREFIXES: &[&str] = &[
@@ -158,10 +158,8 @@ fn command_action_key(command: &str) -> String {
 impl ToolPolicy for ApprovalPolicy {
     async fn evaluate_approval(&self, tool_name: &str, args: &Value) -> Option<ApprovalRequest> {
         match tool_name {
-            // Read-only context tools + verify — always auto-approved.
-            // `verify` only runs `cargo check`; the actual writes happen via
-            // write_file/edit_file, which are gated above.
-            "read_file" | "list_files" | "search_content" | "repo_map" | "verify" => None,
+            // Read-only context tools — always auto-approved.
+            "read_file" | "list_files" | "search_content" | "repo_map" => None,
 
             // File mutations — prompt (Sensitive). `action_key` is scoped to the
             // path so `AllowAlways` grants a narrow standing approval (this file
@@ -350,7 +348,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn classify_safe_verify_commands() {
+    fn classify_safe_build_commands() {
         for cmd in [
             "cargo check",
             "cargo build --release",
@@ -440,11 +438,6 @@ mod tests {
         );
         assert!(
             p.evaluate_approval("search_content", &serde_json::json!({}))
-                .await
-                .is_none()
-        );
-        assert!(
-            p.evaluate_approval("verify", &serde_json::json!({}))
                 .await
                 .is_none()
         );

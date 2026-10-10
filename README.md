@@ -1,6 +1,6 @@
 # phimint
 
-**Pronounced** `/ˈfaɪmɪnt/` ("fie-mint", phi + mint) — a terminal AI coding agent built on [phi-agent](https://github.com/hibuka-labs/phi-agent). Product first; it also serves as the real-world stress test for the framework.
+**Pronounced** `/ˈfaɪmɪnt/` ("fie-mint", phi + mint) — a terminal AI coding agent built on [phi-agent](https://docs.phiagent.dev/), the agent runtime beneath it. *Not just good at chat — it gets the job done right.*
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-edition%202024-orange.svg)](https://www.rust-lang.org)
@@ -10,7 +10,7 @@
 
 *phimint needs one API key in `~/.phimint/config.json` — a one-minute step, see [Quick start](#quick-start).*
 
-phimint runs the full coding loop — understand the request, read the code, change multiple files, compile and test, iterate on failures. The design goal is **verify-before-deliver**: changes are verified before they are reported. That discipline is currently carried by the system prompt (compile/tests must pass before shipping); a hard enforcement gate is implemented but deliberately parked (see [Roadmap](#roadmap)).
+phimint runs the full coding loop — understand the request, read the code, change multiple files, compile and test, iterate on failures.
 
 ## Features
 
@@ -21,7 +21,7 @@ phimint runs the full coding loop — understand the request, read the code, cha
 - **Multi-agent fan-out, push-based fan-in** — `spawn_agent` sends read-only sub-agents to investigate; the main agent gets the **full reports at end of turn** (no polling). The TUI task panel tracks each sub-agent live; a 10-minute per-task hard timeout guarantees delivery.
 - **Three approval modes** — `auto` (full auto), `ask` (prompt on writes/risky shell), `deny` (read-only). Sub-agents inherit the main agent's mode (and can never write).
 - **Guardrails** — reasoning-only spin correction, max-turns nudge, provider truncation guard (lying `finish_reason` tolerance, from agent-base), 16k tool-output cap.
-- **Multi-language** — `code-intel` registry (extension → LSP server → verify fallback): Rust, TypeScript, JavaScript, C, C++ out of the box.
+- **Multi-language** — `code-intel` registry (extension → LSP server → build-command fallback): Rust, TypeScript, JavaScript, C, C++ out of the box.
 - **Modular base** — chat UI components and language intelligence are distilled into their own crates: [`phi-tui`](https://github.com/hibuka-labs/phi-tui) (chat TUI components) and [`code-intel`](https://github.com/hibuka-labs/code-intel) (LSP/repomap/ripgrep cores). phimint keeps only the product shell.
 
 ## Quick start
@@ -49,7 +49,7 @@ $env:PHIMINT_MIRROR='gitee'; irm https://gitee.com/chenkangzeng_admin/phimint/re
 Or use a package manager:
 
 ```bash
-brew install phimint                     # macOS / Linux (Homebrew)
+brew install hibuka-labs/phimint/phimint   # macOS / Linux (Homebrew)
 npm install -g phimint                   # also: pnpm add -g phimint / yarn global add phimint
 cargo install phimint                    # from crates.io
 ```
@@ -59,6 +59,12 @@ Upgrade: `phimint update` for one-liner installs, or `brew upgrade phimint` /
 you installed. Mainland China users can download from
 [Gitee Releases](https://gitee.com/chenkangzeng_admin/phimint/releases);
 the updater falls back to the Gitee mirror automatically.
+
+Uninstall: `phimint uninstall`. It removes the binary through whichever channel
+installed it, then deletes `~/.phimint/` — your config (including the API key),
+sessions, history and notes. `--keep-data` leaves that directory alone,
+`--yes` skips the prompt. On Windows it also drops the PATH entry the installer
+added.
 
 ### 2. Configure
 
@@ -125,6 +131,12 @@ Commands:
                      installs; brew/npm/cargo installs get the matching upgrade
                      command instead). `phimint update --check` reports only.
 
+  uninstall          remove phimint and the data it left behind. The binary goes
+                     back to whichever channel installed it; then ~/.phimint/
+                     (API key, sessions, history, notes) is deleted and the
+                     Windows PATH entry the installer added is dropped.
+                     --keep-data leaves ~/.phimint/ alone. --yes skips the prompt.
+
   -w, --workspace <PATH>       workspace directory (default: current directory)
       --model <NAME>           main model (overrides config.json)
       --lite-model <NAME>      lite model (overrides config.json)
@@ -180,7 +192,7 @@ you: "add a cached get_user function to the lib"
 2. edit_file / write_file the change
 3. diagnostics for type errors in seconds (LSP fast loop, no recompile)
 4. execute_command cargo check / tests → fix → rerun until green
-5. summarize the diff and report (system prompt: verify before deliver)
+5. summarize the diff and report
 ```
 
 ### A typical multi-agent run
@@ -207,7 +219,7 @@ you: "investigate questions X / Y / Z"
 
 ## How it works
 
-phimint is a consumer of the `phi-agent` framework: the agent loop, ReAct, approvals, session event stream and guards all come from the framework (one facade dependency). phimint brings the product shell — system prompt, tool registration, approval wiring, TUI.
+phimint is a consumer of the [`phi-agent`](https://docs.phiagent.dev/) framework: the agent loop, ReAct, approvals, session event stream and guards all come from the framework (one facade dependency). phimint brings the product shell — system prompt, tool registration, approval wiring, TUI.
 
 - **Push-based fan-in** (agent-works) — sub-agent reports are held on completion and injected as a new turn the instant the main agent's turn ends; progress is display-only (never wakes or interrupts). A task over 10 minutes is hard-stopped with an Error result, so a hung child can always wake the parent. Children are hard-gated read-only: `write_file` / `edit_file` / `execute_command` never enter their tool surface.
 - **TUI architecture** — `ui/run.rs` runs a background task per agent turn pushing `RuntimeEvent`s over an mpsc channel; the main loop feeds events into the `App` state machine, polls keys and repaints. Input and events only meet through channels — no shared mutable state, zero intrusion into the agent loop.
@@ -238,7 +250,6 @@ phimint/
 │   ├── agent.rs       # system prompt + tool registration + multi-agent/guard/approval wiring
 │   ├── approval.rs    # two layers: ApprovalPolicy gate + decision handler (TUI queue)
 │   ├── banner.rs      # startup banner (light + dark palettes)
-│   ├── gate.rs        # hard verify gate (VerifyEnforcementMiddleware, currently parked)
 │   ├── skills.rs      # thin Skill shell: agent-works skill subsystem + default dir policy
 │   ├── tools/         # application tool shells (cores live in code-intel)
 │   │   ├── diagnostics.rs   # LSP diagnostics tool
@@ -257,7 +268,6 @@ phimint/
 
 ## Roadmap
 
-- **Verify-before-deliver (PARKED)** — `gate.rs`'s `VerifyEnforcementMiddleware` is implemented: it blocks "done" if code changed without a verification run and injects a "verify first" nudge. Wiring is commented out (`agent.rs`); the discipline currently rides on the system prompt. Re-enabling restores the hard guarantee.
 - **Controlled child writes** — evolve sub-agents from read-only investigation to restricted write delegation (`ChildPermissionMode` groundwork already lands in agent-works).
 
 ## Development

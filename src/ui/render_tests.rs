@@ -45,7 +45,7 @@ fn populated_app() -> App {
     app.running = true;
     app.status = AgentStatus::Running {
         phase: Phase::ToolCall {
-            tool: "verify".into(),
+            tool: "build".into(),
         },
     };
     app

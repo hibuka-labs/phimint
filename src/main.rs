@@ -131,15 +131,39 @@ enum Commands {
         #[arg(long)]
         check: bool,
     },
+
+    /// Remove phimint and the data it left behind.
+    ///
+    /// The binary goes back to the channel that owns it (brew/npm/cargo run
+    /// their own uninstall; a standalone install is deleted here). Then
+    /// `~/.phimint/` is removed — that tree holds your API key and sessions,
+    /// which no package manager knows about — and the Windows user-PATH entry
+    /// the installer added is dropped.
+    Uninstall {
+        /// Keep ~/.phimint (config, sessions, history, notes).
+        #[arg(long)]
+        keep_data: bool,
+
+        /// Skip the confirmation prompt.
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // `phimint update` runs the update cycle and exits — no workspace, no TUI.
-    if let Some(Commands::Update { check }) = cli.command {
-        return run_update_command(check, cli.config.as_deref()).await;
+    // Subcommands run without a workspace and without starting the TUI, so
+    // they dispatch before the `cd` below and before any config is loaded.
+    match cli.command {
+        Some(Commands::Update { check }) => {
+            return run_update_command(check, cli.config.as_deref()).await;
+        }
+        Some(Commands::Uninstall { keep_data, yes }) => {
+            return run_uninstall_command(keep_data, yes);
+        }
+        None => {}
     }
 
     // Resolve the workspace to an absolute path and `cd` into it, so that both
@@ -303,14 +327,12 @@ async fn main() -> Result<()> {
         session_id: session_ctx.session_id.clone(),
     };
 
-    // `deny` mode is read-only (all write tools rejected), so the enforced verify gate is pointless and off.
     let (agent, skill_resolver, skill_telemetry, bg_registry) = agent::build(
         llm_client,
         approval,
         policy,
         cli.shell_timeout_ms,
         workspace.clone(),
-        cli.approval != "deny",
         cli.thinking_budget,
         &cli.reasoning_effort,
         llm_config.model.clone(),
@@ -534,4 +556,18 @@ async fn run_update_command(check_only: bool, config_path: Option<&str>) -> Resu
     println!("Updated to {version}: {}", path.display());
     println!("Restart phimint to use the new version.");
     Ok(())
+}
+
+/// `phimint uninstall` — remove the binary and the data it left behind.
+///
+/// The binary is always handed to whoever owns it: brew/npm/cargo run their own
+/// uninstall, a standalone install deletes its own file. The two things no
+/// package manager can see — the `~/.phimint/` tree and the Windows user-PATH
+/// entry `install.ps1` added — are cleaned up here.
+fn run_uninstall_command(keep_data: bool, yes: bool) -> Result<()> {
+    use phimint::uninstall;
+
+    let plan = uninstall::plan(!keep_data)?;
+    print!("{}", plan.describe());
+    uninstall::run(&plan, yes)
 }

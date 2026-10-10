@@ -259,7 +259,6 @@ pub fn build(
     policy: Option<Arc<dyn ToolPolicy>>,
     shell_timeout_ms: u64,
     workspace_root: PathBuf,
-    writes_possible: bool,
     thinking_budget: u64,
     reasoning_effort: &str,
     model: String,
@@ -288,10 +287,6 @@ pub fn build(
     // Keep a handle for the guard below — `llm_client` itself is moved into the
     // builder here.
     let guard_client = Arc::clone(&llm_client);
-    // PARKED with the verify gate below: the flag only feeds the (currently
-    // commented-out) `VerifyEnforcementMiddleware` wiring. Keep the parameter
-    // so re-enabling the gate needs no signature change.
-    let _ = writes_possible;
 
     // Token-budget context management: when enabled, use window rotation +
     // history/notes tools instead of LLM-based summarization.
@@ -521,17 +516,6 @@ pub fn build(
     builder = builder.middleware(RepeatToolLimitMiddleware::new(
         RepeatToolLimitConfig::default(),
     ));
-
-    // Phase 6a: forced-verify gate. When the agent edits files and then tries to
-    // report "done" without running `verify`, this middleware suppresses that
-    // final text and injects a nudge to verify first — the "never hand back
-    // non-compiling code" promise, enforced as phimint policy (the framework
-    // stays neutral; see design §8.3). In `deny` mode no writes can happen, so
-    // the gate is disabled (`writes_possible`).
-    // builder = builder.middleware(VerifyEnforcementMiddleware::new(VerifyEnforcementConfig {
-    //     writes_possible,
-    //     ..VerifyEnforcementConfig::default()
-    // }));
 
     // Parse reasoning effort from CLI string
     let effort = match reasoning_effort.to_lowercase().as_str() {
@@ -795,7 +779,6 @@ mod prompt_guard_tests {
             policy,
             1_000,
             workspace.to_path_buf(),
-            true,
             1024,
             "low",
             "mock-model".to_string(),
@@ -895,7 +878,6 @@ mod prompt_guard_tests {
             policy,
             1_000,
             workspace.path().to_path_buf(),
-            true,
             1024,
             "low",
             "mock-model".to_string(),

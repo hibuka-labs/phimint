@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-10-10
+
+### Added
+
+- `phimint uninstall` — remove phimint and the data it left behind. The binary
+  goes back to whichever channel installed it (`brew uninstall` / `npm
+  uninstall` / `cargo uninstall`, or self-delete for standalone installs), then
+  `~/.phimint/` (config including the API key, sessions, history, notes) is
+  deleted. `--keep-data` leaves the data directory alone; `--yes` skips the
+  confirmation prompt. On Windows it also drops the PATH entry `install.ps1`
+  added.
+
+### Removed
+
+- The parked verify-before-deliver gate (`src/gate.rs`) and its `verify` tool —
+  the middleware never ran in the agent loop; compile/test feedback belongs to
+  the agent's normal build loop.
+
+### Fixed
+
+- Install one-liners in the READMEs: raw.githubusercontent serves 451 for
+  `.sh` / `.ps1`, so the mainland-China lines now fetch from
+  `releases/download/latest`; Homebrew installs via the tap as
+  `brew install hibuka-labs/phimint/phimint`.
+
 ## [0.2.0] — 2026-10-07
 
 Distribution release — install phimint without a Rust toolchain, on every

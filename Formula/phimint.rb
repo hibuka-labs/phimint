@@ -1,10 +1,11 @@
 # Homebrew formula for phimint.
 #
-# Tap:  brew tap hibuka-labs/phimint && brew install phimint
-# (brew resolves this repo's Formula/ directory — no separate tap repo.)
+#   brew install hibuka-labs/phimint/phimint
 #
-# MAINTAINED BY deploy/release.sh: the version, URLs and sha256 values are
-# rewritten at each release from the built archives. Do not hand-edit them.
+# Source of truth: hibuka-labs/phimint (Formula/phimint.rb). Synced to the tap
+# repository hibuka-labs/homebrew-phimint by deploy/release.sh at every release.
+# The version, URLs and sha256 values below are rewritten at release — do not
+# hand-edit them.
 class Phimint < Formula
   desc "Terminal AI coding agent built on phi-agent"
   homepage "https://github.com/hibuka-labs/phimint"

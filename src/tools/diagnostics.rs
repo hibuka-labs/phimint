@@ -1,11 +1,12 @@
 //! The diagnostics tool: pulls the LSP diagnostic cache (multi-server). A thin
 //! `phi_agent::Tool` shell -- the core (file collection, summary formatting, LSP client and routing) lives in `code-intel`.
 //!
-//! Complements `verify`: `verify` runs a build command for the authoritative
-//! error summary, while `diagnostics` reads each language server's
-//! `publishDiagnostics` cache and reports errors as you write (design S8.4).
-//! Both emit `file:line:col  code  message` summaries, so the agent never has to
-//! read raw build output. Files route to their language's server (rust-analyzer / typescript-language-server / clangd); no server means fall back to `verify`.
+//! The fast inner loop of the coding cycle: it reads each language server's
+//! `publishDiagnostics` cache and reports errors as you write (design S8.4),
+//! emitting `file:line:col  code  message` summaries so the agent never has to
+//! read raw compiler output. Files route to their language's server
+//! (rust-analyzer / typescript-language-server / clangd); no server means fall
+//! back to a shell build command (`cargo check` and friends).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -45,7 +46,7 @@ impl Tool for DiagnosticsTool {
     }
 
     fn description(&self) -> &'static str {
-        "Pull the current LSP diagnostics (errors/warnings) for the workspace as `file:line:col  code  message` lines, without recompiling. Files are routed to their language's server (rust-analyzer, typescript-language-server, clangd). Use after editing code for a fast error check; `verify` remains the authoritative full build check."
+        "Pull the current LSP diagnostics (errors/warnings) for the workspace as `file:line:col  code  message` lines, without recompiling. Files are routed to their language's server (rust-analyzer, typescript-language-server, clangd). Use after editing code for a fast error check; `execute_command` with a full build (`cargo check` or the project's build command) remains the authoritative check."
     }
 
     fn schema(&self) -> Value {
@@ -91,7 +92,7 @@ impl Tool for DiagnosticsTool {
                 let mut synced = 0usize;
                 for f in &files {
                     let Some(client) = manager.client_for(f) else {
-                        continue; // no LSP server for this language — fall back to verify.
+                        continue; // no LSP server for this language — fall back to a shell build.
                     };
                     let Some(language_id) = lang::lsp_language_id(&f.to_string_lossy()) else {
                         continue;
@@ -124,7 +125,7 @@ impl Tool for DiagnosticsTool {
         }
         if clients.is_empty() {
             return Ok(vec![Content::text(
-                "No LSP server is registered for these files' languages - run `verify` instead."
+                "No LSP server is registered for these files' languages - run a build command (e.g. `cargo check`) via `execute_command` instead."
                     .to_string(),
             )]);
         }
@@ -135,7 +136,7 @@ impl Tool for DiagnosticsTool {
         wait_ready(&clients).await;
         if let Some(e) = first_health_error(&clients) {
             return Ok(vec![Content::text(format!(
-                "[Error]: diagnostics unavailable - {e}. Run `verify` instead."
+                "[Error]: diagnostics unavailable - {e}. Run a build command (e.g. `cargo check`) instead."
             ))]);
         }
 
@@ -236,7 +237,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn no_server_degrades_to_verify_hint() {
+    async fn no_server_degrades_to_build_hint() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("lib.rs"), "pub fn f() {}\n").unwrap();
         let tool = DiagnosticsTool::new(manager(dir.path()), dir.path().to_path_buf());
@@ -247,6 +248,6 @@ mod tests {
             "{}",
             text(&out)
         );
-        assert!(text(&out).contains("verify"), "{}", text(&out));
+        assert!(text(&out).contains("cargo check"), "{}", text(&out));
     }
 }

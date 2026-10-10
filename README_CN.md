@@ -2,6 +2,8 @@
 
 **读作** `/ˈfaɪmɪnt/`（phi-mint，同英文 "fie-mint"），不是「皮敏特」。
 
+基于 [phi-agent](https://docs.phiagent.dev/zh/) 构建的终端 AI 编码 agent——底层是那个「不只是会聊天，更能把事做好」的 Agent 运行时底座。
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-edition%202024-orange.svg)](https://www.rust-lang.org)
 [![English](https://img.shields.io/badge/README-English-blue.svg)](README.md)
@@ -10,9 +12,7 @@
 
 *phimint 只需在 `~/.phimint/config.json` 里配一个 API key——一分钟的事，见[快速开始](#快速开始)。*
 
-> 基于 [phi-agent](https://github.com/hibuka-labs/phi-agent) 的终端 AI 编码 agent —— **「产品优先」**，同时是 phi-agent 框架的真实压测场。
-
-phimint 跑「理解需求 → 读码 → 多文件改 → 编译/测试 → 报错迭代」的完整编码链路。设计目标是**「先验再交」**：改完先验、验过才交付——目前这一纪律由 system prompt 承载（交前编译/测试必须过），强制闸门已实现但暂缓接线（见「路线图」）。
+phimint 跑「理解需求 → 读码 → 多文件改 → 编译/测试 → 报错迭代」的完整编码链路。
 
 ## 特性
 
@@ -23,7 +23,7 @@ phimint 跑「理解需求 → 读码 → 多文件改 → 编译/测试 → 报
 - **多 agent 扇出 + 推送式 fan-in**：`spawn_agent` 派只读子 agent 调查，主 agent **结束回合即收全量报告**（无需轮询）；TUI 任务面板逐子 agent 实时跟踪，单任务 10 分钟超时硬停。
 - **审批三态**：`auto`（全自动）/ `ask`（写操作逐条弹窗）/ `deny`（只读）；子 agent 权限跟随主 agent 模式（且永远只读）。
 - **防护栏**：reasoning-only 纠偏（连续空转 → 自动关思考）、max-turns 预警（最后 3 轮逼收尾）、provider 截断守卫（谎报 `finish_reason` 的容错，agent-base 提供）、工具输出 16k 上限。
-- **多语言**：`code-intel` 注册表（扩展名 → LSP server → verify 兜底），Rust / TypeScript / JavaScript / C / C++ 开箱即用。
+- **多语言**：`code-intel` 注册表（扩展名 → LSP server → 构建命令兜底），Rust / TypeScript / JavaScript / C / C++ 开箱即用。
 - **模块化底座**：UI 组件与语言智能已沉淀为独立 crate —— [`phi-tui`](https://github.com/hibuka-labs/phi-tui)（聊天 TUI 组件）与 [`code-intel`](https://github.com/hibuka-labs/code-intel)（LSP/repomap/ripgrep 核心），phimint 只保留产品壳。
 
 ## 快速开始
@@ -50,7 +50,7 @@ $env:PHIMINT_MIRROR='gitee'; irm https://gitee.com/chenkangzeng_admin/phimint/re
 或使用包管理器：
 
 ```bash
-brew install phimint                     # macOS / Linux（Homebrew）
+brew install hibuka-labs/phimint/phimint   # macOS / Linux（Homebrew）
 npm install -g phimint                   # 也支持 pnpm add -g / yarn global add
 cargo install phimint                    # 从 crates.io
 ```
@@ -59,6 +59,10 @@ cargo install phimint                    # 从 crates.io
 `brew upgrade phimint` / `npm install -g phimint@latest` / `cargo install phimint --force`。
 国内下载走 [Gitee Releases](https://gitee.com/chenkangzeng_admin/phimint/releases)，
 更新检查器会自动兜底到 Gitee 镜像。
+
+卸载：`phimint uninstall`。二进制交给当初安装它的渠道去移除，然后删掉 `~/.phimint/`——
+里面是配置（含 API key）、会话、历史和笔记。`--keep-data` 保留这个目录，
+`--yes` 跳过确认。Windows 上还会摘掉安装脚本加进 PATH 的那条。
 
 ### 2. 配置
 
@@ -124,6 +128,12 @@ Commands:
                      brew/npm/cargo 安装的给出对应升级命令）。
                      `phimint update --check` 仅检查不升级。
 
+  uninstall          卸载 phimint 并清掉它留下的数据。二进制交给当初
+                     安装它的渠道移除，然后删掉 ~/.phimint/（API key、
+                     会话、历史、笔记），并摘掉 Windows 上安装脚本加进
+                     PATH 的那条。--keep-data 保留 ~/.phimint/。
+                     --yes 跳过确认。
+
   -w, --workspace <PATH>    工作区目录（默认：当前目录）
       --model <NAME>        主模型名（覆盖 config.json）
       --lite-model <NAME>   lite 模型名（覆盖 config.json）
@@ -179,7 +189,7 @@ Commands:
 2. edit_file / write_file 改代码
 3. diagnostics 秒级拿类型错误（LSP 快速内环，不重编译）
 4. execute_command 跑 cargo check / 测试 → 修 → 重跑，直到全绿
-5. 简述改动、汇报收工（system prompt 纪律：交前编译/测试必须过）
+5. 简述改动、汇报收工
 ```
 
 ### 一次典型多 agent 协作
@@ -206,7 +216,7 @@ Commands:
 
 ## 工作原理
 
-phimint 是 `phi-agent` 框架的 consumer：agent 循环 / ReAct / 审批 / 会话事件流 / 守卫全部来自框架（经 facade 一个依赖引入），phimint 只做产品壳——系统提示、工具注册、审批接线、TUI。
+phimint 是 [`phi-agent`](https://docs.phiagent.dev/zh/) 框架的 consumer：agent 循环 / ReAct / 审批 / 会话事件流 / 守卫全部来自框架（经 facade 一个依赖引入），phimint 只做产品壳——系统提示、工具注册、审批接线、TUI。
 
 - **推送式 fan-in**（agent-works）：子 agent 的报告在完成时被持有，主 agent 回合结束的瞬间批量注入为新回合；进度信息 display-only（不唤醒、不插话）；单任务超 10 分钟硬停并推 Error 结果——挂死的子 agent 一定能唤醒父级。子 agent 硬闸只读：`write_file` / `edit_file` / `execute_command` 不进子 agent 工具面。
 - **TUI 架构**：`ui/run.rs` 主循环里，后台任务跑 agent 回合并把 `RuntimeEvent` 推过 mpsc 通道，主循环把事件灌进 `App` 状态机、轮询键盘、重绘——输入与事件只经通道相遇，无共享可变状态，agent 循环零侵入。
@@ -237,7 +247,6 @@ phimint/
 │   ├── agent.rs       # 系统提示 + 工具注册 + 多 agent/守卫/审批接线
 │   ├── approval.rs    # 审批两层：ApprovalPolicy 闸门 + 决策 handler（含 TUI 队列）
 │   ├── banner.rs      # 启动 banner（明暗两套配色）
-│   ├── gate.rs        # 强制 verify 闸门（VerifyEnforcementMiddleware，暂缓接线）
 │   ├── skills.rs      # Skill 薄壳：re-export agent-works 的 skill 子系统 + phimint 默认目录策略
 │   ├── tools/         # 应用工具壳（核心在 code-intel）
 │   │   ├── diagnostics.rs   # LSP 诊断工具
@@ -256,7 +265,6 @@ phimint/
 
 ## 路线图
 
-- **先验再交（PARKED）**：`gate.rs` 的 `VerifyEnforcementMiddleware` 已实现——动过代码却没跑验证就拦下「报 done」、注入「先 verify」nudge；接线暂注释（`agent.rs`），当前纪律由 system prompt 承载。重新接线即恢复硬保证。
 - **子 agent 受控写**：从只读调查演进到受限写委派（agent-works 的 `ChildPermissionMode` 基建已就位）。
 
 ## 开发

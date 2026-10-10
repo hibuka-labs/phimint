@@ -111,7 +111,6 @@ async fn build_agent(
         policy,
         1_000,
         workspace.path().to_path_buf(),
-        true,
         1024,
         "low",
         "mock-model".to_string(),
