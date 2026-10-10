@@ -102,6 +102,16 @@ impl App {
             return None;
         }
 
+        // Shift+Tab: cycle the approval mode (auto ⇄ ask). Global — works even
+        // while an approval popup is up (entering auto resolves pending
+        // prompts; see App::cycle_approval_mode). `BackTab` is what crossterm
+        // reports for Shift+Tab.
+        if code == BackTab {
+            let mode = self.cycle_approval_mode();
+            tracing::info!(mode = ?mode, "shift+tab: approval mode cycled");
+            return None;
+        }
+
         // Right-click copy menu: Up/Down move the highlight, Enter copies (or
         // cancels), Esc closes; everything else is swallowed.
         if self.selection_state.menu_is_open() {

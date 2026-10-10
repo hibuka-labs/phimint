@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-10-11
+
+### Added
+
+- `Shift+Tab` toggles the approval mode mid-session (`auto` ⇄ `ask`; from
+  `deny` the first press enters `ask`). The flip takes effect on the next tool
+  call — no restart, no rewiring. Entering `auto` resolves any pending prompts
+  so a run is never left blocked on a confirmation. The status bar badges the
+  live mode: `[auto]` green / `[ask]` yellow / `[deny]` red.
+- Write-capable sub-agents. `spawn_agent` can request write capability per
+  spawn (`tools: "write"`, or a `coder`/`tester` preset); default spawns stay
+  read-only. Write-capable children work disjoint file sets under a file lock
+  (a colliding file reports `file locked by <agent>`), and in `ask` every
+  child write prompts in a popup naming the requesting sub-agent.
+
+### Changed
+
+- Approval wiring is now a single live gate (policy + handler behind one
+  shared mode switch) instead of mode-fixed wiring built at startup.
+  `--approval` only sets the initial mode; sub-agents follow the live mode
+  through the parent-policy delegation chain.
+
 ## [0.3.0] — 2026-10-10
 
 ### Added

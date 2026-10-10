@@ -633,6 +633,10 @@
         <span class="fl">不空转，不跑丢</span>
         <p>空转了自己纠、到点自己收尾；厂商谎报截断也有守卫兜着——不瞎耗 token，活干到交卷。</p>
       </div>
+      <div class="feat-item reveal" data-en="&lt;span class=&quot;fl&quot;&gt;Clear permission boundaries&lt;/span&gt;&lt;p&gt;Three modes, switchable any time: full auto, confirm each write (allow once / allow always for that exact command or file / deny), or read-only. Shell commands are risk-graded — dangerous ones flash red first.&lt;/p&gt;">
+        <span class="fl">权限边界清楚</span>
+        <p>auto / ask / deny 三档随时切：全自动跑、写操作逐次确认（允许一次 / 允许总是，只对这条命令或这个文件 / 拒绝）、只读不许动。shell 命令按风险分红黄绿，高危的先亮红牌。</p>
+      </div>
       <div class="feat-item reveal" data-en="&lt;span class=&quot;fl&quot;&gt;No skimping on hard work, no waste on trivia&lt;/span&gt;&lt;p&gt;Advanced for hard problems, main for the day-to-day, lite for trivia — each tier can point at its own provider. You set the cost.&lt;/p&gt;">
         <span class="fl">重活不将就，琐事不浪费</span>
         <p>重活上 advanced、日常用 main、琐事丢 lite，三档还能各配各的厂商——成本自己拿捏。</p>
@@ -687,15 +691,15 @@
 
     <div class="faq-list">
       <details class="reveal">
-        <summary data-en="What is phimint, and how is it different from Claude Code / codex?&lt;span class=&quot;plus&quot;&gt;+&lt;/span&gt;">phimint 是什么？和 Claude Code / codex 这类工具有什么不同？<span class="plus">+</span></summary>
-        <div class="answer" data-pretext data-en="phimint is an open-source AI coding agent that runs the full coding loop: understand the request, read the code, change multiple files, compile and test, iterate on failures. Three things set it apart: &lt;b&gt;multi-agent fan-out with full reports injected back&lt;/b&gt; (no polling, nothing dropped), &lt;b&gt;three approval modes&lt;/b&gt; (full auto / confirm writes / read-only, clear permission boundaries), and &lt;b&gt;no lock-in on models or code&lt;/b&gt; (any provider&#x27;s API, MIT-licensed, you stay in control).">
-          phimint 是一个开源的终端 AI 编程智能体，跑完整的编码闭环：理解需求、读代码、改多文件、编译测试、失败迭代。它的差异点在三处：<b>多 agent 扇出 + 报告全文回注</b>（不轮询、不丢结论）、<b>三档审批</b>（全自动 / 写操作需确认 / 只读，权限边界清晰）、<b>模型与代码都不被绑定</b>（接任意厂商的 API，MIT 开源可自控）。
+        <summary data-en="What is phimint, and how is it different from the AI coding tool I use today?&lt;span class=&quot;plus&quot;&gt;+&lt;/span&gt;">phimint 是什么？和我正在用的 AI 编程工具有什么不同？<span class="plus">+</span></summary>
+        <div class="answer" data-pretext data-en="phimint is an open-source AI coding agent that runs the full coding loop: understand the request, read the code, change multiple files, compile and test, iterate on failures. Three things set it apart: &lt;b&gt;multi-agent fan-out with full reports injected back&lt;/b&gt; — split the problem across sub-agents and their complete reports arrive together, no polling and nothing dropped; &lt;b&gt;LSP wired into the loop&lt;/b&gt; — type errors land right after an edit, so the agent sees its own mistakes and fixes them without a full rebuild; &lt;b&gt;models on your terms&lt;/b&gt; — advanced for hard problems, lite for trivia, each tier pointed at any provider with your own API key, MIT licensed, code and data stay on your machine.">
+          phimint 是一个开源的终端 AI 编程智能体，跑完整的编码闭环：理解需求、读代码、改多文件、编译测试、失败迭代。它的差异点在三处：<b>多 agent 扇出 + 报告全文回注</b>——复杂问题派几个分身分头调查，报告全文整批自动送回来，不用轮询盯着，结论不会丢；<b>给模型接上 LSP</b>——改完立刻拿到类型错误，agent 自己看得见对错、自己纠错，不用等重新编译；<b>模型按活分档、不被绑定</b>——重活上 advanced、琐事丢 lite，各档各配厂商和自己的 API key，MIT 开源，代码和数据都留在你的机器上。
         </div>
       </details>
       <details class="reveal">
         <summary data-en="Can I keep using my existing .claude/skills?&lt;span class=&quot;plus&quot;&gt;+&lt;/span&gt;">我现有的 .claude/skills 技能还能用吗？<span class="plus">+</span></summary>
-        <div class="answer" data-pretext data-en="Yes. Skills in &lt;code&gt;.claude/skills&lt;/code&gt; work as they are — call them with &lt;code&gt;/skill-name args&lt;/code&gt;. Coming from Claude Code means no rewrites.">
-          能。<code>.claude/skills</code> 里的技能直接用，<code>/skill-name args</code> 即可调用——从 Claude Code 搬过来不用重写。
+        <div class="answer" data-pretext data-en="Yes. Skills in &lt;code&gt;.claude/skills&lt;/code&gt; work as they are — call them with &lt;code&gt;/skill-name args&lt;/code&gt;. Your existing skill library comes along as is, no rewrites.">
+          能。<code>.claude/skills</code> 里的技能直接用，<code>/skill-name args</code> 即可调用——已有的技能资产原样复用，不用重写。
         </div>
       </details>
       <details class="reveal">
@@ -717,15 +721,15 @@
         </div>
       </details>
       <details class="reveal">
-        <summary data-en="Is my code or data uploaded?&lt;span class=&quot;plus&quot;&gt;+&lt;/span&gt;">我的代码和数据会被上传吗？<span class="plus">+</span></summary>
-        <div class="answer" data-pretext data-en="No. phimint runs on your machine, with config and keys under &lt;code&gt;~/.phimint/&lt;/code&gt;. Only the conversation and tool results go to your chosen model provider; phimint itself never stores or relays your code. Data-sensitive teams can run a local Ollama model for a fully closed loop.">
-          不会。phimint 在你本机运行，配置和密钥存放在 <code>~/.phimint/</code>。发往模型厂商的只有对话和工具结果（这由你选的模型厂商决定），phimint 自己不存你的代码、不做中转。对数据敏感的团队，可以配本地 Ollama 模型完全闭环。
+        <summary data-en="How do I uninstall it?&lt;span class=&quot;plus&quot;&gt;+&lt;/span&gt;">怎么卸载？<span class="plus">+</span></summary>
+        <div class="answer" data-pretext data-en="One command removes it all: &lt;code&gt;phimint uninstall&lt;/code&gt; takes the binary back out through whichever channel installed it, then deletes &lt;code&gt;~/.phimint/&lt;/code&gt; — config (including the API key), sessions, history and notes. &lt;code&gt;--keep-data&lt;/code&gt; leaves that directory alone, &lt;code&gt;--yes&lt;/code&gt; skips the prompt; on Windows it also drops the PATH entry the installer added. If the binary is already gone, deleting &lt;code&gt;~/.phimint/&lt;/code&gt; by hand is the whole cleanup.">
+          一条命令卸干净：<code>phimint uninstall</code> 会按当初装它的方式移走二进制，再删掉 <code>~/.phimint/</code>——配置（含 API key）、会话、历史、笔记一起清掉。<code>--keep-data</code> 保留这个目录，<code>--yes</code> 跳过确认；Windows 上还会清掉安装脚本加的 PATH 条目。二进制已经不在了的话，手动删掉 <code>~/.phimint/</code> 就是全部数据。
         </div>
       </details>
       <details class="reveal">
-        <summary data-en="Is Chinese supported?&lt;span class=&quot;plus&quot;&gt;+&lt;/span&gt;">界面支持中文吗？<span class="plus">+</span></summary>
-        <div class="answer" data-pretext data-en="Yes. Session titles follow the conversation language, and the Chinese experience is a full first-class citizen. Docs are bilingual.">
-          支持。会话标题跟随对话语言，中文对话体验是完整的一等公民。文档提供中英双语。
+        <summary data-en="Is my code or data uploaded?&lt;span class=&quot;plus&quot;&gt;+&lt;/span&gt;">我的代码和数据会被上传吗？<span class="plus">+</span></summary>
+        <div class="answer" data-pretext data-en="No. phimint runs on your machine, with config and keys under &lt;code&gt;~/.phimint/&lt;/code&gt;. Only the conversation and tool results go to your chosen model provider; phimint itself never stores or relays your code. Data-sensitive teams can run a local Ollama model for a fully closed loop.">
+          不会。phimint 在你本机运行，配置和密钥存放在 <code>~/.phimint/</code>。发往模型厂商的只有对话和工具结果（这由你选的模型厂商决定），phimint 自己不存你的代码、不做中转。对数据敏感的团队，可以配本地 Ollama 模型完全闭环。
         </div>
       </details>
       <details class="reveal">

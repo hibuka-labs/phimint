@@ -20,8 +20,8 @@ phimint 跑「理解需求 → 读码 → 多文件改 → 编译/测试 → 报
 - **斜杠命令**：兼容 `.claude/skills` 的 skill 体系，`/skill-name args` 把 skill 正文注入本轮；`/resume` 交互式选择并恢复历史会话。
 - **拉取式上下文**：`repo_map`（tree-sitter 符号/结构索引）+ `search_content`（ripgrep），agent 主动搜、主动读，而非把整个仓库塞进 context。
 - **LSP 快速内环**：多 server 懒启动（rust-analyzer / typescript-language-server / clangd），改完不重编译秒级拿到 `file:line:col` 诊断；server 起不来降级到 shell。
-- **多 agent 扇出 + 推送式 fan-in**：`spawn_agent` 派只读子 agent 调查，主 agent **结束回合即收全量报告**（无需轮询）；TUI 任务面板逐子 agent 实时跟踪，单任务 10 分钟超时硬停。
-- **审批三态**：`auto`（全自动）/ `ask`（写操作逐条弹窗）/ `deny`（只读）；子 agent 权限跟随主 agent 模式（且永远只读）。
+- **多 agent 扇出 + 推送式 fan-in**：`spawn_agent` 派子 agent 调查（默认只读；任务需要动手改代码时，按次申请写能力），主 agent **结束回合即收全量报告**（无需轮询）；TUI 任务面板逐子 agent 实时跟踪，单任务 10 分钟超时硬停。
+- **审批三态**：`auto`（全自动）/ `ask`（写操作逐条弹窗）/ `deny`（只读）；子 agent 权限跟随主 agent 模式——`ask` 下每次子 agent 写入都会弹窗确认，弹窗标明是哪个子 agent。
 - **防护栏**：reasoning-only 纠偏（连续空转 → 自动关思考）、max-turns 预警（最后 3 轮逼收尾）、provider 截断守卫（谎报 `finish_reason` 的容错，agent-base 提供）、工具输出 16k 上限。
 - **多语言**：`code-intel` 注册表（扩展名 → LSP server → 构建命令兜底），Rust / TypeScript / JavaScript / C / C++ 开箱即用。
 - **模块化底座**：UI 组件与语言智能已沉淀为独立 crate —— [`phi-tui`](https://github.com/hibuka-labs/phi-tui)（聊天 TUI 组件）与 [`code-intel`](https://github.com/hibuka-labs/code-intel)（LSP/repomap/ripgrep 核心），phimint 只保留产品壳。
@@ -165,6 +165,7 @@ Commands:
   |---|---|
   | `Enter` | 发送 |
   | `Shift+Enter` | 换行 |
+  | `Shift+Tab` | 切换审批档位（auto ⇄ ask） |
   | `Ctrl+O` | 展开/折叠思考块 |
   | `Ctrl+Y` | 复制最后一条 AI 回复 |
   | `Ctrl+C` | 按状态分流：有选区→复制、运行中/审批中→取消、空闲→提示后再次按下退出 |
@@ -177,9 +178,11 @@ Commands:
 
   | 模式 | 行为 |
   |---|---|
-  | `auto` | 全自动，什么都不问 |
+  | `auto` | 全自动，什么都不问（带写能力的子 agent 也自由写） |
   | `ask` | 写操作逐条弹窗：`y` 放行一次 / `a` 永久放行 / `n` 拒绝 |
   | `deny` | 只读，拒绝所有写 |
+
+  `Shift+Tab` 随时在 `auto` ⇄ `ask` 之间切换（状态栏显示当前档位）；`--approval` 指定启动档位。
 
 ### 一次典型任务
 
@@ -199,7 +202,7 @@ Commands:
 1. spawn_agent × 3 派只读子 agent（各带窄切片任务），主 agent 立即结束回合
 2. 子 agent 运行期间主 agent 什么都不做——报告是推送的，不是拉的
 3. 全部完成后报告合为一帧批量到达（TUI 任务面板可见每个子 agent 状态与实时输出）
-4. 主 agent 汇总报告，自行完成所有编辑（子 agent 永远只读）
+4. 主 agent 汇总报告自行落改；若任务可按文件拆开，也可派带写能力的子 agent 分片动手（互斥文件集 + 文件锁）
 ```
 
 ## 工具面
@@ -218,7 +221,7 @@ Commands:
 
 phimint 是 [`phi-agent`](https://docs.phiagent.dev/zh/) 框架的 consumer：agent 循环 / ReAct / 审批 / 会话事件流 / 守卫全部来自框架（经 facade 一个依赖引入），phimint 只做产品壳——系统提示、工具注册、审批接线、TUI。
 
-- **推送式 fan-in**（agent-works）：子 agent 的报告在完成时被持有，主 agent 回合结束的瞬间批量注入为新回合；进度信息 display-only（不唤醒、不插话）；单任务超 10 分钟硬停并推 Error 结果——挂死的子 agent 一定能唤醒父级。子 agent 硬闸只读：`write_file` / `edit_file` / `execute_command` 不进子 agent 工具面。
+- **推送式 fan-in**（agent-works）：子 agent 的报告在完成时被持有，主 agent 回合结束的瞬间批量注入为新回合；进度信息 display-only（不唤醒、不插话）；单任务超 10 分钟硬停并推 Error 结果——挂死的子 agent 一定能唤醒父级。子 agent 默认只读：`write_file` / `edit_file` / `execute_command` 不进工具面，除非该次 spawn 申请了写能力（`tools: "write"`，或 `coder`/`tester` preset）；带写能力的子 agent 按互斥文件集干活，撞上被占用的文件会得到 `file locked by <agent>`，`ask` 下每次子 agent 写入都弹窗确认。
 - **TUI 架构**：`ui/run.rs` 主循环里，后台任务跑 agent 回合并把 `RuntimeEvent` 推过 mpsc 通道，主循环把事件灌进 `App` 状态机、轮询键盘、重绘——输入与事件只经通道相遇，无共享可变状态，agent 循环零侵入。
 - **任务面板**：`task_panel.rs` 记账子 agent 生命周期（spawn 出现 / done 翻转 / 完成 3s 后回收，根 agent 忙碌或用户正在看面板时不回收），每个子 agent 独立流式缓冲，交叉输出互不切断；`child_results.rs` 把框架的 fan-in 路由事件映射成面板文案与聚焦子 agent 的实时尾随。
 - **LSP**：`code-intel` 按语言懒启动进程级单例 server，`didOpen`/`didChange`/`didSave` 同步 + `publishDiagnostics` 缓存，`diagnostics` 工具拉取；注册表决定 server 选择，code-intel 不感知「phimint」。
@@ -262,10 +265,6 @@ phimint/
 │       └── handlers/          # keyboard.rs / mouse.rs / runtime.rs
 └── Cargo.toml
 ```
-
-## 路线图
-
-- **子 agent 受控写**：从只读调查演进到受限写委派（agent-works 的 `ChildPermissionMode` 基建已就位）。
 
 ## 开发
 

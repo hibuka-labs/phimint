@@ -52,7 +52,8 @@ struct Cli {
     #[arg(long)]
     config: Option<String>,
 
-    /// Approval mode: `auto` (default), `ask` (prompt on writes/risky shell), or `deny` (reject all writes)
+    /// Approval mode (initial): `auto` (default), `ask` (prompt on writes/risky
+    /// shell), or `deny` (reject all writes). Shift+Tab toggles auto/ask at runtime.
     #[arg(long, default_value = "auto")]
     approval: String,
 
@@ -255,17 +256,13 @@ async fn main() -> Result<()> {
     )));
     let router = Arc::new(router::PhimintRouter::new());
 
-    // Approval is two layers (see approval.rs): a policy (the gate) + a handler
-    // (the decision). In `ask` mode the handler enqueues requests for the TUI
-    // approval prompt instead of reading stdin; the queue receiver is handed to
-    // the UI.
-    let (approval, policy, approval_rx) = if cli.approval == "ask" {
-        let (handler, policy, rx) = approval::build_queued_approval();
-        (handler, policy, Some(rx))
-    } else {
-        let (handler, policy) = approval::build_approval(&cli.approval);
-        (handler, policy, None)
-    };
+    // Approval is the live gate (see approval.rs): a policy (the gate) + a
+    // handler (the decision) sharing one mode switch. The gate is built for
+    // every mode — `--approval` only sets the switch's initial value, and
+    // Shift+Tab flips it at runtime (status bar shows the current mode). The
+    // queue receiver goes to the UI, which renders one popup at a time.
+    let (approval, policy, approval_rx, approval_mode) =
+        approval::build_live_approval(&cli.approval);
 
     // Session + logging. Sessions live under `~/.phimint/sessions/<id>/`; the
     // human-readable tracing log is `session.log`, and each turn's structured
@@ -367,6 +364,7 @@ async fn main() -> Result<()> {
         base_dir,
         workspace,
         approval_rx,
+        approval_mode,
         scheme,
         popup_style,
         show_banner,

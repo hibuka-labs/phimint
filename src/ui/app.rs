@@ -16,7 +16,7 @@ use phi_agent::{ApprovalDecision, ApprovalRequest, RegistrySnapshot, RuntimeEven
 use phi_kernel_tools::background_shell::{BackgroundTaskRegistry, BackgroundTaskStatus};
 use ratatui::style::{Modifier, Style};
 
-use crate::approval::ApprovalItem;
+use crate::approval::{ApprovalItem, ApprovalModeSwitch, RuntimeApprovalMode};
 use crate::banner::{BannerRow, BannerStyle, ColorScheme};
 use crate::ui::theme;
 use phi_tui::completer::{CompleterAction, MentionCompleter, SlashCompleter};
@@ -272,6 +272,9 @@ pub struct App {
     pub viewport: Viewport,
     /// Pending approval requests (front = the popup currently shown).
     pub approval_queue: VecDeque<ApprovalItem>,
+    /// Live approval mode switch, shared with the approval gate (Shift+Tab
+    /// flips it; the status bar badges the current mode).
+    pub approval_switch: Arc<ApprovalModeSwitch>,
     /// Live sub-agent states, keyed by `agent_id` (`root/<task_name>`).
     pub sub_agents: BTreeMap<String, SubAgentState>,
     /// Task panel UI state (focus, selection).
@@ -376,6 +379,7 @@ impl App {
             running: false,
             viewport: Viewport::new(),
             approval_queue: VecDeque::new(),
+            approval_switch: Arc::new(ApprovalModeSwitch::new(RuntimeApprovalMode::Auto)),
             sub_agents: BTreeMap::new(),
             task_panel: TaskPanel::default(),
             sub_agent_transcripts: BTreeMap::new(),
@@ -681,6 +685,26 @@ impl App {
     /// next keypress.
     pub fn set_notice(&mut self, text: impl Into<String>) {
         self.notice = Some(text.into());
+    }
+
+    /// Shift+Tab: cycle the approval mode (auto ⇄ ask; deny leaves for ask).
+    ///
+    /// The switch is shared with the approval gate, so the flip takes effect
+    /// on the next tool call. Entering auto resolves any pending prompts
+    /// (`AllowOnce`) — auto means the run is never blocked on a confirmation.
+    pub fn cycle_approval_mode(&mut self) -> RuntimeApprovalMode {
+        let mode = self.approval_switch.cycle_auto_ask();
+        if mode == RuntimeApprovalMode::Auto {
+            while self.has_pending_approval() {
+                self.approve_front(ApprovalDecision::AllowOnce);
+            }
+        }
+        self.set_notice(match mode {
+            RuntimeApprovalMode::Auto => "Mode: auto - Shift+Tab toggles",
+            RuntimeApprovalMode::Ask => "Mode: ask - Shift+Tab toggles",
+            RuntimeApprovalMode::Deny => "Mode: deny - Shift+Tab leaves deny",
+        });
+        mode
     }
 
     // ── Mouse selection ───────────────────────────────────────────────────

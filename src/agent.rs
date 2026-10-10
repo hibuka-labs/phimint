@@ -177,13 +177,17 @@ pub struct TokenBudgetOptions {
 /// D0 (fully opened after the 2026-09-20 acceptance run, T11): both modes
 /// allow `tools: "write"` children. `has_policy` now only picks the
 /// **permission mode**, no longer the write switch:
-/// ask/deny (policy present) → child writes go through the codex-style
-/// approval delegation; auto (no policy) → children write with full
-/// permission, matching the auto-mode parent's own approval-free behavior
-/// (do NOT flip the call-site argument instead — that would push auto into
-/// None mode too, and auto has no approval chain to delegate to). Default
-/// spawns (no tools argument) stay read-only in both modes, pinned by
-/// `critical_default_spawn_children_get_no_write_tools`.
+/// policy present → child writes go through the codex-style approval
+/// delegation (agent-works resolves this on every spawn: policy with the
+/// parent, or `DenyAllToolPolicy` when the parent carries none); no policy →
+/// children write with full permission. With the live approval gate
+/// (approval.rs) the policy is always installed, so production children are
+/// always in delegation mode and follow the *live* approval mode: auto
+/// auto-passes their calls, ask prompts, deny rejects. The `has_policy ==
+/// false` branch stays as the guard for no-policy callers — never flip the
+/// call-site argument to force it, `None` without a parent policy denies
+/// every child tool. Default spawns (no tools argument) stay read-only in
+/// both modes, pinned by `critical_default_spawn_children_get_no_write_tools`.
 ///
 /// D3.1: `child_read_only` is explicitly off -- the nudge is left to the
 /// framework's per-child rule (write sub-agents are no longer fed read-only
@@ -195,7 +199,8 @@ pub struct TokenBudgetOptions {
 fn child_multi_agent_config(has_policy: bool) -> MultiAgentConfig {
     MultiAgentConfig {
         // Sub-agent permission follows the approval mode (codex-style
-        // delegation lives in agent-works): auto (no policy) grants full; ask/deny restrict and escalate.
+        // delegation lives in agent-works): with a policy the child's calls
+        // escalate to the parent's live gate; without one, full permission.
         child_permission_mode: if has_policy {
             ChildPermissionMode::None
         } else {
@@ -772,7 +777,7 @@ mod prompt_guard_tests {
         let provider = Arc::new(CapturingMockProvider {
             system_prompts: Mutex::new(Vec::new()),
         });
-        let (approval, policy) = crate::approval::build_approval("auto");
+        let (approval, policy, _approval_rx, _mode) = crate::approval::build_live_approval("auto");
         let (agent, _resolver, _telemetry, _bg_registry) = super::build(
             provider.clone() as Arc<dyn LlmProvider>,
             approval,
@@ -871,7 +876,7 @@ mod prompt_guard_tests {
         let provider = Arc::new(CapturingMockProvider {
             system_prompts: Mutex::new(Vec::new()),
         });
-        let (approval, policy) = crate::approval::build_approval("auto");
+        let (approval, policy, _approval_rx, _mode) = crate::approval::build_live_approval("auto");
         let (agent, resolver, _telemetry, _bg_registry) = super::build(
             provider.clone() as Arc<dyn LlmProvider>,
             approval,
@@ -1200,7 +1205,7 @@ mod prompt_guard_tests {
         assert_eq!(
             auto.child_permission_mode,
             phi_agent::ChildPermissionMode::Full,
-            "auto has no approval chain; children must keep Full permission (never None mode)"
+            "no-policy callers have no delegation chain; children must keep Full permission (never None mode)"
         );
         // D3.1: the computation rule owns the nudge; phimint turns the global nudge off explicitly.
         assert!(!ask.child_read_only);

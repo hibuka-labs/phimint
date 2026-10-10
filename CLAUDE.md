@@ -18,8 +18,7 @@ crates, each its own git repository with pure crates.io version dependencies:
 - `phi-telemetry`, `log-core` — observability (session metrics, tracing sink)
 
 phimint keeps the app shell: config, TUI wiring (app/render/handlers), update
-checker, banner, and the system prompt that carries verify-before-deliver
-discipline.
+checker, banner, and the coding-agent system prompt.
 
 ### Local development across crates
 
@@ -34,7 +33,7 @@ phi-agent = { path = "../phi-agent" }
 
 Sibling repos are expected at `../phi-agent`, `../phi-tui`, `../code-intel`, etc.
 
-### Verify before deliver
+### Quality gates
 
 `cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test`
 must pass before any change is reported as done. CI runs the same gates.

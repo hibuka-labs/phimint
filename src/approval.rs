@@ -1,4 +1,4 @@
-//! Approval policy + interactive CLI handler (Phase 3).
+//! Approval wiring: the live gate (policy + handler) and the mode switch.
 //!
 //! Approval in agent-base is **two layers, both required**:
 //! - [`ToolPolicy`] (the *gate*): decides whether a call needs approval at all
@@ -6,22 +6,37 @@
 //!   `Some(ApprovalRequest)` defers to the handler.
 //! - [`ApprovalHandler`] (the *decision*): `AllowOnce` / `AllowAlways` / `Deny`.
 //!
-//! phimint previously wired *only* a handler (`Auto`/`DenyAll`), so
+//! [`LiveApprovalGate`] is phimint's single implementation of both layers,
+//! sharing one [`ApprovalModeSwitch`] so Shift+Tab can flip behaviour mid-
+//! session with no rewiring:
+//!
+//! | mode | policy | handler |
+//! |------|--------|---------|
+//! | `auto` | everything `None` (auto-approved) | never consulted |
+//! | `ask` | writes / risky shell → request | enqueue for the TUI popup |
+//! | `deny` | writes / risky shell → request | `Deny` |
+//!
+//! `--approval` only sets the switch's **initial** value (deny is a CLI
+//! startup mode, not a Shift+Tab stop). Reads always pass: `ask` gates
+//! mutations, not `ls`.
+//!
+//! History: phimint previously wired *only* a handler (`Auto`/`DenyAll`), so
 //! `--approval deny` was a silent no-op — with no policy, `process_approval`
-//! short-circuits and never consults the handler. `ask` mode needs both layers.
+//! short-circuits and never consults the handler. The policy is what makes
+//! deny real, which is why the live gate always carries one.
 
-use std::io::{self, Write};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use async_trait::async_trait;
 use phi_agent::{
-    AgentError, AgentResult, ApprovalDecision, ApprovalHandler, ApprovalMode, ApprovalRequest,
-    AutoApprovalHandler, QueuedApprovalHandler, RiskLevel, ToolPolicy,
+    AgentResult, ApprovalDecision, ApprovalHandler, ApprovalRequest, QueuedApprovalHandler,
+    RiskLevel, ToolPolicy,
 };
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-// The pending-request type now lives in the framework (phi_agent::cli::approval,
+// The pending-request type lives in the framework (phi_agent::cli::approval,
 // sunk down in the distillation plan); re-exported here because phimint's
 // approval module stays the product's approval façade (ui/ consumes it).
 pub use phi_agent::ApprovalItem;
@@ -112,12 +127,6 @@ pub fn classify_command(command: &str) -> RiskLevel {
     RiskLevel::Sensitive
 }
 
-// ── The gate: ApprovalPolicy ────────────────────────────────────────────────
-
-/// phimint's tool policy: auto-approve reads, prompt on writes and risky shell.
-#[derive(Debug, Clone, Default)]
-pub struct ApprovalPolicy;
-
 /// A one-line description of a file mutation for the approval prompt.
 fn describe_write(tool_name: &str, args: &Value) -> String {
     let path = args.get("path").and_then(Value::as_str).unwrap_or("?");
@@ -154,192 +163,222 @@ fn command_action_key(command: &str) -> String {
     format!("execute_command:{normalized}")
 }
 
-#[async_trait]
-impl ToolPolicy for ApprovalPolicy {
-    async fn evaluate_approval(&self, tool_name: &str, args: &Value) -> Option<ApprovalRequest> {
-        match tool_name {
-            // Read-only context tools — always auto-approved.
-            "read_file" | "list_files" | "search_content" | "repo_map" => None,
+/// The ask-gate: auto-approve reads, prompt on writes and risky shell.
+///
+/// Pure decision function shared by the live gate's Ask/Deny modes — reads and
+/// safe shell return `None` (never reach the handler), mutations return the
+/// request the handler decides on.
+fn classify_request(tool_name: &str, args: &Value) -> Option<ApprovalRequest> {
+    match tool_name {
+        // Read-only context tools — always auto-approved.
+        "read_file" | "list_files" | "search_content" | "repo_map" => None,
 
-            // File mutations — prompt (Sensitive). `action_key` is scoped to the
-            // path so `AllowAlways` grants a narrow standing approval (this file
-            // only), not every write_file/edit_file.
-            "write_file" | "edit_file" => {
-                let path = args.get("path").and_then(Value::as_str).unwrap_or("?");
-                Some(ApprovalRequest {
-                    title: tool_name.to_string(),
-                    message: describe_write(tool_name, args),
-                    action_key: Some(format!("{tool_name}:{path}")),
-                    risk_level: RiskLevel::Sensitive,
+        // File mutations — prompt (Sensitive). `action_key` is scoped to the
+        // path so `AllowAlways` grants a narrow standing approval (this file
+        // only), not every write_file/edit_file.
+        "write_file" | "edit_file" => {
+            let path = args.get("path").and_then(Value::as_str).unwrap_or("?");
+            Some(ApprovalRequest {
+                title: tool_name.to_string(),
+                message: describe_write(tool_name, args),
+                action_key: Some(format!("{tool_name}:{path}")),
+                risk_level: RiskLevel::Sensitive,
+                raw: Some(args.clone()),
+                source: None,
+            })
+        }
+
+        // Shell — classify the command; Safe commands auto-approve.
+        "execute_command" => {
+            let command = args.get("command").and_then(Value::as_str).unwrap_or("");
+            match classify_command(command) {
+                RiskLevel::Safe => None,
+                level => Some(ApprovalRequest {
+                    title: format!("execute_command: {}", short_title(command)),
+                    message: command.to_string(),
+                    action_key: Some(command_action_key(command)),
+                    risk_level: level,
                     raw: Some(args.clone()),
                     source: None,
-                })
-            }
-
-            // Shell — classify the command; Safe commands auto-approve.
-            "execute_command" => {
-                let command = args.get("command").and_then(Value::as_str).unwrap_or("");
-                match classify_command(command) {
-                    RiskLevel::Safe => None,
-                    level => Some(ApprovalRequest {
-                        title: format!("execute_command: {}", short_title(command)),
-                        message: command.to_string(),
-                        action_key: Some(command_action_key(command)),
-                        risk_level: level,
-                        raw: Some(args.clone()),
-                        source: None,
-                    }),
-                }
-            }
-
-            _ => None,
-        }
-    }
-}
-
-// ── The decision: CliApprovalHandler ────────────────────────────────────────
-
-/// Interactive terminal approval: `y` allow-once, `a` allow-always, `n` deny.
-///
-/// Mirrors `phi-agent/src/bin/phi/approval.rs` — reads stdin while racing the
-/// caller's cancellation token so Ctrl+C still interrupts a pending prompt.
-#[derive(Debug, Clone, Default)]
-pub struct CliApprovalHandler;
-
-impl CliApprovalHandler {
-    pub fn new() -> Self {
-        Self
-    }
-
-    fn risk_badge(level: &RiskLevel) -> &'static str {
-        match level {
-            RiskLevel::Safe => "\u{1F7E2} Safe",
-            RiskLevel::Sensitive => "\u{1F7E1} Sensitive",
-            RiskLevel::Destructive => "\u{1F534} Destructive",
-        }
-    }
-
-    async fn prompt(
-        &self,
-        request: &ApprovalRequest,
-        cancel_token: &tokio_util::sync::CancellationToken,
-    ) -> AgentResult<ApprovalDecision> {
-        eprintln!();
-        eprintln!("  !! {}", request.title);
-        eprintln!("     Risk: {}", Self::risk_badge(&request.risk_level));
-        eprintln!("     {}", request.message);
-        eprintln!();
-
-        loop {
-            if cancel_token.is_cancelled() {
-                return Err(AgentError::Cancelled);
-            }
-            eprint!("     Confirm? [y=allow / a=allow always / n=deny]: ");
-            io::stderr()
-                .flush()
-                .map_err(|e| AgentError::internal(format!("flush stderr failed: {e}")))?;
-
-            let line = read_stdin_line_cancellable(cancel_token).await?;
-            match map_input(&line) {
-                Some(decision) => return Ok(decision),
-                None => eprintln!("     Invalid input - enter y / a / n"),
+                }),
             }
         }
-    }
-}
 
-/// Map a user's approval keystroke to a decision. `None` = unrecognised input.
-///
-/// Extracted as a pure function so the interactive prompt stays thin and the
-/// mapping is unit-testable without driving stdin.
-fn map_input(s: &str) -> Option<ApprovalDecision> {
-    match s.trim().to_ascii_lowercase().as_str() {
-        "y" | "yes" => Some(ApprovalDecision::AllowOnce),
-        "a" | "always" => Some(ApprovalDecision::AllowAlways),
-        "n" | "no" => Some(ApprovalDecision::Deny),
         _ => None,
     }
 }
 
+// ── The live mode switch (Shift+Tab) ────────────────────────────────────────
+
+/// Runtime approval mode — what the next tool call does.
+///
+/// The UI (Shift+Tab) flips it through [`ApprovalModeSwitch`]; the gate reads
+/// it on every tool call, so a flip takes effect immediately.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum RuntimeApprovalMode {
+    /// Every tool call auto-approves (the policy short-circuits to `None`).
+    Auto = 0,
+    /// Writes and risky shell prompt; reads pass. The interactive default.
+    Ask = 1,
+    /// Writes and risky shell are rejected. CLI startup mode only — Shift+Tab
+    /// leaves it (first press enters `ask`), it is not a cycle stop.
+    Deny = 2,
+}
+
+impl RuntimeApprovalMode {
+    /// Parse a CLI `--approval` value. Unknown values fall back to `auto`
+    /// (matches the historical `build_approval` fallback).
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "ask" => Self::Ask,
+            "deny" => Self::Deny,
+            _ => Self::Auto,
+        }
+    }
+
+    /// The status-bar badge for this mode (ASCII — chrome stays width-safe).
+    pub fn badge(self) -> &'static str {
+        match self {
+            Self::Auto => "[auto]",
+            Self::Ask => "[ask]",
+            Self::Deny => "[deny]",
+        }
+    }
+}
+
+/// Shared live switch between the TUI (Shift+Tab) and the approval gate.
+///
+/// One `Arc` handed to both sides: the UI flips it, the gate reads it per
+/// tool call. No locks in the hot path (`AtomicU8`), no channel — the mode is
+/// a single byte of shared state.
+#[derive(Debug)]
+pub struct ApprovalModeSwitch {
+    mode: AtomicU8,
+}
+
+impl ApprovalModeSwitch {
+    pub fn new(initial: RuntimeApprovalMode) -> Self {
+        Self {
+            mode: AtomicU8::new(initial as u8),
+        }
+    }
+
+    pub fn get(&self) -> RuntimeApprovalMode {
+        match self.mode.load(Ordering::SeqCst) {
+            1 => RuntimeApprovalMode::Ask,
+            2 => RuntimeApprovalMode::Deny,
+            _ => RuntimeApprovalMode::Auto,
+        }
+    }
+
+    pub fn set(&self, mode: RuntimeApprovalMode) {
+        self.mode.store(mode as u8, Ordering::SeqCst);
+    }
+
+    /// Shift+Tab cycle: `auto` ⇄ `ask`. `deny` is a CLI startup mode, not a
+    /// cycle stop — the first press leaves it for `ask`.
+    pub fn cycle_auto_ask(&self) -> RuntimeApprovalMode {
+        let next = match self.get() {
+            RuntimeApprovalMode::Auto => RuntimeApprovalMode::Ask,
+            RuntimeApprovalMode::Ask => RuntimeApprovalMode::Auto,
+            RuntimeApprovalMode::Deny => RuntimeApprovalMode::Ask,
+        };
+        self.set(next);
+        next
+    }
+}
+
+// ── The live gate: policy + handler behind one switch ───────────────────────
+
+/// phimint's single approval wiring: one object implementing both layers.
+///
+/// Both layers consult the same [`ApprovalModeSwitch`], so Shift+Tab changes
+/// the next tool call with no rewiring and no queue rebuild. The queue is
+/// created once at startup and lives for the whole TUI lifetime — in `auto`
+/// mode nothing is ever pushed to it, in `ask` mode every prompt goes through
+/// it. Sub-agents inherit this gate via the parent-policy delegation chain
+/// (see `agent.rs`), so they follow the live mode too.
+pub struct LiveApprovalGate {
+    mode: Arc<ApprovalModeSwitch>,
+    queued: QueuedApprovalHandler,
+}
+
+impl LiveApprovalGate {
+    pub fn new(
+        mode: Arc<ApprovalModeSwitch>,
+        queue_tx: mpsc::UnboundedSender<ApprovalItem>,
+    ) -> Self {
+        Self {
+            mode,
+            queued: QueuedApprovalHandler::new(queue_tx),
+        }
+    }
+
+    /// The switch handle, for the UI (Shift+Tab) and the status-bar badge.
+    pub fn mode_switch(&self) -> Arc<ApprovalModeSwitch> {
+        Arc::clone(&self.mode)
+    }
+}
+
 #[async_trait]
-impl ApprovalHandler for CliApprovalHandler {
+impl ToolPolicy for LiveApprovalGate {
+    async fn evaluate_approval(&self, tool_name: &str, args: &Value) -> Option<ApprovalRequest> {
+        match self.mode.get() {
+            // auto: nothing needs approval — the handler is never consulted.
+            RuntimeApprovalMode::Auto => None,
+            // ask/deny share the gate; the handler decides allow vs deny.
+            RuntimeApprovalMode::Ask | RuntimeApprovalMode::Deny => {
+                classify_request(tool_name, args)
+            }
+        }
+    }
+}
+
+#[async_trait]
+impl ApprovalHandler for LiveApprovalGate {
     async fn approve(
         &self,
         request: ApprovalRequest,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> AgentResult<ApprovalDecision> {
-        self.prompt(&request, &cancel_token).await
-    }
-}
-
-// ── The decision: QueuedApprovalHandler (Phase 5b) ─────────────────────────────
-//
-// The queued handler itself (`QueuedApprovalHandler` + `ApprovalItem`) is
-// framework code now — re-exported from phi-agent (`cli::approval`), since any
-// phi-agent UI runtime needs the same enqueue-and-answer pattern. What stays
-// here is only the wiring: `build_queued_approval` pairs the handler with
-// phimint's policy.
-
-/// Read a stdin line, racing against `cancel_token` so the prompt doesn't block
-/// the runtime or ignore Ctrl+C.
-async fn read_stdin_line_cancellable(
-    cancel_token: &tokio_util::sync::CancellationToken,
-) -> AgentResult<String> {
-    use tokio::io::AsyncBufReadExt;
-
-    tokio::select! {
-        _ = cancel_token.cancelled() => Err(AgentError::Cancelled),
-        result = async {
-            let stdin = tokio::io::BufReader::new(tokio::io::stdin());
-            let mut lines = stdin.lines();
-            match lines.next_line().await {
-                Ok(Some(line)) => Ok(line),
-                Ok(None) => Err(AgentError::Cancelled),
-                Err(e) => Err(AgentError::internal(format!("read stdin failed: {e}"))),
-            }
-        } => result,
+        match self.mode.get() {
+            // Defensive: the policy auto-passes in auto mode. If a request
+            // still arrives (mode flipped between evaluate and approve), allow
+            // it — auto means "don't block the run".
+            RuntimeApprovalMode::Auto => Ok(ApprovalDecision::AllowOnce),
+            RuntimeApprovalMode::Deny => Ok(ApprovalDecision::Deny),
+            RuntimeApprovalMode::Ask => self.queued.approve(request, cancel_token).await,
+        }
     }
 }
 
 // ── Wiring ──────────────────────────────────────────────────────────────────
 
-/// Build the approval handler + policy for a CLI mode.
-///
-/// `auto` → handler only (policy stays `None`, every call auto-approved);
-/// `deny` → deny-all handler **plus** policy (policy is what makes deny real);
-/// `ask` → interactive handler **plus** policy (prompt on writes / risky shell).
-pub fn build_approval(mode: &str) -> (Arc<dyn ApprovalHandler>, Option<Arc<dyn ToolPolicy>>) {
-    match mode {
-        "deny" => (
-            Arc::new(AutoApprovalHandler::new(ApprovalMode::DenyAll)),
-            Some(Arc::new(ApprovalPolicy)),
-        ),
-        "ask" => (
-            Arc::new(CliApprovalHandler::new()),
-            Some(Arc::new(ApprovalPolicy)),
-        ),
-        _ => (Arc::new(AutoApprovalHandler::new(ApprovalMode::Auto)), None),
-    }
-}
-
-/// `build_queued_approval` output: handler, policy, and the TUI-side receiver.
-pub type QueuedApprovalBuild = (
+/// `build_live_approval` output: handler, policy, the TUI-side queue receiver,
+/// and the shared mode switch (for Shift+Tab + the status-bar badge).
+pub type LiveApprovalBuild = (
     Arc<dyn ApprovalHandler>,
     Option<Arc<dyn ToolPolicy>>,
     mpsc::UnboundedReceiver<ApprovalItem>,
+    Arc<ApprovalModeSwitch>,
 );
 
-/// Build the queued approval handler + policy for `ask` mode (Phase 5b).
+/// Build the live approval gate for a CLI `--approval` value.
 ///
-/// The handler enqueues requests instead of reading stdin; the caller keeps the
-/// returned receiver and feeds it to the TUI popup, which drains it and renders
-/// one prompt at a time.
-pub fn build_queued_approval() -> QueuedApprovalBuild {
+/// The gate (policy + handler + queue) is built for **every** mode — `auto`
+/// just runs with the switch turned to Auto, where the policy auto-passes
+/// everything. Only the switch's initial value differs; Shift+Tab flips it
+/// from there.
+pub fn build_live_approval(initial: &str) -> LiveApprovalBuild {
+    let mode = Arc::new(ApprovalModeSwitch::new(RuntimeApprovalMode::parse(initial)));
     let (queue_tx, queue_rx) = mpsc::unbounded_channel();
+    let gate = Arc::new(LiveApprovalGate::new(Arc::clone(&mode), queue_tx));
     (
-        Arc::new(QueuedApprovalHandler::new(queue_tx)),
-        Some(Arc::new(ApprovalPolicy)),
+        gate.clone() as Arc<dyn ApprovalHandler>,
+        Some(gate as Arc<dyn ToolPolicy>),
         queue_rx,
+        mode,
     )
 }
 
@@ -428,147 +467,168 @@ mod tests {
         assert_eq!(classify_command(""), RiskLevel::Safe);
     }
 
-    #[tokio::test]
-    async fn policy_auto_approves_read_tools() {
-        let p = ApprovalPolicy;
+    #[test]
+    fn classify_request_auto_approves_read_tools() {
+        // Reads and safe shell never reach the handler — no prompt, ever.
+        assert!(classify_request("read_file", &serde_json::json!({})).is_none());
+        assert!(classify_request("search_content", &serde_json::json!({})).is_none());
         assert!(
-            p.evaluate_approval("read_file", &serde_json::json!({}))
-                .await
-                .is_none()
-        );
-        assert!(
-            p.evaluate_approval("search_content", &serde_json::json!({}))
-                .await
-                .is_none()
+            classify_request(
+                "execute_command",
+                &serde_json::json!({"command": "cargo check"})
+            )
+            .is_none()
         );
     }
 
-    #[tokio::test]
-    async fn policy_prompts_on_writes() {
-        let p = ApprovalPolicy;
-        let req = p
-            .evaluate_approval("write_file", &serde_json::json!({"path": "src/lib.rs"}))
-            .await
+    #[test]
+    fn classify_request_prompts_on_writes() {
+        let req = classify_request("write_file", &serde_json::json!({"path": "src/lib.rs"}))
             .expect("write_file should prompt");
         assert_eq!(req.risk_level, RiskLevel::Sensitive);
         assert_eq!(req.action_key.as_deref(), Some("write_file:src/lib.rs"));
         assert!(req.message.contains("src/lib.rs"));
     }
 
-    #[tokio::test]
-    async fn write_approval_key_is_scoped_to_path() {
+    #[test]
+    fn write_approval_key_is_scoped_to_path() {
         // `AllowAlways` must grant a narrow standing approval (this file), not
         // every write_file — two different paths must produce different keys.
-        let p = ApprovalPolicy;
-        let a = p
-            .evaluate_approval("write_file", &serde_json::json!({"path": "src/cache.rs"}))
-            .await
-            .unwrap();
-        let b = p
-            .evaluate_approval("write_file", &serde_json::json!({"path": "src/logging.rs"}))
-            .await
-            .unwrap();
+        let a =
+            classify_request("write_file", &serde_json::json!({"path": "src/cache.rs"})).unwrap();
+        let b =
+            classify_request("write_file", &serde_json::json!({"path": "src/logging.rs"})).unwrap();
         assert_eq!(a.action_key.as_deref(), Some("write_file:src/cache.rs"));
         assert_eq!(b.action_key.as_deref(), Some("write_file:src/logging.rs"));
         assert_ne!(a.action_key, b.action_key);
     }
 
-    #[tokio::test]
-    async fn command_approval_key_is_scoped_to_command() {
-        let p = ApprovalPolicy;
-        let req = p
-            .evaluate_approval(
-                "execute_command",
-                &serde_json::json!({"command": "rm -rf /tmp/x"}),
-            )
-            .await
-            .expect("rm should prompt");
+    #[test]
+    fn command_approval_key_is_scoped_to_command() {
+        let req = classify_request(
+            "execute_command",
+            &serde_json::json!({"command": "rm -rf /tmp/x"}),
+        )
+        .expect("rm should prompt");
         assert_eq!(req.risk_level, RiskLevel::Destructive);
         assert_eq!(
             req.action_key.as_deref(),
             Some("execute_command:rm -rf /tmp/x")
         );
         // Whitespace is normalised so `touch X` and `touch   X` share a key.
-        let a = p
-            .evaluate_approval(
-                "execute_command",
-                &serde_json::json!({"command": "touch  X"}),
-            )
-            .await
-            .unwrap();
-        let b = p
-            .evaluate_approval(
-                "execute_command",
-                &serde_json::json!({"command": "touch X"}),
-            )
-            .await
-            .unwrap();
+        let a = classify_request(
+            "execute_command",
+            &serde_json::json!({"command": "touch  X"}),
+        )
+        .unwrap();
+        let b = classify_request(
+            "execute_command",
+            &serde_json::json!({"command": "touch X"}),
+        )
+        .unwrap();
         assert_eq!(a.action_key, b.action_key);
     }
 
-    #[tokio::test]
-    async fn policy_classifies_shell() {
-        let p = ApprovalPolicy;
-        // Safe command → no prompt.
-        assert!(
-            p.evaluate_approval(
-                "execute_command",
-                &serde_json::json!({"command": "cargo check"})
-            )
-            .await
-            .is_none()
-        );
-        // Destructive command → prompt with Destructive risk.
-        let req = p
-            .evaluate_approval(
-                "execute_command",
-                &serde_json::json!({"command": "rm -rf /tmp/x"}),
-            )
-            .await
-            .expect("rm should prompt");
+    #[test]
+    fn classify_request_classifies_shell() {
+        // Destructive command → Destructive risk; unknown → Sensitive.
+        let req = classify_request(
+            "execute_command",
+            &serde_json::json!({"command": "rm -rf /tmp/x"}),
+        )
+        .expect("rm should prompt");
         assert_eq!(req.risk_level, RiskLevel::Destructive);
-        // Unknown command → Sensitive.
-        let req = p
-            .evaluate_approval("execute_command", &serde_json::json!({"command": "make"}))
-            .await
+        let req = classify_request("execute_command", &serde_json::json!({"command": "make"}))
             .expect("make should prompt");
         assert_eq!(req.risk_level, RiskLevel::Sensitive);
     }
 
     #[test]
-    fn map_input_parses_decisions() {
-        assert_eq!(map_input("y"), Some(ApprovalDecision::AllowOnce));
-        assert_eq!(map_input("yes"), Some(ApprovalDecision::AllowOnce));
-        assert_eq!(map_input("  Y  "), Some(ApprovalDecision::AllowOnce));
-        assert_eq!(map_input("a"), Some(ApprovalDecision::AllowAlways));
-        assert_eq!(map_input("always"), Some(ApprovalDecision::AllowAlways));
-        assert_eq!(map_input("n"), Some(ApprovalDecision::Deny));
-        assert_eq!(map_input("no"), Some(ApprovalDecision::Deny));
-        assert_eq!(map_input("maybe"), None);
-        assert_eq!(map_input(""), None);
+    fn mode_switch_cycle_is_auto_ask_with_deny_exit() {
+        // Shift+Tab: auto ⇄ ask; deny (CLI startup mode) leaves for ask.
+        let sw = ApprovalModeSwitch::new(RuntimeApprovalMode::Auto);
+        assert_eq!(sw.cycle_auto_ask(), RuntimeApprovalMode::Ask);
+        assert_eq!(sw.cycle_auto_ask(), RuntimeApprovalMode::Auto);
+
+        let sw = ApprovalModeSwitch::new(RuntimeApprovalMode::Deny);
+        assert_eq!(sw.cycle_auto_ask(), RuntimeApprovalMode::Ask);
+        assert_eq!(sw.cycle_auto_ask(), RuntimeApprovalMode::Auto);
     }
 
     #[test]
-    fn build_approval_modes() {
-        let (_, policy) = build_approval("auto");
-        assert!(policy.is_none(), "auto has no policy");
-        let (_, policy) = build_approval("deny");
-        assert!(policy.is_some(), "deny must have a policy");
-        let (_, policy) = build_approval("ask");
-        assert!(policy.is_some(), "ask must have a policy");
-        let (_, policy) = build_approval("bogus");
-        assert!(policy.is_none(), "unknown mode falls back to auto");
+    fn parse_falls_back_to_auto() {
+        assert_eq!(RuntimeApprovalMode::parse("ask"), RuntimeApprovalMode::Ask);
+        assert_eq!(
+            RuntimeApprovalMode::parse("deny"),
+            RuntimeApprovalMode::Deny
+        );
+        assert_eq!(
+            RuntimeApprovalMode::parse("auto"),
+            RuntimeApprovalMode::Auto
+        );
+        assert_eq!(
+            RuntimeApprovalMode::parse("bogus"),
+            RuntimeApprovalMode::Auto
+        );
+    }
+
+    #[test]
+    fn build_live_approval_wires_every_mode() {
+        // The gate is always built (policy present) — the switch's initial
+        // value is the only per-mode difference. This is what makes Shift+Tab
+        // able to leave any mode, including deny.
+        for (arg, want) in [
+            ("auto", RuntimeApprovalMode::Auto),
+            ("ask", RuntimeApprovalMode::Ask),
+            ("deny", RuntimeApprovalMode::Deny),
+            ("bogus", RuntimeApprovalMode::Auto),
+        ] {
+            let (_handler, policy, _rx, switch) = build_live_approval(arg);
+            assert!(policy.is_some(), "{arg}: the live gate must carry a policy");
+            assert_eq!(switch.get(), want, "{arg}: initial mode");
+        }
     }
 
     #[tokio::test]
-    async fn build_queued_approval_wires_handler_to_queue() {
-        // The sunk-down handler (now from phi-agent) must still be reachable
-        // through phimint's wiring: requests enqueued, policy attached.
-        let (handler, policy, mut queue_rx) = build_queued_approval();
-        assert!(policy.is_some(), "queued mode must carry the policy");
+    async fn auto_mode_policy_passes_everything() {
+        let (_handler, policy, _rx, switch) = build_live_approval("auto");
+        let policy = policy.expect("policy present");
+        assert!(
+            policy
+                .evaluate_approval("write_file", &serde_json::json!({"path": "src/lib.rs"}))
+                .await
+                .is_none(),
+            "auto mode must never prompt — writes included"
+        );
+        assert!(
+            policy
+                .evaluate_approval(
+                    "execute_command",
+                    &serde_json::json!({"command": "rm -rf /tmp/x"})
+                )
+                .await
+                .is_none(),
+            "auto mode must never prompt — destructive shell included"
+        );
+        // Switching to ask (Shift+Tab) makes the very same call prompt.
+        switch.set(RuntimeApprovalMode::Ask);
+        assert!(
+            policy
+                .evaluate_approval("write_file", &serde_json::json!({"path": "src/lib.rs"}))
+                .await
+                .is_some(),
+            "the flip must take effect on the next evaluate"
+        );
+    }
+
+    #[tokio::test]
+    async fn ask_mode_queues_prompt_and_roundtrips() {
+        let (handler, _policy, mut queue_rx, switch) = build_live_approval("ask");
+        assert_eq!(switch.get(), RuntimeApprovalMode::Ask);
 
         let cancel = tokio_util::sync::CancellationToken::new();
         let handle = tokio::spawn({
+            let handler = handler.clone();
             let cancel = cancel.clone();
             async move {
                 handler
@@ -594,5 +654,30 @@ mod tests {
             .expect("UI should be able to answer");
         let decision = handle.await.expect("handler task").expect("approve");
         assert_eq!(decision, ApprovalDecision::Deny);
+    }
+
+    #[tokio::test]
+    async fn deny_mode_denies_without_queueing() {
+        let (handler, _policy, mut queue_rx, _switch) = build_live_approval("deny");
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let decision = handler
+            .approve(
+                ApprovalRequest {
+                    title: "write_file".to_string(),
+                    message: "m".to_string(),
+                    action_key: None,
+                    risk_level: RiskLevel::Sensitive,
+                    raw: None,
+                    source: None,
+                },
+                cancel,
+            )
+            .await
+            .expect("approve");
+        assert_eq!(decision, ApprovalDecision::Deny);
+        assert!(
+            queue_rx.try_recv().is_err(),
+            "deny must decide locally, never prompt"
+        );
     }
 }

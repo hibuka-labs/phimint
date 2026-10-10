@@ -957,6 +957,37 @@ fn approval_popup_routes_yan_and_swallows_others() {
 }
 
 #[test]
+fn shift_tab_cycles_approval_mode() {
+    let mut app = App::new();
+    assert_eq!(app.approval_switch.get(), RuntimeApprovalMode::Auto);
+
+    // Shift+Tab is a global toggle: no Action, state flips in place.
+    assert_eq!(app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT), None);
+    assert_eq!(app.approval_switch.get(), RuntimeApprovalMode::Ask);
+    assert!(
+        app.status_line().contains("Mode: ask"),
+        "switching must announce the new mode on the status bar: {}",
+        app.status_line()
+    );
+
+    assert_eq!(app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT), None);
+    assert_eq!(app.approval_switch.get(), RuntimeApprovalMode::Auto);
+}
+
+#[test]
+fn shift_tab_enters_auto_and_resolves_pending_prompts() {
+    let mut app = App::new();
+    app.approval_switch.set(RuntimeApprovalMode::Ask);
+    pending_approval(&mut app);
+
+    // BackTab must NOT be swallowed by the popup's y/a/n routing.
+    assert_eq!(app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT), None);
+    assert_eq!(app.approval_switch.get(), RuntimeApprovalMode::Auto);
+    // Entering auto resolves the queued prompt — auto never blocks the run.
+    assert!(!app.has_pending_approval());
+}
+
+#[test]
 fn approve_front_pops_and_sends() {
     let mut app = App::new();
     let (tx, mut rx) = tokio::sync::oneshot::channel();

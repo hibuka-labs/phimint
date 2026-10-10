@@ -18,8 +18,8 @@ phimint runs the full coding loop — understand the request, read the code, cha
 - **Slash commands** — `.claude/skills`-compatible skills: `/skill-name args` injects the skill body into the turn. `/resume` reopens a previous session with an interactive picker.
 - **Pull-based context** — `repo_map` (tree-sitter symbol/structure index) plus `search_content` (ripgrep). The agent searches and reads on demand instead of stuffing the whole repo into context.
 - **LSP fast inner loop** — lazily started per-language servers (rust-analyzer, typescript-language-server, clangd); `file:line:col` diagnostics in seconds without recompiling. Falls back to shell when a server is missing.
-- **Multi-agent fan-out, push-based fan-in** — `spawn_agent` sends read-only sub-agents to investigate; the main agent gets the **full reports at end of turn** (no polling). The TUI task panel tracks each sub-agent live; a 10-minute per-task hard timeout guarantees delivery.
-- **Three approval modes** — `auto` (full auto), `ask` (prompt on writes/risky shell), `deny` (read-only). Sub-agents inherit the main agent's mode (and can never write).
+- **Multi-agent fan-out, push-based fan-in** — `spawn_agent` sends sub-agents to investigate (read-only by default; write capability is requested per spawn when a task must edit). The main agent gets the **full reports at end of turn** (no polling). The TUI task panel tracks each sub-agent live; a 10-minute per-task hard timeout guarantees delivery.
+- **Three approval modes** — `auto` (full auto), `ask` (prompt on writes/risky shell), `deny` (read-only). Sub-agents inherit the main agent's mode: in `ask`, every sub-agent write prompts in a popup that names the requesting sub-agent.
 - **Guardrails** — reasoning-only spin correction, max-turns nudge, provider truncation guard (lying `finish_reason` tolerance, from agent-base), 16k tool-output cap.
 - **Multi-language** — `code-intel` registry (extension → LSP server → build-command fallback): Rust, TypeScript, JavaScript, C, C++ out of the box.
 - **Modular base** — chat UI components and language intelligence are distilled into their own crates: [`phi-tui`](https://github.com/hibuka-labs/phi-tui) (chat TUI components) and [`code-intel`](https://github.com/hibuka-labs/code-intel) (LSP/repomap/ripgrep cores). phimint keeps only the product shell.
@@ -168,6 +168,7 @@ Commands:
   |---|---|
   | `Enter` | send |
   | `Shift+Enter` | newline |
+  | `Shift+Tab` | toggle approval mode (auto ⇄ ask) |
   | `Ctrl+O` | expand/collapse thinking blocks |
   | `Ctrl+Y` | copy the last reply |
   | `Ctrl+C` | context-sensitive: copy selection → cancel run → quit (press twice) |
@@ -180,9 +181,12 @@ Commands:
 
   | Mode | Behavior |
   |---|---|
-  | `auto` | everything allowed; sub-agents get full (read-only) run |
+  | `auto` | everything allowed; write-capable sub-agents write freely too |
   | `ask` | each write prompts: `y` allow once / `a` allow always / `n` deny |
   | `deny` | read-only; all writes rejected |
+
+  `Shift+Tab` toggles `auto` ⇄ `ask` mid-session (the status bar shows the
+  current mode); `--approval` picks the starting mode.
 
 ### A typical task
 
@@ -202,7 +206,7 @@ you: "investigate questions X / Y / Z"
 1. spawn_agent × 3 read-only sub-agents (each a narrow slice), main agent ends the turn
 2. while they run, the main agent does nothing — reports are pushed, not polled
 3. reports arrive batched at once (the task panel shows each sub-agent live)
-4. the main agent synthesizes and does all editing itself (children never write)
+4. the main agent synthesizes the findings and applies the edits itself — or, for independent work, spawns write-capable sub-agents on disjoint file sets
 ```
 
 ## Tool surface
@@ -221,7 +225,7 @@ you: "investigate questions X / Y / Z"
 
 phimint is a consumer of the [`phi-agent`](https://docs.phiagent.dev/) framework: the agent loop, ReAct, approvals, session event stream and guards all come from the framework (one facade dependency). phimint brings the product shell — system prompt, tool registration, approval wiring, TUI.
 
-- **Push-based fan-in** (agent-works) — sub-agent reports are held on completion and injected as a new turn the instant the main agent's turn ends; progress is display-only (never wakes or interrupts). A task over 10 minutes is hard-stopped with an Error result, so a hung child can always wake the parent. Children are hard-gated read-only: `write_file` / `edit_file` / `execute_command` never enter their tool surface.
+- **Push-based fan-in** (agent-works) — sub-agent reports are held on completion and injected as a new turn the instant the main agent's turn ends; progress is display-only (never wakes or interrupts). A task over 10 minutes is hard-stopped with an Error result, so a hung child can always wake the parent. Sub-agents are read-only by default — `write_file` / `edit_file` / `execute_command` stay off their tool surface until write capability is requested for that spawn (`tools: "write"`, or a `coder`/`tester` preset). Write-capable children work disjoint file sets under a file lock (`file locked by <agent>` on collision), and in `ask` every child write is confirmed in a popup.
 - **TUI architecture** — `ui/run.rs` runs a background task per agent turn pushing `RuntimeEvent`s over an mpsc channel; the main loop feeds events into the `App` state machine, polls keys and repaints. Input and events only meet through channels — no shared mutable state, zero intrusion into the agent loop.
 - **Task panel** — `task_panel.rs` books sub-agent lifecycle (appears on spawn, flips on done, recycled 3s after completion, deferred while the root is busy or you're looking at the panel). Each sub-agent streams into its own buffer so interleaved output never cuts lines.
 - **LSP** — `code-intel` lazily starts one server per language, syncs `didOpen`/`didChange`/`didSave` with cached `publishDiagnostics`, pulled by the `diagnostics` tool. The registry picks the server; code-intel knows nothing about phimint.
@@ -265,10 +269,6 @@ phimint/
 │       └── handlers/          # keyboard.rs / mouse.rs / runtime.rs
 └── Cargo.toml
 ```
-
-## Roadmap
-
-- **Controlled child writes** — evolve sub-agents from read-only investigation to restricted write delegation (`ChildPermissionMode` groundwork already lands in agent-works).
 
 ## Development
 

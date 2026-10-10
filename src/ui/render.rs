@@ -706,8 +706,19 @@ fn render_status(f: &mut Frame, app: &App, area: Rect) {
         AgentStatus::Waiting { .. } => Style::default().fg(Color::Cyan),
         AgentStatus::Running { .. } => Style::default().fg(Color::Yellow),
     };
+    // Approval-mode badge first: the current mode must be readable at a
+    // glance (Shift+Tab toggles it; labels live in approval.rs).
+    let mode = app.approval_switch.get();
+    let badge_style = match mode {
+        crate::approval::RuntimeApprovalMode::Auto => Style::default().fg(Color::Green),
+        crate::approval::RuntimeApprovalMode::Ask => Style::default().fg(Color::Yellow),
+        crate::approval::RuntimeApprovalMode::Deny => Style::default().fg(Color::Red),
+    };
     f.render_widget(
-        Paragraph::new(Line::from(Span::styled(app.status_line(), style))),
+        Paragraph::new(Line::from(vec![
+            Span::styled(format!("{} ", mode.badge()), badge_style),
+            Span::styled(app.status_line(), style),
+        ])),
         area,
     );
 }

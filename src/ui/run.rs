@@ -82,7 +82,8 @@ pub async fn run_tui(
     session_ctx: SessionContext,
     base_dir: PathBuf,
     workspace: PathBuf,
-    approval_rx: Option<mpsc::UnboundedReceiver<ApprovalItem>>,
+    approval_rx: mpsc::UnboundedReceiver<ApprovalItem>,
+    approval_mode: Arc<crate::approval::ApprovalModeSwitch>,
     scheme: ColorScheme,
     popup_style: phi_tui::popup_list::PopupStyle,
     show_banner: bool,
@@ -253,6 +254,7 @@ pub async fn run_tui(
         }
 
         let mut app = App::new();
+        app.approval_switch = Arc::clone(&approval_mode);
         app.set_scheme(scheme);
         app.set_popup_style(popup_style);
         app.set_workspace_root(workspace.clone());
@@ -464,11 +466,9 @@ pub async fn run_tui(
 
             // Drain queued approval requests into the popup queue (one popup at a
             // time — the front of the queue is what gets rendered).
-            if let Some(rx) = approval_rx.as_mut() {
-                while let Ok(item) = rx.try_recv() {
-                    app.approval_queue.push_back(item);
-                    dirty = true;
-                }
+            while let Ok(item) = approval_rx.try_recv() {
+                app.approval_queue.push_back(item);
+                dirty = true;
             }
 
             // Poll input with a short timeout so the frame rate stays bounded even
@@ -590,9 +590,7 @@ pub async fn run_tui(
                                     // request not yet drained (the cancelled handler
                                     // stops sending once its token fires).
                                     app.approval_queue.clear();
-                                    if let Some(rx) = approval_rx.as_mut() {
-                                        while rx.try_recv().is_ok() {}
-                                    }
+                                    while approval_rx.try_recv().is_ok() {}
                                 }
                                 Action::Quit => {
                                     agent.cancel();
