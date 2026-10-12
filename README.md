@@ -68,6 +68,8 @@ added.
 
 ### 2. Configure
 
+The application configuration schema supports advanced customization properties. For a complete blueprint detailing all accepted properties—including manifest tracking behaviors (`update`) and window presentation options (`ui.popup`)—refer directly to the fully-annotated [`config.json.example`](config.json.example) baseline.
+
 A one-minute step: you need an API key for any supported model provider
 (OpenAI / Anthropic / DeepSeek / Aliyun / Moonshot / Gemini / Ollama …).
 
