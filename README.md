@@ -177,6 +177,7 @@ Commands:
   | `PageUp` / `PageDown` | scroll the transcript |
 
 - **Mouse** — wheel scrolls; left-drag selects lines; right-click opens a copy menu.
+- **Terminal notes** — In macOS Terminal.app, enable **View → Allow Mouse Reporting** for wheel/trackpad scrolling. If it is disabled, use `fn+Up` / `fn+Down` to page through the transcript. Terminal.app does not report the Kitty keyboard protocol, so `Cmd+C` cannot be detected as a copy shortcut; use `Ctrl+C` while a selection is active or the right-click copy menu instead.
 - **Approvals**
 
   | Mode | Behavior |

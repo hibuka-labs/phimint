@@ -174,6 +174,7 @@ Commands:
   | `PageUp` / `PageDown` | 滚动输出区 |
 
 - **鼠标**：滚轮滚动、左键拖选出行范围、右键弹出拷贝菜单。
+- **终端说明**：在 macOS Terminal.app 中，请启用 **View → Allow Mouse Reporting**，滚轮和触控板滚动才能正常工作。若未启用，可使用 `fn+Up` / `fn+Down` 翻页浏览输出。Terminal.app 不会报告 Kitty 键盘协议，因此无法识别 `Cmd+C` 作为拷贝快捷键；请先选中文本后使用 `Ctrl+C`，或使用右键拷贝菜单。
 - **审批三态**：
 
   | 模式 | 行为 |
