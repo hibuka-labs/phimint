@@ -29,3 +29,29 @@
   //   "compression": "lite"
   // },
 }
+
+  ,
+  // System Update Configurations
+  "update": {
+    // List of manifest URLs to check for updates
+    "endpoints": [
+      "https://example.com"
+    ],
+    "channel": "stable",
+    "auto_check": true
+  },
+
+  // User Interface Window Configurations
+  "ui": {
+    "popup": {
+      "frame": true,
+      // Horizontal width layout: set to "fill" or a specific column count integer
+      "width": "fill",
+      // Vertical height layout measured in rows (integer count)
+      "height": 24,
+      "separator": true
+    }
+  }
+}
+   
+  
