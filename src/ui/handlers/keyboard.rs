@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use crossterm::event::{KeyCode, KeyModifiers};
 
-use crate::ui::app::{Action, AgentStatus, App, FocusTarget, Phase};
+use crate::ui::app::{Action, App, FocusTarget};
 use phi_agent::ApprovalDecision;
 use phi_kernel_tools::background_shell::BackgroundTaskStatus;
 
@@ -199,25 +199,16 @@ impl App {
                 } else if !self.running && !self.composer.is_empty() {
                     let text = self.composer.text();
                     self.composer.clear();
-                    // Echo the user's message into the transcript before the
-                    // agent's reply, so the record keeps the human turn too.
-                    self.push_user(&text);
-                    self.transcript.clear_plan();
-                    // `running` is set at the Cmd::Run send site in run.rs —
-                    // a submit intercepted before the send (/resume, /upgrade)
-                    // must not leave the composer locked.
-                    // Follow the conversation: the user just committed to a
-                    // turn, so the reply must stream into view. If they were
-                    // scrolled up reading history, this is the moment their
-                    // reading position ends.
-                    self.scroll_to_bottom();
-                    // The user just committed to a turn — start the activity
-                    // clock now, not at the engine's first event, so the
-                    // thinking/streaming stretch ticks from this keystroke.
-                    self.begin_activity();
-                    self.status = AgentStatus::Running {
-                        phase: Phase::Thinking,
-                    };
+                    // Deliberately no turn state here. The echoed user message,
+                    // the activity clock, the plan reset and the Thinking phase
+                    // are all committed by `App::begin_user_turn` at the
+                    // `Cmd::Run` send site in run.rs. `running` was already
+                    // send-site-only; the rest must follow it, or a submit
+                    // intercepted before the send (/resume, /upgrade) leaves
+                    // the transcript echoing a message that was never sent and
+                    // the status bar on a phantom "thinking" stretch (session
+                    // 20261013_075bb995: a cancelled picker left total_turns
+                    // at 0 while the spinner ran for minutes).
                     Some(Action::Submit(text))
                 } else {
                     None

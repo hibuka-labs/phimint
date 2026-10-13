@@ -119,10 +119,18 @@ fn plan_ex(
     }
 }
 
+/// Simulates the run.rs send path: key handling yields the action, and the
+/// loop commits turn state only when it actually queues a `Cmd::Run`. A submit
+/// intercepted before that point (/resume, /upgrade) never calls
+/// [`App::begin_user_turn`] — see `intercepted_submit_commits_no_turn_state`.
 fn submit(app: &mut App, input: &str) -> Action {
     app.composer.clear();
     app.composer.insert_str(input);
-    app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap()
+    let action = app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    if let Action::Submit(text) = &action {
+        app.begin_user_turn(text);
+    }
+    action
 }
 
 #[test]
@@ -281,6 +289,51 @@ fn submit_requires_nonempty_and_not_running() {
     app.running = true;
     app.composer.insert_str("second");
     assert_eq!(app.handle_key(KeyCode::Enter, KeyModifiers::NONE), None);
+}
+
+/// Regression (session 20261013_075bb995): `/resume` is intercepted before
+/// the `Cmd::Run` send. Enter used to commit the turn state in key handling,
+/// so cancelling the picker left `status = Running { Thinking }` and a running
+/// activity clock with `total_turns == 0` — the status bar span`thinking... - 3m10s` for minutes with no run in flight, and the transcript
+/// echoed `> /resume` as if the message had been sent.
+#[test]
+fn intercepted_submit_commits_no_turn_state() {
+    let mut app = App::new();
+    app.composer.insert_str("/resume");
+
+    // Exactly what run.rs does for an intercepted submit: key handling yields
+    // the action, then the loop branches into the interceptor and never
+    // reaches the send site.
+    let action = app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(action, Some(Action::Submit("/resume".to_string())));
+
+    assert!(
+        matches!(app.status, AgentStatus::Idle),
+        "intercepted submit must not start a turn, got {:?}",
+        app.status
+    );
+    assert!(
+        app.activity_since.is_none(),
+        "intercepted submit must not start the activity clock"
+    );
+    assert!(
+        !app.is_active(),
+        "no run in flight — the liveness tick must not spin a phantom spinner"
+    );
+    let users: Vec<&str> = app
+        .transcript
+        .output
+        .iter()
+        .filter(|l| l.kind == LineKind::User)
+        .map(|l| l.text.as_str())
+        .collect();
+    assert!(
+        users.is_empty(),
+        "intercepted submit must not echo a message that was never sent, got {users:?}"
+    );
+
+    // The composer is still usable: `running` was never raised either.
+    assert!(!app.running, "composer must not be locked");
 }
 
 /// Regression (user report 2026-09-16, round 3): after resuming, the user

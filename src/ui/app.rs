@@ -924,6 +924,35 @@ impl App {
         self.viewport.scroll_down(WHEEL_STEP)
     }
 
+    /// Commit the UI state that means "a user turn is starting": echo the
+    /// message into the transcript, reset the plan block, follow the bottom,
+    /// start the activity clock and flip the status to Thinking.
+    ///
+    /// Call this at the `Cmd::Run` send site — never from key handling. Key
+    /// handling only yields [`Action::Submit`]; run.rs may intercept that
+    /// before the send (`/resume`, `/upgrade`), and an intercepted submit
+    /// must leave nothing behind. Session 20261013_075bb995: `/resume` was
+    /// submitted, the picker was cancelled, and the status bar span
+    /// `thinking...` for minutes with `total_turns == 0` — the turn state had
+    /// been committed by Enter with no run ever queued to settle it.
+    ///
+    /// The clock starts here rather than at the engine's first event so a
+    /// model that thinks for half a minute before its first delta doesn't
+    /// render a frozen spinner with no elapsed readout (session
+    /// 20261006_9264ba3e).
+    pub fn begin_user_turn(&mut self, text: &str) {
+        self.push_user(text);
+        self.transcript.clear_plan();
+        // Follow the conversation: the user just committed to a turn, so the
+        // reply must stream into view. If they were scrolled up reading
+        // history, this is the moment their reading position ends.
+        self.scroll_to_bottom();
+        self.begin_activity();
+        self.status = AgentStatus::Running {
+            phase: Phase::Thinking,
+        };
+    }
+
     /// True while a turn or a child wait is in flight — gates the event loop's
     /// liveness tick (spinner/elapsed need periodic redraws even with zero
     /// events; see `activity_since`).

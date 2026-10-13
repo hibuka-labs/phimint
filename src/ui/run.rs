@@ -542,12 +542,28 @@ pub async fn run_tui(
                                         });
                                         break;
                                     }
+                                    // Commit the turn's UI state at the send
+                                    // site — key handling only yields
+                                    // Action::Submit, and this branch is past
+                                    // every interceptor (/resume, /upgrade),
+                                    // so the echo/clock/phase can no longer
+                                    // outlive a submit that never queued a run.
+                                    app.begin_user_turn(&text);
                                     if cmd_tx.send(Cmd::Run(text)).is_ok() {
                                         // Root turn queued. Synthetic turns set the
                                         // same flag at their send sites — `running`
                                         // means "a turn is in flight or queued", and
                                         // it is cleared only by settle_after_turn.
                                         app.running = true;
+                                    } else {
+                                        // Channel closed — the agent loop is gone, so
+                                        // nothing will ever settle this turn. Undo the
+                                        // commit rather than leave a phantom
+                                        // "thinking" stretch with no run behind it
+                                        // (the same failure mode the commit moved
+                                        // here to prevent). The dead-agent detector
+                                        // reports the underlying loss.
+                                        app.settle_status_from_inflight();
                                     }
                                     user_msg_count += 1;
                                     if user_msg_count == 10 {
