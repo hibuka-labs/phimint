@@ -29,12 +29,15 @@ pub fn muted(scheme: ColorScheme) -> Color {
     }
 }
 
-/// Chrome: borders, timestamps, markers, hint tails. At notice-level on a dark
-/// screen; on light it must step *darker*, not lighter, to stay visible.
+/// Chrome: borders, timestamps, markers, hint tails. Truecolor on both
+/// schemes: ANSI DarkGray is palette-defined and lands near-invisible on
+/// popular dark terminal themes (Apple Terminal's bright black is ~#666,
+/// unreadable on a navy bg), so Dark pins a mid gray; Light steps darker,
+/// not lighter, to stay visible on white.
 pub fn faint(scheme: ColorScheme) -> Color {
     match scheme {
-        ColorScheme::Dark => Color::DarkGray,
-        ColorScheme::Light => Color::Rgb(0x8a, 0x8a, 0x8a),
+        ColorScheme::Dark => Color::Rgb(0x8a, 0x8a, 0x8a),
+        ColorScheme::Light => Color::Rgb(0x6e, 0x6e, 0x6e),
     }
 }
 

@@ -4,7 +4,10 @@
 //! stays in the bar while output scrolls above it).
 
 // Modules live in the lib crate (src/lib.rs) so tests/ can exercise them.
-use phimint::{agent, approval, banner, config, model_store, router, skills, title_gen, ui};
+use phimint::{
+    agent, approval, banner, config, model_store, router, session_birthplace, session_history,
+    session_scope, skills, title_gen, ui,
+};
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -107,9 +110,13 @@ struct Cli {
     )]
     token_budget: usize,
 
-    /// Days to retain session history and notes (default: 7).
+    /// Days to retain session history and notes (default: 30).
     /// Expired data is cleaned up at startup.
-    #[arg(long, default_value_t = 7)]
+    ///
+    /// Deliberately tied to `session_scope::RECENT_DAYS`: the resume
+    /// picker's default view reaches back a month, so the data has to
+    /// survive a month or the window has nothing to show.
+    #[arg(long, default_value_t = session_scope::RECENT_DAYS as i64)]
     session_retention_days: i64,
 
     /// Skip the automatic update check on startup.
@@ -272,6 +279,19 @@ async fn main() -> Result<()> {
     // Cleanup expired session data (history, notes, sessions) at startup.
     cleanup_expired_data(&base_dir, cli.session_retention_days);
 
+    // Sessions created before the workspace tag existed have no home folder,
+    // which makes the resume picker's folder view look like the history is
+    // gone. File them once, from the repos their paths touched. Declining to
+    // guess is recorded too, so this is not re-read on every launch.
+    let (filed, unfiled) = session_birthplace::recover_missing_birthplaces(&base_dir);
+    if filed > 0 {
+        tracing::info!(
+            filed,
+            unfiled,
+            "filed legacy sessions into their home workspace"
+        );
+    }
+
     // Process any pending title generation marker from a previous exit.
     // Runs in the main tokio runtime — the LLM provider is healthy here.
     {
@@ -339,6 +359,15 @@ async fn main() -> Result<()> {
 
     // Create or resume the runtime session.
     let (session, resume_messages) = if cli.resume {
+        // Heal first: a session that rotated and then died may have its whole
+        // conversation in the history archive and no `messages.jsonl` to
+        // resume from. Without this the picker lists it (after the listing
+        // fix) but the model comes back with no memory at all.
+        session_history::restore_messages_jsonl(
+            &base_dir,
+            &session_ctx.session_id,
+            &session_ctx.session_dir,
+        );
         let messages = load_session_messages(&session_ctx.session_dir)
             .context("Failed to load session messages")?;
         let replay = messages.clone(); // kept for TUI transcript replay

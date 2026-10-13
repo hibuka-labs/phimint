@@ -47,9 +47,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let content_width = term_w as usize;
     app.set_wrap_width(content_width);
 
-    // Composer height: visual rows (accounting for soft-wrap) + 2 for border.
-    // The composer's Block::borders(ALL) consumes 2 columns (left+right).
-    let composer_inner_w = term_w.saturating_sub(2);
+    // Composer height: visual rows (accounting for soft-wrap) + 2 for the
+    // top/bottom rules. Claude Code style chrome: TOP+BOTTOM only, so no
+    // columns are lost to side borders (inner width = terminal width).
+    let composer_inner_w = term_w;
     let composer_vis = app
         .composer
         .visual_height(composer_inner_w)
@@ -601,8 +602,8 @@ fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn render_composer(f: &mut Frame, app: &App, area: Rect) {
-    let inner_height = area.height.saturating_sub(2) as usize;
-    let inner_width = area.width.saturating_sub(2) as usize; // border left+right
+    let inner_height = area.height.saturating_sub(2) as usize; // top+bottom rules
+    let inner_width = area.width as usize; // no side borders (Claude Code style)
     let prefix_w = 2usize; // "> " or "  "
 
     tracing::debug!(
@@ -694,9 +695,13 @@ fn render_composer(f: &mut Frame, app: &App, area: Rect) {
     let total = items.len();
     let scroll = total.saturating_sub(inner_height) as u16;
 
+    // Claude Code style: full-width horizontal rules, open sides. `faint`
+    // keeps the rules at notice level on dark terminals and steps darker on
+    // light ones (theme slot, follows --color-scheme).
     let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded);
+        .borders(Borders::TOP | Borders::BOTTOM)
+        .border_type(BorderType::Plain)
+        .border_style(Style::default().fg(theme::faint(app.scheme())));
     f.render_widget(Paragraph::new(items).block(block).scroll((scroll, 0)), area);
 }
 

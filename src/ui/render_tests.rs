@@ -455,10 +455,10 @@ fn banner_spans_render_palette_on_top_of_system_style() {
 
     // Wordmark row 0: face glyph 0 is Logo(0) = dark stop #FF6A3D; the shadow
     // stroke (col 6, '╗') is LogoShadow #4A3226; the connector/padding (col 8)
-    // is Default → falls back to the System base (DarkGray).
+    // is Default → falls back to the System base (faint).
     assert_eq!(cell(0, 0).style().fg, Some(Color::Rgb(0xff, 0x6a, 0x3d)));
     assert_eq!(cell(6, 0).style().fg, Some(Color::Rgb(0x4a, 0x32, 0x26)));
-    assert_eq!(cell(8, 0).style().fg, Some(Color::DarkGray));
+    assert_eq!(cell(8, 0).style().fg, Some(theme::faint(ColorScheme::Dark)));
 
     // Slogan row (index 7): "Forged…" is bold Slogan #FFB066.
     let slogan = cell(0, 7).style();
@@ -1648,7 +1648,7 @@ fn slash_lines_keeps_the_selected_row_two_tone() {
     // Unselected row keeps the plain dim description.
     assert_eq!(
         fg(1, 2),
-        Some(Color::DarkGray),
+        Some(theme::faint(ColorScheme::Dark)),
         "unselected description drifted"
     );
     assert_eq!(fg(1, 0), Some(Color::White), "unselected name drifted");
@@ -2261,9 +2261,12 @@ fn styled_banner_rows_stay_whole_and_do_not_soft_wrap() {
         .lines()
         .filter(|l| !l.trim().is_empty() && l.trim().chars().all(|c| c == '─'))
         .collect();
+    // Dash rows on screen: the banner rule (1) plus the composer's top and
+    // bottom rules (2, Claude Code style chrome). Any wrap fragment of the
+    // 100-col banner rule would push the count above 3.
     assert_eq!(
         dash_rows.len(),
-        1,
+        3,
         "rule must stay one clipped visual row, not wrap into fragments:\n{snap}"
     );
     // And the wordmark keeps one visual row per glyph row (6), not 12 halves.

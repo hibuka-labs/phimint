@@ -25,7 +25,7 @@ use async_trait::async_trait;
 
 use phi_agent::{
     ChatMessage, CompactionKind, CompactionOutcome, ContextCompaction, SessionId,
-    TokenBudgetAction, TokenBudgetCore, clear_messages_jsonl, estimate_messages_tokens,
+    TokenBudgetAction, TokenBudgetCore, estimate_messages_tokens, persist_window_messages,
 };
 
 use phi_kernel_tools::context_rotation::{
@@ -182,13 +182,14 @@ impl ContextCompaction for TokenBudgetCompactor {
                         message_count = messages.len(),
                         "archived window messages to history"
                     );
-                    // Archive succeeded — clear messages.jsonl so that a
-                    // future resume does not re-inject the already-archived
-                    // window (the history tool can retrieve it).
-                    let session_dir = self.base_dir.join("sessions").join(&self.session_id);
-                    if let Err(e) = clear_messages_jsonl(&session_dir) {
-                        tracing::warn!(error = %e, "failed to clear messages.jsonl after archive");
-                    }
+                    // `messages.jsonl` is NOT deleted here. It used to be, to
+                    // stop a resume re-injecting the already-archived window —
+                    // but that left the session with no restorable snapshot at
+                    // all: unlisted by the picker and blank on resume whenever
+                    // the process died before the next turn-end persist (and
+                    // both rotated sessions did, on the same tool panic).
+                    // Instead the file is rewritten below with just the fresh
+                    // window, which is both non-reinjecting AND restorable.
                 }
 
                 // 2. The model's own handoff note, if it wrote one.
@@ -224,6 +225,20 @@ impl ContextCompaction for TokenBudgetCompactor {
                         .build_reset_messages(messages, thread_hint, previous_window);
                 let new_window = self.core.commit_reset();
                 self.reset_count.fetch_add(1, Ordering::Relaxed);
+
+                // 3b. Persist the fresh window immediately. `messages.jsonl`
+                //     must always hold *something* restorable: the turn-end
+                //     persist is the only other writer, and a rotation is
+                //     usually followed by more work in this turn — dying in
+                //     between (a tool panic, a crash) used to leave the
+                //     session invisible to the resume picker.
+                let session_dir = self.base_dir.join("sessions").join(&self.session_id);
+                if let Err(e) = std::fs::create_dir_all(&session_dir) {
+                    tracing::warn!(error = %e, "failed to create session dir for fresh window");
+                }
+                if let Err(e) = persist_window_messages(&session_dir, &new_messages) {
+                    tracing::warn!(error = %e, "failed to persist fresh window after reset");
+                }
 
                 tracing::info!(
                     session_id = %self.session_id,
@@ -368,6 +383,57 @@ mod tests {
             .join("001.jsonl");
         assert!(jsonl.exists());
         assert_eq!(std::fs::read_to_string(&jsonl).unwrap().lines().count(), 2);
+    }
+
+    /// A reset must leave `messages.jsonl` holding the fresh window. It used
+    /// to *delete* the file (so a resume could not re-inject the archived
+    /// window), which left a session that rotated and then died with nothing
+    /// to resume from — unlisted by the picker and blank on resume. Both
+    /// rotated sessions in `~/.phimint` ended exactly that way.
+    #[test]
+    fn reset_leaves_messages_jsonl_restorable() {
+        let tmp = TempDir::new().unwrap();
+        let core = small_core();
+        let reset_point = core.hard_limit() - core.base_overhead();
+        let shell = shell_with(core, &tmp);
+        let msgs = work_msgs(shell.core(), reset_point);
+
+        let _ = shell.compact_sync(&msgs).expect("fallback must fire"); // hold
+        let result = shell.compact_sync(&msgs).expect("reset must fire");
+        assert_eq!(result.kind, CompactionKind::Reset);
+
+        let messages_path = tmp
+            .path()
+            .join("sessions")
+            .join("test_session")
+            .join("messages.jsonl");
+        let stored = std::fs::read_to_string(&messages_path)
+            .expect("messages.jsonl must survive a window reset");
+        assert!(
+            stored.lines().any(|l| !l.trim().is_empty()),
+            "messages.jsonl must be non-blank after a reset, got: {stored:?}"
+        );
+
+        // The fresh window, not a re-injection of the archived one: the
+        // trail's user message is kept, the outgoing work blob is not.
+        assert!(
+            stored.contains("x"),
+            "fresh window must carry the user trail"
+        );
+        let archived = std::fs::read_to_string(
+            tmp.path()
+                .join("history")
+                .join("test_session")
+                .join("windows")
+                .join("001.jsonl"),
+        )
+        .unwrap();
+        let outgoing_len = archived.lines().count();
+        assert!(outgoing_len > 0);
+        assert!(
+            stored.lines().count() < outgoing_len + 5,
+            "messages.jsonl should hold the fresh window only"
+        );
     }
 
     #[test]

@@ -3,6 +3,9 @@
 //! Uses `phi_agent::list_sessions` for scanning and presents a ratatui list
 //! for the user to choose from.  Returns the selected session's directory
 //! path, or `None` if the user pressed Esc.
+//!
+//! The list is scoped by [`crate::session_scope`]: by default only sessions
+//! from the folder phimint was launched in, `Tab` widens to everything.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -20,10 +23,11 @@ use ratatui::{
     layout::{Constraint, Layout},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
 
 use crate::banner::ColorScheme;
+use crate::session_scope::{self, Scope};
 use crate::ui::theme;
 
 /// Show the picker from within an active TUI session.
@@ -39,6 +43,7 @@ pub fn show_picker_from_tui(
     if entries.is_empty() {
         return Ok(None);
     }
+    let workspace = session_scope::current_workspace();
 
     // Leave the caller's alternate screen.
     let mut stdout = io::stdout();
@@ -51,7 +56,13 @@ pub fn show_picker_from_tui(
         let mut terminal = Terminal::new(backend)?;
         let mut state = ListState::default();
         state.select(Some(0));
-        let r = picker_loop(&mut terminal, &entries, &mut state, scheme);
+        let r = picker_loop(
+            &mut terminal,
+            &entries,
+            &mut state,
+            scheme,
+            workspace.as_deref(),
+        );
         disable_raw_mode()?;
         execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
         r
@@ -79,6 +90,7 @@ pub fn show_picker(
         eprintln!("No resumable sessions found.");
         return Ok(None);
     }
+    let workspace = session_scope::current_workspace();
 
     // Set up terminal.
     enable_raw_mode()?;
@@ -90,7 +102,13 @@ pub fn show_picker(
     let mut state = ListState::default();
     state.select(Some(0));
 
-    let result = picker_loop(&mut terminal, &entries, &mut state, scheme);
+    let result = picker_loop(
+        &mut terminal,
+        &entries,
+        &mut state,
+        scheme,
+        workspace.as_deref(),
+    );
 
     // Clean up terminal.
     disable_raw_mode()?;
@@ -100,12 +118,20 @@ pub fn show_picker(
 }
 
 /// The picker event loop — renders the list and handles keyboard input.
+///
+/// `entries` is every resumable session; the loop narrows it to the current
+/// [`Scope`] and lets `Tab` flip between the two.
 fn picker_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     entries: &[SessionInfo],
     state: &mut ListState,
     scheme: ColorScheme,
+    workspace: Option<&Path>,
 ) -> io::Result<Option<PathBuf>> {
+    let mut scope = Scope::Workspace;
+    let mut shown = session_scope::visible(entries, scope, workspace);
+    clamp_selection(state, shown.len());
+
     loop {
         terminal.draw(|frame| {
             let area = frame.area();
@@ -116,46 +142,54 @@ fn picker_loop(
             ])
             .split(area);
 
-            // Build list items.
-            let items: Vec<ListItem> = entries
-                .iter()
-                .map(|e| {
-                    // Format: "  2026-09-10T14:30  title text"
-                    let date = format_date(e.last_active_at);
-                    let line = Line::from(vec![
-                        Span::styled(
-                            format!("  {}  ", date),
-                            Style::default().fg(theme::faint(scheme)),
-                        ),
-                        Span::raw(&e.title),
-                    ]);
-                    ListItem::new(line)
-                })
-                .collect();
+            // Empty body is a first-class state, not a blank screen: the
+            // sessions still exist, they just live in other folders.
+            if shown.is_empty() {
+                frame.render_widget(
+                    Paragraph::new(empty_state_lines(entries.len(), scheme)),
+                    chunks[0],
+                );
+            } else {
+                let items: Vec<ListItem> = shown
+                    .iter()
+                    .map(|e| {
+                        // Format: "  2026-09-10T14:30  title text"
+                        let date = format_date(e.last_active_at);
+                        let line = Line::from(vec![
+                            Span::styled(
+                                format!("  {}  ", date),
+                                Style::default().fg(theme::faint(scheme)),
+                            ),
+                            Span::raw(&e.title),
+                        ]);
+                        ListItem::new(line)
+                    })
+                    .collect();
 
-            let list = List::new(items)
-                .block(
-                    Block::default()
-                        .title(" Resume Session ")
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(theme::faint(scheme))),
-                )
-                .highlight_style(
-                    Style::default()
-                        .bg(theme::selection_bg(scheme))
-                        .fg(theme::selection_fg(scheme))
-                        .add_modifier(Modifier::BOLD),
-                )
-                .highlight_symbol("> ");
+                let list = List::new(items)
+                    .block(
+                        Block::default()
+                            .title(title(scope))
+                            .borders(Borders::ALL)
+                            .border_style(Style::default().fg(theme::faint(scheme))),
+                    )
+                    .highlight_style(
+                        Style::default()
+                            .bg(theme::selection_bg(scheme))
+                            .fg(theme::selection_fg(scheme))
+                            .add_modifier(Modifier::BOLD),
+                    )
+                    .highlight_symbol("> ");
 
-            frame.render_stateful_widget(list, chunks[0], state);
+                frame.render_stateful_widget(list, chunks[0], state);
+            }
 
             // Footer hint.
             let hint = Span::styled(
-                " ↑↓ navigate  Enter select  Esc cancel ",
+                footer(scope, shown.len(), entries.len()),
                 Style::default().fg(theme::faint(scheme)),
             );
-            frame.render_widget(ratatui::widgets::Paragraph::new(hint), chunks[1]);
+            frame.render_widget(Paragraph::new(hint), chunks[1]);
         })?;
 
         // Handle key events.
@@ -172,13 +206,20 @@ fn picker_loop(
                 }
                 KeyCode::Down => {
                     let selected = state.selected().unwrap_or(0);
-                    if selected + 1 < entries.len() {
+                    if selected + 1 < shown.len() {
                         state.select(Some(selected + 1));
                     }
                 }
+                KeyCode::Tab => {
+                    scope = scope.toggled();
+                    shown = session_scope::visible(entries, scope, workspace);
+                    clamp_selection(state, shown.len());
+                }
                 KeyCode::Enter => {
-                    if let Some(idx) = state.selected() {
-                        return Ok(Some(entries[idx].session_dir.clone()));
+                    if let Some(idx) = state.selected()
+                        && let Some(entry) = shown.get(idx)
+                    {
+                        return Ok(Some(entry.session_dir.clone()));
                     }
                 }
                 KeyCode::Esc => return Ok(None),
@@ -186,6 +227,68 @@ fn picker_loop(
             }
         }
     }
+}
+
+/// Keep the selection inside the visible list after a scope switch.
+fn clamp_selection(state: &mut ListState, len: usize) {
+    if len == 0 {
+        state.select(None);
+    } else {
+        state.select(Some(state.selected().unwrap_or(0).min(len - 1)));
+    }
+}
+
+fn title(scope: Scope) -> String {
+    // ASCII only: the chrome-width guard rejects em dashes and middots,
+    // which render double-width in CJK terminals and shift the box borders.
+    match scope {
+        Scope::Workspace => " Resume Session  [this folder] ".to_string(),
+        Scope::All => " Resume Session  [all folders] ".to_string(),
+    }
+}
+
+fn footer(scope: Scope, shown: usize, total: usize) -> String {
+    match scope {
+        // Say what Tab does next, not where you are: the empty state is the
+        // moment this line earns its keep.
+        Scope::Workspace => format!(
+            " ↑↓ navigate  Enter select  Tab all folders  Esc cancel   |  {} in this folder, {} total ",
+            shown, total
+        ),
+        Scope::All => {
+            format!(
+                " ↑↓ navigate  Enter select  Tab this folder  Esc cancel   |  {} total ",
+                total
+            )
+        }
+    }
+}
+
+/// What to render when the current scope shows nothing.
+///
+/// "Nothing here" and "nothing anywhere" are different situations and must
+/// not look the same — the first is a filter, the second is a fresh install.
+fn empty_state_lines(total: usize, scheme: ColorScheme) -> Vec<Line<'static>> {
+    let faint = Style::default().fg(theme::faint(scheme));
+    if total == 0 {
+        return vec![
+            Line::from(""),
+            Line::styled("  No sessions yet.", faint),
+            Line::styled("  Start one with `phimint`; it will show up here.", faint),
+        ];
+    }
+    vec![
+        Line::from(""),
+        Line::styled("  No sessions from this folder yet.", faint),
+        Line::styled(
+            format!(
+                "  {} live in other folders, or predate folder tracking.",
+                total
+            ),
+            faint,
+        ),
+        Line::styled("  Press Tab to see them all.", faint),
+    ]
 }
 
 /// Format a `SystemTime` for display with relative time.
@@ -328,5 +431,88 @@ mod tests {
     fn test_format_date_future_clock_skew() {
         let future = SystemTime::now() + Duration::from_secs(60);
         assert_eq!(format_date(future), "just now");
+    }
+
+    // ── scope wiring: the picker's two views ──
+
+    #[test]
+    fn clamp_selection_keeps_the_cursor_inside_the_list() {
+        let mut state = ListState::default();
+        state.select(Some(5));
+        clamp_selection(&mut state, 2);
+        assert_eq!(state.selected(), Some(1));
+
+        clamp_selection(&mut state, 0);
+        assert_eq!(
+            state.selected(),
+            None,
+            "an empty list has nothing to select"
+        );
+
+        let mut fresh = ListState::default();
+        clamp_selection(&mut fresh, 3);
+        assert_eq!(fresh.selected(), Some(0));
+    }
+
+    #[test]
+    fn footer_points_at_the_other_scope() {
+        assert!(footer(Scope::Workspace, 2, 9).contains("Tab all folders"));
+        assert!(footer(Scope::All, 9, 9).contains("Tab this folder"));
+        assert!(footer(Scope::Workspace, 2, 9).contains("2 in this folder"));
+        assert!(footer(Scope::All, 9, 9).contains("9 total"));
+    }
+
+    #[test]
+    fn empty_state_distinguishes_a_filter_from_a_fresh_install() {
+        let joined =
+            |lines: Vec<Line<'static>>| lines.iter().map(|l| l.to_string()).collect::<String>();
+
+        let fresh = joined(empty_state_lines(0, ColorScheme::Dark));
+        assert!(
+            fresh.contains("No sessions yet"),
+            "a fresh install must say so: {fresh}"
+        );
+
+        let filtered = joined(empty_state_lines(12, ColorScheme::Dark));
+        assert!(
+            filtered.contains("Press Tab"),
+            "the way out must be on screen: {filtered}"
+        );
+        assert!(
+            filtered.contains("12"),
+            "the hidden count must be on screen: {filtered}"
+        );
+    }
+
+    /// End-to-end over real session directories: one recorded in this folder
+    /// shows up in the default view, one recorded elsewhere does not.
+    #[test]
+    fn workspace_scope_filters_real_sessions() {
+        let tmp = TempDir::new().unwrap();
+        let here = std::fs::canonicalize(std::env::current_dir().unwrap()).unwrap();
+
+        for (id, cwd) in [
+            ("mine", here.to_string_lossy().into_owned()),
+            ("theirs", "/somewhere/else".into()),
+        ] {
+            let dir = make_session(tmp.path(), id, id);
+            let meta = serde_json::json!({
+                "session_id": id,
+                "last_active_at": "2026-09-10T14:30:00Z",
+                "cwd": cwd,
+            });
+            std::fs::write(
+                dir.join("session_meta.json"),
+                serde_json::to_string_pretty(&meta).unwrap(),
+            )
+            .unwrap();
+        }
+
+        let entries = phi_agent::list_sessions(tmp.path(), None);
+        assert_eq!(entries.len(), 2);
+
+        let shown = session_scope::visible(&entries, Scope::Workspace, Some(&here));
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0].session_id, "mine");
     }
 }

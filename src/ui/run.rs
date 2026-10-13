@@ -26,7 +26,7 @@ use phi_agent::{
     persist_window_messages, read_session_title, save_turn_log,
 };
 use phi_kernel_tools::background_shell::BackgroundTaskRegistry;
-use ratatui::{Terminal, backend::CrosstermBackend};
+use ratatui::{Terminal, backend::CrosstermBackend, layout::Rect};
 use tokio::sync::mpsc;
 
 use super::app::{Action, App, TuiEvent};
@@ -104,6 +104,22 @@ pub async fn run_tui(
 
     // Terminal setup. The guard restores the terminal on any exit path.
     enable_raw_mode()?;
+
+    // Panic hook: restore the terminal BEFORE the default hook prints, or the
+    // panic text lands mid-frame in raw mode and smears across the status bar
+    // and input box (observed: a tool panic on a tokio worker corrupted the
+    // composer for the rest of the session). Installed once per process —
+    // /resume re-enters this function and must not stack hooks.
+    static PANIC_HOOK: std::sync::Once = std::sync::Once::new();
+    PANIC_HOOK.call_once(|| {
+        let default_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let _ = disable_raw_mode();
+            let _ = execute!(io::stderr(), LeaveAlternateScreen);
+            default_hook(info);
+        }));
+    });
+
     let mut stdout = io::stdout();
     execute!(
         stdout,
@@ -140,6 +156,7 @@ pub async fn run_tui(
         terminal.clear()?;
 
         let session_dir = session_ctx.session_dir.clone();
+        let session_id = session_ctx.session_id.clone();
         let log_path = session_ctx.log_path().display().to_string();
         let frames_path = session_ctx.session_dir.join("frames.txt");
         let perf_path = session_ctx.session_dir.join("perf.log");
@@ -230,6 +247,9 @@ pub async fn run_tui(
             model_store.clone(),
             router.clone(),
         ));
+        // Set once the agent task is observed dead (panic) — the failure is
+        // surfaced in the transcript exactly once, not every tick.
+        let mut agent_dead_announced = false;
 
         // Persistent event bridge: subscribe to the runtime's event bus each
         // session. The spawned task dies when event_tx is dropped (session ends).
@@ -297,14 +317,25 @@ pub async fn run_tui(
         // Replay historical messages into the transcript so the user sees the
         // previous conversation (not just a blank screen) after --resume.
         if let Some(messages) = &resume_messages {
-            replay_messages_to_transcript(&mut app, messages);
-            if !messages.is_empty() {
+            // Archived windows first. `messages.jsonl` only ever holds the
+            // live window, so without this a rotated session opens on its
+            // recent tail and the whole past is invisible — which from the
+            // outside is exactly "resume shows no history". Display only:
+            // the model still resumes from the live window and recovers the
+            // rest through the history.* tools.
+            let archived = crate::session_history::load_archived_messages(&base_dir, &session_id);
+            // A restored window (or a rotation's user trail) sits in both
+            // slices — show it once, from the archive, which is the fuller
+            // copy.
+            let fresh = crate::session_history::drop_already_shown(&archived, messages);
+            replay_messages_to_transcript(&mut app, &archived, fresh);
+            if !messages.is_empty() || !archived.is_empty() {
                 // Digest goes AFTER the replay block: the viewport follows the
                 // bottom, so this lands on the visible last screen — right
                 // where the user is looking, telling them the history above is
                 // browsable with PgUp (half a page per press).
                 let title = read_session_title(&session_dir);
-                app.push_system(&resume_digest_line(messages, title));
+                app.push_system(&resume_digest_line(&archived, fresh, title));
             }
         }
 
@@ -335,6 +366,12 @@ pub async fn run_tui(
         let mut dirty = true; // capture the initial screen
         // Last real render time — drives the UI_TICK liveness redraw.
         let mut last_draw = Instant::now();
+        // Last terminal-geometry probe — drives the 1 Hz size self-heal below.
+        let mut last_geom_check = Instant::now();
+        // Last size we know the buffers were resized to. The 1 Hz probe below
+        // compares the REAL terminal size against this; autoresize alone is
+        // not enough because it resizes buffers without clearing the screen.
+        let mut last_size = crossterm::terminal::size().unwrap_or((0, 0));
 
         // Child-result delivery (fan-in redesign). The watcher coordinates: a
         // Progress event is display-only, a Batch event wakes the parent. The
@@ -464,6 +501,22 @@ pub async fn run_tui(
                 dirty = true;
             }
 
+            // Detect a dead agent task. `agent_task` is only awaited at exit,
+            // so a panic that escaped tool-level isolation would otherwise
+            // leave the spinner turning forever with the user typing into a
+            // dead session. `outcome.is_none()` skips the normal quit path,
+            // where Quit is sent to the agent right before the UI exits.
+            if outcome.is_none() && !agent_dead_announced && agent_task.is_finished() {
+                agent_dead_announced = true;
+                tracing::error!("tui: agent task finished unexpectedly (panic or early exit)");
+                app.push_system(
+                    "! Agent runtime terminated unexpectedly - input is no longer \
+                     processed. Quit (Ctrl+C) and resume the session; see session.log \
+                     for the panic details.",
+                );
+                dirty = true;
+            }
+
             // Drain queued approval requests into the popup queue (one popup at a
             // time — the front of the queue is what gets rendered).
             while let Ok(item) = approval_rx.try_recv() {
@@ -506,6 +559,17 @@ pub async fn run_tui(
                                             ),
                                             app.scheme(),
                                         )?;
+                                        // The picker bounces LeaveAlternateScreen
+                                        // / EnterAlternateScreen, so we come back
+                                        // to a freshly blanked alternate screen.
+                                        // ratatui's draw() diffs against its cached
+                                        // previous buffer and re-emits only changed
+                                        // cells — with the screen blank but the cache
+                                        // intact that means the banner and borders
+                                        // are never repainted (the "界面乱了" after a
+                                        // cancelled picker). Clearing invalidates the
+                                        // cache and forces a full repaint.
+                                        terminal.clear()?;
                                         if let Some(picked_dir) = picked {
                                             outcome = Some(TuiOutcome::SwitchSession(picked_dir));
                                         }
@@ -657,7 +721,17 @@ pub async fn run_tui(
                         dirty = true;
                         app.paste(&text);
                     }
-                    Event::Resize(_, _) => {
+                    Event::Resize(w, h) => {
+                        // Repaint unconditionally: mid-drag SIGWINCHs coalesce
+                        // into a single event whose size may equal the buffer
+                        // size, yet the terminal has already CLIPPED cells off
+                        // the right edge. Diff rendering can't repair cells it
+                        // believes unchanged - resize + clear forces every cell
+                        // back out, or a 1-col "notch" stays on the composer's
+                        // right border until the next effective resize.
+                        terminal.resize(Rect::new(0, 0, w, h))?;
+                        terminal.clear()?;
+                        last_size = (w, h);
                         dirty = true;
                     }
                     _ => {}
@@ -679,6 +753,24 @@ pub async fn run_tui(
             let slept = !dirty;
             if slept {
                 std::thread::sleep(Duration::from_millis(2));
+            }
+
+            // Geometry self-heal (1 Hz): a SIGWINCH burst can coalesce into NO
+            // Resize event at all (size ends where it started) or the event
+            // races the drain loop, while ratatui's per-draw autoresize only
+            // resizes buffers - it never clears cells the terminal already
+            // clipped mid-drag. Probe the real size once a second; on drift,
+            // resize + clear forces a full repaint and heals the notch.
+            if last_geom_check.elapsed() >= Duration::from_secs(1) {
+                last_geom_check = Instant::now();
+                let probed = crossterm::terminal::size().unwrap_or(last_size);
+                if probed != last_size {
+                    tracing::info!(?last_size, ?probed, "tui: geometry self-heal resize");
+                    last_size = probed;
+                    terminal.resize(Rect::new(0, 0, probed.0, probed.1))?;
+                    terminal.clear()?;
+                    dirty = true;
+                }
             }
 
             // Liveness tick: active (Running/Waiting) with no events this
@@ -781,6 +873,13 @@ pub async fn run_tui(
                 return Ok(());
             }
             TuiOutcome::SwitchSession(picked_dir) => {
+                // Heal before loading: a session that rotated and then died
+                // may hold its conversation only in the history archive.
+                let picked_id = picked_dir
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                crate::session_history::restore_messages_jsonl(&base_dir, &picked_id, &picked_dir);
                 match agent.switch_to_session(&picked_dir, &base_dir).await {
                     Ok((new_id, messages, new_ctx)) => {
                         // Re-point the tracing file sink so logs follow the data
@@ -1203,7 +1302,17 @@ fn wheel_dead_notice(
 /// One-line digest pushed after the replayed history. The resume viewport
 /// lands on the tail of the conversation, so without this the user has no
 /// signal that the full history is loaded (or that PgUp reaches it).
-fn resume_digest_line(messages: &[ChatMessage], title: Option<String>) -> String {
+/// Digest of what a resume restored: archived windows + the live window.
+///
+/// Both slices count — a rotated session's history is split across them, and
+/// a digest that only mentioned the live window would under-report the
+/// conversation the user just scrolled into.
+fn resume_digest_line(
+    archived: &[ChatMessage],
+    current: &[ChatMessage],
+    title: Option<String>,
+) -> String {
+    let messages: Vec<&ChatMessage> = archived.iter().chain(current.iter()).collect();
     let turns = messages
         .iter()
         .filter(|m| {
@@ -1233,79 +1342,103 @@ fn resume_digest_line(messages: &[ChatMessage], title: Option<String>) -> String
 
 /// Replay historical `ChatMessage`s into the TUI transcript so the user sees
 /// the previous conversation after `--resume`.
-fn replay_messages_to_transcript(app: &mut super::app::App, messages: &[ChatMessage]) {
-    use phi_tui::lines::{LineKind, OutputLine};
+///
+/// `archived` are the rotated-out windows from the history store and
+/// `current` is the live window from `messages.jsonl`. Archived first, in
+/// chronological order, with a divider between the two only when both are
+/// present.
+fn replay_messages_to_transcript(
+    app: &mut super::app::App,
+    archived: &[ChatMessage],
+    current: &[ChatMessage],
+) {
+    if archived.is_empty() && current.is_empty() {
+        return;
+    }
 
     app.push_system("── resumed conversation ──");
 
-    for msg in messages {
-        match msg {
-            ChatMessage::User { content, .. } => {
-                app.transcript.push_user(content);
-            }
-            ChatMessage::Assistant {
-                content,
-                tool_calls,
-                ..
-            } => {
-                // Push text content (if any).
-                // ONE raw OutputLine for the whole message: Normal prose is
-                // wrapped at display time (markdown + `wrap_line`), and
-                // `rewrap_output` keeps Normal lines whole for exactly that
-                // reason. Pre-wrapping here froze the resume-time width into
-                // the transcript, so a resized terminal kept stale breaks.
-                if let Some(text) = content
-                    && !text.is_empty()
-                {
-                    let text = text.clone();
-                    app.transcript.push(OutputLine {
-                        original: Some(text.clone()),
-                        text,
-                        kind: LineKind::Normal,
-                        spans: None,
-                        detail: None,
-                        tool_state: None,
-                    });
-                }
-                // Push tool call markers.
-                if let Some(tcs) = tool_calls {
-                    for tc in tcs {
-                        app.transcript.push(OutputLine {
-                            text: format!("⚙ {}", tc.name),
-                            kind: LineKind::Tool,
-                            spans: None,
-                            original: None,
-                            detail: None,
-                            tool_state: None,
-                        });
-                    }
-                }
-            }
-            ChatMessage::Tool { name, content, .. } => {
-                let label = name.as_deref().unwrap_or("tool");
-                let preview = content.lines().next().unwrap_or(content);
-                // `elide`, not a byte slice: `&preview[..120]` panics mid-UTF-8
-                // on non-ASCII tool output (any CJK repo), and the budget is
-                // display columns so the row cannot overflow the pane.
-                let display = format!(
-                    "↻ {}: {}",
-                    label,
-                    phi_tui::wrap::elide(preview, 120, phi_tui::wrap::Elide::Head)
-                );
+    for msg in archived {
+        push_replayed_message(app, msg);
+    }
+    if !archived.is_empty() && !current.is_empty() {
+        app.push_system("── current window ──");
+    }
+    for msg in current {
+        push_replayed_message(app, msg);
+    }
+
+    app.push_system("── end of resumed conversation ──");
+}
+
+/// Push one historical message into the transcript as display lines.
+fn push_replayed_message(app: &mut super::app::App, msg: &ChatMessage) {
+    use phi_tui::lines::{LineKind, OutputLine};
+
+    match msg {
+        ChatMessage::User { content, .. } => {
+            app.transcript.push_user(content);
+        }
+        ChatMessage::Assistant {
+            content,
+            tool_calls,
+            ..
+        } => {
+            // Push text content (if any).
+            // ONE raw OutputLine for the whole message: Normal prose is
+            // wrapped at display time (markdown + `wrap_line`), and
+            // `rewrap_output` keeps Normal lines whole for exactly that
+            // reason. Pre-wrapping here froze the resume-time width into
+            // the transcript, so a resized terminal kept stale breaks.
+            if let Some(text) = content
+                && !text.is_empty()
+            {
+                let text = text.clone();
                 app.transcript.push(OutputLine {
-                    text: display,
-                    kind: LineKind::ToolResult,
+                    original: Some(text.clone()),
+                    text,
+                    kind: LineKind::Normal,
                     spans: None,
-                    original: None,
                     detail: None,
                     tool_state: None,
                 });
             }
-            _ => {} // System / Custom — already filtered, skip.
+            // Push tool call markers.
+            if let Some(tcs) = tool_calls {
+                for tc in tcs {
+                    app.transcript.push(OutputLine {
+                        text: format!("⚙ {}", tc.name),
+                        kind: LineKind::Tool,
+                        spans: None,
+                        original: None,
+                        detail: None,
+                        tool_state: None,
+                    });
+                }
+            }
         }
+        ChatMessage::Tool { name, content, .. } => {
+            let label = name.as_deref().unwrap_or("tool");
+            let preview = content.lines().next().unwrap_or(content);
+            // `elide`, not a byte slice: `&preview[..120]` panics mid-UTF-8
+            // on non-ASCII tool output (any CJK repo), and the budget is
+            // display columns so the row cannot overflow the pane.
+            let display = format!(
+                "↻ {}: {}",
+                label,
+                phi_tui::wrap::elide(preview, 120, phi_tui::wrap::Elide::Head)
+            );
+            app.transcript.push(OutputLine {
+                text: display,
+                kind: LineKind::ToolResult,
+                spans: None,
+                original: None,
+                detail: None,
+                tool_state: None,
+            });
+        }
+        _ => {} // System / Custom — already filtered, skip.
     }
-
-    app.push_system("── end of resumed conversation ──");
 }
 
 #[cfg(test)]
@@ -1338,7 +1471,7 @@ mod resume_digest_tests {
             user("继续"),
             assistant("好的"),
         ];
-        let line = resume_digest_line(&msgs, Some("探究工程".into()));
+        let line = resume_digest_line(&[], &msgs, Some("探究工程".into()));
         assert!(line.contains("resumed session \"探究工程\""), "{line}");
         assert!(line.contains("2 turns"), "{line}");
         assert!(line.contains("5 messages"), "{line}");
@@ -1348,7 +1481,7 @@ mod resume_digest_tests {
     #[test]
     fn digest_omits_title_when_absent() {
         let msgs = vec![user("hi"), assistant("hello")];
-        let line = resume_digest_line(&msgs, None);
+        let line = resume_digest_line(&[], &msgs, None);
         assert!(!line.contains('"'), "{line}");
         assert!(line.contains("1 turn, 2 messages"), "{line}");
     }
@@ -1359,7 +1492,7 @@ mod resume_digest_tests {
     #[test]
     fn digest_does_not_count_ephemeral_as_turn() {
         let msgs = vec![ChatMessage::user_ephemeral("skill body"), assistant("ok")];
-        let line = resume_digest_line(&msgs, None);
+        let line = resume_digest_line(&[], &msgs, None);
         assert!(line.contains("0 turns, 2 messages"), "{line}");
     }
 
@@ -1840,7 +1973,7 @@ mod replay_tests {
         let mut app = App::new();
         let long = "The policy lives in the wake module and batches completions behind a quiet window so a burst of finished tasks costs one notification turn, not ten of them.";
         let msgs = vec![assistant(long)];
-        replay_messages_to_transcript(&mut app, &msgs);
+        replay_messages_to_transcript(&mut app, &[], &msgs);
         let normals: Vec<_> = app
             .transcript
             .output
@@ -1862,7 +1995,7 @@ mod replay_tests {
             name: Some("bash".into()),
             content: "中".repeat(200), // 600 bytes — past the old cut
         }];
-        replay_messages_to_transcript(&mut app, &msgs);
+        replay_messages_to_transcript(&mut app, &[], &msgs);
         let preview = app
             .transcript
             .output
@@ -1871,5 +2004,67 @@ mod replay_tests {
             .expect("tool result line");
         assert!(preview.text.contains("bash"), "{}", preview.text);
         assert!(preview.text.len() < 300, "preview elided: {}", preview.text);
+    }
+
+    /// A rotated session splits its history across the archive and the live
+    /// window. Resume used to replay only the live window, so the past was
+    /// invisible — which from the outside is "resume shows no history".
+    #[test]
+    fn replay_shows_archived_windows_before_the_live_window() {
+        let mut app = App::new();
+        let archived = vec![ChatMessage::user("from the archived window")];
+        let current = vec![assistant("from the live window")];
+        replay_messages_to_transcript(&mut app, &archived, &current);
+
+        let text: Vec<&str> = app
+            .transcript
+            .output
+            .iter()
+            .map(|l| l.text.as_str())
+            .collect();
+        let archived_at = text
+            .iter()
+            .position(|t| t.contains("from the archived window"))
+            .expect("archived line");
+        let current_at = text
+            .iter()
+            .position(|t| t.contains("from the live window"))
+            .expect("live line");
+        assert!(
+            archived_at < current_at,
+            "archive is older, so it must render first"
+        );
+        assert!(
+            text.iter().any(|t| t.contains("current window")),
+            "a divider must separate the two when both are present: {text:?}"
+        );
+    }
+
+    #[test]
+    fn replay_omits_divider_when_only_one_source_has_content() {
+        let mut app = App::new();
+        replay_messages_to_transcript(&mut app, &[], &[assistant("only the live window")]);
+        let text: Vec<&str> = app
+            .transcript
+            .output
+            .iter()
+            .map(|l| l.text.as_str())
+            .collect();
+        assert!(
+            !text.iter().any(|t| t.contains("current window")),
+            "{text:?}"
+        );
+    }
+
+    #[test]
+    fn resume_digest_counts_archived_and_live_messages() {
+        let archived = vec![
+            ChatMessage::user("older question"),
+            assistant("older answer"),
+        ];
+        let current = vec![ChatMessage::user("latest question")];
+        let line = resume_digest_line(&archived, &current, None);
+        assert!(line.contains("2 turns"), "{line}");
+        assert!(line.contains("3 messages"), "{line}");
     }
 }
