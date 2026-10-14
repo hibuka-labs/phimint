@@ -453,22 +453,42 @@ fn banner_spans_render_palette_on_top_of_system_style() {
     let w = 120usize;
     let cell = |x: usize, y: usize| buf.content()[y * w + x].clone();
 
-    // Wordmark row 0: face glyph 0 is Logo(0) = dark stop #FF6A3D; the shadow
-    // stroke (col 6, '╗') is LogoShadow #4A3226; the connector/padding (col 8)
-    // is Default → falls back to the System base (faint).
+    // Wordmark row 0: face fill 0 is Logo(0) = dark stop #FF6A3D. The flat
+    // wordmark carries no shadow strokes — cols 6..8 are glyph padding and the
+    // connector, so they fall back to the System base (faint).
     assert_eq!(cell(0, 0).style().fg, Some(Color::Rgb(0xff, 0x6a, 0x3d)));
-    assert_eq!(cell(6, 0).style().fg, Some(Color::Rgb(0x4a, 0x32, 0x26)));
+    assert_eq!(cell(5, 0).style().fg, Some(Color::Rgb(0xff, 0x6a, 0x3d)));
+    assert_eq!(cell(6, 0).style().fg, Some(theme::faint(ColorScheme::Dark)));
     assert_eq!(cell(8, 0).style().fg, Some(theme::faint(ColorScheme::Dark)));
 
-    // Slogan row (index 7): "Forged…" is bold Slogan #FFB066.
-    let slogan = cell(0, 7).style();
+    // The lockup hangs the text block off the right of the wordmark,
+    // bottom-aligned: slogan on wordmark row 1, ad on row 2. "Forged…" is bold
+    // Slogan #FFB066; "Built on" is label #F2A462 and "phi-agent" is Ad #FFC66E
+    // (bold).
+    let row_text = |y: usize| -> String {
+        (0..w)
+            .map(|x| buf.content()[y * w + x].symbol().to_string())
+            .collect()
+    };
+    // Column, not byte offset: the wordmark's `█` cells are multi-byte, so a
+    // byte index into the row text is not a screen column.
+    let find_col = |y: usize, needle: &str| -> Option<usize> {
+        let t = row_text(y);
+        t.find(needle).map(|b| t[..b].chars().count())
+    };
+    let x = find_col(1, "Forged").expect("slogan on wordmark row 1");
+    assert_eq!(
+        find_col(2, "Built on"),
+        Some(x),
+        "ad must hang at the same x as the slogan"
+    );
+    let slogan = cell(x, 1).style();
     assert_eq!(slogan.fg, Some(Color::Rgb(0xff, 0xb0, 0x66)));
     assert!(slogan.add_modifier.contains(Modifier::BOLD));
 
-    // Ad row (index 8): "Built on" label #F2A462, then "phi-agent" Ad #FFC66E (bold).
-    assert_eq!(cell(0, 8).style().fg, Some(Color::Rgb(0xf2, 0xa4, 0x62)));
-    let ad_x = "Built on   ".len();
-    let ad = cell(ad_x, 8).style();
+    assert_eq!(cell(x, 2).style().fg, Some(Color::Rgb(0xf2, 0xa4, 0x62)));
+    let ad_x = x + "Built on   ".len();
+    let ad = cell(ad_x, 2).style();
     assert_eq!(ad.fg, Some(Color::Rgb(0xff, 0xc6, 0x6e)));
     assert!(ad.add_modifier.contains(Modifier::BOLD));
 }
@@ -2256,7 +2276,7 @@ fn streaming_tail_longer_than_width_must_wrap_not_clip() {
 /// phi-tui documents "**no** soft-wrap (the wordmark must stay whole; ratatui
 /// clips on narrow terminals), no re-wrap on width change (`original: None`)".
 /// Banner art and the full-width `─` rule are fixed-width chrome — wrapping the
-/// rule (no break points) hard-splits it into dash fragments and the 60-col
+/// rule (no break points) hard-splits it into dash fragments and the 58-col
 /// wordmark splits at its letter gaps. Render a banner wider than the pane and
 /// assert the rule stays ONE visual row (clipped), not a stack of fragments.
 #[test]
@@ -2282,15 +2302,11 @@ fn styled_banner_rows_stay_whole_and_do_not_soft_wrap() {
         3,
         "rule must stay one clipped visual row, not wrap into fragments:\n{snap}"
     );
-    // And the wordmark keeps one visual row per glyph row (6), not 12 halves.
-    // (Row 5 is pure shadow `╚═╝`, so count the full face+shadow charset.)
-    let wordmark_rows = snap
-        .lines()
-        .filter(|l| l.chars().any(|c| "█╔═╗║╚╝".contains(c)))
-        .count();
+    // And the wordmark keeps one visual row per glyph row (5), not 10 halves.
+    let wordmark_rows = snap.lines().filter(|l| l.contains('█')).count();
     assert_eq!(
-        wordmark_rows, 6,
-        "wordmark must stay whole (6 rows), not split at letter gaps:\n{snap}"
+        wordmark_rows, 5,
+        "wordmark must stay whole (5 rows), not split at letter gaps:\n{snap}"
     );
 }
 

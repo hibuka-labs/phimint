@@ -8,9 +8,9 @@
 //! 2. **ANSI grays** — their *role* flips with the background: the gray that
 //!    reads "quiet hint" on dark reads "dead" on light. Two semantic slots,
 //!    [`muted`] and [`faint`], map to different grays per scheme.
-//! 3. **Absolute truecolor** (thought, user, warm, selection) — one RGB value
-//!    cannot serve both backgrounds, so both sets live here and the scheme
-//!    picks.
+//! 3. **Absolute truecolor** (thought, user, warm, good, selection) — one RGB
+//!    value cannot serve both backgrounds, so both sets live here and the
+//!    scheme picks.
 //!
 //! Two static palettes, no dynamic adaptation: `--color-scheme dark|light|auto`
 //! resolves once at startup (`banner::resolve_scheme`, keyed off `$COLORFGBG`)
@@ -27,6 +27,27 @@ pub fn muted(scheme: ColorScheme) -> Color {
     match scheme {
         ColorScheme::Dark => Color::Gray,
         ColorScheme::Light => Color::Rgb(0x55, 0x55, 0x55),
+    }
+}
+
+/// Status-band chrome: the Idle status word, the tip, the mode-cycle hint.
+/// A step brighter than [`faint`] so the bottom band reads without squinting;
+/// content chrome (timestamps, markers) stays at `faint`.
+pub fn hint(scheme: ColorScheme) -> Color {
+    match scheme {
+        ColorScheme::Dark => Color::Rgb(0xa0, 0xa0, 0xa0),
+        ColorScheme::Light => Color::Rgb(0x5e, 0x5e, 0x5e),
+    }
+}
+
+/// The bottom-right status slot (scroll position, upgrade hint). A medium
+/// green pinned in truecolor: the call is for a shade ("not too dark, not too
+/// light") and ANSI Green is terminal-defined, landing anywhere from deep to
+/// neon. Content success markers keep `Color::Green`.
+pub fn good(scheme: ColorScheme) -> Color {
+    match scheme {
+        ColorScheme::Dark => Color::Rgb(0x66, 0xbb, 0x6a),
+        ColorScheme::Light => Color::Rgb(0x2e, 0x7d, 0x32),
     }
 }
 
@@ -114,8 +135,10 @@ mod tests {
 
     type Slot = fn(ColorScheme) -> Color;
 
-    const SLOTS: [(&str, Slot); 9] = [
+    const SLOTS: [(&str, Slot); 11] = [
         ("muted", muted),
+        ("hint", hint),
+        ("good", good),
         ("faint", faint),
         ("thought", thought),
         ("user", user),
@@ -147,6 +170,7 @@ mod tests {
         for scheme in [ColorScheme::Dark, ColorScheme::Light] {
             for (name, c) in [
                 ("muted", muted(scheme)),
+                ("hint", hint(scheme)),
                 ("faint", faint(scheme)),
                 ("thought", thought(scheme)),
                 ("lifted", lifted(scheme)),

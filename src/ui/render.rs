@@ -732,7 +732,7 @@ fn render_process_line(f: &mut Frame, app: &App, area: Rect) {
     let scheme = app.scheme();
     let text = app.status_line();
     let style = match app.status {
-        AgentStatus::Idle => Style::default().fg(theme::faint(scheme)),
+        AgentStatus::Idle => Style::default().fg(theme::hint(scheme)),
         AgentStatus::Waiting { .. } => Style::default().fg(Color::Cyan),
         AgentStatus::Running { .. } => Style::default().fg(Color::Yellow),
     };
@@ -751,7 +751,7 @@ fn render_process_line(f: &mut Frame, app: &App, area: Rect) {
             let budget = width - status_w - TIP_GAP;
             let tip = elide(&tip, budget, Elide::Head);
             spans.push(Span::raw(" ".repeat(TIP_GAP)));
-            spans.push(Span::styled(tip, Style::default().fg(theme::faint(scheme))));
+            spans.push(Span::styled(tip, Style::default().fg(theme::hint(scheme))));
         }
     }
     f.render_widget(Paragraph::new(Line::from(spans)), area);
@@ -783,7 +783,7 @@ fn render_status(f: &mut Frame, app: &App, area: Rect) {
     let mut spans = vec![
         Span::styled(mode.badge(), badge_style),
         Span::raw(" "),
-        Span::styled(MODE_CYCLE_HINT, Style::default().fg(theme::faint(scheme))),
+        Span::styled(MODE_CYCLE_HINT, Style::default().fg(theme::hint(scheme))),
     ];
     if let Some((text, style)) = status_bar_right(app) {
         let width = area.width as usize;
@@ -808,12 +808,13 @@ fn render_status(f: &mut Frame, app: &App, area: Rect) {
 const MODE_CYCLE_HINT: &str = "(shift+tab to cycle)";
 
 /// The right slot of the bottom status bar, in priority order: the upgrade
-/// hint (persistent, yellow), else the scroll position while the transcript
-/// sits off the bottom (faint, with the key that re-follows it). `None` when
-/// there is nothing to report.
+/// hint (persistent), else the scroll position while the transcript sits off
+/// the bottom (with the key that re-follows it). `None` when there is nothing
+/// to report. Both ride the medium green `good` slot.
 fn status_bar_right(app: &App) -> Option<(String, Style)> {
+    let green = Style::default().fg(theme::good(app.scheme()));
     if let Some(hint) = &app.upgrade_hint {
-        return Some((hint.clone(), Style::default().fg(Color::Yellow)));
+        return Some((hint.clone(), green));
     }
     let v = &app.viewport;
     if v.follow_bottom || v.rendered_total == 0 || v.viewport_height == 0 {
@@ -823,7 +824,7 @@ fn status_bar_right(app: &App) -> Option<(String, Style)> {
     let range = v.window_range(total, v.viewport_height);
     Some((
         format!("scroll {}/{total} (End to bottom)", range.start + 1),
-        Style::default().fg(theme::faint(app.scheme())),
+        green,
     ))
 }
 

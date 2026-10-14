@@ -1,6 +1,8 @@
-//! Startup brand banner: a figlet "phimint" wordmark + tagline + workspace/log
-//! metadata. Row spans keep the text pure so copy/selection and the frame
-//! capture never see styling.
+//! Startup brand banner: a flat block "phimint" wordmark + tagline +
+//! workspace/log metadata, laid out as a logo lockup (wordmark left, text
+//! right, bottoms aligned) when the terminal is wide enough and as a stack
+//! when it is not. Row spans keep the text pure so copy/selection and the
+//! frame capture never see styling.
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -21,10 +23,8 @@ pub enum ColorScheme {
 pub enum BannerStyle {
     /// Uncolored spaces (letter connectors and intra-glyph padding).
     Default,
-    /// Wordmark face stroke (`█`) at gradient stop `0..=6`, left → right.
+    /// Wordmark face fill (`█`) at gradient stop `0..=6`, left → right.
     Logo(u8),
-    /// Wordmark drop-shadow strokes (`╔═╗║╚╝`).
-    LogoShadow,
     /// Full-width divider rule under the banner block.
     Rule,
     /// The slogan (bold).
@@ -81,11 +81,12 @@ impl BannerStyle {
                 );
                 stops[usize::from(i).min(stops.len() - 1)]
             }
-            BannerStyle::LogoShadow => match scheme {
+            BannerStyle::Rule => match scheme {
+                // Warm ember-brown, not neutral gray: the divider closes the
+                // banner block without breaking the all-warm palette.
                 ColorScheme::Dark => (0x4a, 0x32, 0x26),
                 ColorScheme::Light => (0xd9, 0xc3, 0xac),
             },
-            BannerStyle::Rule => BannerStyle::LogoShadow.rgb(scheme),
             BannerStyle::Slogan => match scheme {
                 ColorScheme::Dark => (0xff, 0xb0, 0x66),
                 ColorScheme::Light => (0x9a, 0x4b, 0x12),
@@ -165,67 +166,55 @@ impl BannerRow {
     }
 }
 
-/// `ANSI Shadow` figlet glyphs for the letters of "phimint". Each entry is
-/// `[row; 6]`, row 0 at the top, and every row of one glyph has the same width
-/// (asserted by test). `GLYPHS[i][row]` is the `i`th letter's `row`-th row.
-const GLYPHS: [[&str; 6]; 7] = [
+/// Flat block glyphs for the letters of "phimint": the `ANSI Shadow` figlet
+/// faces with their `╔═╗║╚╝` drop-shadow strokes removed, leaving only the
+/// `█` letterforms and the spaces that hold each glyph's width — so the
+/// wordmark keeps its 58-column footprint and its letter gaps, just without
+/// the 3D edge. Each entry is `[row; 5]`, row 0 at the top, and every row of
+/// one glyph has the same width (asserted by test). `GLYPHS[i][row]` is the
+/// `i`th letter's `row`-th row.
+const GLYPHS: [[&str; 5]; 7] = [
     // P
-    [
-        "██████╗ ",
-        "██╔══██╗",
-        "██████╔╝",
-        "██╔═══╝ ",
-        "██║     ",
-        "╚═╝     ",
-    ],
+    ["██████  ", "██   ██ ", "██████  ", "██      ", "██      "],
     // H
-    [
-        "██╗  ██╗",
-        "██║  ██║",
-        "███████║",
-        "██╔══██║",
-        "██║  ██║",
-        "╚═╝  ╚═╝",
-    ],
+    ["██   ██ ", "██   ██ ", "███████ ", "██   ██ ", "██   ██ "],
     // I
-    ["██╗", "██║", "██║", "██║", "██║", "╚═╝"],
+    ["██ ", "██ ", "██ ", "██ ", "██ "],
     // M
     [
-        "███╗   ███╗",
-        "████╗ ████║",
-        "██╔████╔██║",
-        "██║╚██╔╝██║",
-        "██║ ╚═╝ ██║",
-        "╚═╝     ╚═╝",
+        "███    ███ ",
+        "████  ████ ",
+        "██ ████ ██ ",
+        "██  ██  ██ ",
+        "██      ██ ",
     ],
     // I
-    ["██╗", "██║", "██║", "██║", "██║", "╚═╝"],
+    ["██ ", "██ ", "██ ", "██ ", "██ "],
     // N
     [
-        "███╗   ██╗",
-        "████╗  ██║",
-        "██╔██╗ ██║",
-        "██║╚██╗██║",
-        "██║ ╚████║",
-        "╚═╝  ╚═══╝",
+        "███    ██ ",
+        "████   ██ ",
+        "██ ██  ██ ",
+        "██  ██ ██ ",
+        "██   ████ ",
     ],
     // T
     [
-        "████████╗",
-        "╚══██╔══╝",
-        "   ██║   ",
-        "   ██║   ",
-        "   ██║   ",
-        "   ╚═╝   ",
+        "████████ ",
+        "   ██    ",
+        "   ██    ",
+        "   ██    ",
+        "   ██    ",
     ],
 ];
 
-/// The six wordmark rows: letters joined by single `Default` connector spaces.
-/// Each glyph is split per character into face (`█` → `Logo(letter)` gradient
-/// stop) and shadow (`╔═╗║╚╝` → `LogoShadow`) runs; consecutive same-style
-/// characters merge into one span.
+/// The five wordmark rows: letters joined by single `Default` connector
+/// spaces. Each glyph is split per character into face fill (`█` →
+/// `Logo(letter)` gradient stop) and padding (` ` → `Default`) runs;
+/// consecutive same-style characters merge into one span. Anything that is
+/// not face fill is padding — the flat wordmark has no shadow strokes.
 pub fn logo_rows() -> Vec<BannerRow> {
-    (0..6)
+    (0..5)
         .map(|row| {
             let mut spans: Vec<BannerSpan> = Vec::new();
             for (i, glyph) in GLYPHS.iter().enumerate() {
@@ -234,12 +223,11 @@ pub fn logo_rows() -> Vec<BannerRow> {
                 }
                 let stop = i as u8;
                 for ch in glyph[row].chars() {
-                    let style = match ch {
-                        '█' => BannerStyle::Logo(stop),
-                        ' ' => BannerStyle::Default,
-                        _ => BannerStyle::LogoShadow,
-                    };
-                    push_char(&mut spans, ch, style);
+                    if ch == '█' {
+                        push_char(&mut spans, ch, BannerStyle::Logo(stop));
+                    } else {
+                        push_char(&mut spans, ' ', BannerStyle::Default);
+                    }
                 }
             }
             BannerRow { spans }
@@ -332,23 +320,77 @@ fn info_row(label: &str, value: &str) -> BannerRow {
     }
 }
 
-/// Build the banner: 6 wordmark rows + spacer + slogan + ad + Workspace +
-/// Logs + full-width rule = 12 rows. `term_width` is the terminal's column
-/// count at startup (resize afterwards may leave the rule slightly stale —
-/// clipped when narrower, a stub when wider; accepted by design).
+/// Columns of breathing room between the wordmark and the right-hand text
+/// block when the two sit side by side (the logo lockup).
+const LOCKUP_GAP: usize = 2;
+
+/// Display columns of a banner row's plain text (CJK path segments count 2).
+fn row_width(row: &BannerRow) -> usize {
+    unicode_width::UnicodeWidthStr::width(row.text().as_str())
+}
+
+/// Build the banner. Two layouts, picked by whether the lockup fits:
+///
+/// * **lockup** — the wordmark on the left, the slogan/ad/info block on the
+///   right, bottoms aligned so the block's last row shares the wordmark's
+///   last row. Taken when `term_width ≥ wordmark + gap + widest text row`.
+/// * **stacked** — the classic stack: wordmark, spacer, then the text block
+///   underneath. Narrow terminals land here so nothing clips.
+///
+/// Either way the block ends with the full-width `─` rule. `term_width` is the
+/// terminal's column count at startup (resize afterwards may leave the rule
+/// slightly stale — clipped when narrower, a stub when wider; accepted by
+/// design).
 pub fn build(
     workspace: &Path,
     log_path: &Path,
     version: &str,
     term_width: usize,
 ) -> Vec<BannerRow> {
-    let mut rows = logo_rows();
-    rows.push(BannerRow { spans: vec![] });
-    rows.push(tagline_row(version));
-    rows.push(ad_row());
-    rows.push(info_row("Workspace", &shorten_home(workspace)));
-    rows.push(info_row("Logs", &shorten_home(log_path)));
+    let text = [
+        tagline_row(version),
+        ad_row(),
+        info_row("Workspace", &shorten_home(workspace)),
+        info_row("Logs", &shorten_home(log_path)),
+    ];
+    let logo = logo_rows();
+    let logo_width = logo.iter().map(row_width).max().unwrap_or(0);
+    let text_width = text.iter().map(row_width).max().unwrap_or(0);
+
+    let mut rows = if term_width >= logo_width + LOCKUP_GAP + text_width {
+        lockup_rows(&logo, &text, LOCKUP_GAP)
+    } else {
+        stacked_rows(&logo, &text)
+    };
     rows.push(rule_row(term_width));
+    rows
+}
+
+/// The side-by-side lockup: one row per wordmark row, with the text block hung
+/// off the right and bottom-aligned — text row `j` lands on wordmark row
+/// `j + offset`, where `offset` is whatever keeps the block's last row on the
+/// wordmark's last row. The caller only picks this layout when the combined
+/// width fits, so nothing here has to deal with overflow.
+fn lockup_rows(logo: &[BannerRow], text: &[BannerRow], gap: usize) -> Vec<BannerRow> {
+    let offset = logo.len().saturating_sub(text.len());
+    let height = logo.len().max(offset + text.len());
+    (0..height)
+        .map(|i| {
+            let mut spans = logo.get(i).map(|r| r.spans.clone()).unwrap_or_default();
+            if let Some(t) = i.checked_sub(offset).and_then(|j| text.get(j)) {
+                spans.push((" ".repeat(gap), BannerStyle::Default));
+                spans.extend(t.spans.iter().cloned());
+            }
+            BannerRow { spans }
+        })
+        .collect()
+}
+
+/// The classic stack: wordmark, spacer, then the text block underneath.
+fn stacked_rows(logo: &[BannerRow], text: &[BannerRow]) -> Vec<BannerRow> {
+    let mut rows = logo.to_vec();
+    rows.push(BannerRow { spans: vec![] });
+    rows.extend(text.iter().cloned());
     rows
 }
 
@@ -386,7 +428,6 @@ mod tests {
             BannerStyle::Logo(0),
             BannerStyle::Logo(3),
             BannerStyle::Logo(6),
-            BannerStyle::LogoShadow,
             BannerStyle::Rule,
             BannerStyle::Slogan,
             BannerStyle::Version,
@@ -425,34 +466,29 @@ mod tests {
     }
 
     #[test]
-    fn logo_rows_are_six_equal_width_rows() {
+    fn logo_rows_are_five_equal_width_rows() {
         let rows = logo_rows();
-        assert_eq!(rows.len(), 6);
+        assert_eq!(rows.len(), 5);
         let w = rows[0].text().chars().count();
         for row in &rows {
             assert_eq!(row.text().chars().count(), w, "rows must be equal width");
         }
-        for row in &rows {
-            for (chunk, style) in &row.spans {
-                if *style == BannerStyle::Default {
-                    assert!(
-                        chunk.chars().all(|c| c == ' '),
-                        "non-space Default: {chunk:?}"
-                    );
-                    continue;
-                }
+        // Flat wordmark: the glyph table holds face fill and padding, nothing
+        // else. The old `╔═╗║╚╝` drop-shadow strokes are gone for good.
+        for glyph in GLYPHS {
+            for row in glyph {
                 assert!(
-                    chunk.chars().all(|c| c == ' ' || "█╔═╝╗║╚".contains(c)),
-                    "bad glyph char: {chunk:?}"
+                    row.chars().all(|c| c == '█' || c == ' '),
+                    "non-flat glyph char: {row:?}"
                 );
             }
         }
     }
 
-    /// 字面 `█` → `Logo(档)`，阴影 `╔═╗║╚╝` → `LogoShadow`，空格 → `Default`。
-    /// 字符集两分零歧义，这是 3D 立体感的机制基础。
+    /// 字面 `█` → `Logo(档)`，空格 → `Default`。字符集两分零歧义，这是
+    /// 渐变分色的机制基础。
     #[test]
-    fn wordmark_face_and_shadow_split_by_charset() {
+    fn wordmark_face_fill_split_by_charset() {
         for row in logo_rows() {
             for (chunk, style) in &row.spans {
                 match style {
@@ -462,12 +498,6 @@ mod tests {
                     BannerStyle::Logo(_) => {
                         assert!(
                             !chunk.is_empty() && chunk.chars().all(|c| c == '█'),
-                            "{chunk:?}"
-                        )
-                    }
-                    BannerStyle::LogoShadow => {
-                        assert!(
-                            !chunk.is_empty() && chunk.chars().all(|c| "╔═╗║╚╝".contains(c)),
                             "{chunk:?}"
                         )
                     }
@@ -491,9 +521,9 @@ mod tests {
     }
 
     /// 渐变语义：stop = 字母序号（PHIMINT 左→右 0..=6）。镜像/错位会让
-    /// 分色测试照样通过，这里把定义钉死。一个字母的字面笔画可被阴影/空格拆
-    /// 成多段 run（H/M/N/T），故按 GLYPHS 的连续 `█` 段展开期望序列：每段 run
-    /// 的 stop 都必须等于其字母序号；基线行（如 `╚═╝`）无 `█`，期望为空。
+    /// 分色测试照样通过，这里把定义钉死。一个字母的字面可被空格拆成多段
+    /// run（M/N/T），故按 GLYPHS 的连续 `█` 段展开期望序列：每段 run 的
+    /// stop 都必须等于其字母序号。
     #[test]
     fn gradient_stop_equals_letter_index_left_to_right() {
         for (r, row) in logo_rows().iter().enumerate() {
@@ -550,7 +580,6 @@ mod tests {
         assert!(BannerStyle::Ad.is_bold());
         for s in [
             BannerStyle::Default,
-            BannerStyle::LogoShadow,
             BannerStyle::Rule,
             BannerStyle::Version,
             BannerStyle::Label,
@@ -600,8 +629,9 @@ mod tests {
     }
 
     #[test]
-    fn glyphs_are_six_rows_each_with_consistent_width() {
+    fn glyphs_are_five_rows_each_with_consistent_width() {
         for (i, glyph) in GLYPHS.iter().enumerate() {
+            assert_eq!(glyph.len(), 5, "glyph {i} row count");
             let w = glyph[0].chars().count();
             for row in glyph {
                 assert_eq!(row.chars().count(), w, "glyph {i} row width mismatch");
@@ -625,21 +655,9 @@ mod tests {
         assert_eq!(shorten_home_with(Path::new("/p"), None), "/p");
     }
 
-    #[test]
-    fn build_emits_twelve_rows_with_slogan_ad_and_rule() {
-        let rows = build(
-            Path::new("/Users/eve/w"),
-            Path::new("/Users/eve/.phimint/s/1/session.log"),
-            "0.1.0",
-            80,
-        );
-        assert_eq!(
-            rows.len(),
-            12,
-            "6 art + blank + slogan + ad + 2 info + rule"
-        );
-        assert_eq!(rows[6].text(), "", "spacer row");
-        let tagline = rows[7].text();
+    /// The four content rows' plain text: slogan, ad, Workspace, Logs. Same
+    /// words in both layouts — only their position differs.
+    fn assert_content_text(tagline: &str, ad: &str, ws: &str, logs: &str) {
         assert!(
             tagline.contains("Forged with intent. Shipped with care."),
             "missing slogan: {tagline}"
@@ -649,15 +667,12 @@ mod tests {
             !tagline.contains("Phimint"),
             "brand is redundant with the wordmark: {tagline}"
         );
-        let ad = rows[8].text();
         assert!(ad.starts_with("Built on"), "bad ad row: {ad}");
         assert!(ad.contains("phi-agent"), "missing engine: {ad}");
         assert!(
             ad.contains("https://docs.phiagent.dev/"),
             "missing docs url: {ad}"
         );
-        let ws = rows[9].text();
-        let logs = rows[10].text();
         let want_ws = shorten_home(Path::new("/Users/eve/w"));
         let want_logs = shorten_home(Path::new("/Users/eve/.phimint/s/1/session.log"));
         assert!(
@@ -668,9 +683,18 @@ mod tests {
             logs.starts_with("Logs") && logs.ends_with(&want_logs),
             "bad logs: {logs}"
         );
-        // Label column is 11 display columns (`{label:<9}  `) on all three
-        // label rows — ad/Workspace/Logs values start at the same x.
-        for (n, row) in [("ad", &rows[8]), ("ws", &rows[9]), ("logs", &rows[10])] {
+    }
+
+    /// Label column is 11 display columns (`{label:<9}  `) on all three label
+    /// rows — ad/Workspace/Logs values start at the same x. Pinned on the row
+    /// builders so neither layout can reflow it.
+    #[test]
+    fn label_column_is_eleven_display_columns() {
+        for (n, row) in [
+            ("ad", ad_row()),
+            ("ws", info_row("Workspace", "/w")),
+            ("logs", info_row("Logs", "/l")),
+        ] {
             let label = &row.spans[0].0;
             assert_eq!(
                 unicode_width::UnicodeWidthStr::width(label.as_str()),
@@ -680,9 +704,103 @@ mod tests {
         }
     }
 
+    #[test]
+    fn build_stacks_wordmark_and_text_when_the_lockup_does_not_fit() {
+        let rows = build(
+            Path::new("/Users/eve/w"),
+            Path::new("/Users/eve/.phimint/s/1/session.log"),
+            "0.1.0",
+            80,
+        );
+        assert_eq!(
+            rows.len(),
+            11,
+            "5 art + spacer + slogan + ad + 2 info + rule"
+        );
+        // The wordmark owns its five rows outright.
+        for (i, art) in logo_rows().iter().enumerate() {
+            assert_eq!(rows[i].text(), art.text(), "row {i} must be bare wordmark");
+        }
+        assert_eq!(rows[5].text(), "", "spacer row");
+        assert_content_text(
+            &rows[6].text(),
+            &rows[7].text(),
+            &rows[8].text(),
+            &rows[9].text(),
+        );
+    }
+
+    #[test]
+    fn build_locks_up_wordmark_and_text_when_it_fits() {
+        let rows = build(
+            Path::new("/Users/eve/w"),
+            Path::new("/Users/eve/.phimint/s/1/session.log"),
+            "0.1.0",
+            200,
+        );
+        assert_eq!(rows.len(), 6, "5 lockup rows + rule");
+        let logo = logo_rows();
+        // Char offset of the right-hand block: wordmark + gap. Slicing by char
+        // (not display width) so a CJK path in the text block cannot skew it.
+        let x = logo[0].text().chars().count() + LOCKUP_GAP;
+
+        // Row 0 is wordmark only — the text block hangs at the bottom.
+        assert_eq!(rows[0].text(), logo[0].text(), "row 0 carries no text");
+        for (i, art) in logo.iter().enumerate().skip(1) {
+            assert!(
+                rows[i].text().starts_with(&art.text()),
+                "row {i} must lead with the wordmark: {}",
+                rows[i].text()
+            );
+        }
+        // Rows 1..=4 carry slogan/ad/Workspace/Logs, bottoms aligned onto the
+        // wordmark's last row.
+        let right = |i: usize| -> String { rows[i].text().chars().skip(x).collect() };
+        assert_content_text(&right(1), &right(2), &right(3), &right(4));
+
+        // The right-hand text keeps its own runs — the slogan still rides
+        // Slogan, just shifted past the wordmark.
+        let (_, runs) = rows[1].to_runs();
+        assert!(
+            runs.iter().any(|r| r.style == BannerStyle::Slogan),
+            "slogan run lost in the lockup"
+        );
+    }
+
+    /// The lockup is a width decision, not a taste one: taken only when
+    /// wordmark + gap + widest text row fit, so nothing clips. Paths are data —
+    /// a long one must push the banner back to the stack.
+    #[test]
+    fn build_picks_the_lockup_only_when_the_block_fits() {
+        let ws = Path::new("/Users/eve/w");
+        let log = Path::new("/Users/eve/.phimint/s/1/session.log");
+        let stacked = build(ws, log, "0.1.0", 80);
+        let lockup = build(ws, log, "0.1.0", 400);
+        let text_width = (6..10).map(|i| row_width(&stacked[i])).max().unwrap();
+        let need = row_width(&logo_rows()[0]) + LOCKUP_GAP + text_width;
+
+        assert_eq!(
+            build(ws, log, "0.1.0", need - 1).len(),
+            stacked.len(),
+            "stacked one column short of the need"
+        );
+        assert_eq!(
+            build(ws, log, "0.1.0", need).len(),
+            lockup.len(),
+            "lockup exactly at the need"
+        );
+
+        let long = Path::new("/Users/eve/a/deeply/nested/workspace/that/keeps/going/on/and/on");
+        assert_eq!(
+            build(long, log, "0.1.0", need).len(),
+            stacked.len(),
+            "long path must fall back to the stack"
+        );
+    }
+
     /// Style runs of the content rows, pinned via `to_runs()`: the design's
-    /// row/col alignment depends on this exact run order (ad row 8's label
-    /// width, slogan emphasis, Ad brightness, Dim separators).
+    /// row/col alignment depends on this exact run order (label width, slogan
+    /// emphasis, Ad brightness, Dim separators).
     #[test]
     fn content_row_runs_match_design_styles() {
         let rows = build(
@@ -695,12 +813,12 @@ mod tests {
             &text[start..start + len]
         }
 
-        // Row 7 slogan: Slogan body + Version tail.
-        let (text, runs) = rows[7].to_runs();
+        // Row 6 slogan: Slogan body + Version tail.
+        let (text, runs) = rows[6].to_runs();
         assert_eq!(
             runs.iter().map(|r| r.style).collect::<Vec<_>>(),
             vec![BannerStyle::Slogan, BannerStyle::Version],
-            "row 7 style order: {text}"
+            "row 6 style order: {text}"
         );
         assert_eq!(
             run_text(&text, runs[0].start, runs[0].len),
@@ -708,8 +826,8 @@ mod tests {
         );
         assert_eq!(run_text(&text, runs[1].start, runs[1].len), "   -   v0.1.0");
 
-        // Row 8 ad: Label + Ad + Dim separator + Dim url.
-        let (text, runs) = rows[8].to_runs();
+        // Row 7 ad: Label + Ad + Dim separator + Dim url.
+        let (text, runs) = rows[7].to_runs();
         assert_eq!(
             runs.iter().map(|r| r.style).collect::<Vec<_>>(),
             vec![
@@ -718,7 +836,7 @@ mod tests {
                 BannerStyle::Dim,
                 BannerStyle::Dim
             ],
-            "row 8 style order: {text}"
+            "row 7 style order: {text}"
         );
         assert_eq!(run_text(&text, runs[0].start, runs[0].len), "Built on   ");
         assert_eq!(run_text(&text, runs[1].start, runs[1].len), "phi-agent");
