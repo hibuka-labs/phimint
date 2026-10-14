@@ -123,6 +123,7 @@ pub async fn run_tui(
     update_config: crate::config::UpdateConfig,
     no_update_check: bool,
     tips_config: crate::config::TipsConfig,
+    exit_dump_mode: crate::config::ExitDumpMode,
     log_sinks: log_core::SinkHandle,
 ) -> Result<()> {
     let agent = Arc::new(agent);
@@ -910,7 +911,25 @@ pub async fn run_tui(
                 // Restore the terminal BEFORE printing so the diagnostic lands in
                 // the normal screen, visible above the next shell prompt.
                 drop(_guard);
-                tracing::info!("tui: guard dropped, evaluating wheel diagnostic");
+                tracing::info!("tui: guard dropped, replaying session to restored terminal");
+                // Replay the transcript now that the primary screen is back:
+                // the alt-screen content is gone the instant we left it, and
+                // nothing else keeps the conversation on screen. The rows land
+                // in the shell's scrollback (Claude Code parity).
+                crate::ui::exit_dump::replay_to_stdout(
+                    exit_dump_mode,
+                    &crate::ui::exit_dump::SessionFacts {
+                        version,
+                        session_id: &session_id,
+                        session_dir: &session_dir,
+                        turns: user_msg_count,
+                        tokens_in: app.tokens_in,
+                        tokens_out: app.tokens_out,
+                    },
+                    &app.transcript.output,
+                    &app.sub_agent_transcripts,
+                );
+                tracing::info!("tui: session replayed, evaluating wheel diagnostic");
                 if let Some(notice) = wheel_dead_notice(
                     std::env::var("TERM_PROGRAM").ok().as_deref(),
                     saw_scroll,
@@ -962,6 +981,22 @@ pub async fn run_tui(
                     Err(e) => {
                         tracing::warn!(error = %e, "session switch failed, shutting down");
                         bg_registry.shutdown();
+                        // Out is out: same replay as the quit arm. Drop the
+                        // guard first so the rows land on the primary screen.
+                        drop(_guard);
+                        crate::ui::exit_dump::replay_to_stdout(
+                            exit_dump_mode,
+                            &crate::ui::exit_dump::SessionFacts {
+                                version,
+                                session_id: &session_id,
+                                session_dir: &session_dir,
+                                turns: user_msg_count,
+                                tokens_in: app.tokens_in,
+                                tokens_out: app.tokens_out,
+                            },
+                            &app.transcript.output,
+                            &app.sub_agent_transcripts,
+                        );
                         return Ok(());
                     }
                 }

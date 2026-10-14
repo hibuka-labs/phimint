@@ -142,13 +142,34 @@ pub struct ModelConfig {
     pub ui: UiConfig,
 }
 
-/// UI configuration: the completion popup band and the tips line.
+/// UI configuration: the completion popup band, the tips line, and the exit
+/// transcript replay.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct UiConfig {
     #[serde(default)]
     pub popup: PopupConfig,
     #[serde(default)]
     pub tips: TipsConfig,
+    /// What the restored terminal keeps when phimint exits.
+    #[serde(default)]
+    pub exit_dump: ExitDumpMode,
+}
+
+/// `ui.exit_dump` — what the restored terminal shows after phimint quits.
+///
+/// phimint draws on the alternate screen, whose content the terminal discards
+/// on exit, so "keep the record" is a replay printed to the primary screen
+/// (see `ui::exit_dump`). The mode is the replay's completeness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ExitDumpMode {
+    /// Replay the whole session (the default, and the Claude Code parity).
+    #[default]
+    Full,
+    /// Header/footer plus the final answer only.
+    Summary,
+    /// Nothing — the alt-screen content is discarded.
+    None,
 }
 
 /// `ui.popup` — the `@`/`/` popup band. Missing fields take the widget defaults.

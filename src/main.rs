@@ -250,6 +250,7 @@ async fn main() -> Result<()> {
     // Extract update config before model_config is moved into the store.
     let update_config = model_config.update.clone();
     let tips_config = model_config.ui.tips.clone();
+    let exit_dump_mode = model_config.ui.exit_dump;
 
     let popup_style = model_config
         .ui
@@ -405,6 +406,7 @@ async fn main() -> Result<()> {
         update_config,
         cli.no_update_check,
         tips_config,
+        exit_dump_mode,
         log_sinks,
     )
     .await

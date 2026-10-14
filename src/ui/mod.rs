@@ -7,6 +7,7 @@
 //! - `handlers`: `RuntimeEvent` / keyboard / mouse input handling
 //! - `child_results`: fan-in result routing decisions (unit-tested)
 //! - `bg_wake`: background-task auto-wake policy (unit-tested)
+//! - `exit_dump`: exit transcript replay onto the restored terminal (unit-tested)
 //! - `theme`: semantic color slots, Dark/Light palettes (unit-tested)
 //! - `frame_log`: session logs (frames.txt / perf.log / composer.log)
 //! - `run`: the main loop — terminal setup, channels, agent-side turn runner
@@ -19,6 +20,7 @@
 pub mod app;
 mod bg_wake;
 mod child_results;
+mod exit_dump;
 pub mod frame_log;
 pub mod handlers;
 pub mod picker;
