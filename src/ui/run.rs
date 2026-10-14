@@ -583,6 +583,8 @@ pub async fn run_tui(
             let mut has_scroll = false;
             let mut has_key = false;
             let mut has_mouse = false;
+            let mut has_paste = false;
+            let mut has_resize = false;
             while crossterm::event::poll(Duration::ZERO)? {
                 let event = crossterm::event::read()?;
                 crossterm_count += 1;
@@ -710,6 +712,16 @@ pub async fn run_tui(
                                     app.clear_selection();
                                     tracing::info!("selection cleared after copy");
                                 }
+                                Action::Redraw => {
+                                    // Same repair as the Resize path: clear
+                                    // invalidates ratatui's diff cache so every
+                                    // cell goes back out, overwriting whatever
+                                    // the terminal clipped or left stale.
+                                    tracing::info!("ctrl+l: forced full repaint");
+                                    terminal.clear()?;
+                                    dirty = true;
+                                    app.set_notice("screen redrawn");
+                                }
                                 Action::Cancel => {
                                     agent.cancel();
                                     // Dismiss the popup(s) and drop any in-flight
@@ -765,6 +777,7 @@ pub async fn run_tui(
                     }
                     Event::Paste(text) => {
                         dirty = true;
+                        has_paste = true;
                         app.paste(&text);
                     }
                     Event::Resize(w, h) => {
@@ -775,6 +788,17 @@ pub async fn run_tui(
                         // believes unchanged - resize + clear forces every cell
                         // back out, or a 1-col "notch" stays on the composer's
                         // right border until the next effective resize.
+                        // Logged: same-size events are the fingerprint of that
+                        // coalescing (session 20261014_25c28bee — a size pulse
+                        // garbled the screen and this path repaired it).
+                        tracing::info!(
+                            w,
+                            h,
+                            last_w = last_size.0,
+                            last_h = last_size.1,
+                            "tui: resize event -> clear+repaint"
+                        );
+                        has_resize = true;
                         terminal.resize(Rect::new(0, 0, w, h))?;
                         terminal.clear()?;
                         last_size = (w, h);
@@ -783,7 +807,9 @@ pub async fn run_tui(
                     _ => {}
                 }
             }
-            // Build a compact event-type tag for the log (e.g. "S" / "K" / "SM" / "SK").
+            // Build a compact event-type tag for the log (e.g. "S" / "K" / "SM" / "SK";
+            // "R" = resize, "P" = paste — they used to be invisible, which made
+            // repair-path events indistinguishable from ghosts).
             let mut event_types = String::new();
             if has_scroll {
                 event_types.push('S');
@@ -793,6 +819,12 @@ pub async fn run_tui(
             }
             if has_mouse {
                 event_types.push('M');
+            }
+            if has_paste {
+                event_types.push('P');
+            }
+            if has_resize {
+                event_types.push('R');
             }
 
             // If no events arrived, sleep briefly to avoid busy-spinning.

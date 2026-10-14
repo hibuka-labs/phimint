@@ -112,6 +112,14 @@ impl App {
             return None;
         }
 
+        // Ctrl+L: force a full screen repaint. Global — it is the user's
+        // escape hatch for terminal-grid desync (clipped cells after a size
+        // pulse, stale composite rows), so it must fire even while a popup
+        // would otherwise swallow keys. Plain 'l' still types a literal 'l'.
+        if ctrl && code == Char('l') {
+            return Some(Action::Redraw);
+        }
+
         // Right-click copy menu: Up/Down move the highlight, Enter copies (or
         // cancels), Esc closes; everything else is swallowed.
         if self.selection_state.menu_is_open() {

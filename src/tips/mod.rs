@@ -41,6 +41,7 @@ pub fn default_items() -> Vec<TipItem> {
         TipItem::tip("Press Ctrl+C once to cancel the running task"),
         TipItem::tip("Press Ctrl+C twice to quit when idle"),
         TipItem::tip("Press Ctrl+Y to copy the last reply"),
+        TipItem::tip("Press Ctrl+L to redraw the screen if the display looks wrong"),
         TipItem::tip("Scroll history with the mouse wheel or fn+Up/Down"),
     ]
 }

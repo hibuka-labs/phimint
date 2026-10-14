@@ -259,6 +259,11 @@ pub enum Action {
     /// Copy the active transcript selection to the system clipboard (Ctrl+C
     /// with a selection, or right-click → copy).
     CopySelection,
+    /// Force a full screen repaint (Ctrl+L). Heals terminal-grid desync the
+    /// diff renderer cannot see — clipped cells after a size pulse, stale
+    /// composites after an alt-screen bounce — by invalidating ratatui's cache
+    /// (see the `Event::Resize` note in `run.rs`).
+    Redraw,
 }
 
 /// An event delivered from the agent task to the TUI.

@@ -997,6 +997,27 @@ fn ctrl_c_cancels_when_running() {
 }
 
 #[test]
+fn ctrl_l_requests_full_repaint() {
+    let mut app = App::new();
+    // Plain 'l' still types a literal character.
+    assert_eq!(app.handle_key(KeyCode::Char('l'), KeyModifiers::NONE), None);
+    assert_eq!(app.composer.text(), "l");
+    // Ctrl+L is the screen-repair key: surfaces the redraw action, never types.
+    app.composer.clear();
+    assert_eq!(
+        app.handle_key(KeyCode::Char('l'), KeyModifiers::CONTROL),
+        Some(Action::Redraw)
+    );
+    // Global: context routing (here an open approval popup) must not swallow
+    // it — screen repair has to work even mid-approval.
+    pending_approval(&mut app);
+    assert_eq!(
+        app.handle_key(KeyCode::Char('l'), KeyModifiers::CONTROL),
+        Some(Action::Redraw)
+    );
+}
+
+#[test]
 fn turn_error_appends_red_line_and_resets() {
     let mut app = App::new();
     app.running = true;
