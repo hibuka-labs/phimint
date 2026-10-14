@@ -852,6 +852,8 @@ fn rendered_chrome_stays_cjk_width_safe() {
     status_texts.push(app.status_line());
     app.status = AgentStatus::Idle;
     status_texts.push(app.status_line());
+    // Idle renders the tips band; its label/text are chrome too.
+    app.set_tips(crate::tips::default_items());
 
     let text = snapshot_text(&mut app, 100, 30);
     let all = text + &status_texts.join("\n");
@@ -978,6 +980,7 @@ fn committed_thought_folds_and_expands() {
             raw: raw.to_string(),
             line_count: 5,
             char_count: raw.chars().count(),
+            duration_secs: Some(47),
             meta_head: phi_tui::lines::MetaHead::None,
         }),
         text: "line one".into(),
@@ -986,10 +989,11 @@ fn committed_thought_folds_and_expands() {
     });
     let text = snapshot_text(&mut app, 80, 24);
     // Line count + estimate (spec: the summary carries a line count and an
-    // estimated tok count). No leading `>` — that marker belongs to user
-    // lines, and a summary starting with `>` reads as something you typed.
+    // estimated tok count), then the segment's duration and the expand hint.
+    // No leading `>` — that marker belongs to user lines, and a summary
+    // starting with `>` reads as something you typed.
     assert!(
-        text.contains("thinking - 5 lines - ~16 tok"),
+        text.contains("thinking - 5 lines - ~16 tok - 47s (Ctrl+O expand)"),
         "summary missing:\n{text}"
     );
     assert!(
@@ -1082,20 +1086,22 @@ fn thinking_panel_hidden_when_output_pane_too_short() {
         }));
         snapshot_text(&mut app, w, h)
     };
-    // 80x12: output pane = 12 - composer(3) - status(1) = 8 rows — the box
-    // alone would fill it; the fit guard hides the panel so history survives.
+    // 80x12: output pane = 12 - gap(1) - process(1) - composer(3) -
+    // status(1) = 6 rows — the box alone wouldn't fit; the fit guard hides the
+    // panel so history survives.
     let text = shot(80, 12);
     assert!(
         !text.contains("thinking -"),
         "panel must hide, not occlude:\n{text}"
     );
-    // 80x14: output pane = 10 = box(8) + history(2) — exact boundary shows.
-    let text = shot(80, 14);
+    // 80x16: output pane = 16 - 6 = 10 = box(8) + history(2) — exact boundary
+    // shows.
+    let text = shot(80, 16);
     assert!(
         text.contains("thinking -"),
         "boundary (8+2) must show:\n{text}"
     );
-    // 80x20: output pane = 16 ≥ box(8) + history(2) — panel shows.
+    // 80x20: output pane = 14 ≥ box(8) + history(2) — panel shows.
     let text = shot(80, 20);
     assert!(
         text.contains("thinking -"),
@@ -1131,6 +1137,8 @@ fn thinking_panel_anchors_row_position_below_history() {
     // committed history. Three separate `push_system` calls are three system
     // *blocks* (design §1 — a block is one message, not one kind), so they
     // interleave with render-time spacers and the title row lands at 5.
+    // 80x19 gives the output pane the exact 13 rows history + box need
+    // (19 - 6 chrome rows).
     let mut app = App::new();
     app.push_system("one");
     app.push_system("two");
@@ -1141,7 +1149,7 @@ fn thinking_panel_anchors_row_position_below_history() {
         agent_id: None,
         trace_id: None,
     }));
-    let text = snapshot_text(&mut app, 80, 20);
+    let text = snapshot_text(&mut app, 80, 19);
     let rows: Vec<&str> = text.lines().collect();
     // Block rhythm: content, spacer, content, spacer, content, then the panel.
     assert_eq!(rows.first().map(|r| r.trim()), Some("one"), "\n{text}");
@@ -1205,6 +1213,7 @@ fn expanded_thought_rewraps_at_current_width() {
             raw: raw.clone(),
             line_count: 3,
             char_count,
+            duration_secs: None,
             meta_head: phi_tui::lines::MetaHead::None,
         }),
         text: "line one".into(),
@@ -1246,6 +1255,7 @@ fn history_head_survives_fold_reflow_above_viewport() {
             raw: raw.clone(),
             line_count: 8,
             char_count: raw.chars().count(),
+            duration_secs: None,
             meta_head: phi_tui::lines::MetaHead::None,
         }),
         text: "thought line 0".into(),
@@ -1310,6 +1320,7 @@ fn expanded_thought_with_tail() -> App {
             raw: raw.clone(),
             line_count: 40,
             char_count: raw.chars().count(),
+            duration_secs: None,
             meta_head: phi_tui::lines::MetaHead::None,
         }),
         text: "thought line 0".into(),
@@ -1820,7 +1831,9 @@ fn framed_band_elides_rows_to_the_content_width() {
     let text = snapshot_text(&mut app, 100, 40);
     let row = text.lines().find(|l| l.contains('📄')).expect("file row");
     // Strip the band's border cells so the assertions look at content only.
-    let inner = row.trim().trim_matches('│');
+    // The popup is an overlay — process-line text behind the band's right edge
+    // shares the row — so cut at the closing border instead of trimming.
+    let inner = row.split('│').nth(1).unwrap_or(row).trim();
     // Budgeted at 28 content columns the row is ≤28 wide and the elision keeps
     // the tail whole. Budgeted at 30 it would render 30 columns into a 28-wide
     // area and come out as `...name.` — the `.rs` would be clipped off.
@@ -2278,5 +2291,237 @@ fn styled_banner_rows_stay_whole_and_do_not_soft_wrap() {
     assert_eq!(
         wordmark_rows, 6,
         "wordmark must stay whole (6 rows), not split at letter gaps:\n{snap}"
+    );
+}
+
+#[test]
+fn process_row_renders_note_and_tip_labels() {
+    let mut app = App::new();
+    app.push_system("hello");
+    app.set_tips(vec![crate::tips::TipItem::note(
+        "phimint is built on phi-agent - docs: https://docs.phiagent.dev/",
+    )]);
+    let snap = snapshot_text(&mut app, 80, 24);
+    assert!(
+        snap.contains("Note: phimint is built on phi-agent"),
+        "note text missing from the process row:\n{snap}"
+    );
+    assert!(
+        !snap.contains("Tip:"),
+        "a promo must never render as Tip:\n{snap}"
+    );
+
+    let mut app = App::new();
+    app.push_system("hello");
+    app.set_tips(vec![crate::tips::TipItem::tip(
+        "Press Ctrl+Y to copy the last reply",
+    )]);
+    let snap = snapshot_text(&mut app, 80, 24);
+    assert!(
+        snap.contains("Tip: Press Ctrl+Y to copy the last reply"),
+        "tip text missing from the process row:\n{snap}"
+    );
+    // Status and tip share the one fixed row above the composer.
+    let row = snap
+        .lines()
+        .find(|l| l.contains("Tip:"))
+        .unwrap_or_else(|| panic!("tip row missing:\n{snap}"));
+    assert!(
+        row.contains("Idle"),
+        "status and tip must share one row:\n{snap}"
+    );
+}
+
+#[test]
+fn process_row_hides_tip_without_items_and_during_fresh_activity() {
+    // No pool (tips disabled): the row is status-only.
+    let mut app = App::new();
+    app.push_system("hello");
+    let snap = snapshot_text(&mut app, 80, 24);
+    assert!(
+        !snap.contains("Tip:") && !snap.contains("Note:"),
+        "no pool renders no tip:\n{snap}"
+    );
+
+    // Fresh active stretch: hidden until the activity threshold.
+    let mut app = App::new();
+    app.push_system("hello");
+    app.set_tips(vec![crate::tips::TipItem::tip("# fresh")]);
+    app.running = true;
+    app.status = AgentStatus::Running {
+        phase: Phase::ToolCall {
+            tool: "build".into(),
+        },
+    };
+    app.begin_activity();
+    let snap = snapshot_text(&mut app, 80, 24);
+    assert!(
+        !snap.contains("Tip:"),
+        "fresh activity hides the tip:\n{snap}"
+    );
+
+    // A long-running action past the threshold shows it again.
+    app.activity_since = Some(std::time::Instant::now() - std::time::Duration::from_secs(10));
+    let snap = snapshot_text(&mut app, 80, 24);
+    assert!(
+        snap.contains("Tip: # fresh"),
+        "long activity shows the tip on the process row:\n{snap}"
+    );
+}
+
+#[test]
+fn process_row_truncates_tip_but_keeps_label() {
+    let mut app = App::new();
+    app.push_system("hello");
+    app.set_tips(vec![crate::tips::TipItem::tip("#".repeat(400))]);
+    let snap = snapshot_text(&mut app, 80, 24);
+    // One fixed row only: the tip truncates to the row (elide keeps the
+    // head, so the `Tip:` label survives) instead of spilling to a band.
+    let rows: Vec<&str> = snap.lines().filter(|l| l.contains('#')).collect();
+    assert_eq!(rows.len(), 1, "tip must not spill past one row:\n{snap}");
+    assert!(
+        rows[0].contains("Tip:") && rows[0].contains("..."),
+        "label survives truncation (elide keeps the head):\n{snap}"
+    );
+}
+
+#[test]
+fn process_row_puts_tip_one_tab_after_status() {
+    let mut app = App::new();
+    app.push_system("hello");
+    app.set_tips(vec![crate::tips::TipItem::tip("# after")]);
+    let snap = snapshot_text(&mut app, 80, 24);
+    // The tip rides right behind the status with a tab-wide gap (4 columns),
+    // not pushed to the far edge of the row.
+    let row = snap
+        .lines()
+        .find(|l| l.contains("Tip:"))
+        .unwrap_or_else(|| panic!("tip row missing:\n{snap}"));
+    assert!(
+        row.contains("Idle    Tip: # after"),
+        "tip must sit one tab (4 cols) behind the status:\n{snap}"
+    );
+}
+
+#[test]
+fn process_row_shows_thinking_word_with_panel_visible() {
+    let mut app = App::new();
+    app.push_system("hello");
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ThoughtDelta {
+        session_id: SessionId::new(1),
+        text: "analyze ".repeat(120),
+        agent_id: None,
+        trace_id: None,
+    }));
+    app.status = AgentStatus::Running {
+        phase: Phase::Thinking,
+    };
+    let snap = snapshot_text(&mut app, 80, 24);
+    // The folded thinking panel is up AND the process row still says
+    // "thinking..." in full - the panel never replaces the live status word.
+    assert!(snap.contains("thinking -"), "panel title missing:\n{snap}");
+    assert!(
+        snap.contains("thinking..."),
+        "status keeps the thinking word while the panel is visible:\n{snap}"
+    );
+}
+
+// ── Bottom status bar (mode block left, status-driven right slot) ──────────
+
+#[test]
+fn status_bar_shows_mode_with_switch_hint() {
+    let mut app = App::new();
+    app.push_system("hello");
+    let snap = snapshot_text(&mut app, 80, 24);
+    let bar = snap.lines().last().unwrap_or_default();
+    // The badge teaches its toggle where it lives (Claude Code style).
+    assert_eq!(
+        bar, "auto mode on (shift+tab to cycle)",
+        "mode block alone on the bottom bar, no key-hint string:\n{snap}"
+    );
+}
+
+#[test]
+fn process_row_sits_below_a_gap_row() {
+    let mut app = App::new();
+    app.push_system("hello");
+    let snap = snapshot_text(&mut app, 80, 24);
+    let lines: Vec<&str> = snap.lines().collect();
+    let pos = lines
+        .iter()
+        .position(|l| l.contains("Idle"))
+        .expect("process row present");
+    assert!(
+        pos > 0 && lines[pos - 1].trim().is_empty(),
+        "transcript content must not crowd the process row:\n{snap}"
+    );
+}
+
+#[test]
+fn status_bar_right_slot_prefers_upgrade_hint() {
+    let mut app = App::new();
+    app.push_system("hello");
+    app.upgrade_hint = Some("⬆ phimint 0.9.9 available - run: brew upgrade".to_string());
+    let snap = snapshot_text(&mut app, 80, 24);
+    let bar = snap.lines().last().unwrap_or_default();
+    assert!(
+        bar.starts_with("auto mode on (shift+tab to cycle)") && bar.ends_with("brew upgrade"),
+        "upgrade hint must sit in the right slot:\n{snap}"
+    );
+}
+
+#[test]
+fn status_bar_right_slot_shows_scroll_position_off_bottom() {
+    let mut app = App::new();
+    for i in 0..100 {
+        app.push_system(&format!("line {i}"));
+    }
+    // First frame records the pane geometry the scroll math runs on; at the
+    // bottom there is nothing to report.
+    let snap = snapshot_text(&mut app, 80, 20);
+    let bar = snap.lines().last().unwrap_or_default();
+    assert_eq!(
+        bar, "auto mode on (shift+tab to cycle)",
+        "quiet right slot while following the bottom:\n{snap}"
+    );
+
+    app.scroll_up();
+    let snap = snapshot_text(&mut app, 80, 20);
+    let bar = snap.lines().last().unwrap_or_default();
+    assert!(
+        bar.contains("scroll ") && bar.contains("(End to bottom)"),
+        "scrolled off the bottom must show the scroll position:\n{snap}"
+    );
+
+    app.scroll_to_bottom();
+    let snap = snapshot_text(&mut app, 80, 20);
+    let bar = snap.lines().last().unwrap_or_default();
+    assert_eq!(
+        bar, "auto mode on (shift+tab to cycle)",
+        "back at the bottom the slot goes quiet again:\n{snap}"
+    );
+}
+
+#[test]
+fn status_bar_elides_long_right_notices() {
+    let mut app = App::new();
+    app.push_system("hello");
+    app.upgrade_hint = Some(format!(
+        "⬆ phimint 9.9.9 available - run: {}",
+        "x".repeat(200)
+    ));
+    let snap = snapshot_text(&mut app, 40, 24);
+    let bar = snap.lines().last().unwrap_or_default();
+    assert!(
+        bar.starts_with("auto mode on (shift+tab to cycle)"),
+        "mode block keeps its columns:\n{snap}"
+    );
+    assert!(
+        bar.contains("..."),
+        "an overlong right notice elides instead of wrapping:\n{snap}"
+    );
+    assert!(
+        !bar.contains("xxxxxxxxxx"),
+        "the elision must cut the overflow away:\n{snap}"
     );
 }

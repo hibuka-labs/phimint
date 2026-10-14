@@ -142,11 +142,13 @@ pub struct ModelConfig {
     pub ui: UiConfig,
 }
 
-/// UI configuration. Currently only the completion popup band.
+/// UI configuration: the completion popup band and the tips line.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct UiConfig {
     #[serde(default)]
     pub popup: PopupConfig,
+    #[serde(default)]
+    pub tips: TipsConfig,
 }
 
 /// `ui.popup` — the `@`/`/` popup band. Missing fields take the widget defaults.
@@ -229,6 +231,44 @@ impl PopupConfig {
             ..PopupStyle::default()
         })
     }
+}
+
+/// `ui.tips` — the rotating tips line under the process status line.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TipsConfig {
+    /// Show the tips line at all.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Tips manifest endpoint URLs (tried in order, 3s timeout each).
+    /// Each is a full URL to a tips JSON file.
+    #[serde(default = "default_tips_endpoints")]
+    pub endpoints: Vec<String>,
+    /// Minimum seconds between cloud refresh attempts.
+    #[serde(default = "default_tips_refresh_interval")]
+    pub refresh_interval_secs: u64,
+}
+
+impl Default for TipsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_true(),
+            endpoints: default_tips_endpoints(),
+            refresh_interval_secs: default_tips_refresh_interval(),
+        }
+    }
+}
+
+fn default_tips_endpoints() -> Vec<String> {
+    vec![
+        // Primary: GitHub (global). Fallback: Gitee (mainland China).
+        // The checker tries endpoints in order, 3s timeout each.
+        "https://github.com/hibuka-labs/phimint/releases/latest/download/tips.json".to_string(),
+        "https://gitee.com/chenkangzeng_admin/phimint/raw/release-metadata/tips.json".to_string(),
+    ]
+}
+
+fn default_tips_refresh_interval() -> u64 {
+    86_400
 }
 
 /// Configuration for the update checker.
@@ -571,6 +611,32 @@ mod tests {
         assert_eq!(style.width, phi_tui::popup_list::WidthSpec::Fixed(64));
         assert!(style.frame);
         assert!(!style.separator);
+    }
+
+    #[test]
+    fn ui_tips_defaults() {
+        let cfg: ModelConfig = json5::from_str(r#"{"main": "gpt-4"}"#).unwrap();
+        assert!(cfg.ui.tips.enabled);
+        assert_eq!(cfg.ui.tips.refresh_interval_secs, 86_400);
+        assert_eq!(cfg.ui.tips.endpoints.len(), 2);
+    }
+
+    #[test]
+    fn ui_tips_parses_overrides() {
+        let cfg: ModelConfig = json5::from_str(
+            r#"{"main":"gpt-4","ui":{"tips":{
+                "enabled": false,
+                "refresh_interval_secs": 3600,
+                "endpoints": ["https://example.com/tips.json"]
+            }}}"#,
+        )
+        .unwrap();
+        assert!(!cfg.ui.tips.enabled);
+        assert_eq!(cfg.ui.tips.refresh_interval_secs, 3600);
+        assert_eq!(
+            cfg.ui.tips.endpoints,
+            vec!["https://example.com/tips.json".to_string()]
+        );
     }
 
     #[test]

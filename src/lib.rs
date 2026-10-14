@@ -15,6 +15,7 @@ pub mod session_birthplace;
 pub mod session_history;
 pub mod session_scope;
 pub mod skills;
+pub mod tips;
 pub mod title_gen;
 pub mod tools;
 pub mod ui;

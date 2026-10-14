@@ -34,6 +34,16 @@ fn tool_started(name: &str) -> RuntimeEvent {
     }
 }
 
+fn tool_started_with(name: &str, args_json: &str) -> RuntimeEvent {
+    RuntimeEvent::ToolCallStarted {
+        session_id: SessionId::new(1),
+        tool_name: name.to_string(),
+        args_json: args_json.to_string(),
+        agent_id: None,
+        trace_id: None,
+    }
+}
+
 fn tool_finished(name: &str, denied: bool) -> RuntimeEvent {
     RuntimeEvent::ToolCallFinished {
         session_id: SessionId::new(1),
@@ -482,11 +492,83 @@ fn spawn_agent_invocation_line_is_compacted() {
 }
 
 #[test]
+fn tool_args_drop_schema_default_noise() {
+    let mut app = App::new();
+    app.set_workspace_root(std::path::PathBuf::from("/work"));
+    // Every knob spelled out at its default is one fact wearing decorations:
+    // the row keeps the fact only.
+    app.handle_event(TuiEvent::Runtime(tool_started_with(
+        "execute_command",
+        r#"{"background":false,"command":"cargo build","timeout_ms":120000,"working_dir":"/work"}"#,
+    )));
+    app.handle_event(TuiEvent::Runtime(tool_started_with(
+        "list_files",
+        r#"{"limit":500,"path":".","recursive":false}"#,
+    )));
+    app.handle_event(TuiEvent::Runtime(tool_started_with(
+        "read_file",
+        r#"{"limit":2000,"offset":0,"path":"src/main.rs"}"#,
+    )));
+    let texts: Vec<&str> = app
+        .transcript
+        .output
+        .iter()
+        .map(|l| l.text.as_str())
+        .collect();
+    assert_eq!(
+        texts,
+        vec![
+            "* execute_command  command=cargo build",
+            "* list_files",
+            "* read_file  main.rs",
+        ]
+    );
+}
+
+#[test]
+fn tool_args_keep_non_default_choices() {
+    let mut app = App::new();
+    // Choices that differ from the schema default *are* the call.
+    app.handle_event(TuiEvent::Runtime(tool_started_with(
+        "execute_command",
+        r#"{"background":true,"command":"npm run dev","timeout_ms":300000}"#,
+    )));
+    // …while the background default (0 = never kill) still drops.
+    app.handle_event(TuiEvent::Runtime(tool_started_with(
+        "execute_command",
+        r#"{"background":true,"command":"vite","timeout_ms":0}"#,
+    )));
+    app.handle_event(TuiEvent::Runtime(tool_started_with(
+        "list_files",
+        r#"{"limit":50,"path":"src","recursive":true}"#,
+    )));
+    app.handle_event(TuiEvent::Runtime(tool_started_with(
+        "read_file",
+        r#"{"limit":50,"offset":10,"path":"src/main.rs"}"#,
+    )));
+    let texts: Vec<&str> = app
+        .transcript
+        .output
+        .iter()
+        .map(|l| l.text.as_str())
+        .collect();
+    assert_eq!(
+        texts,
+        vec![
+            "* execute_command  background=true  command=npm run dev  timeout_ms=300000",
+            "* execute_command  background=true  command=vite",
+            "* list_files  limit=50  src  recursive=true",
+            "* read_file  main.rs from L11 to L60",
+        ]
+    );
+}
+
+#[test]
 fn activity_clock_follows_root_status() {
     let mut app = App::new();
     assert!(!app.is_active());
     assert_eq!(app.spinner_char(), "⠋"); // idle: static first frame
-    assert_eq!(app.elapsed_suffix(), "");
+    assert_eq!(app.activity_suffix(), "");
 
     app.handle_event(TuiEvent::Runtime(tool_started("read_file")));
     assert!(app.is_active());
@@ -498,7 +580,7 @@ fn activity_clock_follows_root_status() {
     );
 
     // Turn settles with no children → Idle clears the clock.
-    app.settle_after_turn(false);
+    app.settle_after_turn(TurnEnd::Done);
     assert!(!app.is_active());
     assert!(app.activity_since.is_none());
     assert_eq!(app.spinner_char(), "⠋");
@@ -755,6 +837,46 @@ fn spawn_result_label_keeps_recycled_and_degraded_facts() {
 }
 
 #[test]
+fn background_start_result_is_humanized_with_raw_preserved() {
+    let mut app = App::new();
+    app.handle_event(TuiEvent::Runtime(tool_started_with(
+        "execute_command",
+        r#"{"background":true,"command":"vite"}"#,
+    )));
+    let summary = serde_json::json!({
+        "background": true,
+        "task_id": "bg_ab12cd34",
+        "message": "Command started in background. Use task_output to check."
+    })
+    .to_string();
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallFinished {
+        session_id: SessionId::new(1),
+        tool_name: "execute_command".to_string(),
+        summary: summary.clone(),
+        agent_id: None,
+        trace_id: None,
+        denied: false,
+        details: None,
+    }));
+    let last = app.transcript.output.last().unwrap();
+    assert_eq!(last.text, "  < background task bg_ab12cd34 started");
+    match &last.detail {
+        Some(LineDetail::Folded { raw, meta_head, .. }) => {
+            assert_eq!(
+                raw, &summary,
+                "summary is display-only — raw rides the fold, never rewritten"
+            );
+            assert_eq!(
+                *meta_head,
+                MetaHead::None,
+                "the label is a fact, not the payload's head"
+            );
+        }
+        other => panic!("expected Folded result, got {other:?}"),
+    }
+}
+
+#[test]
 fn write_file_content_head_is_never_restored() {
     let mut app = App::new();
     // A long first line wraps at display time; `MetaHead::None` is what keeps
@@ -779,10 +901,68 @@ fn write_file_content_head_is_never_restored() {
 }
 
 #[test]
-fn elapsed_suffix_formats_minutes() {
+fn activity_suffix_formats_minutes_and_tokens() {
     let mut app = App::new();
     app.activity_since = Some(Instant::now() - std::time::Duration::from_secs(91));
-    assert_eq!(app.elapsed_suffix(), " - 1m32s");
+    assert_eq!(app.activity_suffix(), " - 1m32s");
+    // Session-cumulative usage rides along once any usage arrives.
+    app.tokens_in = 12_000;
+    app.tokens_out = 3_000;
+    assert_eq!(app.activity_suffix(), " - 1m32s - 15.0k tok");
+}
+
+#[test]
+fn usage_events_feed_status_and_turn_summary_tokens() {
+    let mut app = App::new();
+    app.running = true;
+    app.status = AgentStatus::Running {
+        phase: Phase::Thinking,
+    };
+    app.begin_activity();
+    app.handle_event(TuiEvent::Usage {
+        input_tokens: 12_000,
+        output_tokens: 300,
+    });
+    app.handle_event(TuiEvent::Usage {
+        input_tokens: 500,
+        output_tokens: 2_200,
+    });
+    let line = app.status_line();
+    assert!(
+        line.contains(" - 15.0k tok"),
+        "status shows session token total, got: {line}"
+    );
+
+    app.handle_event(TuiEvent::TurnDone);
+    let last = app.transcript.output.last().expect("turn-final line");
+    assert!(
+        last.text.starts_with("crunched for ") && last.text.contains(" - 15.0k tok - done"),
+        "turn-final line reports the stretch's tokens, got: {}",
+        last.text
+    );
+
+    // The next stretch restarts the turn tally but keeps the session total.
+    app.running = true;
+    app.status = AgentStatus::Running {
+        phase: Phase::Thinking,
+    };
+    app.begin_activity();
+    app.handle_event(TuiEvent::Usage {
+        input_tokens: 400,
+        output_tokens: 100,
+    });
+    let line = app.status_line();
+    assert!(
+        line.contains(" - 15.5k tok"),
+        "status keeps the session total, got: {line}"
+    );
+    app.handle_event(TuiEvent::TurnDone);
+    let last = app.transcript.output.last().expect("turn-final line");
+    assert!(
+        last.text.contains(" - 500 tok - done"),
+        "turn-final line reports only the new stretch, got: {}",
+        last.text
+    );
 }
 
 #[test]
@@ -2337,17 +2517,12 @@ fn turn_done_with_running_children_enters_waiting_state() {
 fn turn_done_without_running_children_shows_done_and_clears_panel() {
     let mut app = App::new();
     app.running = true;
+    app.begin_activity();
     app.handle_event(TuiEvent::Runtime(child_text("root/a", "hi")));
     app.handle_event(TuiEvent::Runtime(run_finished(Some("root/a")))); // child done first
     app.handle_event(TuiEvent::Runtime(run_finished(None)));
     app.handle_event(TuiEvent::TurnDone);
-    let texts: Vec<&str> = app
-        .transcript
-        .output
-        .iter()
-        .map(|l| l.text.as_str())
-        .collect();
-    assert!(texts.iter().any(|t| t.contains("✅ done")));
+    assert!(app.last_turn_summary.is_some(), "done summary recorded");
     assert_eq!(app.status, AgentStatus::Idle);
     assert!(app.sub_agents.is_empty());
 }
@@ -2528,6 +2703,7 @@ fn daemon_only_settle_is_done_plus_service_note_not_waiting() {
     // as done and note the service, never "waiting".
     let mut app = App::new();
     app.running = true;
+    app.begin_activity();
     running_daemon_task(&mut app, "bg_daemon01", "mvn spring-boot:run");
 
     app.handle_event(TuiEvent::Runtime(run_finished(None)));
@@ -2544,7 +2720,10 @@ fn daemon_only_settle_is_done_plus_service_note_not_waiting() {
         .iter()
         .map(|l| l.text.as_str())
         .collect();
-    assert!(texts.contains(&"✅ done"), "work is done: {texts:?}");
+    assert!(
+        app.last_turn_summary.is_some(),
+        "work is done: summary recorded"
+    );
     assert!(
         texts
             .iter()
@@ -2933,4 +3112,96 @@ fn notice_info_renders_plain_line() {
         "got: {}",
         line.text
     );
+}
+
+#[test]
+fn tips_rotate_once_per_settled_turn() {
+    let mut app = App::new();
+    app.set_tips(vec![
+        TipItem::tip("one"),
+        TipItem::tip("two"),
+        TipItem::tip("three"),
+    ]);
+    assert_eq!(app.current_tip().map(|t| t.text.as_str()), Some("one"));
+
+    // A settled turn advances the rotation exactly once ...
+    app.handle_event(TuiEvent::Runtime(tool_started("read_file")));
+    app.handle_event(TuiEvent::TurnDone);
+    assert_eq!(app.status, AgentStatus::Idle);
+    assert_eq!(
+        app.current_tip().map(|t| t.text.as_str()),
+        Some("two"),
+        "one settled turn = one step"
+    );
+
+    // ... and a settle with no fresh stretch must not skip entries.
+    app.handle_event(TuiEvent::TurnDone);
+    assert_eq!(
+        app.current_tip().map(|t| t.text.as_str()),
+        Some("two"),
+        "repeated settle keeps the entry"
+    );
+
+    // Round-robin wraps without repeats within a pass.
+    app.handle_event(TuiEvent::Runtime(tool_started("read_file")));
+    app.handle_event(TuiEvent::TurnDone);
+    app.handle_event(TuiEvent::Runtime(tool_started("read_file")));
+    app.handle_event(TuiEvent::TurnDone);
+    assert_eq!(
+        app.current_tip().map(|t| t.text.as_str()),
+        Some("one"),
+        "wraps around after the last entry"
+    );
+}
+
+#[test]
+fn tip_visible_idle_and_after_activity_threshold() {
+    let mut app = App::new();
+    app.set_tips(vec![TipItem::tip("t")]);
+    // Idle: the tips line is resident.
+    assert!(app.tip_visible());
+
+    // A fresh active stretch hides it until the threshold ...
+    app.handle_event(TuiEvent::Runtime(tool_started("read_file")));
+    assert!(app.is_active());
+    assert!(!app.tip_visible());
+
+    // ... and a long-running action past the threshold shows it again.
+    app.activity_since = Some(Instant::now() - std::time::Duration::from_secs(10));
+    assert!(app.tip_visible());
+}
+
+#[test]
+fn tip_hidden_without_items() {
+    let app = App::new();
+    assert!(app.tips.is_empty());
+    assert!(app.current_tip().is_none());
+    assert!(!app.tip_visible(), "no pool renders no tips line");
+}
+
+#[test]
+fn tips_updated_event_replaces_pool_and_resets_rotation() {
+    let mut app = App::new();
+    app.set_tips(vec![
+        TipItem::tip("built-in one"),
+        TipItem::tip("built-in two"),
+    ]);
+    app.rotate_tip();
+    assert_eq!(
+        app.current_tip().map(|t| t.text.as_str()),
+        Some("built-in two")
+    );
+
+    app.handle_event(TuiEvent::TipsUpdated {
+        items: vec![TipItem::note(
+            "phimint is built on phi-agent - docs: https://docs.phiagent.dev/",
+        )],
+    });
+    let tip = app.current_tip().expect("cloud pool renders");
+    assert_eq!(tip.kind, crate::tips::TipKind::Note);
+    assert_eq!(
+        tip.text,
+        "phimint is built on phi-agent - docs: https://docs.phiagent.dev/"
+    );
+    assert_eq!(app.tip_index, 0, "a fresh pool restarts the rotation");
 }

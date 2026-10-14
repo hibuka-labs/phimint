@@ -17,7 +17,8 @@ use crate::banner::BannerStyle;
 use crate::ui::app::{AgentStatus, App, Phase, SubAgentStatus, ToolEvent};
 use phi_tui::diff::{diff_to_hunks, diff_to_hunks_indexed};
 use phi_tui::lines::{DiffHunk, LineDetail, LineKind, MetaHead, OutputLine, ToolState};
-use phi_tui::wrap::{one_line, wrap};
+use phi_tui::wrap::{Elide, elide, one_line, wrap};
+use unicode_width::UnicodeWidthStr;
 
 /// Render a notice line for the TUI.
 ///
@@ -74,6 +75,7 @@ fn build_tool_detail(tool_name: &str, args_json: &str) -> Option<LineDetail> {
             raw: task.to_string(),
             line_count: task.lines().count(),
             char_count: task.chars().count(),
+            duration_secs: None,
             meta_head,
         });
     }
@@ -108,6 +110,7 @@ fn build_tool_detail(tool_name: &str, args_json: &str) -> Option<LineDetail> {
                 raw: content.to_string(),
                 line_count: content.lines().count(),
                 char_count: content.chars().count(),
+                duration_secs: None,
                 // The meta row is the invocation (`* write_file <path>`); it
                 // says nothing about the content, so the body owns every row.
                 meta_head: MetaHead::None,
@@ -130,17 +133,113 @@ fn path_label(path: &str) -> String {
         .to_string()
 }
 
+/// `(tool, key)` pairs whose schema default is `false` — a flag that only
+/// carries information when it is `true`.
+const FALSE_DEFAULT_FLAGS: &[(&str, &str)] = &[
+    ("execute_command", "background"),
+    ("history.list_items", "recent_first"),
+    ("history.list_windows", "recent_first"),
+    ("list_files", "recursive"),
+    ("task_output", "wait"),
+    ("write_file", "overwrite"),
+];
+
+/// `(tool, key, default)` numeric knobs at their schema-documented default.
+/// `execute_command.timeout_ms` is conditional on `background` and lives in
+/// [`is_default_noise`].
+const DEFAULT_NUMBERS: &[(&str, &str, u64)] = &[
+    ("history.list_items", "limit", 50),
+    ("history.list_windows", "limit", 20),
+    ("history.read_item", "limit_chars", 3_000),
+    ("history.read_item", "offset_chars", 0),
+    ("history.search_contents", "limit", 10),
+    ("list_files", "limit", 500),
+    ("notes.list_files", "max_results", 50),
+    ("notes.read_file", "start_line", 1),
+    ("notes.search_contents", "max_files", 20),
+    ("notes.search_contents", "max_matches", 5),
+    ("read_file", "limit", 2_000),
+    ("search_content", "max_results", 20),
+    ("task_output", "timeout_ms", 120_000),
+];
+
+/// The schema default for `(tool_name, key)`, when the knob has one.
+fn default_number(tool_name: &str, key: &str) -> Option<u64> {
+    DEFAULT_NUMBERS
+        .iter()
+        .find(|(t, k, _)| *t == tool_name && *k == key)
+        .map(|&(_, _, d)| d)
+}
+
+/// Whether `(key, value)` only spells out the tool's schema default.
+///
+/// Models routinely pass every knob they see — `{"background": false,
+/// "timeout_ms": 120000, "command": "cargo build"}` is one fact wearing two
+/// decorations. The call still executes with those values and the raw JSON
+/// stays in `session.log`; the projection only decides what the row spends
+/// its columns on. "Default" means the one the schema documents (the model's
+/// notion of leaving a knob alone), so `working_dir` at the workspace the
+/// process runs in counts too. A real choice — `background=true`,
+/// `limit=100` — is the call and always stays.
+fn is_default_noise(
+    tool_name: &str,
+    key: &str,
+    v: &serde_json::Value,
+    background: bool,
+    workspace_root: &std::path::Path,
+) -> bool {
+    match v {
+        serde_json::Value::Bool(false) => FALSE_DEFAULT_FLAGS.contains(&(tool_name, key)),
+        serde_json::Value::Number(n) => {
+            let default = if (tool_name, key) == ("execute_command", "timeout_ms") {
+                // Foreground dies at the tool timeout (schema: 120000);
+                // background runs until it ends (0 = never kill).
+                Some(if background { 0 } else { 120_000 })
+            } else {
+                default_number(tool_name, key)
+            };
+            default.is_some_and(|d| n.as_u64() == Some(d))
+        }
+        serde_json::Value::String(s) => match (tool_name, key) {
+            // "Wherever the tool already is": the workspace the process runs
+            // in, spelled absolute or as `.`.
+            ("execute_command", "working_dir")
+            | ("list_files", "path")
+            | ("search_content", "path") => {
+                let s = s.trim();
+                s == "." || std::path::Path::new(s) == workspace_root
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 /// Argument values that identify a call, with the JSON syntax dropped.
 ///
 /// `args_json` is a syntax dump — `{"limit": 60, "path": "/Users/…/x.md"}` —
 /// whose braces, quoted keys and full paths eat the line budget while adding
 /// nothing the tool name doesn't already say. The transcript shows the values
-/// (rule 3: 工具名 + 可读参数); the raw JSON stays in the log.
+/// (rule 3: 工具名 + 可读参数); the raw JSON stays in the log. Values that
+/// merely spell out a schema default are dropped entirely — see
+/// [`is_default_noise`].
 ///
 /// Content payloads (`content`, `old_text`/`new_text`, `edits`, `task`) are
 /// never inlined here — they are either multi-KB or already rendered as the
 /// tool's structured block.
-fn args_label(tool_name: &str, args: &serde_json::Value) -> String {
+///
+/// `budget` is the display columns the joined label may occupy — the room the
+/// terminal actually has after the `* {tool}  ` gutter. Each value elides to
+/// the columns still left, so a lone `command` fills the line instead of a
+/// fixed char count truncating it while the row is still empty. Eliding
+/// flattens whitespace first (`split_whitespace`), matching the old
+/// `one_line` single-row contract.
+fn args_label(
+    tool_name: &str,
+    args: &serde_json::Value,
+    budget: usize,
+    workspace_root: &std::path::Path,
+) -> String {
     // Payload keys shown elsewhere (structured block) or too long to inline.
     const SKIP: &[&str] = &[
         "content",
@@ -165,21 +264,40 @@ fn args_label(tool_name: &str, args: &serde_json::Value) -> String {
             Some(p) => path_label(p),
             None => String::new(),
         };
-        if let Some(off) = obj.get("offset").and_then(|v| v.as_u64()) {
-            out.push_str(&format!(" from L{}", off + 1));
+        let offset = obj.get("offset").and_then(|v| v.as_u64()).unwrap_or(0);
+        let limit = obj.get("limit").and_then(|v| v.as_u64());
+        // The defaults read on from the top of the file; only an explicit
+        // window is a fact about this call.
+        if offset > 0 {
+            out.push_str(&format!(" from L{}", offset + 1));
+        }
+        if let Some(end) = limit
+            .filter(|l| Some(*l) != default_number("read_file", "limit"))
+            .map(|l| offset + l)
+        {
+            out.push_str(&format!(" to L{end}"));
         }
         return out;
     }
 
+    let background = obj
+        .get("background")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
     let mut parts: Vec<String> = Vec::new();
+    let mut remaining = budget;
     for (k, v) in obj {
         if SKIP.contains(&k.as_str()) {
+            continue;
+        }
+        if is_default_noise(tool_name, k, v, background, workspace_root) {
             continue;
         }
         if PATHISH.contains(&k.as_str()) {
             if let Some(p) = v.as_str() {
                 let label = path_label(p);
                 if !label.is_empty() {
+                    remaining = remaining.saturating_sub(label.width() + 2);
                     parts.push(label);
                 }
             }
@@ -190,11 +308,16 @@ fn args_label(tool_name: &str, args: &serde_json::Value) -> String {
             serde_json::Value::String(s) => {
                 // A command or a pattern is worth showing whole-ish; a bare name
                 // reads better without its key.
-                let shown = one_line(s, 60);
-                if k == "name" || k == "pattern" {
+                let bare = k == "name" || k == "pattern";
+                let kv = if bare { String::new() } else { format!("{k}=") };
+                let avail = remaining.saturating_sub(kv.width());
+                let flat = s.split_whitespace().collect::<Vec<_>>().join(" ");
+                let shown = elide(&flat, avail, Elide::Head);
+                remaining = remaining.saturating_sub(kv.width() + shown.width() + 2);
+                if bare {
                     parts.push(shown);
                 } else {
-                    parts.push(format!("{k}={shown}"));
+                    parts.push(format!("{kv}{shown}"));
                 }
             }
             serde_json::Value::Number(n) => parts.push(format!("{k}={n}")),
@@ -210,7 +333,17 @@ fn args_label(tool_name: &str, args: &serde_json::Value) -> String {
 
 /// Invocation-line body for a tool call: `tool_name` plus readable arguments.
 /// No leading glyph — the renderer draws that from the call's [`ToolState`].
-fn tool_invocation_text(tool_name: &str, args_json: &str, prefix: &str) -> String {
+///
+/// `max_cols` is the terminal width the row may fill; the argument label is
+/// budgeted to the columns left after the `* {prefix}{tool_name}  ` gutter so
+/// a lone `command` uses the space the row actually has.
+fn tool_invocation_text(
+    tool_name: &str,
+    args_json: &str,
+    prefix: &str,
+    max_cols: usize,
+    workspace_root: &std::path::Path,
+) -> String {
     if tool_name == "spawn_agent" {
         return spawn_invocation_text(args_json, prefix)
             .unwrap_or_else(|| format!("{prefix}{tool_name}"));
@@ -219,7 +352,9 @@ fn tool_invocation_text(tool_name: &str, args_json: &str, prefix: &str) -> Strin
         Ok(v) => v,
         Err(_) => return format!("{prefix}{tool_name}"),
     };
-    let label = args_label(tool_name, &args);
+    let gutter = 2 + prefix.width() + tool_name.width() + 2;
+    let budget = max_cols.saturating_sub(gutter).max(8);
+    let label = args_label(tool_name, &args, budget, workspace_root);
     if label.is_empty() {
         format!("{prefix}{tool_name}")
     } else {
@@ -309,6 +444,27 @@ fn spawn_result_label(summary: &str) -> Option<String> {
     } else {
         Some(format!("spawned {path} ({})", facts.join(", ")))
     }
+}
+
+/// Human label for an `execute_command` background-start result.
+///
+/// The tool answers with structured JSON
+/// (`{"background":true,"task_id":…,"message":…}`), and the fact the row
+/// exists for is which task id now owns the command — the task panel and
+/// `task_output` are keyed on it. The raw result (with the tool's own
+/// `message`) rides the fold.
+///
+/// `None` when the summary is not that shape → the generic head/meta path.
+fn bg_start_result_label(summary: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(summary).ok()?;
+    if v.get("background").and_then(serde_json::Value::as_bool) != Some(true) {
+        return None;
+    }
+    let task_id = v
+        .get("task_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|id| !id.is_empty())?;
+    Some(format!("background task {task_id} started"))
 }
 
 /// Prefix for sub-agent output lines (e.g., `[task_name] `).
@@ -525,7 +681,13 @@ impl App {
                     // written content / spawn brief) the ladder expands below
                     // this line.
                     let detail = build_tool_detail(&tool_name, &args_json);
-                    let body = tool_invocation_text(&tool_name, &args_json, &prefix);
+                    let body = tool_invocation_text(
+                        &tool_name,
+                        &args_json,
+                        &prefix,
+                        self.transcript.wrap_width(),
+                        &self.workspace_root,
+                    );
                     // The `*` is a marker slot, not a glyph: the renderer draws
                     // the state glyph over it (braille while running, `o`/`x`
                     // when settled). Keeping a stable placeholder means the
@@ -605,12 +767,15 @@ impl App {
                             LineKind::Error,
                             None,
                         )
-                    } else if let Some(label) = spawn_result_label(&summary) {
-                        // A spawn answers with structured JSON. The meta row
-                        // states the fact the row exists for (whom, with what
-                        // capability) and the raw result rides the fold — the
-                        // registered-tool dump and the tool's own wording stay
-                        // one keypress away, and `summary` is never rewritten.
+                    } else if let Some(label) =
+                        spawn_result_label(&summary).or_else(|| bg_start_result_label(&summary))
+                    {
+                        // A tool answers with structured JSON (a spawn, a
+                        // background start). The meta row states the fact the
+                        // row exists for (whom, with what capability; which
+                        // task id) and the raw result rides the fold — the
+                        // tool's own wording and payload stay one keypress
+                        // away, and `summary` is never rewritten.
                         let body = if adjacent {
                             label
                         } else {
@@ -620,6 +785,7 @@ impl App {
                         let detail = Some(LineDetail::Folded {
                             line_count: raw.lines().count(),
                             char_count: raw.chars().count(),
+                            duration_secs: None,
                             raw,
                             // The meta row is a label, not the payload's head.
                             meta_head: MetaHead::None,
@@ -677,6 +843,7 @@ impl App {
                                 raw,
                                 line_count,
                                 char_count,
+                                duration_secs: None,
                                 meta_head,
                             })
                         } else {
@@ -883,7 +1050,7 @@ impl App {
                     }
                     _ => {
                         // Root agent: just flush and settle. The actual
-                        // outcome message ("✅ done" / "⏳ waiting" / "❌ error")
+                        // outcome message ("done" / "waiting" / "error")
                         // is rendered by TurnDone / TurnError after run_turn
                         // returns. With sub-agents or background tasks still
                         // running the panel stays alive — the fan-in batch
@@ -937,6 +1104,10 @@ impl App {
                             kind: LineKind::Cancelled,
                             tool_state: None,
                         });
+                        // Mark the pending summary as cancelled so the
+                        // turn-final status line reads "- cancelled" instead
+                        // of "- done" when the stretch settles to Idle.
+                        self.pending_cancel = true;
                         // `running` clears via the turn's terminal event
                         // (settle_after_turn) — see the RunFinished note.
                         // Cancelling the turn does not cancel in-flight work:

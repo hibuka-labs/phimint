@@ -66,6 +66,35 @@ enum TuiOutcome {
 /// the flipbook's content dedup (~4 frames/s of nothing but spinner motion).
 const UI_TICK: Duration = Duration::from_millis(250);
 
+/// Opportunistic tips refresh re-check: the event loop compares this cadence
+/// against `last_tips_check` (no timer task) and spawns one more background
+/// fetch pass when it lapses. [`crate::tips::refresh`] consults the cache
+/// timestamp first, so a fresh cache makes the pass a no-op and a failing
+/// endpoint is retried at this cadence rather than every tick.
+const TIPS_RECHECK: Duration = Duration::from_secs(300);
+
+/// Spawn one background tips refresh pass: fetch (3s timeout per endpoint,
+/// endpoints in order), merge against the cache, persist, and deliver
+/// `TuiEvent::TipsUpdated` only when the manifest version changed. A fresh
+/// cache short-circuits before any network. Failures are silent (debug log) —
+/// tips are decoration, never a startup or runtime dependency.
+fn spawn_tips_refresh(
+    tips_config: &crate::config::TipsConfig,
+    tx: mpsc::UnboundedSender<TuiEvent>,
+) {
+    let endpoints = tips_config.endpoints.clone();
+    let interval = Duration::from_secs(tips_config.refresh_interval_secs);
+    tokio::spawn(async move {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(3))
+            .build()
+            .unwrap_or_default();
+        if let Some(items) = crate::tips::refresh(&client, &endpoints, interval).await {
+            let _ = tx.send(TuiEvent::TipsUpdated { items });
+        }
+    });
+}
+
 /// Run the interactive ratatui TUI until the user quits.
 ///
 /// Takes ownership of the agent/session because the turn runner lives in a
@@ -93,6 +122,7 @@ pub async fn run_tui(
     resume_messages: Option<Vec<ChatMessage>>,
     update_config: crate::config::UpdateConfig,
     no_update_check: bool,
+    tips_config: crate::config::TipsConfig,
     log_sinks: log_core::SinkHandle,
 ) -> Result<()> {
     let agent = Arc::new(agent);
@@ -208,6 +238,14 @@ pub async fn run_tui(
             });
         }
 
+        // Background tips refresh (if enabled). Startup renders built-in
+        // defaults (or the cache) immediately; this pass swaps in cloud
+        // content only when the manifest version changed. Never blocks boot:
+        // a fresh cache makes it a pure timestamp comparison.
+        if tips_config.enabled {
+            spawn_tips_refresh(&tips_config, event_tx.clone());
+        }
+
         // Start the child-result watcher (Phase 2): monitors the mailbox and
         // delivers each finished child's result as a ChildResultEvent. The loop
         // below decides per event: inject immediately (agent idle) or stash and
@@ -280,6 +318,11 @@ pub async fn run_tui(
         app.set_workspace_root(workspace.clone());
         app.set_skill_summaries(skill_summaries);
         app.set_background_registry(bg_registry.clone());
+        if tips_config.enabled {
+            // Cache (or built-in defaults) render from the first frame; the
+            // refresh pass above only replaces them on a version change.
+            app.set_tips(crate::tips::initial_items());
+        }
         if show_banner {
             // Divider width follows the startup window (see banner::build docs
             // for the accepted resize staleness).
@@ -368,6 +411,8 @@ pub async fn run_tui(
         let mut last_draw = Instant::now();
         // Last terminal-geometry probe — drives the 1 Hz size self-heal below.
         let mut last_geom_check = Instant::now();
+        // Last tips refresh re-check — drives the opportunistic pass below.
+        let mut last_tips_check = Instant::now();
         // Last size we know the buffers were resized to. The 1 Hz probe below
         // compares the REAL terminal size against this; autoresize alone is
         // not enough because it resizes buffers without clearing the screen.
@@ -773,6 +818,14 @@ pub async fn run_tui(
                 }
             }
 
+            // Opportunistic tips refresh (see TIPS_RECHECK): a session that
+            // outlives the refresh interval gets another background pass;
+            // the cache timestamp keeps a fresh one a no-op.
+            if tips_config.enabled && last_tips_check.elapsed() >= TIPS_RECHECK {
+                last_tips_check = Instant::now();
+                spawn_tips_refresh(&tips_config, event_tx.clone());
+            }
+
             // Liveness tick: active (Running/Waiting) with no events this
             // iteration → redraw so spinner/elapsed advance. Tick-only frames are
             // drawn but not captured (see UI_TICK).
@@ -958,6 +1011,23 @@ async fn agent_loop(
         agent.config.model.clone(),
     );
 
+    // Live token readout for the status bar: forward every model call's real
+    // usage as it settles (the same numbers phi-telemetry accumulates for
+    // session_metrics.json). Fires per model call, so the readout grows
+    // through the tool loop instead of only at turn end. Root agent only —
+    // sub-agent tokens stay in their own sessions' metrics.
+    {
+        let usage_tx = event_tx.clone();
+        agent.runtime().on_turn_end(move |ctx| {
+            if let Some(usage) = &ctx.usage {
+                let _ = usage_tx.send(TuiEvent::Usage {
+                    input_tokens: usage.prompt_tokens.unwrap_or(0).into(),
+                    output_tokens: usage.completion_tokens.unwrap_or(0).into(),
+                });
+            }
+        });
+    }
+
     // Session-scope skills (skill-lifetime v3): reload the active list and
     // re-bake it into the system prompt. Covers both process resume (fresh
     // agent, restored history) and session switches (fresh agent_loop).
@@ -992,8 +1062,9 @@ async fn agent_loop(
             Cmd::Run(input) => {
                 // Check for model-related commands first
                 if let Some(response) = handle_model_command(&input, &model_store, &router) {
-                    // Send response as a system message (reuse TurnError for display)
-                    let _ = event_tx.send(TuiEvent::TurnError(response));
+                    // A local answer, not a turn: it settles via SystemMessage
+                    // so no turn-final status line is appended for it.
+                    let _ = event_tx.send(TuiEvent::SystemMessage(response));
                     continue;
                 }
 

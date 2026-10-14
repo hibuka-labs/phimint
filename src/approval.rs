@@ -238,11 +238,12 @@ impl RuntimeApprovalMode {
     }
 
     /// The status-bar badge for this mode (ASCII — chrome stays width-safe).
+    /// Claude Code style wording: `<mode> mode on`.
     pub fn badge(self) -> &'static str {
         match self {
-            Self::Auto => "[auto]",
-            Self::Ask => "[ask]",
-            Self::Deny => "[deny]",
+            Self::Auto => "auto mode on",
+            Self::Ask => "ask mode on",
+            Self::Deny => "deny mode on",
         }
     }
 }

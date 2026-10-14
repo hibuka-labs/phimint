@@ -539,6 +539,16 @@ impl App {
             }
         }
     }
+
+    /// Whether the boxed (folded) thinking panel is *wanted* for the focused
+    /// agent — the exact predicate `render_output` uses to choose the
+    /// placeholder rows. Terminal/output-fit guards are the caller's job
+    /// (they need frame geometry). Shared by the renderer so the process
+    /// status line can drop the redundant "thinking..." when the panel already
+    /// reports it (Ctrl+O folded view).
+    pub(crate) fn thinking_panel_wanted(&self) -> bool {
+        !self.show_thoughts && self.thinking_panel_state().is_some()
+    }
 }
 
 #[cfg(test)]

@@ -39,6 +39,8 @@ pub enum BannerStyle {
     Ad,
     /// `-` separators and the docs URL.
     Dim,
+    /// Turn-final `- error` status marker (dark red).
+    Error,
 }
 
 /// 7-stop face gradient (stop 0 = leftmost letter). Precomputed so render
@@ -105,6 +107,10 @@ impl BannerStyle {
                 ColorScheme::Light => (0xc4, 0x3e, 0x10),
             },
             BannerStyle::Dim => BannerStyle::Version.rgb(scheme),
+            BannerStyle::Error => match scheme {
+                ColorScheme::Dark => (0xc0, 0x40, 0x30),
+                ColorScheme::Light => (0x8a, 0x22, 0x18),
+            },
         }
     }
 
@@ -388,6 +394,7 @@ mod tests {
             BannerStyle::Value,
             BannerStyle::Ad,
             BannerStyle::Dim,
+            BannerStyle::Error,
         ] {
             assert_ne!(s.rgb(ColorScheme::Dark), s.rgb(ColorScheme::Light), "{s:?}");
         }
@@ -404,6 +411,7 @@ mod tests {
                 BannerStyle::Value,
                 BannerStyle::Ad,
                 BannerStyle::Dim,
+                BannerStyle::Error,
             ] {
                 let (r, g, b) = s.rgb(scheme);
                 assert!(
@@ -548,6 +556,7 @@ mod tests {
             BannerStyle::Label,
             BannerStyle::Value,
             BannerStyle::Dim,
+            BannerStyle::Error,
         ] {
             assert!(!s.is_bold(), "{s:?} must not be bold");
         }

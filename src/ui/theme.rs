@@ -8,8 +8,9 @@
 //! 2. **ANSI grays** — their *role* flips with the background: the gray that
 //!    reads "quiet hint" on dark reads "dead" on light. Two semantic slots,
 //!    [`muted`] and [`faint`], map to different grays per scheme.
-//! 3. **Absolute truecolor** (thought, user, selection) — one RGB value cannot
-//!    serve both backgrounds, so both sets live here and the scheme picks.
+//! 3. **Absolute truecolor** (thought, user, warm, selection) — one RGB value
+//!    cannot serve both backgrounds, so both sets live here and the scheme
+//!    picks.
 //!
 //! Two static palettes, no dynamic adaptation: `--color-scheme dark|light|auto`
 //! resolves once at startup (`banner::resolve_scheme`, keyed off `$COLORFGBG`)
@@ -61,6 +62,17 @@ pub fn user(scheme: ColorScheme) -> Color {
     }
 }
 
+/// Brand warm: the mode badge. A lighter step of the logo's warm gradient —
+/// the gradient start `--warm-1` (`#ff6a3d`) reads dark and reddish at chrome
+/// text size, so the badge rides the banner's Slogan stop (`#ffb066`) on dark;
+/// Light keeps the hue but drops the red (`#e07a3c`) for white backgrounds.
+pub fn warm(scheme: ColorScheme) -> Color {
+    match scheme {
+        ColorScheme::Dark => Color::Rgb(0xff, 0xb0, 0x66),
+        ColorScheme::Light => Color::Rgb(0xe0, 0x7a, 0x3c),
+    }
+}
+
 /// Foregrounds that must read on any background — popup row names on light.
 pub fn strong(scheme: ColorScheme) -> Color {
     match scheme {
@@ -102,11 +114,12 @@ mod tests {
 
     type Slot = fn(ColorScheme) -> Color;
 
-    const SLOTS: [(&str, Slot); 8] = [
+    const SLOTS: [(&str, Slot); 9] = [
         ("muted", muted),
         ("faint", faint),
         ("thought", thought),
         ("user", user),
+        ("warm", warm),
         ("strong", strong),
         ("selection_bg", selection_bg),
         ("selection_fg", selection_fg),

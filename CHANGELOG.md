@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The bottom status bar is Claude Code style: the mode badge reads `auto mode
+  on` / `ask mode on` / `deny mode on` with `(shift+tab to cycle)` behind it
+  (auto and ask share the brand warm color; only deny is red), and the right
+  slot carries the upgrade hint or the scroll position. The composer sits
+  flush between its rules, with no blank rows around it.
+
 ## [0.4.1] — 2026-10-12
 
 ### Fixed

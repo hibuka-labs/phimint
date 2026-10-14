@@ -16,7 +16,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::banner::{BannerStyle, ColorScheme, SpanSpec};
 use crate::ui::app::{
     AgentStatus, App, CONTEXT_MENU_H, CONTEXT_MENU_W, FocusTarget, ResultTier, SubAgentStatus,
-    context_menu_pos, is_writing_hint,
+    context_menu_pos, fmt_k, is_writing_hint,
 };
 use crate::ui::task_panel::ThinkingPanelState;
 use crate::ui::theme;
@@ -37,7 +37,7 @@ const THINKING_PANEL_H: u16 = 8;
 const MIN_PANEL_HISTORY_ROWS: u16 = 2;
 /// Below this terminal height the thinking panel hides entirely. Belt and
 /// suspenders: at current composer bounds the fit guard already hides it
-/// (term < 14 ⇒ output < 10), but a future composer/layout change must not
+/// (term < 17 ⇒ output < 10), but a future composer/layout change must not
 /// resurrect the squeeze this guard exists for.
 const MIN_PANEL_TERM_H: u16 = 12;
 
@@ -69,14 +69,20 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     );
 
     let mut constraints = vec![
-        Constraint::Min(3), // output (transcript)
+        Constraint::Min(3),    // output (transcript)
+        Constraint::Length(1), // gap: transcript content never crowds the process row
+        Constraint::Length(1), // process status line (status + tip, Claude Code style)
     ];
     if has_task_panel {
         let task_count = app.sub_agents.len();
         constraints.push(Constraint::Length(task_count as u16 + 2)); // task panel
     }
+    // The composer's own top/bottom rules are the separators around it —
+    // no blank rows between the process band, the rules, and the mode line.
+    // (A cell grid has no half-row; the rules carry the visual separation
+    // and keep the status and mode lines one keystroke away from the box.)
     constraints.push(Constraint::Length(composer_height)); // composer
-    constraints.push(Constraint::Length(1)); // status bar
+    constraints.push(Constraint::Length(1)); // status bar (mode line)
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -89,12 +95,15 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     let mut idx = 0;
     render_output(f, app, chunks[idx]);
+    idx += 2; // skip the gap above the process row
+    render_process_line(f, app, chunks[idx]);
     idx += 1;
     if has_task_panel {
         render_task_panel(f, app, chunks[idx]);
         idx += 1;
     }
-    render_composer(f, app, chunks[idx]);
+    let composer_area = chunks[idx];
+    render_composer(f, app, composer_area);
     render_status(f, app, chunks[idx + 1]);
 
     if app.has_pending_approval() {
@@ -104,10 +113,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         render_context_menu(f, app);
     }
     if app.mention().is_some() {
-        render_mention_popup(f, app, chunks[idx]);
+        render_mention_popup(f, app, composer_area);
     }
     if app.slash().is_some() {
-        render_slash_popup(f, app, chunks[idx]);
+        render_slash_popup(f, app, composer_area);
     }
 }
 
@@ -288,6 +297,7 @@ fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
                     raw,
                     line_count,
                     char_count,
+                    duration_secs,
                     meta_head,
                 } => {
                     let width = app.transcript.wrap_width();
@@ -301,10 +311,17 @@ fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
                             // No leading `>`: that is the user line's marker
                             // (transcript.rs `push_user`) and a summary that
                             // starts with `>` reads as something you typed.
-                            let summary = format!(
+                            // The expand hint rides every summary row: the
+                            // fold is otherwise indistinguishable from a
+                            // dropped segment (discoverability of Ctrl+O).
+                            let mut summary = format!(
                                 "thinking - {line_count} lines - ~{} tok",
-                                fmt_k(*char_count / 3)
+                                fmt_k(*char_count as u64 / 3)
                             );
+                            if let Some(secs) = duration_secs {
+                                summary.push_str(&format!(" - {}", App::fmt_elapsed(*secs)));
+                            }
+                            summary.push_str(" (Ctrl+O expand)");
                             let mut styled = Line::from(Span::styled(
                                 summary.clone(),
                                 style_for(LineKind::Thought, scheme),
@@ -532,7 +549,8 @@ fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
         None
     } else {
         app.thinking_panel_state().filter(|_| {
-            f.area().height >= MIN_PANEL_TERM_H
+            app.thinking_panel_wanted()
+                && f.area().height >= MIN_PANEL_TERM_H
                 && height >= (THINKING_PANEL_H + MIN_PANEL_HISTORY_ROWS) as usize
         })
     };
@@ -705,27 +723,108 @@ fn render_composer(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(items).block(block).scroll((scroll, 0)), area);
 }
 
-fn render_status(f: &mut Frame, app: &App, area: Rect) {
+/// The process-status line (Claude Code style) that sits between the
+/// transcript and the composer: live phase (thinking/streaming/tool/waiting)
+/// or, at Idle, the ambient notices. A running spin is still shown live so an
+/// event-less LLM call isn't mistaken for a frozen screen. The current tip
+/// rides the same row, right behind the status.
+fn render_process_line(f: &mut Frame, app: &App, area: Rect) {
+    let scheme = app.scheme();
+    let text = app.status_line();
     let style = match app.status {
-        AgentStatus::Idle => Style::default().fg(Color::Green),
+        AgentStatus::Idle => Style::default().fg(theme::faint(scheme)),
         AgentStatus::Waiting { .. } => Style::default().fg(Color::Cyan),
         AgentStatus::Running { .. } => Style::default().fg(Color::Yellow),
     };
-    // Approval-mode badge first: the current mode must be readable at a
-    // glance (Shift+Tab toggles it; labels live in approval.rs).
+    let mut spans = vec![Span::styled(text, style)];
+    // The tip follows the status after a tab-wide gap (4 columns) so it never
+    // crowds or replaces it. Status wins the width contest (it is always
+    // shown whole); the tip truncates to what remains, `Elide::Head` keeping
+    // its `Tip:`/`Note:` label.
+    const TIP_GAP: usize = 4;
+    if app.tip_visible()
+        && let Some(tip) = tip_line_text(app)
+    {
+        let status_w = UnicodeWidthStr::width(spans[0].content.as_ref());
+        let width = area.width as usize;
+        if width > status_w + TIP_GAP + 8 {
+            let budget = width - status_w - TIP_GAP;
+            let tip = elide(&tip, budget, Elide::Head);
+            spans.push(Span::raw(" ".repeat(TIP_GAP)));
+            spans.push(Span::styled(tip, Style::default().fg(theme::faint(scheme))));
+        }
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// The tip text for the process row: `Tip: ...`, or `Note: ...` for items
+/// labelled as promos/announcements (never dressed up as a Tip).
+fn tip_line_text(app: &App) -> Option<String> {
+    let tip = app.current_tip()?;
+    Some(format!("{}: {}", tip.kind.label(), tip.text))
+}
+
+/// Bottom status bar (Claude Code style): left, the live approval mode badge
+/// with its switch hint; right, the highest-priority status-driven notice —
+/// the persistent upgrade hint, else the transcript scroll position. The
+/// right slot stays empty when there is nothing to report; rotating tips
+/// ride the process row, never here.
+fn render_status(f: &mut Frame, app: &App, area: Rect) {
+    let scheme = app.scheme();
     let mode = app.approval_switch.get();
+    // auto and ask are equally calm positions of one switch, so they share the
+    // brand warm badge color; only deny is a warning (red).
     let badge_style = match mode {
-        crate::approval::RuntimeApprovalMode::Auto => Style::default().fg(Color::Green),
-        crate::approval::RuntimeApprovalMode::Ask => Style::default().fg(Color::Yellow),
+        crate::approval::RuntimeApprovalMode::Auto | crate::approval::RuntimeApprovalMode::Ask => {
+            Style::default().fg(theme::warm(scheme))
+        }
         crate::approval::RuntimeApprovalMode::Deny => Style::default().fg(Color::Red),
     };
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(format!("{} ", mode.badge()), badge_style),
-            Span::styled(app.status_line(), style),
-        ])),
-        area,
-    );
+    let mut spans = vec![
+        Span::styled(mode.badge(), badge_style),
+        Span::raw(" "),
+        Span::styled(MODE_CYCLE_HINT, Style::default().fg(theme::faint(scheme))),
+    ];
+    if let Some((text, style)) = status_bar_right(app) {
+        let width = area.width as usize;
+        let left_w: usize = spans
+            .iter()
+            .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+            .sum();
+        // The mode block is short and structural — it keeps its columns and
+        // the right notice elides to what remains (head kept, like tips).
+        if width > left_w + 2 {
+            let text = elide(&text, width - left_w - 2, Elide::Head);
+            let text_w = UnicodeWidthStr::width(text.as_str());
+            spans.push(Span::raw(" ".repeat(width - left_w - text_w)));
+            spans.push(Span::styled(text, style));
+        }
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// The mode badge's switch hint, right behind the badge (Claude Code style
+/// teaches the toggle where it lives).
+const MODE_CYCLE_HINT: &str = "(shift+tab to cycle)";
+
+/// The right slot of the bottom status bar, in priority order: the upgrade
+/// hint (persistent, yellow), else the scroll position while the transcript
+/// sits off the bottom (faint, with the key that re-follows it). `None` when
+/// there is nothing to report.
+fn status_bar_right(app: &App) -> Option<(String, Style)> {
+    if let Some(hint) = &app.upgrade_hint {
+        return Some((hint.clone(), Style::default().fg(Color::Yellow)));
+    }
+    let v = &app.viewport;
+    if v.follow_bottom || v.rendered_total == 0 || v.viewport_height == 0 {
+        return None;
+    }
+    let total = v.rendered_total;
+    let range = v.window_range(total, v.viewport_height);
+    Some((
+        format!("scroll {}/{total} (End to bottom)", range.start + 1),
+        Style::default().fg(theme::faint(app.scheme())),
+    ))
 }
 
 /// Format files list for display (max 2 files, truncate with ...).
@@ -1144,7 +1243,7 @@ fn render_thinking_panel(
         format!(
             " - {} - ~{} tok",
             App::fmt_elapsed(elapsed),
-            fmt_k(chars / 3)
+            fmt_k(chars as u64 / 3)
         ),
         dim,
     ));
@@ -1157,15 +1256,6 @@ fn render_thinking_panel(
         },
         area,
     );
-}
-
-/// `950` → "950"; `12000` → "12.0k". Cosmetic counts in titles/summaries.
-fn fmt_k(n: usize) -> String {
-    if n < 1000 {
-        n.to_string()
-    } else {
-        format!("{:.1}k", n as f64 / 1000.0)
-    }
 }
 
 fn style_for(kind: LineKind, scheme: ColorScheme) -> Style {

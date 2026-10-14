@@ -249,6 +249,7 @@ async fn main() -> Result<()> {
 
     // Extract update config before model_config is moved into the store.
     let update_config = model_config.update.clone();
+    let tips_config = model_config.ui.tips.clone();
 
     let popup_style = model_config
         .ui
@@ -403,6 +404,7 @@ async fn main() -> Result<()> {
         resume_messages,
         update_config,
         cli.no_update_check,
+        tips_config,
         log_sinks,
     )
     .await

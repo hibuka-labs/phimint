@@ -17,7 +17,8 @@ use phi_kernel_tools::background_shell::{BackgroundTaskRegistry, BackgroundTaskS
 use ratatui::style::{Modifier, Style};
 
 use crate::approval::{ApprovalItem, ApprovalModeSwitch, RuntimeApprovalMode};
-use crate::banner::{BannerRow, BannerStyle, ColorScheme};
+use crate::banner::{BannerRow, BannerStyle, ColorScheme, SpanSpec};
+use crate::tips::TipItem;
 use crate::ui::theme;
 use phi_tui::completer::{CompleterAction, MentionCompleter, SlashCompleter};
 use phi_tui::input::Composer;
@@ -60,6 +61,37 @@ pub enum AgentStatus {
     Running {
         phase: Phase,
     },
+}
+
+/// Summary of a finished turn. Rendered as the turn-final status line at the
+/// end of the transcript ("crunched for 1m 18s - 15.0k tok - done 20:11", grey; a failed
+/// turn reads "- error" in dark red) so scrolling back through history shows
+/// how every turn ended. Cleared when the next turn begins.
+#[derive(Debug, Clone)]
+pub(crate) struct LastTurnSummary {
+    /// Total elapsed time of the finished Running/Waiting stretch.
+    pub duration: Duration,
+    /// Wall-clock time when the stretch settled to Idle.
+    pub finished_at: chrono::NaiveTime,
+    /// True when the turn was cancelled (Ctrl+C) rather than completed.
+    pub cancelled: bool,
+    /// Tokens consumed by the finished stretch (real LLM usage accumulated
+    /// from `TuiEvent::Usage`); `0` when no usage arrived.
+    pub tokens: u64,
+}
+
+/// How a turn ended — picks the wording and color of the turn-final status
+/// line appended at settlement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TurnEnd {
+    /// The model finished normally (`- done`).
+    Done,
+    /// The run failed or was cut short by the turn cap (`- error`, dark red).
+    Error,
+    /// A local model command answered without running the model. Settles the
+    /// turn but records no summary and appends no final-status line — there
+    /// was no run to summarize.
+    Command,
 }
 
 /// Live state of a sub-agent shown in the task panel.
@@ -249,10 +281,30 @@ pub enum TuiEvent {
     Warning(String),
     /// A turn completed (safety net in case `RunFinished` was never seen).
     TurnDone,
+    /// A local model command's answer (e.g. `/model`), delivered as a system
+    /// line. Settles the turn like [`TuiEvent::TurnDone`] (clears
+    /// [`App::running`]) but adds no turn-final status line — the command
+    /// never ran the model.
+    SystemMessage(String),
     /// An update check found a new version.
     UpdateAvailable {
         version: String,
         download_url: String,
+    },
+    /// A tips refresh delivered a new content version (the background fetch
+    /// task sends this; same-version fetches only bump the cache timestamp
+    /// and never reach the UI).
+    TipsUpdated {
+        items: Vec<TipItem>,
+    },
+    /// Real LLM token usage for one model call, forwarded from the agent
+    /// task's `on_turn_end` hook. Accumulated into the status bar's token
+    /// readout and the turn-final status line.
+    Usage {
+        /// Prompt/input tokens of the call.
+        input_tokens: u64,
+        /// Completion/output tokens of the call (thinking included).
+        output_tokens: u64,
     },
 }
 
@@ -333,7 +385,8 @@ pub struct App {
     pub(crate) tool_drafts: HashMap<usize, (String, usize)>,
     /// Transient status-bar notice (e.g. "📋 copied …"), cleared on the next key.
     pub(crate) notice: Option<String>,
-    /// Persistent upgrade hint (e.g. "⬆ phimint 0.2.0 available — type /upgrade").
+    /// Persistent upgrade hint (e.g. "⬆ phimint 0.2.0 available - run: brew
+    /// upgrade phimint"), rendered on the bottom status bar's right slot.
     /// Survives keypresses; cleared on /upgrade or when already up-to-date.
     pub(crate) upgrade_hint: Option<String>,
     /// When the current Running/Waiting stretch began — drives the spinner and
@@ -343,6 +396,21 @@ pub struct App {
     /// 20260904_e6612477, "frozen for a while"). The ~250 ms tick re-renders while this is
     /// set, keeping spinner/elapsed alive through event-less stretches.
     pub(crate) activity_since: Option<Instant>,
+    /// Summary of the last finished turn (rendered as the transcript's
+    /// turn-final status line); cleared as soon as the next turn's activity
+    /// begins.
+    pub(crate) last_turn_summary: Option<LastTurnSummary>,
+    /// True while `last_turn_summary` holds a settled stretch whose
+    /// turn-final status line has not been appended yet. Set when
+    /// `settle_status_from_inflight` records the summary (which can happen
+    /// before the settling `TurnDone`/`TurnError` arrives — the `RunCancelled`
+    /// root handler settles early), consumed exactly once by
+    /// `settle_after_turn`.
+    pub(crate) final_status_pending: bool,
+    /// Transient flag set by the `RunCancelled` root handler so the next
+    /// `settle_status_from_inflight` → Idle transition records a cancelled
+    /// summary instead of a normal "done" one.
+    pub(crate) pending_cancel: bool,
     /// Fold state for committed thought blocks: `false` = collapsed summary
     /// lines, `true` = full text inline. Global toggle (Ctrl+O); folding is a
     /// render-time decision — `OutputLine` always carries the full text.
@@ -362,6 +430,28 @@ pub struct App {
     pub(crate) background_registry: Option<Arc<BackgroundTaskRegistry>>,
     /// Background shell tasks displayed in the task panel.
     pub(crate) background_tasks: BTreeMap<String, BackgroundTaskEntry>,
+    /// Rotating tips pool: built-in defaults, replaced when a cloud fetch
+    /// delivers a new content version. Empty when `ui.tips.enabled` is false.
+    pub(crate) tips: Vec<TipItem>,
+    /// Round-robin cursor into `tips`, advanced once per settled turn so each
+    /// Idle stretch greets the next tip. Always `< tips.len()` when non-empty.
+    pub(crate) tip_index: usize,
+    /// Session-cumulative real LLM token usage (prompt/completion), fed by
+    /// `TuiEvent::Usage`. Rendered in the status bar's activity suffix.
+    pub(crate) tokens_in: u64,
+    pub(crate) tokens_out: u64,
+    /// Tokens consumed by the current activity stretch; reset when a new
+    /// stretch begins and snapshotted into `LastTurnSummary`.
+    pub(crate) turn_tokens: u64,
+}
+
+/// `950` → "950"; `12000` → "12.0k". Cosmetic counts in titles/summaries.
+pub(crate) fn fmt_k(n: u64) -> String {
+    if n < 1000 {
+        n.to_string()
+    } else {
+        format!("{:.1}k", n as f64 / 1000.0)
+    }
 }
 
 impl Default for App {
@@ -400,11 +490,19 @@ impl App {
             notice: None,
             upgrade_hint: None,
             activity_since: None,
+            last_turn_summary: None,
+            final_status_pending: false,
+            pending_cancel: false,
             show_thoughts: false,
             result_tier: ResultTier::default(),
             thinking_since: HashMap::new(),
             background_registry: None,
             background_tasks: BTreeMap::new(),
+            tips: Vec::new(),
+            tip_index: 0,
+            tokens_in: 0,
+            tokens_out: 0,
+            turn_tokens: 0,
         }
     }
 
@@ -500,7 +598,7 @@ impl App {
             TuiEvent::TurnError(msg) => {
                 self.flush_pending();
                 self.push_error_line(&msg);
-                self.settle_after_turn(false);
+                self.settle_after_turn(TurnEnd::Error);
             }
             TuiEvent::Warning(msg) => {
                 self.flush_pending();
@@ -509,7 +607,12 @@ impl App {
             TuiEvent::Lifecycle(snap) => self.apply_lifecycle_snapshot(&snap),
             TuiEvent::TurnDone => {
                 self.flush_pending();
-                self.settle_after_turn(true);
+                self.settle_after_turn(TurnEnd::Done);
+            }
+            TuiEvent::SystemMessage(msg) => {
+                self.flush_pending();
+                self.push_system(&msg);
+                self.settle_after_turn(TurnEnd::Command);
             }
             TuiEvent::UpdateAvailable { version, .. } => {
                 // Channel-aware: brew/npm/cargo own their upgrades, standalone
@@ -518,12 +621,25 @@ impl App {
                 self.upgrade_hint = Some(format!("⬆ phimint {version} available - run: {cmd}"));
                 tracing::info!(version = %version, "upgrade available");
             }
+            TuiEvent::TipsUpdated { items } => {
+                self.set_tips(items);
+            }
+            TuiEvent::Usage {
+                input_tokens,
+                output_tokens,
+            } => {
+                self.tokens_in += input_tokens;
+                self.tokens_out += output_tokens;
+                self.turn_tokens += input_tokens + output_tokens;
+            }
         }
     }
 
-    /// Red ❌ line for turn errors and mid-turn warnings (wrapped).
+    /// Red error line for turn errors and mid-turn warnings (wrapped).
+    /// Styled via `LineKind::Error` — no emoji prefix, the color carries the
+    /// severity.
     pub(crate) fn push_error_line(&mut self, msg: &str) {
-        let err_text = format!("❌ {msg}");
+        let err_text = msg.to_string();
         for (i, line) in wrap(&err_text, self.transcript.wrap_width())
             .into_iter()
             .enumerate()
@@ -546,7 +662,13 @@ impl App {
     /// never hold the wait: "the server is up" is steady state, not pending
     /// work, and promising a completion report for it would be a lie (the
     /// confusion this caused is session 20260922_6d262d0f).
-    fn settle_after_turn(&mut self, show_done_marker: bool) {
+    ///
+    /// When the stretch does settle to Idle, the turn-final status line is
+    /// appended to the transcript (`crunched for 1m 18s - 15.0k tok - done
+    /// 20:11`, grey; `- cancelled` grey; `- error` dark red) so history shows
+    /// how every turn ended. `TurnEnd::Command` settles without a line — there was no run to
+    /// summarize.
+    fn settle_after_turn(&mut self, end: TurnEnd) {
         let (_, daemons) = self.bg_running_split();
         if self.settle_status_from_inflight() {
             if let AgentStatus::Waiting { running, .. } = &self.status {
@@ -574,15 +696,48 @@ impl App {
                     tool_state: None,
                 });
             }
-        } else if show_done_marker {
-            self.transcript.push(OutputLine {
-                spans: None,
-                original: None,
-                detail: None,
-                text: "✅ done".to_string(),
-                kind: LineKind::Done,
-                tool_state: None,
+        } else if std::mem::take(&mut self.final_status_pending) && end != TurnEnd::Command {
+            // Turn-final status line: the turn's verdict travels with the
+            // history instead of being overwritten on the status strip. A
+            // cancelled turn reads "- cancelled" even though the settlement
+            // arrives via TurnDone (RunCancelled snapshotted the summary).
+            let line = self.last_turn_summary.as_ref().map(|sum| {
+                let word = if sum.cancelled {
+                    "cancelled"
+                } else if end == TurnEnd::Error {
+                    "error"
+                } else {
+                    "done"
+                };
+                // Token readout omitted when the turn never reached the model
+                // (`0` usage), so command-only turns keep the bare format.
+                let tok = if sum.tokens > 0 {
+                    format!(" - {} tok", fmt_k(sum.tokens))
+                } else {
+                    String::new()
+                };
+                format!(
+                    "crunched for {}{} - {} {}",
+                    Self::fmt_elapsed(sum.duration.as_secs()),
+                    tok,
+                    word,
+                    sum.finished_at.format("%H:%M")
+                )
             });
+            if let Some(text) = line {
+                // Grey verdict; the failure marker is dark red so it reads as
+                // a subdued verdict, not a live error line.
+                let spans = if end == TurnEnd::Error {
+                    vec![SpanSpec {
+                        start: 0,
+                        len: text.len(),
+                        style: BannerStyle::Error,
+                    }]
+                } else {
+                    Vec::new()
+                };
+                self.transcript.push_styled_line(text, spans);
+            }
         }
         // Daemon-only settlement: the agent IS done — say so plainly, then
         // note the service without any "waiting" framing.
@@ -624,6 +779,26 @@ impl App {
             };
             true
         } else {
+            // A stretch is being settled: if one was live (activity_since set),
+            // snapshot its duration + finish time for the turn-final status
+            // line and arm its append (`final_status_pending`, consumed by the
+            // next `settle_after_turn`). `activity_since.is_some()` both guards
+            // against re-recording (settle can be called repeatedly) and
+            // against recording a synthetic turn that never really ran.
+            if let Some(started) = self.activity_since {
+                self.last_turn_summary = Some(LastTurnSummary {
+                    duration: started.elapsed(),
+                    finished_at: chrono::Local::now().time(),
+                    cancelled: self.pending_cancel,
+                    tokens: self.turn_tokens,
+                });
+                self.final_status_pending = true;
+                // A settled stretch advances the tips rotation (sequential
+                // round-robin; the guard keeps repeated settle calls from
+                // skipping entries).
+                self.rotate_tip();
+            }
+            self.pending_cancel = false;
             self.status = AgentStatus::Idle;
             self.activity_since = None;
             self.sub_agents.clear();
@@ -648,7 +823,7 @@ impl App {
 
     /// The assistant's last reply as plain text: every committed `Normal` line
     /// since the last user turn, plus any reply still streaming. Tool calls,
-    /// tool results, plan lines and the `✅ done` marker are excluded — this is
+    /// tool results, plan lines and the done marker are excluded — this is
     /// the prose the user most often wants to grab (e.g. a URL the AI printed).
     pub fn last_reply_text(&self) -> String {
         let mut lines: Vec<String> = Vec::new();
@@ -808,6 +983,47 @@ impl App {
     /// Inject the loaded skill summaries (called once at startup from `run_tui`).
     pub fn set_skill_summaries(&mut self, summaries: Vec<(String, String)>) {
         self.skill_summaries = summaries;
+    }
+
+    // ── Tips ───────────────────────────────────────────────────────────────
+
+    /// How long an active stretch runs before the tips line appears under it
+    /// (long actions get a tip too, Idle always shows one).
+    const TIP_ACTIVITY_THRESHOLD: Duration = Duration::from_secs(3);
+
+    /// Replace the tips pool (startup wiring and cloud refresh).
+    pub fn set_tips(&mut self, tips: Vec<TipItem>) {
+        self.tips = tips;
+        self.tip_index = 0;
+    }
+
+    /// The tip shown right now (round-robin over the pool).
+    pub(crate) fn current_tip(&self) -> Option<&TipItem> {
+        if self.tips.is_empty() {
+            return None;
+        }
+        self.tips.get(self.tip_index % self.tips.len())
+    }
+
+    /// Advance to the next tip (round-robin). Called once per settled turn so
+    /// the next Idle stretch greets a fresh tip without repeats within a pass.
+    pub(crate) fn rotate_tip(&mut self) {
+        if !self.tips.is_empty() {
+            self.tip_index = (self.tip_index + 1) % self.tips.len();
+        }
+    }
+
+    /// Whether the tips line is on screen: always at Idle; an active
+    /// Running/Waiting stretch only after [`Self::TIP_ACTIVITY_THRESHOLD`].
+    pub(crate) fn tip_visible(&self) -> bool {
+        if self.tips.is_empty() {
+            return false;
+        }
+        if !self.is_active() {
+            return true;
+        }
+        self.activity_since
+            .is_some_and(|t| t.elapsed() >= Self::TIP_ACTIVITY_THRESHOLD)
     }
 
     /// The active skill picker, if open.
@@ -972,6 +1188,14 @@ impl App {
     pub(crate) fn begin_activity(&mut self) {
         if self.activity_since.is_none() {
             self.activity_since = Some(std::time::Instant::now());
+            // A brand-new stretch means the turn is leaving Idle — drop the
+            // previous turn's done-summary (it is replaced by live status) and
+            // disarm its final-status append in case the settlement event was
+            // dropped on a dead channel (no stale line at the next turn end).
+            self.last_turn_summary = None;
+            self.pending_cancel = false;
+            self.final_status_pending = false;
+            self.turn_tokens = 0;
         }
     }
 
@@ -993,13 +1217,21 @@ impl App {
         }
     }
 
-    /// ` · 42s`-style elapsed readout for the active stretch (empty when idle).
-    /// Rounded up so a just-started stretch doesn't read as "0s".
-    fn elapsed_suffix(&self) -> String {
-        match self.activity_since {
+    /// ` - 42s - 15.0k tok`-style readout for the active stretch: elapsed
+    /// time (rounded up so a just-started stretch doesn't read as "0s") plus
+    /// the session's cumulative token usage. Empty when idle and no usage
+    /// has arrived. ASCII separators only: `·` renders double-width in CJK
+    /// fonts (render_tests CJK width guard).
+    pub(crate) fn activity_suffix(&self) -> String {
+        let mut suffix = match self.activity_since {
             Some(t) => format!(" - {}", Self::fmt_elapsed(t.elapsed().as_secs() + 1)),
             None => String::new(),
+        };
+        let total = self.tokens_in + self.tokens_out;
+        if total > 0 {
+            suffix.push_str(&format!(" - {} tok", fmt_k(total)));
         }
+        suffix
     }
 
     /// Status-strip text for tool calls whose arguments are still streaming
@@ -1028,21 +1260,23 @@ impl App {
         }
     }
 
-    /// The status-bar text for the current state (§9.6).
+    /// The process-status line for the current state (§9.6) — the layer above
+    /// the composer (Claude Code style), below the transcript. Wording follows
+    /// the bounded/daemon split: bounded jobs carry a completion promise
+    /// (auto-report when done), daemons are merely counted as running services
+    /// — the two must never share a "waiting for completion" promise.
     ///
-    /// Wording follows the bounded/daemon split: bounded jobs carry a
-    /// completion promise (auto-report when done), daemons are merely counted
-    /// as running services — the two must never share a "waiting for
-    /// completion" promise.
+    /// A finished turn's verdict is not shown here: it is the turn-final
+    /// status line appended to the transcript. At Idle the ambient
+    /// notices show; key hints rotate in the tips, and the upgrade hint
+    /// lives on the bottom status bar's right slot.
     pub fn status_line(&self) -> String {
         match &self.status {
             AgentStatus::Idle => {
-                let base = if let Some(u) = &self.upgrade_hint {
-                    u.clone()
-                } else if let Some(n) = &self.notice {
+                let base = if let Some(n) = &self.notice {
                     n.clone()
                 } else {
-                    "Idle - Enter send | Shift+Enter newline | Ctrl+Y copy | wheel / fn+Up/Down scroll | Ctrl+C quit".to_string()
+                    "Idle".to_string()
                 };
                 let (_, daemons) = self.bg_running_split();
                 if daemons > 0 {
@@ -1057,17 +1291,17 @@ impl App {
                     (_, 0) => format!(
                         "{} waiting for sub-agents ({running} running)...{} auto-continue when results arrive",
                         self.spinner_char(),
-                        self.elapsed_suffix()
+                        self.activity_suffix()
                     ),
                     (0, _) => format!(
                         "{} waiting for background tasks ({bounded} running)...{} auto-report when done",
                         self.spinner_char(),
-                        self.elapsed_suffix()
+                        self.activity_suffix()
                     ),
                     (_, _) => format!(
                         "{} waiting for sub-agents ({running}) + background tasks ({bounded})...{} auto-continue when done",
                         self.spinner_char(),
-                        self.elapsed_suffix()
+                        self.activity_suffix()
                     ),
                 };
                 if daemons > 0 {
@@ -1080,7 +1314,7 @@ impl App {
                     format!(
                         "{} thinking...{} (Ctrl+C cancel)",
                         self.spinner_char(),
-                        self.elapsed_suffix()
+                        self.activity_suffix()
                     )
                 }
                 Phase::Streaming => match self.draft_status_text() {
@@ -1090,12 +1324,12 @@ impl App {
                     Some(draft) => format!(
                         "{} {draft}{} (Ctrl+C cancel)",
                         self.spinner_char(),
-                        self.elapsed_suffix()
+                        self.activity_suffix()
                     ),
                     None => format!(
                         "{} streaming...{} (Ctrl+C cancel)",
                         self.spinner_char(),
-                        self.elapsed_suffix()
+                        self.activity_suffix()
                     ),
                 },
                 Phase::ToolCall { tool } => match &self.live_progress {
@@ -1103,14 +1337,14 @@ impl App {
                         format!(
                             "{} 🔧 {tool}: {p}{}",
                             self.spinner_char(),
-                            self.elapsed_suffix()
+                            self.activity_suffix()
                         )
                     }
                     None => {
                         format!(
                             "{} 🔧 {tool}{} (Ctrl+C cancel)",
                             self.spinner_char(),
-                            self.elapsed_suffix()
+                            self.activity_suffix()
                         )
                     }
                 },

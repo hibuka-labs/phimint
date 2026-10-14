@@ -234,10 +234,11 @@ async fn judge_degradation_renders_red_line_end_to_end() {
     let line = app.transcript.output.last().expect("line appended");
     assert_eq!(line.kind, LineKind::Error, "warning renders as red line");
     // The event carries the cause-specific English fact (asserted above); the
-    // TUI shows the product-layer user copy — no "judge" jargon on screen.
+    // TUI shows the product-layer user copy — no "judge" jargon on screen. The
+    // severity is the red `LineKind::Error` styling, not an emoji prefix.
     assert_eq!(
-        line.text, "❌ Answer accepted without verification.",
-        "red line = error glyph + user-facing copy"
+        line.text, "Answer accepted without verification.",
+        "red line = user-facing copy; color carries the severity"
     );
     assert!(
         matches!(app.status, AgentStatus::Running { .. }),
