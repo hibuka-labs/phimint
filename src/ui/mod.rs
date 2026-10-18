@@ -28,6 +28,8 @@ pub mod render;
 mod run;
 pub mod session_state;
 mod task_panel;
+#[cfg(unix)]
+mod term_guard;
 mod theme;
 
 pub use run::run_tui;

@@ -1,0 +1,109 @@
+{
+  "entries": [
+    {
+      "name": "notion",
+      "title": "Notion",
+      "description": "Notion workspace — pages, databases, comments",
+      "required_env": ["NOTION_TOKEN"],
+      "transport": {
+        "type": "stdio",
+        "command": "npx",
+        "args": ["-y", "@notionhq/notion-mcp-server"],
+        "env": { "NOTION_TOKEN": "${ENV:NOTION_TOKEN}" }
+      }
+    },
+    {
+      "name": "figma",
+      "title": "Figma",
+      "description": "Figma design files — read frames, components, comments",
+      "required_env": ["FIGMA_TOKEN"],
+      "transport": {
+        "type": "stdio",
+        "command": "npx",
+        "args": ["-y", "figma-developer-mcp", "--stdio"],
+        "env": { "FIGMA_API_KEY": "${ENV:FIGMA_TOKEN}" }
+      }
+    },
+    {
+      "name": "github",
+      "title": "GitHub",
+      "description": "GitHub repos — issues, PRs, code search",
+      "required_env": ["GITHUB_PERSONAL_ACCESS_TOKEN"],
+      "transport": {
+        "type": "stdio",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-github"],
+        "env": {
+          "GITHUB_PERSONAL_ACCESS_TOKEN": "${ENV:GITHUB_PERSONAL_ACCESS_TOKEN}"
+        }
+      }
+    },
+    {
+      "name": "slack",
+      "title": "Slack",
+      "description": "Slack — channels, messages, users",
+      "required_env": ["SLACK_BOT_TOKEN", "SLACK_TEAM_ID"],
+      "transport": {
+        "type": "stdio",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-slack"],
+        "env": {
+          "SLACK_BOT_TOKEN": "${ENV:SLACK_BOT_TOKEN}",
+          "SLACK_TEAM_ID": "${ENV:SLACK_TEAM_ID}"
+        }
+      }
+    },
+    {
+      "name": "postgres",
+      "title": "PostgreSQL",
+      "description": "PostgreSQL — read-only schema introspection and queries",
+      "required_env": ["POSTGRES_URL"],
+      "transport": {
+        "type": "stdio",
+        "command": "npx",
+        "args": [
+          "-y",
+          "@modelcontextprotocol/server-postgres",
+          "${ENV:POSTGRES_URL}"
+        ]
+      }
+    },
+    {
+      "name": "filesystem",
+      "title": "Filesystem",
+      "description": "Extra filesystem roots beyond the project (read/write)",
+      "required_env": [],
+      "transport": {
+        "type": "stdio",
+        "command": "npx",
+        "args": [
+          "-y",
+          "@modelcontextprotocol/server-filesystem",
+          "${ENV:HOME}"
+        ]
+      }
+    },
+    {
+      "name": "memory",
+      "title": "Memory",
+      "description": "Long-term memory knowledge graph (persistent)",
+      "required_env": [],
+      "transport": {
+        "type": "stdio",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-memory"]
+      }
+    },
+    {
+      "name": "puppeteer",
+      "title": "Puppeteer",
+      "description": "Browser automation — screenshots, page content, clicks",
+      "required_env": [],
+      "transport": {
+        "type": "stdio",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-puppeteer"]
+      }
+    }
+  ]
+}

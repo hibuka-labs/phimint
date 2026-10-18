@@ -20,15 +20,43 @@
 //! startup mode, not a Shift+Tab stop). Reads always pass: `ask` gates
 //! mutations, not `ls`.
 //!
+//! # External tools (tool-socket P1): the ledger is above the mode
+//!
+//! Identity keys with a `mcp.` / `script.` / `plugin.` prefix are **never**
+//! short-circuited by the mode switch. The standing tier lives in
+//! `~/.phimint/approvals.json` (the *approval ledger*) and decides first
+//! (contract: `agent-works/docs/tool-contract.md` §2):
+//!
+//! | tier \\ mode | auto | ask | deny |
+//! |---|---|---|---|
+//! | `ask each time` (default) | **prompt** | prompt | deny (brake) |
+//! | `always allow` | allow | allow | deny (brake) |
+//! | `deny` | deny | deny | deny |
+//!
+//! Three hard rules:
+//! 1. **fail-closed** — `classify_request`'s fallback answers "confirm" for
+//!    the three prefixes, and `auto` never auto-approves them;
+//! 2. **single memory owner** — `AllowAlways` is recorded only in the ledger;
+//!    the engine's `action_key` cache (builtin precise actions) gets the
+//!    decision demoted to `AllowOnce` ([`engine_decision_for_external`]);
+//! 3. **SC6 test criterion** — an `ask each time` external tool call prompts even
+//!    under Shift+Tab=auto.
+//!
 //! History: phimint previously wired *only* a handler (`Auto`/`DenyAll`), so
 //! `--approval deny` was a silent no-op — with no policy, `process_approval`
 //! short-circuits and never consults the handler. The policy is what makes
 //! deny real, which is why the live gate always carries one.
 
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use async_trait::async_trait;
+use phi_agent::approval_ledger::{
+    ApprovalLedger, ApprovalMode as LedgerMode, ApprovalTier, ExternalGate,
+    engine_decision_for_external, gate_decision, is_external_identity_key,
+};
 use phi_agent::{
     AgentResult, ApprovalDecision, ApprovalHandler, ApprovalRequest, QueuedApprovalHandler,
     RiskLevel, ToolPolicy,
@@ -137,6 +165,17 @@ fn describe_write(tool_name: &str, args: &Value) -> String {
     }
 }
 
+/// Description of an external (three-prefix) tool call for the approval prompt.
+///
+/// The confirmation dialog must show the full picture (name + args) — a bare
+/// name is not an approval surface (contract: tool-contract.md §2).
+fn describe_external(tool_name: &str, args: &Value) -> String {
+    format!(
+        "External tool `{tool_name}` requests a call:\n{}",
+        serde_json::to_string_pretty(args).unwrap_or_else(|_| args.to_string())
+    )
+}
+
 /// Truncate a command for the approval title (keep it scannable).
 fn short_title(command: &str) -> String {
     let trimmed = command.trim();
@@ -202,6 +241,24 @@ fn classify_request(tool_name: &str, args: &Value) -> Option<ApprovalRequest> {
                     source: None,
                 }),
             }
+        }
+
+        _ if is_external_identity_key(tool_name) => {
+            // Three prefixes (`mcp.` / `script.` / `plugin.`): fail-closed —
+            // the fallback must answer "confirm", never auto-approve. The
+            // live gate consults the ledger *before* this classifier, so this
+            // arm is the last line of defence (contract hard rule #1).
+            Some(ApprovalRequest {
+                title: tool_name.to_string(),
+                message: describe_external(tool_name, args),
+                // Carrier: the identity key. `action_key` is what the handler
+                // matches on and what the ledger remembers; it must NOT leak
+                // into the engine's `AllowAlways` cache (demoted in approve()).
+                action_key: Some(tool_name.to_string()),
+                risk_level: RiskLevel::Sensitive,
+                raw: Some(args.clone()),
+                source: None,
+            })
         }
 
         _ => None,
@@ -292,27 +349,148 @@ impl ApprovalModeSwitch {
 
 // ── The live gate: policy + handler behind one switch ───────────────────────
 
+/// The approval ledger behind the gate: standing tiers for external tools.
+///
+/// Memory owner for `always allow` (contract hard rule #2) — the engine's
+/// `action_key` cache never sees `AllowAlways` for external keys. Storage is
+/// injected: `~/.phimint/approvals.json` is the product's choice (`main.rs`);
+/// `None` keeps it in-memory (tests).
+struct LedgerStore {
+    path: Option<PathBuf>,
+    ledger: Mutex<ApprovalLedger>,
+}
+
+impl LedgerStore {
+    /// Load from the injected path. Missing file = fresh ledger. A corrupt
+    /// file is moved aside (`approvals.json.corrupt`) and a fresh ledger
+    /// starts — never silently overwrite a user's standing approvals, and
+    /// never refuse to boot over a bad JSON either.
+    fn load(path: Option<PathBuf>) -> Self {
+        let ledger = match &path {
+            Some(p) => match ApprovalLedger::load(p) {
+                Ok(ledger) => ledger,
+                Err(e) => {
+                    let aside = p.with_extension("json.corrupt");
+                    eprintln!(
+                        "warning: approvals ledger {} is unreadable ({e}); moving it to {}",
+                        p.display(),
+                        aside.display()
+                    );
+                    let _ = std::fs::rename(p, &aside);
+                    ApprovalLedger::new()
+                }
+            },
+            None => ApprovalLedger::new(),
+        };
+        Self {
+            path,
+            ledger: Mutex::new(ledger),
+        }
+    }
+
+    fn tier_of(&self, identity_key: &str) -> ApprovalTier {
+        self.ledger
+            .lock()
+            .map(|l| l.tier_of(identity_key))
+            .unwrap_or(ApprovalTier::Ask) // lock poisoned → fail-closed direction
+    }
+
+    /// Three-button record: only `[always allow]` changes the tier, then persists.
+    fn record(&self, identity_key: &str, decision: &ApprovalDecision) {
+        let Ok(mut ledger) = self.ledger.lock() else {
+            return;
+        };
+        if ledger.record_decision(identity_key, decision) {
+            self.persist(&ledger);
+        }
+    }
+
+    /// Direct tier set (`/tools` management surface), persisted.
+    fn set_tier(&self, identity_key: &str, tier: ApprovalTier) {
+        let Ok(mut ledger) = self.ledger.lock() else {
+            return;
+        };
+        ledger.set_tier(identity_key, tier);
+        self.persist(&ledger);
+    }
+
+    /// Drop one entry (`/tools remove <key>`: no orphan memories), persisted.
+    fn remove(&self, identity_key: &str) {
+        let Ok(mut ledger) = self.ledger.lock() else {
+            return;
+        };
+        if ledger.remove(identity_key) {
+            self.persist(&ledger);
+        }
+    }
+
+    /// Drop a prefix (`plugin remove`: `plugin.{name}.*`), persisted.
+    #[allow(dead_code)] // wired by P3 `plugin remove`
+    fn remove_prefix(&self, prefix: &str) {
+        let Ok(mut ledger) = self.ledger.lock() else {
+            return;
+        };
+        if ledger.remove_prefix(prefix) > 0 {
+            self.persist(&ledger);
+        }
+    }
+
+    fn persist(&self, ledger: &ApprovalLedger) {
+        let Some(path) = &self.path else { return };
+        if let Err(e) = ledger.save(path) {
+            eprintln!(
+                "warning: cannot save approvals ledger {}: {e}",
+                path.display()
+            );
+        }
+    }
+}
+
+/// The identity key of an external-tool request, if this is one.
+///
+/// `action_key` carries the identity key for external tools (see
+/// `classify_request`); the title is a fallback. Builtins use scoped keys
+/// (`write_file:{path}`, `execute_command:{cmd}`) which can never match a
+/// three-prefix key.
+fn external_identity_of(request: &ApprovalRequest) -> Option<String> {
+    for candidate in request
+        .action_key
+        .as_deref()
+        .into_iter()
+        .chain([&*request.title])
+    {
+        if is_external_identity_key(candidate) {
+            return Some(candidate.to_string());
+        }
+    }
+    None
+}
+
 /// phimint's single approval wiring: one object implementing both layers.
 ///
 /// Both layers consult the same [`ApprovalModeSwitch`], so Shift+Tab changes
 /// the next tool call with no rewiring and no queue rebuild. The queue is
 /// created once at startup and lives for the whole TUI lifetime — in `auto`
-/// mode nothing is ever pushed to it, in `ask` mode every prompt goes through
-/// it. Sub-agents inherit this gate via the parent-policy delegation chain
-/// (see `agent.rs`), so they follow the live mode too.
+/// mode nothing is ever pushed to it (except external tools, which prompt
+/// anyway), in `ask` mode every prompt goes through it. Sub-agents inherit
+/// this gate via the parent-policy delegation chain (see `agent.rs`), so they
+/// follow the live mode too.
 pub struct LiveApprovalGate {
     mode: Arc<ApprovalModeSwitch>,
     queued: QueuedApprovalHandler,
+    ledger: LedgerStore,
 }
 
 impl LiveApprovalGate {
     pub fn new(
         mode: Arc<ApprovalModeSwitch>,
         queue_tx: mpsc::UnboundedSender<ApprovalItem>,
+        ledger_path: Option<PathBuf>,
     ) -> Self {
         Self {
             mode,
             queued: QueuedApprovalHandler::new(queue_tx),
+            ledger: LedgerStore::load(ledger_path),
         }
     }
 
@@ -320,11 +498,74 @@ impl LiveApprovalGate {
     pub fn mode_switch(&self) -> Arc<ApprovalModeSwitch> {
         Arc::clone(&self.mode)
     }
+
+    fn ledger_mode(&self) -> LedgerMode {
+        match self.mode.get() {
+            RuntimeApprovalMode::Auto => LedgerMode::Auto,
+            RuntimeApprovalMode::Ask => LedgerMode::Ask,
+            RuntimeApprovalMode::Deny => LedgerMode::Deny,
+        }
+    }
+
+    /// Tier of an external identity key (for `/tools` and tests).
+    pub fn tier_of(&self, identity_key: &str) -> ApprovalTier {
+        self.ledger.tier_of(identity_key)
+    }
+
+    /// Set a standing tier (`/tools` management: ask each time / always allow / deny).
+    pub fn set_tier(&self, identity_key: &str, tier: ApprovalTier) {
+        self.ledger.set_tier(identity_key, tier);
+    }
+
+    /// `/tools remove <key>`: drop the tool's ledger entry (no orphans).
+    pub fn remove_ledger_entry(&self, identity_key: &str) {
+        self.ledger.remove(identity_key);
+    }
+
+    /// `plugin remove`: drop every `plugin.{name}.*` entry.
+    pub fn remove_ledger_prefix(&self, prefix: &str) {
+        self.ledger.remove_prefix(prefix);
+    }
+
+    /// Human review before install (plugin install / agent-written tools):
+    /// **always pops the full picture**, regardless of the approval tier and
+    /// the mode switch, and writes no ledger entry (an install is not a tool
+    /// call; there is no reusable tier).
+    /// It goes through the very same TUI queue as tool approval (the same
+    /// popup, y/n).
+    ///
+    /// Security baseline: any tool/plugin definition written by an agent is
+    /// never executed and never "auto-allowed" before a human confirms the
+    /// entry's full picture — so the mode is ignored here; `auto` pops too.
+    pub async fn confirm_always(&self, request: ApprovalRequest) -> ApprovalDecision {
+        let cancel = tokio_util::sync::CancellationToken::new();
+        // Queue disconnected (UI exited) → Cancelled → always recorded as a
+        // decline (fail-closed).
+        self.queued
+            .approve(request, cancel)
+            .await
+            .unwrap_or(ApprovalDecision::Deny)
+    }
 }
 
 #[async_trait]
 impl ToolPolicy for LiveApprovalGate {
     async fn evaluate_approval(&self, tool_name: &str, args: &Value) -> Option<ApprovalRequest> {
+        // External tools: the ledger decides *before* the mode switch (SC6 —
+        // `ask each time` prompts even in auto). deny is the global brake.
+        if is_external_identity_key(tool_name) {
+            return match gate_decision(self.ledger.tier_of(tool_name), self.ledger_mode()) {
+                ExternalGate::Allow => None,
+                ExternalGate::Prompt | ExternalGate::Deny => Some(ApprovalRequest {
+                    title: tool_name.to_string(),
+                    message: describe_external(tool_name, args),
+                    action_key: Some(tool_name.to_string()),
+                    risk_level: RiskLevel::Sensitive,
+                    raw: Some(args.clone()),
+                    source: None,
+                }),
+            };
+        }
         match self.mode.get() {
             // auto: nothing needs approval — the handler is never consulted.
             RuntimeApprovalMode::Auto => None,
@@ -343,6 +584,20 @@ impl ApprovalHandler for LiveApprovalGate {
         request: ApprovalRequest,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> AgentResult<ApprovalDecision> {
+        // External tools: three-button prompt (or ledger tier), even in auto.
+        if let Some(key) = external_identity_of(&request) {
+            return match gate_decision(self.ledger.tier_of(&key), self.ledger_mode()) {
+                ExternalGate::Deny => Ok(ApprovalDecision::Deny), // tier=deny or brake
+                ExternalGate::Allow => Ok(ApprovalDecision::AllowOnce), // tier=always allow
+                ExternalGate::Prompt => {
+                    let decision = self.queued.approve(request, cancel_token).await?;
+                    self.ledger.record(&key, &decision);
+                    // Single memory owner: `AllowAlways` is the ledger's; the
+                    // engine's action_key cache must not double-write it.
+                    Ok(engine_decision_for_external(decision))
+                }
+            };
+        }
         match self.mode.get() {
             // Defensive: the policy auto-passes in auto mode. If a request
             // still arrives (mode flipped between evaluate and approve), allow
@@ -356,10 +611,15 @@ impl ApprovalHandler for LiveApprovalGate {
 
 // ── Wiring ──────────────────────────────────────────────────────────────────
 
-/// `build_live_approval` output: handler, policy, the TUI-side queue receiver,
-/// and the shared mode switch (for Shift+Tab + the status-bar badge).
+/// `build_live_approval` output: the gate, the TUI-side queue receiver, and the
+/// shared mode switch (for Shift+Tab + the status-bar badge).
+///
+/// The handler slot is the concrete [`LiveApprovalGate`] (not `dyn`) so callers
+/// keep the ledger-management surface (`tier_of` / `set_tier` / `remove_*` for
+/// `/tools` and `plugin remove`); it coerces to `Arc<dyn ApprovalHandler>` at
+/// `agent::build`.
 pub type LiveApprovalBuild = (
-    Arc<dyn ApprovalHandler>,
+    Arc<LiveApprovalGate>,
     Option<Arc<dyn ToolPolicy>>,
     mpsc::UnboundedReceiver<ApprovalItem>,
     Arc<ApprovalModeSwitch>,
@@ -369,14 +629,21 @@ pub type LiveApprovalBuild = (
 ///
 /// The gate (policy + handler + queue) is built for **every** mode — `auto`
 /// just runs with the switch turned to Auto, where the policy auto-passes
-/// everything. Only the switch's initial value differs; Shift+Tab flips it
-/// from there.
-pub fn build_live_approval(initial: &str) -> LiveApprovalBuild {
+/// everything builtin. Only the switch's initial value differs; Shift+Tab
+/// flips it from there. External tools are ledger-gated in every mode.
+///
+/// `ledger_path` is injected (`~/.phimint/approvals.json` from `main.rs`).
+/// `None` keeps the ledger in-memory — tests only.
+pub fn build_live_approval(initial: &str, ledger_path: Option<PathBuf>) -> LiveApprovalBuild {
     let mode = Arc::new(ApprovalModeSwitch::new(RuntimeApprovalMode::parse(initial)));
     let (queue_tx, queue_rx) = mpsc::unbounded_channel();
-    let gate = Arc::new(LiveApprovalGate::new(Arc::clone(&mode), queue_tx));
+    let gate = Arc::new(LiveApprovalGate::new(
+        Arc::clone(&mode),
+        queue_tx,
+        ledger_path,
+    ));
     (
-        gate.clone() as Arc<dyn ApprovalHandler>,
+        Arc::clone(&gate),
         Some(gate as Arc<dyn ToolPolicy>),
         queue_rx,
         mode,
@@ -584,7 +851,7 @@ mod tests {
             ("deny", RuntimeApprovalMode::Deny),
             ("bogus", RuntimeApprovalMode::Auto),
         ] {
-            let (_handler, policy, _rx, switch) = build_live_approval(arg);
+            let (_handler, policy, _rx, switch) = build_live_approval(arg, None);
             assert!(policy.is_some(), "{arg}: the live gate must carry a policy");
             assert_eq!(switch.get(), want, "{arg}: initial mode");
         }
@@ -592,7 +859,7 @@ mod tests {
 
     #[tokio::test]
     async fn auto_mode_policy_passes_everything() {
-        let (_handler, policy, _rx, switch) = build_live_approval("auto");
+        let (_handler, policy, _rx, switch) = build_live_approval("auto", None);
         let policy = policy.expect("policy present");
         assert!(
             policy
@@ -624,7 +891,7 @@ mod tests {
 
     #[tokio::test]
     async fn ask_mode_queues_prompt_and_roundtrips() {
-        let (handler, _policy, mut queue_rx, switch) = build_live_approval("ask");
+        let (handler, _policy, mut queue_rx, switch) = build_live_approval("ask", None);
         assert_eq!(switch.get(), RuntimeApprovalMode::Ask);
 
         let cancel = tokio_util::sync::CancellationToken::new();
@@ -659,7 +926,7 @@ mod tests {
 
     #[tokio::test]
     async fn deny_mode_denies_without_queueing() {
-        let (handler, _policy, mut queue_rx, _switch) = build_live_approval("deny");
+        let (handler, _policy, mut queue_rx, _switch) = build_live_approval("deny", None);
         let cancel = tokio_util::sync::CancellationToken::new();
         let decision = handler
             .approve(
@@ -679,6 +946,245 @@ mod tests {
         assert!(
             queue_rx.try_recv().is_err(),
             "deny must decide locally, never prompt"
+        );
+    }
+
+    // ── External tools: the ledger is above the mode (tool-socket P1) ──────
+
+    fn external_request(key: &str) -> ApprovalRequest {
+        ApprovalRequest {
+            title: key.to_string(),
+            message: describe_external(key, &serde_json::json!({"q": "x"})),
+            action_key: Some(key.to_string()),
+            risk_level: RiskLevel::Sensitive,
+            raw: Some(serde_json::json!({"q": "x"})),
+            source: None,
+        }
+    }
+
+    /// SC6 test criterion (contract §2 hard rule 3): an external tool call at
+    /// the `ask each time` tier **still prompts** under Shift+Tab=auto.
+    #[tokio::test]
+    async fn sc6_ask_tier_external_prompts_even_in_auto_mode() {
+        let (_handler, policy, _rx, switch) = build_live_approval("auto", None);
+        let policy = policy.expect("policy present");
+        for key in [
+            "mcp.figma.get_file",
+            "script.deploy",
+            "plugin.my-tools.search",
+        ] {
+            let req = policy
+                .evaluate_approval(key, &serde_json::json!({"q": "x"}))
+                .await;
+            assert!(req.is_some(), "{key} must prompt in auto mode");
+            let req = req.unwrap();
+            assert_eq!(
+                req.action_key.as_deref(),
+                Some(key),
+                "{key}: key is the carrier"
+            );
+        }
+        // Builtin writes still auto-pass in auto mode (unchanged behaviour).
+        assert!(
+            policy
+                .evaluate_approval("write_file", &serde_json::json!({"path": "a"}))
+                .await
+                .is_none()
+        );
+        assert_eq!(switch.get(), RuntimeApprovalMode::Auto);
+    }
+
+    /// Three-button tier migration + single memory owner: `[allow always]`
+    /// only records to the ledger; the engine only ever sees `AllowOnce`
+    /// (the action_key cache must not double-write).
+    #[tokio::test]
+    async fn always_allow_records_ledger_and_demotes_engine_decision() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("approvals.json");
+        let (handler, _policy, mut queue_rx, _switch) =
+            build_live_approval("ask", Some(path.clone()));
+
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let handle = tokio::spawn({
+            let handler = handler.clone();
+            let cancel = cancel.clone();
+            async move {
+                handler
+                    .approve(external_request("script.deploy"), cancel)
+                    .await
+            }
+        });
+        let item = queue_rx.recv().await.expect("external request must prompt");
+        item.decision_tx
+            .send(ApprovalDecision::AllowAlways)
+            .expect("UI answers");
+        let decision = handle.await.expect("task").expect("approve");
+        assert_eq!(
+            decision,
+            ApprovalDecision::AllowOnce,
+            "AllowAlways must not reach the engine cache"
+        );
+
+        // The ledger remembers "always allow" and persists it
+        assert_eq!(handler.tier_of("script.deploy"), ApprovalTier::AlwaysAllow);
+        let saved = ApprovalLedger::load(&path).expect("ledger persisted");
+        assert_eq!(saved.tier_of("script.deploy"), ApprovalTier::AlwaysAllow);
+
+        // Afterwards it also passes in auto mode (the ledger goes before the
+        // mode, AlwaysAllow → Allow)
+        let (auto_handler, auto_policy, _rx, _switch) =
+            build_live_approval("auto", Some(path.clone()));
+        assert!(
+            auto_policy
+                .expect("policy")
+                .evaluate_approval("script.deploy", &serde_json::json!({}))
+                .await
+                .is_none(),
+            "tier=always allow must pass in auto"
+        );
+        assert_eq!(
+            auto_handler.tier_of("script.deploy"),
+            ApprovalTier::AlwaysAllow,
+            "tier survives a reload"
+        );
+    }
+
+    /// `[allow once]` / `[deny]` do not change the tier; it must ask again
+    /// next time.
+    #[tokio::test]
+    async fn once_and_deny_this_leave_tier_untouched() {
+        let (handler, policy, mut queue_rx, _switch) = build_live_approval("auto", None);
+        let policy = policy.expect("policy present");
+
+        for decision_out in [ApprovalDecision::AllowOnce, ApprovalDecision::Deny] {
+            let cancel = tokio_util::sync::CancellationToken::new();
+            let handle = tokio::spawn({
+                let handler = handler.clone();
+                let cancel = cancel.clone();
+                async move {
+                    handler
+                        .approve(external_request("mcp.notion.search"), cancel)
+                        .await
+                }
+            });
+            let item = queue_rx.recv().await.expect("must prompt even in auto");
+            item.decision_tx
+                .send(decision_out.clone())
+                .expect("UI answers");
+            let decision = handle.await.expect("task").expect("approve");
+            assert_eq!(decision, decision_out, "decision passes through");
+            assert_eq!(handler.tier_of("mcp.notion.search"), ApprovalTier::Ask);
+            assert!(
+                policy
+                    .evaluate_approval("mcp.notion.search", &serde_json::json!({}))
+                    .await
+                    .is_some(),
+                "tier unchanged → prompt again"
+            );
+        }
+    }
+
+    /// Shift+Tab=deny is the global brake; it overrides the ledger's
+    /// "always allow".
+    #[tokio::test]
+    async fn deny_brake_overrides_standing_allow() {
+        let (handler, policy, mut queue_rx, switch) = build_live_approval("ask", None);
+        let policy = policy.expect("policy present");
+        handler.set_tier("plugin.my-tools.search", ApprovalTier::AlwaysAllow);
+
+        switch.set(RuntimeApprovalMode::Deny);
+        assert!(
+            policy
+                .evaluate_approval("plugin.my-tools.search", &serde_json::json!({}))
+                .await
+                .is_some(),
+            "brake: still surfaces a request"
+        );
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let decision = handler
+            .approve(external_request("plugin.my-tools.search"), cancel)
+            .await
+            .expect("approve");
+        assert_eq!(decision, ApprovalDecision::Deny);
+        assert!(queue_rx.try_recv().is_err(), "brake decides locally");
+    }
+
+    /// Ledger tier `deny`: no popup, straight rejection (the /tools
+    /// permanent-deny path).
+    #[tokio::test]
+    async fn ledger_tier_deny_rejects_without_prompt() {
+        let (handler, policy, mut queue_rx, _switch) = build_live_approval("auto", None);
+        let policy = policy.expect("policy present");
+        handler.set_tier("script.deploy", ApprovalTier::Deny);
+
+        assert!(
+            policy
+                .evaluate_approval("script.deploy", &serde_json::json!({}))
+                .await
+                .is_some()
+        );
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let decision = handler
+            .approve(external_request("script.deploy"), cancel)
+            .await
+            .expect("approve");
+        assert_eq!(decision, ApprovalDecision::Deny);
+        assert!(queue_rx.try_recv().is_err());
+    }
+
+    /// `/tools remove` / `plugin remove` ledger cleanup (no orphaned memory).
+    #[tokio::test]
+    async fn ledger_cleanup_on_remove() {
+        let (handler, _policy, _rx, _switch) = build_live_approval("auto", None);
+        handler.set_tier("script.deploy", ApprovalTier::AlwaysAllow);
+        handler.set_tier("plugin.my-tools.search", ApprovalTier::AlwaysAllow);
+        handler.set_tier("plugin.my-tools.deploy", ApprovalTier::AlwaysAllow);
+        handler.set_tier("plugin.other.search", ApprovalTier::AlwaysAllow);
+
+        handler.remove_ledger_entry("script.deploy");
+        assert_eq!(handler.tier_of("script.deploy"), ApprovalTier::Ask);
+
+        handler.remove_ledger_prefix("plugin.my-tools.");
+        assert_eq!(handler.tier_of("plugin.my-tools.search"), ApprovalTier::Ask);
+        assert_eq!(handler.tier_of("plugin.my-tools.deploy"), ApprovalTier::Ask);
+        assert_eq!(
+            handler.tier_of("plugin.other.search"),
+            ApprovalTier::AlwaysAllow,
+            "prefix cleanup must not touch other plugins"
+        );
+    }
+
+    /// Classification fallback is fail-closed: the three prefixes never fall
+    /// into `_ => None` auto-pass.
+    #[test]
+    fn classify_request_fallback_is_fail_closed_for_external() {
+        for key in [
+            "mcp.figma.get_file",
+            "script.deploy",
+            "plugin.my-tools.search",
+            // Malformed long-tail keys also land on the confirmation surface.
+            "mcp.foo",
+            "plugin.x",
+        ] {
+            let req = classify_request(key, &serde_json::json!({"a": 1}))
+                .unwrap_or_else(|| panic!("{key} must classify as needing confirmation"));
+            assert_eq!(req.action_key.as_deref(), Some(key));
+            assert!(req.message.contains(key));
+        }
+    }
+
+    /// Corrupt ledger file: move it to a .corrupt backup, never silently
+    /// overwrite it, never refuse to boot.
+    #[test]
+    fn corrupt_ledger_is_quarantined_not_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("approvals.json");
+        std::fs::write(&path, "{broken").unwrap();
+        let (handler, _policy, _rx, _switch) = build_live_approval("ask", Some(path.clone()));
+        assert_eq!(handler.tier_of("script.deploy"), ApprovalTier::Ask);
+        assert!(
+            path.with_extension("json.corrupt").exists(),
+            "the broken file must be kept aside"
         );
     }
 }

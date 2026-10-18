@@ -5,8 +5,8 @@
 
 // Modules live in the lib crate (src/lib.rs) so tests/ can exercise them.
 use phimint::{
-    agent, approval, banner, config, model_store, router, session_birthplace, session_history,
-    session_scope, skills, title_gen, ui,
+    agent, approval, banner, config, external, model_store, router, session_birthplace,
+    session_history, session_scope, skills, title_gen, ui,
 };
 
 use std::path::{Path, PathBuf};
@@ -265,18 +265,25 @@ async fn main() -> Result<()> {
     )));
     let router = Arc::new(router::PhimintRouter::new());
 
+    // Session + logging. Sessions live under `~/.phimint/sessions/<id>/`; the
+    // human-readable tracing log is `session.log`, and each turn's structured
+    // event stream (tool calls, text deltas, …) is `turn_NNN.jsonl`.
+    let base_dir = sessions_base_dir();
+
     // Approval is the live gate (see approval.rs): a policy (the gate) + a
     // handler (the decision) sharing one mode switch. The gate is built for
     // every mode — `--approval` only sets the switch's initial value, and
     // Shift+Tab flips it at runtime (status bar shows the current mode). The
     // queue receiver goes to the UI, which renders one popup at a time.
+    // The ledger (standing tiers for external tools) lives next to the
+    // sessions: `~/.phimint/approvals.json`.
     let (approval, policy, approval_rx, approval_mode) =
-        approval::build_live_approval(&cli.approval);
-
-    // Session + logging. Sessions live under `~/.phimint/sessions/<id>/`; the
-    // human-readable tracing log is `session.log`, and each turn's structured
-    // event stream (tool calls, text deltas, …) is `turn_NNN.jsonl`.
-    let base_dir = sessions_base_dir();
+        approval::build_live_approval(&cli.approval, Some(base_dir.join("approvals.json")));
+    // tool-socket P3: ExternalState's ledger gate is this same gate (the
+    // install confirmation surface reuses the same TUI approval queue, but
+    // always asks a human and ignores the tier). `agent::build` takes the
+    // approval away, so keep a copy of the Arc here.
+    let external_ledger = Arc::clone(&approval);
 
     // Cleanup expired session data (history, notes, sessions) at startup.
     cleanup_expired_data(&base_dir, cli.session_retention_days);
@@ -385,6 +392,13 @@ async fn main() -> Result<()> {
     let show_banner = cli.banner != "off";
     let version = env!("CARGO_PKG_VERSION");
 
+    // tool-socket P3: the socket board (five config surfaces merged). Loading
+    // the files is sync; the startup merge (register/connect) runs inside
+    // run_tui, where the live agent is the ToolHost.
+    let external = Arc::new(tokio::sync::Mutex::new(
+        external::state::ExternalState::load(&base_dir, &workspace, external_ledger),
+    ));
+
     ui::run_tui(
         agent,
         skill_resolver,
@@ -402,6 +416,7 @@ async fn main() -> Result<()> {
         version,
         model_store,
         router,
+        external,
         resume_messages,
         update_config,
         cli.no_update_check,

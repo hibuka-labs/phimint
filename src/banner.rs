@@ -441,7 +441,8 @@ mod tests {
         }
     }
 
-    /// 全暖约束：文字变体禁止回到中性灰（红通道领先、色散 ≥ 20）。
+    /// All-warm constraint: text variants must not fall back to neutral gray
+    /// (red channel leading, spread ≥ 20).
     #[test]
     fn text_styles_stay_warm() {
         for scheme in [ColorScheme::Dark, ColorScheme::Light] {
@@ -485,8 +486,9 @@ mod tests {
         }
     }
 
-    /// 字面 `█` → `Logo(档)`，空格 → `Default`。字符集两分零歧义，这是
-    /// 渐变分色的机制基础。
+    /// Literal `█` → `Logo(stop)`, space → `Default`. The charset splits
+    /// cleanly into the two, zero ambiguity — that is the mechanical basis
+    /// for gradient color splitting.
     #[test]
     fn wordmark_face_fill_split_by_charset() {
         for row in logo_rows() {
@@ -507,7 +509,8 @@ mod tests {
         }
     }
 
-    /// 纯文本不变式：span 合并不得改变可复制文本（copy/frame capture 依赖它）。
+    /// Plain-text invariant: span merging must not change the copyable text
+    /// (copy/frame capture depend on it).
     #[test]
     fn wordmark_row_text_is_single_space_joined_glyphs() {
         for (r, row) in logo_rows().iter().enumerate() {
@@ -520,10 +523,12 @@ mod tests {
         }
     }
 
-    /// 渐变语义：stop = 字母序号（PHIMINT 左→右 0..=6）。镜像/错位会让
-    /// 分色测试照样通过，这里把定义钉死。一个字母的字面可被空格拆成多段
-    /// run（M/N/T），故按 GLYPHS 的连续 `█` 段展开期望序列：每段 run 的
-    /// stop 都必须等于其字母序号。
+    /// Gradient semantics: stop = letter index (PHIMINT left→right 0..=6).
+    /// Mirroring/misalignment would still let the color-split test pass, so
+    /// the definition is pinned here. A letter's literal can be split by
+    /// spaces into several runs (M/N/T), so the expected sequence is expanded
+    /// over GLYPHS' contiguous `█` runs: every run's stop must equal its
+    /// letter index.
     #[test]
     fn gradient_stop_equals_letter_index_left_to_right() {
         for (r, row) in logo_rows().iter().enumerate() {
@@ -621,7 +626,8 @@ mod tests {
         );
     }
 
-    /// 字母数与渐变档数必须一致，否则 `Logo(i)` 在 release 里会被静默夹到 stop 6。
+    /// Letter count and gradient stop count must match, or `Logo(i)` gets
+    /// silently clamped to stop 6 in release builds.
     #[test]
     fn glyph_count_matches_gradient_stops() {
         assert_eq!(GLYPHS.len(), LOGO_STOPS_DARK.len());

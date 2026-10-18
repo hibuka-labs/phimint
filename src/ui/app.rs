@@ -344,6 +344,17 @@ pub struct App {
     /// Timestamp of the last "press Ctrl+C again to exit" hint. If set and
     /// within `QUIT_HINT_TIMEOUT`, a second Ctrl+C actually quits.
     pub(crate) quit_hint_at: Option<Instant>,
+    /// Selected option for the approval popup (BUG 4, final form).
+    ///
+    /// A typed letter must never decide a prompt. The first gate (500ms
+    /// isolation gap) still fired on the *first* key of a typing burst —
+    /// `anyday`'s `a` granted AllowAlways (acceptance session
+    /// 20261018_0affd119) — because a lone decision key and the first letter
+    /// of a word have the same timing signature. So the decision moved to a
+    /// commit step typing never produces: bare Enter. y/a/n only highlight a
+    /// choice here; Enter commits it. Esc does nothing (an IME cancel sends
+    /// Esc). Cleared whenever the front prompt changes.
+    pub(crate) approval_selection: Option<ApprovalDecision>,
     /// `@` mention picker, open while the user is choosing a path.
     pub(crate) mention: Option<MentionCompleter>,
     /// `/` skill picker, open while the user is choosing a skill.
@@ -480,6 +491,7 @@ impl App {
             sub_agent_transcripts: BTreeMap::new(),
             selection_state: SelectionState::new(),
             quit_hint_at: None,
+            approval_selection: None,
             mention: None,
             slash: None,
             popup_style: PopupStyle::default(),
@@ -1058,6 +1070,25 @@ impl App {
         modifiers: KeyModifiers,
     ) -> Option<Action> {
         let _ = modifiers;
+
+        // Enter with no matching skill: this is a real command with arguments
+        // (`/tools off <key>`, `/connect <name>`, `/plugin add <path>`), not a
+        // completion target. Close the picker and submit the text as typed.
+        // The completer's Confirm-with-empty-selection degrades to Cancelled,
+        // whose wipe-the-line semantics silently deleted the whole command
+        // before it ever reached `parse_command` (observed in session
+        // 20261015_35ab9031: every `/tools off add_tool` vanished without a
+        // trace while the agent was idle).
+        if code == KeyCode::Enter && self.slash.as_ref().is_some_and(|s| s.entries_count() == 0) {
+            self.slash = None;
+            if !self.running && !self.composer.is_empty() {
+                let text = self.composer.text();
+                self.composer.clear();
+                return Some(Action::Submit(text));
+            }
+            return None;
+        }
+
         let s = self.slash.as_mut()?;
 
         // Capture old prefix BEFORE handle_key modifies it (same pattern as handle_mention_key)
@@ -1371,10 +1402,20 @@ impl App {
     }
 
     /// Resolve the front approval with `decision` (popping it off the queue).
+    /// The selection never leaks to the next prompt in the queue.
     pub fn approve_front(&mut self, decision: ApprovalDecision) {
+        self.approval_selection = None;
         if let Some(item) = self.approval_queue.pop_front() {
             let _ = item.decision_tx.send(decision);
         }
+    }
+
+    /// Dismiss every pending approval without deciding (cancel path). The
+    /// selection goes with them — a stale highlight must never Enter-commit a
+    /// later prompt.
+    pub fn clear_approvals(&mut self) {
+        self.approval_selection = None;
+        self.approval_queue.clear();
     }
 }
 

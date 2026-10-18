@@ -7,7 +7,7 @@
 
 use std::time::Instant;
 
-use crossterm::event::{KeyCode, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers};
 
 use crate::ui::app::{Action, App, FocusTarget};
 use phi_agent::ApprovalDecision;
@@ -16,6 +16,18 @@ use phi_kernel_tools::background_shell::BackgroundTaskStatus;
 impl App {
     /// Handle a keyboard event and return an action if one was triggered.
     pub fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Option<Action> {
+        self.handle_key_event(code, modifiers, KeyEventKind::Press)
+    }
+
+    /// Full keyboard entry point: `kind` separates a real press from auto-Repeat,
+    /// which must never decide an approval prompt (holding `a` must not grant
+    /// standing approval to a whole queue).
+    pub fn handle_key_event(
+        &mut self,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+        kind: KeyEventKind,
+    ) -> Option<Action> {
         use KeyCode::*;
 
         let ctrl = modifiers.contains(KeyModifiers::CONTROL);
@@ -149,12 +161,36 @@ impl App {
             };
         }
 
-        // While an approval popup is showing, route y/a/n and swallow the rest.
+        // While an approval popup is showing, letters only SELECT a choice and
+        // bare Enter COMMITS it (Claude Code's modal pattern).
+        // BUG 4 (final form): timing cannot tell a lone decision key from the
+        // first letter of a typing burst ("anyday" — its `a` once granted
+        // AllowAlways). So a decision needs a commit step typing never produces:
+        //  - `y`/`a`/`n` (Press, no chord) only set `approval_selection`;
+        //  - bare Enter submits the selection; with nothing selected it is a
+        //    no-op;
+        //  - everything else is swallowed — including Esc (an IME cancel sends
+        //    Esc), chords (Ctrl+A must never mean AllowAlways) and auto-Repeat
+        //    (holding `a` must not grant standing approval to a whole queue).
         if !self.approval_queue.is_empty() {
+            let bare = !modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER);
             return match code {
-                Char('y') => Some(Action::Approve(ApprovalDecision::AllowOnce)),
-                Char('a') => Some(Action::Approve(ApprovalDecision::AllowAlways)),
-                Char('n') => Some(Action::Approve(ApprovalDecision::Deny)),
+                Char(c) if kind == KeyEventKind::Press && bare => {
+                    let choice = match c.to_ascii_lowercase() {
+                        'y' => Some(ApprovalDecision::AllowOnce),
+                        'a' => Some(ApprovalDecision::AllowAlways),
+                        'n' => Some(ApprovalDecision::Deny),
+                        _ => None,
+                    };
+                    if choice.is_some() {
+                        self.approval_selection = choice;
+                    }
+                    None
+                }
+                Enter if kind == KeyEventKind::Press && bare => {
+                    self.approval_selection.clone().map(Action::Approve)
+                }
                 _ => None,
             };
         }

@@ -33,6 +33,8 @@ use super::app::{Action, App, TuiEvent};
 use super::child_results::{ChildResultRoute, ChildResultRouter};
 use super::frame_log::{ComposerLog, FrameCapture, PerfLog, PerfRow};
 use super::render;
+#[cfg(unix)]
+use super::term_guard;
 use crate::approval::ApprovalItem;
 use crate::banner::ColorScheme;
 use crate::model_store::ModelStore;
@@ -119,6 +121,7 @@ pub async fn run_tui(
     version: &str,
     model_store: Arc<tokio::sync::Mutex<ModelStore>>,
     router: Arc<PhimintRouter>,
+    external: Arc<tokio::sync::Mutex<crate::external::state::ExternalState>>,
     resume_messages: Option<Vec<ChatMessage>>,
     update_config: crate::config::UpdateConfig,
     no_update_check: bool,
@@ -127,6 +130,29 @@ pub async fn run_tui(
     log_sinks: log_core::SinkHandle,
 ) -> Result<()> {
     let agent = Arc::new(agent);
+
+    // tool-socket P3: the startup merge of the socket board (script tools →
+    // plugins → enabled connections). Once per process; a session switch does not
+    // redo it — the tool table is global. Graceful errors are pushed into the
+    // transcript by the outer layer (`external_notices`), never silently dropped.
+    let mut external_notices = {
+        let host = crate::external::PhiToolHost {
+            agent: agent.clone(),
+        };
+        let mut state = external.lock().await;
+        state.start(&host).await
+    };
+    // `add_tool`: the human-review entry point for tools the agent writes on the
+    // user's behalf. **post-build registration = root-only** — a multi-agent's
+    // business_tools is a build-time snapshot, so a child agent's tool face never
+    // sees it (a child must not grow tools for itself). The registration hook
+    // holds a Weak to avoid a cycle.
+    {
+        let registry = agent.runtime().tools_mut();
+        let add_tool =
+            crate::tools::add_tool::AddTool::new(Arc::clone(&external), Arc::downgrade(&registry));
+        registry.write().await.register_arc(Arc::new(add_tool));
+    }
 
     // Session state (updated on each /resume switch).
     let mut session = session;
@@ -205,6 +231,13 @@ pub async fn run_tui(
         skill_summaries.push(("resume".into(), "Switch to another session".into()));
         // Built-in command: /upgrade (a local UI command, never reaches the LLM)
         skill_summaries.push(("upgrade".into(), "Check for phimint updates".into()));
+        // tool-socket P3 external-tool commands (local semantics, no model turn)
+        skill_summaries.push((
+            "connect".into(),
+            "Connect an MCP server (catalog name or paste config)".into(),
+        ));
+        skill_summaries.push(("tools".into(), "List external tools / toggle on-off".into()));
+        skill_summaries.push(("plugin".into(), "List, install, or remove plugins".into()));
 
         // Spawn background update check (if enabled).
         // Sends TuiEvent::UpdateAvailable if a newer version is found.
@@ -285,6 +318,7 @@ pub async fn run_tui(
             cmd_rx,
             model_store.clone(),
             router.clone(),
+            Arc::clone(&external),
         ));
         // Set once the agent task is observed dead (panic) — the failure is
         // surfaced in the transcript exactly once, not every tick.
@@ -358,6 +392,14 @@ pub async fn run_tui(
             app.push_system(&format!("! {notice}"));
         }
 
+        // tool-socket P3: graceful startup-load errors (broken registry / missing
+        // env var / script not found / connection failure). Visible on the first
+        // frame, never silent; pushed exactly once (a session switch does not
+        // replay it).
+        for notice in std::mem::take(&mut external_notices) {
+            app.push_system(&format!("! {notice}"));
+        }
+
         // Replay historical messages into the transcript so the user sees the
         // previous conversation (not just a blank screen) after --resume.
         if let Some(messages) = &resume_messages {
@@ -412,6 +454,9 @@ pub async fn run_tui(
         let mut last_draw = Instant::now();
         // Last terminal-geometry probe — drives the 1 Hz size self-heal below.
         let mut last_geom_check = Instant::now();
+        // Last termios probe — drives the 1 Hz raw-mode self-heal below.
+        #[cfg(unix)]
+        let mut last_term_guard = Instant::now();
         // Last tips refresh re-check — drives the opportunistic pass below.
         let mut last_tips_check = Instant::now();
         // Last size we know the buffers were resized to. The 1 Hz probe below
@@ -565,9 +610,39 @@ pub async fn run_tui(
 
             // Drain queued approval requests into the popup queue (one popup at a
             // time — the front of the queue is what gets rendered).
+            let had_approval = app.has_pending_approval();
             while let Ok(item) = approval_rx.try_recv() {
                 app.approval_queue.push_back(item);
                 dirty = true;
+            }
+            // BUG 4: a popup that just opened must never see keys typed before it
+            // appeared — those were aimed at the composer, not at a prompt nobody
+            // had seen yet (`/plugin`'s trailing n once decided Deny this way).
+            // Drop whatever is still buffered and keep Resizes (they self-heal in
+            // the 1 Hz geometry probe anyway if they were lost). Keys that survive
+            // into the popup can at worst select an option — bare Enter is still
+            // required to commit.
+            if !had_approval && app.has_pending_approval() {
+                let mut dropped_keys = 0usize;
+                while crossterm::event::poll(Duration::ZERO)? {
+                    match crossterm::event::read()? {
+                        Event::Resize(w, h) => {
+                            tracing::info!(w, h, "tui: resize during approval-open input drain");
+                            terminal.resize(Rect::new(0, 0, w, h))?;
+                            terminal.clear()?;
+                            last_size = (w, h);
+                            dirty = true;
+                        }
+                        Event::Key(_) | Event::Paste(_) => dropped_keys += 1,
+                        _ => {}
+                    }
+                }
+                if dropped_keys > 0 {
+                    tracing::info!(
+                        dropped_keys,
+                        "tui: drained pre-popup input at approval open"
+                    );
+                }
             }
 
             // Poll input with a short timeout so the frame rate stays bounded even
@@ -594,7 +669,9 @@ pub async fn run_tui(
                     {
                         dirty = true;
                         has_key = true;
-                        if let Some(action) = app.handle_key(key.code, key.modifiers) {
+                        if let Some(action) =
+                            app.handle_key_event(key.code, key.modifiers, key.kind)
+                        {
                             match action {
                                 Action::Submit(text) => {
                                     // Intercept built-in commands before sending to agent.
@@ -614,7 +691,8 @@ pub async fn run_tui(
                                         // previous buffer and re-emits only changed
                                         // cells — with the screen blank but the cache
                                         // intact that means the banner and borders
-                                        // are never repainted (the "界面乱了" after a
+                                        // are never repainted (the "display got
+                                        // messed up" after a
                                         // cancelled picker). Clearing invalidates the
                                         // cache and forces a full repaint.
                                         terminal.clear()?;
@@ -727,7 +805,7 @@ pub async fn run_tui(
                                     // Dismiss the popup(s) and drop any in-flight
                                     // request not yet drained (the cancelled handler
                                     // stops sending once its token fires).
-                                    app.approval_queue.clear();
+                                    app.clear_approvals();
                                     while approval_rx.try_recv().is_ok() {}
                                 }
                                 Action::Quit => {
@@ -846,6 +924,25 @@ pub async fn run_tui(
                     tracing::info!(?last_size, ?probed, "tui: geometry self-heal resize");
                     last_size = probed;
                     terminal.resize(Rect::new(0, 0, probed.0, probed.1))?;
+                    terminal.clear()?;
+                    dirty = true;
+                }
+            }
+
+            // Terminal-integrity self-heal (1 Hz): an external clobber — the
+            // BUG 7 incident had an MCP child's npm/node flipping the tty back
+            // to cooked — kills input without any app-side signal: keystrokes
+            // sit in the kernel line buffer and crossterm never sees them.
+            // Probe the real termios once a second; on drift, force raw back
+            // (disable→enable — crossterm's enable is a no-op while it still
+            // believes raw is on) and clear, so the next draw also covers the
+            // garbage the child scribbled onto the alt-screen.
+            #[cfg(unix)]
+            if last_term_guard.elapsed() >= term_guard::CHECK_INTERVAL {
+                last_term_guard = Instant::now();
+                if !term_guard::raw_mode_intact() {
+                    tracing::warn!("tui: termios drifted out of raw mode; re-asserting");
+                    term_guard::reassert_raw_mode();
                     terminal.clear()?;
                     dirty = true;
                 }
@@ -1066,6 +1163,7 @@ async fn agent_loop(
     mut cmd_rx: mpsc::UnboundedReceiver<Cmd>,
     model_store: Arc<tokio::sync::Mutex<ModelStore>>,
     router: Arc<PhimintRouter>,
+    external: Arc<tokio::sync::Mutex<crate::external::state::ExternalState>>,
 ) {
     // Resume turn numbering from any turns already logged for this session.
     let mut turn_number = session_ctx.last_turn_number();
@@ -1127,6 +1225,31 @@ async fn agent_loop(
                 break;
             }
             Cmd::Run(input) => {
+                // tool-socket P3: external-tool command face (/connect /tools
+                // /plugin). Local semantics executed by ExternalState — never a
+                // model turn, settles via SystemMessage (no turn_number, same
+                // as /model below). Commands serialize on this loop, so the
+                // socket board sees one at a time; a plugin install blocks here
+                // until the human answers its full-facts confirm popup.
+                if let Some(cmd) = crate::external::commands::parse_command(&input) {
+                    let host = crate::external::PhiToolHost {
+                        agent: agent.clone(),
+                    };
+                    let mut state = external.lock().await;
+                    let confirm = state.confirm_gate();
+                    let response = state.handle(&host, confirm.as_ref(), cmd).await;
+                    let _ = event_tx.send(TuiEvent::SystemMessage(response));
+                    continue;
+                }
+                // Namespace hit but malformed (/plugin frobnicate x): show the
+                // usage line, never forward the half-command as a turn. (Bare
+                // /plugin is a real command — the list view; /tools misses
+                // fall back to its own panel, which shows the syntax.)
+                if let Some(usage) = crate::external::commands::usage_for(&input) {
+                    let _ = event_tx.send(TuiEvent::SystemMessage(usage.to_string()));
+                    continue;
+                }
+
                 // Check for model-related commands first
                 if let Some(response) = handle_model_command(&input, &model_store, &router) {
                     // A local answer, not a turn: it settles via SystemMessage

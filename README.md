@@ -16,6 +16,7 @@ phimint runs the full coding loop — understand the request, read the code, cha
 
 - **Streaming TUI** — ratatui + crossterm: fixed bottom composer, token-by-token streaming, inline tool calls, live line-by-line shell output, approval popups, startup banner that detects your terminal's light/dark background.
 - **Slash commands** — `.claude/skills`-compatible skills: `/skill-name args` injects the skill body into the turn. `/resume` reopens a previous session with an interactive picker.
+- **External tools** — plug in your own tools behind one contract (WIT + Component Model): MCP servers (`/connect`), user scripts, and wasm plugin packs (`plugin add` / `plugin remove`). `/tools` shows every tool's source, namespace and tier with one-key disable; secrets live only as `${ENV:VAR}` references — never literal on disk; `add_tool` lets the agent write and register a tool for you behind a full confirmation card (argv, absolute path, timeout).
 - **Pull-based context** — `repo_map` (tree-sitter symbol/structure index) plus `search_content` (ripgrep). The agent searches and reads on demand instead of stuffing the whole repo into context.
 - **LSP fast inner loop** — lazily started per-language servers (rust-analyzer, typescript-language-server, clangd); `file:line:col` diagnostics in seconds without recompiling. Falls back to shell when a server is missing.
 - **Multi-agent fan-out, push-based fan-in** — `spawn_agent` sends sub-agents to investigate (read-only by default; write capability is requested per spawn when a task must edit). The main agent gets the **full reports at end of turn** (no polling). The TUI task panel tracks each sub-agent live; a 10-minute per-task hard timeout guarantees delivery.
@@ -220,6 +221,8 @@ you: "investigate questions X / Y / Z"
 | `diagnostics` | LSP diagnostics (fast loop without recompiling; degrades to shell) |
 | `update_plan` | structured checklist for complex tasks (display-only, Codex-style; agent-base) |
 | `spawn_agent` / `send_message` / `wait_agent` / `list_agents` / `close_agent` | sub-agent primitives (agent-works; preferred pattern: spawn, end turn, await push) |
+| `add_tool` | the agent writes and registers a tool for you (root-only; full confirmation card before anything lands) |
+| `/connect` · `/tools` · `plugin add` / `plugin remove` | external tool surfaces: MCP servers, script tools, wasm plugin packs (approval ledger per tool, fail-closed) |
 
 ## How it works
 

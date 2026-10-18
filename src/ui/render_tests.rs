@@ -190,9 +190,112 @@ fn approval_popup_without_source_renders_unchanged() {
     let text = snapshot_text(&mut app, 80, 24);
     assert!(
         !text.contains("sub-agent"),
-        "no source → no sub-agent label (主 agent 渲染与现状一致):\n{text}"
+        "no source → no sub-agent label (the main agent's rendering is unchanged):\n{text}"
     );
     assert!(text.contains("Write file: src/lib.rs"));
+}
+
+fn push_approval_with_message(app: &mut App, message: String) {
+    let (tx, _rx) = tokio::sync::oneshot::channel();
+    app.approval_queue.push_back(crate::approval::ApprovalItem {
+        request: phi_agent::ApprovalRequest {
+            title: "write_file".into(),
+            message,
+            action_key: None,
+            risk_level: phi_agent::RiskLevel::Destructive,
+            raw: None,
+            source: None,
+        },
+        decision_tx: tx,
+    });
+}
+
+#[test]
+fn approval_popup_footer_survives_a_long_message() {
+    // BUG 1: the y/a/n legend used to be the tail of one wrapped paragraph —
+    // a long message pushed it out of the fixed 70%x50% box and the user got
+    // an approval prompt with no visible keys. The legend is now pinned.
+    let mut app = App::new();
+    let long = (0..60)
+        .map(|i| format!("step {i}: do the thing"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    push_approval_with_message(&mut app, long);
+    let text = snapshot_text(&mut app, 80, 24);
+    for legend in ["[y] allow once", "[a] allow always", "[n] deny"] {
+        assert!(text.contains(legend), "legend {legend:?} clipped:\n{text}");
+    }
+}
+
+#[test]
+fn approval_popup_footer_survives_a_narrow_terminal() {
+    // Narrower than the legend itself: it wraps onto its reserved footer rows
+    // rather than being pushed off-screen (every decision stays visible).
+    let mut app = App::new();
+    push_approval_with_message(&mut app, "Write file: src/lib.rs".into());
+    let text = snapshot_text(&mut app, 40, 12);
+    for legend in ["allow once", "allow always", "deny"] {
+        assert!(
+            text.contains(legend),
+            "legend {legend:?} clipped at 40x12:\n{text}"
+        );
+    }
+}
+
+#[test]
+fn approval_popup_sizes_to_a_small_request() {
+    // Content-sized box: a one-line request no longer gets the giant 70%x50%
+    // frame (the legend and title still render).
+    let mut app = App::new();
+    push_approval_with_message(&mut app, "Write file: src/lib.rs".into());
+    let text = snapshot_text(&mut app, 100, 40);
+    assert!(text.contains("[y] allow once"), "legend missing:\n{text}");
+    assert!(text.contains("write_file"), "title missing:\n{text}");
+}
+
+#[test]
+fn approval_footer_spans_concatenate_to_the_budgeted_legend() {
+    // The popup's width/height budget is measured from APPROVAL_FOOTER; the
+    // styled footer line must concatenate to exactly that text or the box
+    // under-measures what it renders (or clips the legend).
+    let mut app = App::new();
+    push_approval_with_message(&mut app, "Write file: src/lib.rs".into());
+    for sel in [
+        None,
+        Some(ApprovalDecision::AllowOnce),
+        Some(ApprovalDecision::AllowAlways),
+        Some(ApprovalDecision::Deny),
+    ] {
+        app.approval_selection = sel;
+        let line = approval_footer_line(&app);
+        let joined: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(joined, APPROVAL_FOOTER);
+    }
+}
+
+#[test]
+fn approval_footer_highlights_the_selected_option() {
+    // BUG 4 (final form): letters only select — the highlight is the only
+    // signal that one is picked; Enter is inert (dimmed) until then.
+    let mut app = App::new();
+    push_approval_with_message(&mut app, "Write file: src/lib.rs".into());
+    app.approval_selection = Some(ApprovalDecision::AllowAlways);
+    let line = approval_footer_line(&app);
+    let bold: Vec<&str> = line
+        .spans
+        .iter()
+        .filter(|s| s.style.add_modifier.contains(Modifier::BOLD))
+        .map(|s| s.content.as_ref())
+        .collect();
+    assert_eq!(bold, vec!["[a] allow always", "[Enter] confirm"]);
+    app.approval_selection = None;
+    let line = approval_footer_line(&app);
+    assert!(
+        line.spans
+            .iter()
+            .all(|s| !s.style.add_modifier.contains(Modifier::BOLD)),
+        "nothing selected → nothing highlighted:\n{line:?}"
+    );
 }
 
 #[test]
@@ -455,11 +558,11 @@ fn banner_spans_render_palette_on_top_of_system_style() {
 
     // Wordmark row 0: face fill 0 is Logo(0) = dark stop #FF6A3D. The flat
     // wordmark carries no shadow strokes — cols 6..8 are glyph padding and the
-    // connector, so they fall back to the System base (faint).
+    // connector, so they fall back to the System base (muted).
     assert_eq!(cell(0, 0).style().fg, Some(Color::Rgb(0xff, 0x6a, 0x3d)));
     assert_eq!(cell(5, 0).style().fg, Some(Color::Rgb(0xff, 0x6a, 0x3d)));
-    assert_eq!(cell(6, 0).style().fg, Some(theme::faint(ColorScheme::Dark)));
-    assert_eq!(cell(8, 0).style().fg, Some(theme::faint(ColorScheme::Dark)));
+    assert_eq!(cell(6, 0).style().fg, Some(theme::muted(ColorScheme::Dark)));
+    assert_eq!(cell(8, 0).style().fg, Some(theme::muted(ColorScheme::Dark)));
 
     // The lockup hangs the text block off the right of the wordmark,
     // bottom-aligned: slogan on wordmark row 1, ad on row 2. "Forged…" is bold
@@ -903,7 +1006,28 @@ fn chrome_sources_stay_cjk_width_safe() {
     for file in FILES {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(file);
         let source = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {file}: {e}"));
+        let mut exempt = false;
         for (i, line) in source.lines().enumerate() {
+            // Region markers live in comments (checked on the raw line): a
+            // marked block recolours glyphs the product already wrote and
+            // computes no columns, so it can't shift any layout.
+            if line.contains("cjk-glyph-exempt: begin") {
+                assert!(!exempt, "{file}:{} nested cjk-glyph-exempt begin", i + 1);
+                exempt = true;
+                continue;
+            }
+            if line.contains("cjk-glyph-exempt: end") {
+                assert!(
+                    exempt,
+                    "{file}:{} cjk-glyph-exempt end without begin",
+                    i + 1
+                );
+                exempt = false;
+                continue;
+            }
+            if exempt {
+                continue;
+            }
             let code = line.split_once("//").map_or(line, |(code, _)| code);
             let offenders: Vec<char> = code
                 .chars()
@@ -915,6 +1039,7 @@ fn chrome_sources_stay_cjk_width_safe() {
                 i + 1
             );
         }
+        assert!(!exempt, "{file}: unclosed cjk-glyph-exempt region");
     }
 }
 
@@ -1691,7 +1816,7 @@ fn light_scheme_flips_the_gray_and_truecolor_slots() {
     // this guards the other half: a light terminal must not wear dark chrome.
     assert_eq!(
         style_for(LineKind::System, ColorScheme::Light).fg,
-        Some(theme::faint(ColorScheme::Light))
+        Some(theme::muted(ColorScheme::Light))
     );
     assert_eq!(
         style_for(LineKind::ToolResult, ColorScheme::Light).fg,
@@ -1717,6 +1842,86 @@ fn light_scheme_flips_the_gray_and_truecolor_slots() {
             style_for(kind, ColorScheme::Dark).fg,
             "{kind:?} is identical in Dark and Light"
         );
+    }
+}
+
+#[test]
+fn system_line_status_glyphs_take_semantic_hues() {
+    // The product's own answer vocabulary: ✓ success, ✗ failure, ⚠ warning,
+    // → next-step pointer — each glyph paints its hue, the body stays muted.
+    for (text, hue) in [
+        ("✓ my-tools installed · 2 tools", Color::Green),
+        ("✗ connection refused", Color::Red),
+        ("⚠ connections.json not saved", Color::Yellow),
+        (
+            "→ ask me to use them by name in chat",
+            theme::strong(ColorScheme::Dark),
+        ),
+    ] {
+        let line = system_info_line(text, ColorScheme::Dark);
+        assert_eq!(line.spans[0].style.fg, Some(hue), "glyph hue of {text:?}");
+        assert_eq!(
+            line.spans[1].style.fg,
+            Some(theme::muted(ColorScheme::Dark)),
+            "body of {text:?}"
+        );
+        // Byte-exact: selection and copy reconstruct the original line.
+        let plain: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(plain, text);
+    }
+}
+
+#[test]
+fn system_line_aligned_labels_read_strong() {
+    // A command row: indent + label + double-space gap + description splits
+    // like the `/` popup — the `/command` spec strong, the description muted.
+    let text = "  /plugin add <path|url>   install a plugin";
+    let line = system_info_line(text, ColorScheme::Dark);
+    assert_eq!(line.spans.len(), 3);
+    assert_eq!(line.spans[0].content.as_ref(), "  ");
+    assert_eq!(line.spans[1].content.as_ref(), "/plugin add <path|url>");
+    assert_eq!(
+        line.spans[1].style.fg,
+        Some(theme::strong(ColorScheme::Dark)),
+        "command label must pop"
+    );
+    assert_eq!(
+        line.spans[2].style.fg,
+        Some(theme::muted(ColorScheme::Dark)),
+        "description stays on the base"
+    );
+    let plain: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+    assert_eq!(plain, text);
+
+    // Tool-key rows in the /tools panel take the same split.
+    let key_row = "      on   plugin.my-tools.deploy          trusted";
+    let line = system_info_line(key_row, ColorScheme::Dark);
+    assert_eq!(line.spans[1].content.as_ref(), "on");
+    assert_eq!(
+        line.spans[1].style.fg,
+        Some(theme::strong(ColorScheme::Dark))
+    );
+}
+
+#[test]
+fn system_line_plain_text_paints_whole() {
+    // Headers, markers and prose have no glyph and no column gap: one span on
+    // the System base.
+    for text in [
+        "plugin commands:",
+        "── resumed conversation ──",
+        "tools — 12 total · 10 on · 2 off",
+        // A double-space in prose past the label cap is not a column row.
+        "  this label is definitely longer than thirty-two characters   and stays whole",
+    ] {
+        let line = system_info_line(text, ColorScheme::Dark);
+        assert_eq!(line.spans.len(), 1, "expected one span for {text:?}");
+        assert_eq!(
+            line.spans[0].style.fg,
+            Some(theme::muted(ColorScheme::Dark)),
+            "base style for {text:?}"
+        );
+        assert_eq!(line.spans[0].content.as_ref(), text);
     }
 }
 

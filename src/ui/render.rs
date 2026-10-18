@@ -1,6 +1,6 @@
 //! ratatui frame rendering: transcript (output) / composer / status bar.
 
-use phi_agent::RiskLevel;
+use phi_agent::{ApprovalDecision, RiskLevel};
 use ratatui::{
     Frame, Terminal,
     backend::TestBackend,
@@ -457,6 +457,12 @@ fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
                 )
             } else if kind == LineKind::ToolResult {
                 result_meta_line(&line.text, kind, scheme)
+            } else if kind == LineKind::System && spans.is_empty() {
+                // Command answers (usage hints, /tools, /connect, install
+                // results) are plain System text but not uniform: a status
+                // glyph takes its hue, a column-aligned label reads strong.
+                // Banner and verdict rows carry spans and keep `span_line`.
+                system_info_line(&line.text, scheme)
             } else {
                 span_line(&line.text, spans, style_for(kind, scheme), scheme)
             };
@@ -980,17 +986,85 @@ fn render_task_panel(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(lines), inner);
 }
 
-/// A centered modal popup showing the current approval request + y/a/n hint.
+/// Rows a content line takes at `inner_w` columns once wrapped (display width).
+/// Word wrap can only rarely add a row on top of this — and when it does, the
+/// body clips (fail-safe) while the footer stays put.
+fn wrapped_rows(s: &str, inner_w: u16) -> u16 {
+    if s.is_empty() {
+        return 1;
+    }
+    UnicodeWidthStr::width(s)
+        .max(1)
+        .div_ceil(inner_w.max(1) as usize) as u16
+}
+
+/// The approval decision legend. The one line that must never be clipped: it is
+/// pinned to the last row(s) of the popup, sized for, and rendered apart from
+/// the message body.
+///
+/// BUG 4 (final form): letters only SELECT an option, bare Enter COMMITS it.
+/// The footer is built from spans whose concatenated text equals this constant
+/// exactly ([`approval_footer_line`] — see its test), so the width budget stays
+/// honest while the selected option and the commit key can be highlighted.
+const APPROVAL_FOOTER: &str = "[y] allow once   [a] allow always   [n] deny   -   [Enter] confirm";
+
+/// The footer as a styled line: the selected option (and a live commit key when
+/// one is selected) carry the highlight; the rest stay cyan. Concatenating the
+/// spans yields [`APPROVAL_FOOTER`] verbatim.
+fn approval_footer_line(app: &App) -> Line<'static> {
+    let sel_bg = theme::selection_bg(app.scheme());
+    let option = |text: &str, decision: ApprovalDecision| {
+        if app.approval_selection.as_ref() == Some(&decision) {
+            Span::styled(
+                text.to_string(),
+                Style::default().bg(sel_bg).add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::styled(text.to_string(), Style::default().fg(Color::Cyan))
+        }
+    };
+    // Enter is inert without a selection — dimmed until it can commit.
+    let commit = if app.approval_selection.is_some() {
+        Span::styled(
+            "[Enter] confirm".to_string(),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        Span::styled(
+            "[Enter] confirm".to_string(),
+            Style::default().fg(Color::DarkGray),
+        )
+    };
+    let gap = Span::styled("   ".to_string(), Style::default().fg(Color::Cyan));
+    Line::from(vec![
+        option("[y] allow once", ApprovalDecision::AllowOnce),
+        gap.clone(),
+        option("[a] allow always", ApprovalDecision::AllowAlways),
+        gap.clone(),
+        option("[n] deny", ApprovalDecision::Deny),
+        Span::styled("   -   ".to_string(), Style::default().fg(Color::Cyan)),
+        commit,
+    ])
+}
+
+/// A centered modal popup showing the current approval request + the decision
+/// legend.
+///
+/// BUG 1: the decision legend used to be the last line of one wrapped paragraph
+/// — a long message pushed it past the bottom edge of the fixed 70%x50% box and
+/// the user was shown an approval prompt with no keys to press. Now the box
+/// sizes to its content (clamped to the terminal, which can still clip the
+/// message tail — never the decisions), and the legend is rendered on its own
+/// reserved footer rows.
 fn render_approval_popup(f: &mut Frame, app: &App) {
     let Some(request) = app.current_approval() else {
         return;
     };
 
-    let area = centered_rect(70, 50, f.area());
-    f.render_widget(Clear, area);
-
     let (risk, risk_color) = risk_label(&request.risk_level);
-    let mut lines = vec![
+    let mut head_lines = vec![
         Line::from(Span::styled(
             "!! Approval required",
             Style::default()
@@ -1001,39 +1075,104 @@ fn render_approval_popup(f: &mut Frame, app: &App) {
     ];
     // D4 source marker: a sub-agent's request is tagged on its own line; the main agent is unchanged.
     if let Some(source) = &request.source {
-        lines.push(Line::from(Span::styled(
+        head_lines.push(Line::from(Span::styled(
             format!("requested by sub-agent [{source}]"),
             Style::default()
                 .fg(Color::Magenta)
                 .add_modifier(Modifier::BOLD),
         )));
-        lines.push(Line::from(""));
+        head_lines.push(Line::from(""));
     }
-    lines.push(Line::from(Span::styled(
+    head_lines.push(Line::from(Span::styled(
         request.title.clone(),
         Style::default().add_modifier(Modifier::BOLD),
     )));
-    lines.push(Line::from(Span::styled(
+    head_lines.push(Line::from(Span::styled(
         format!("Risk: {risk}"),
         Style::default().fg(risk_color),
     )));
-    lines.push(Line::from(""));
-    for raw in request.message.split('\n') {
-        lines.push(Line::from(raw.to_string()));
-    }
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "[y] allow once   [a] allow always   [n] deny",
-        Style::default().fg(Color::Cyan),
-    )));
+    head_lines.push(Line::from(""));
+
+    let message_lines: Vec<&str> = request.message.split('\n').collect();
+
+    // Width from content: the footer is part of the budget so the legend fits
+    // on a single row on any reasonable terminal (it wraps only where the
+    // terminal is narrower than the legend itself).
+    let content_w = [
+        UnicodeWidthStr::width("!! Approval required"),
+        request.source.as_deref().map_or(0, |s| {
+            UnicodeWidthStr::width(format!("requested by sub-agent [{s}]").as_str())
+        }),
+        UnicodeWidthStr::width(request.title.as_str()),
+        UnicodeWidthStr::width(format!("Risk: {risk}").as_str()),
+        UnicodeWidthStr::width(APPROVAL_FOOTER),
+    ]
+    .into_iter()
+    .chain(message_lines.iter().map(|s| UnicodeWidthStr::width(*s)))
+    .max()
+    .unwrap_or(0);
+
+    let screen = f.area();
+    // The area can never exceed the screen (a Rect taller than the buffer
+    // panics the renderer), and the footer keeps at least one row for itself.
+    let width = (content_w as u16 + 2)
+        .min(screen.width.saturating_sub(2).max(3))
+        .max(3)
+        .min(screen.width.max(1));
+    let inner_w = width.saturating_sub(2);
+    let footer_rows = wrapped_rows(APPROVAL_FOOTER, inner_w).max(1);
+    // Head lines are short and counted unwrapped; message lines are budgeted
+    // for the wrap width actually chosen above.
+    let body_rows = head_lines
+        .len()
+        .saturating_add(
+            message_lines
+                .iter()
+                .map(|s| wrapped_rows(s, inner_w) as usize)
+                .sum::<usize>(),
+        )
+        .saturating_add(1) // blank line before the footer
+        .min(u16::MAX as usize) as u16;
+    let height = (body_rows.saturating_add(footer_rows).saturating_add(2))
+        .min(screen.height.saturating_sub(2).max(3))
+        .max(footer_rows + 3)
+        .min(screen.height.max(1));
+    let area = Rect::new(
+        screen.width.saturating_sub(width) / 2,
+        screen.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    f.render_widget(Clear, area);
 
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .title("approval");
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    if inner.height == 0 {
+        return;
+    }
+
+    // Footer last: it owns the bottom rows of the inner area unconditionally.
+    let footer_h = footer_rows.min(inner.height);
+    let footer_rect = Rect {
+        y: inner.y + inner.height - footer_h,
+        height: footer_h,
+        ..inner
+    };
+    let body_rect = Rect {
+        height: inner.height - footer_h,
+        ..inner
+    };
+
+    let mut body = head_lines;
+    body.extend(message_lines.iter().map(|s| Line::from(*s)));
+    f.render_widget(Paragraph::new(body).wrap(Wrap { trim: true }), body_rect);
     f.render_widget(
-        Paragraph::new(lines).block(block).wrap(Wrap { trim: true }),
-        area,
+        Paragraph::new(approval_footer_line(app)).wrap(Wrap { trim: true }),
+        footer_rect,
     );
 }
 
@@ -1190,26 +1329,6 @@ fn render_slash_popup(f: &mut Frame, app: &App, composer: Rect) {
     .render_at(f, composer);
 }
 
-/// A centered rectangle occupying `percent_x`/`percent_y` of `area`.
-fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
-    let vertical = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(area);
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(vertical[1])[1]
-}
-
 fn risk_label(level: &RiskLevel) -> (&'static str, Color) {
     match level {
         RiskLevel::Safe => ("Safe", Color::Green),
@@ -1279,7 +1398,12 @@ fn style_for(kind: LineKind, scheme: ColorScheme) -> Style {
         // green actually means something.
         LineKind::ToolResult => Style::default().fg(theme::muted(scheme)),
         LineKind::Error => Style::default().fg(Color::Red),
-        LineKind::System => Style::default().fg(theme::faint(scheme)),
+        // System messages are the product talking back — command answers,
+        // notices, verdicts — content the user asked for or must see, so they
+        // read at the `muted` level (tool arguments, result bodies), not the
+        // `faint` chrome slot. The composition in [`system_info_line`] adds
+        // hue and label emphasis on top for the shapes worth scanning.
+        LineKind::System => Style::default().fg(theme::muted(scheme)),
         LineKind::Cancelled => Style::default().fg(Color::Yellow),
         LineKind::Approval => Style::default().fg(Color::Yellow),
         LineKind::User => Style::default()
@@ -1368,6 +1492,69 @@ fn result_meta_line(text: &str, kind: LineKind, scheme: ColorScheme) -> Line<'st
         // Denied / error rows keep their own wording and colour.
         Line::from(Span::styled(text.to_string(), style_for(kind, scheme)))
     }
+}
+
+/// Hue for a leading status glyph on a system line — the same semantic hues
+/// the transcript already uses for Done / Error / Approval, so a success or
+/// failure inside a command answer reads at a glance.
+///
+/// cjk-glyph-exempt: begin — this selector only recolours glyphs the product
+/// already wrote into the message; it computes no columns, so the CJK
+/// double-width disagreement can't shift any layout.
+fn system_glyph_style(glyph: char, scheme: ColorScheme) -> Option<Style> {
+    match glyph {
+        '✓' => Some(Style::default().fg(Color::Green)),
+        '✗' => Some(Style::default().fg(Color::Red)),
+        '⚠' => Some(Style::default().fg(Color::Yellow)),
+        '●' | '⚙' | '→' => Some(Style::default().fg(theme::strong(scheme))),
+        _ => None,
+    }
+}
+// cjk-glyph-exempt: end
+
+/// Longest column-aligned label worth highlighting. The product's own panels
+/// align command and tool-key columns at 32; anything longer is prose that
+/// happened to contain a double space, and stays on the base style.
+const SYSTEM_LABEL_MAX: usize = 32;
+
+/// A system line, composed rather than uniformly tinted: command answers are
+/// the product talking back, and the shapes worth scanning get structure.
+///
+/// Three rules, all byte-exact partitions of `text` (selection and copy see
+/// the original):
+///
+/// 1. A leading status glyph (`✓ ✗ ⚠ ● ⚙ →`) takes its hue; the rest of the
+///    line stays on the System base.
+/// 2. A column-aligned row — indent, a short label, a double-space gap, a
+///    description — splits like the `/` popup's name/description: the label
+///    (a `/command` spec or a tool key) reads strong, the description muted.
+/// 3. Everything else (headers, markers, wrapped prose) paints whole.
+fn system_info_line(text: &str, scheme: ColorScheme) -> Line<'static> {
+    let base = style_for(LineKind::System, scheme);
+    if let Some(g) = text.chars().next()
+        && let Some(gs) = system_glyph_style(g, scheme)
+    {
+        return Line::from(vec![
+            Span::styled(g.to_string(), gs),
+            Span::styled(text[g.len_utf8()..].to_string(), base),
+        ]);
+    }
+    let trimmed = text.trim_start();
+    let indent = text.len() - trimmed.len();
+    if indent > 0
+        && let Some(split_at) = trimmed.find("  ")
+    {
+        let (label, desc) = trimmed.split_at(split_at);
+        let key = label.trim_end();
+        if !key.is_empty() && key.chars().count() <= SYSTEM_LABEL_MAX && !desc.trim().is_empty() {
+            return Line::from(vec![
+                Span::styled(text[..indent].to_string(), base),
+                Span::styled(key.to_string(), Style::default().fg(theme::strong(scheme))),
+                Span::styled(desc.to_string(), base),
+            ]);
+        }
+    }
+    Line::from(Span::styled(text.to_string(), base))
 }
 
 /// A banner run's style for the given scheme: 24-bit fg + bold for the brand.

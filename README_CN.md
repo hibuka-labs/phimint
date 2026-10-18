@@ -18,6 +18,7 @@ phimint 跑「理解需求 → 读码 → 多文件改 → 编译/测试 → 报
 
 - **流式 TUI**：ratatui + crossterm，底部固定输入栏、逐字流式输出、工具调用内联、shell 命令逐行实时回显、审批弹窗、启动 banner（自动识别终端明暗配色）。
 - **斜杠命令**：兼容 `.claude/skills` 的 skill 体系，`/skill-name args` 把 skill 正文注入本轮；`/resume` 交互式选择并恢复历史会话。
+- **外部工具**：一套契约（WIT + Component Model）接入三种自定义工具——MCP 服务（`/connect`）、用户脚本、wasm 插件包（`plugin add` / `plugin remove`）。`/tools` 一屏列出全部工具的来源/命名空间/档位并可一键关闭；secret 只以 `${ENV:VAR}` 引用落盘、绝不存明文；`add_tool` 让 agent 代写工具，全貌确认卡（argv、绝对路径、超时）点头后才注册。
 - **拉取式上下文**：`repo_map`（tree-sitter 符号/结构索引）+ `search_content`（ripgrep），agent 主动搜、主动读，而非把整个仓库塞进 context。
 - **LSP 快速内环**：多 server 懒启动（rust-analyzer / typescript-language-server / clangd），改完不重编译秒级拿到 `file:line:col` 诊断；server 起不来降级到 shell。
 - **多 agent 扇出 + 推送式 fan-in**：`spawn_agent` 派子 agent 调查（默认只读；任务需要动手改代码时，按次申请写能力），主 agent **结束回合即收全量报告**（无需轮询）；TUI 任务面板逐子 agent 实时跟踪，单任务 10 分钟超时硬停。
@@ -216,6 +217,8 @@ Commands:
 | `diagnostics` | LSP 诊断（改完不重编译的快速内环；server 缺失降级到 shell） |
 | `update_plan` | 复杂任务先展示结构化清单（display-only，Codex 风格；agent-base） |
 | `spawn_agent` / `send_message` / `wait_agent` / `list_agents` / `close_agent` | 子 agent 原语（agent-works；推荐用法见上：spawn 后结束回合等推送） |
+| `add_tool` | agent 代写并注册工具（root-only；全貌确认卡点头后才落盘） |
+| `/connect` · `/tools` · `plugin add` / `plugin remove` | 外部工具面：MCP 服务、脚本工具、wasm 插件包（逐工具审批档位，fail-closed） |
 
 ## 工作原理
 

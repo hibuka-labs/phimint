@@ -7,7 +7,11 @@
 //! The cores (search / repo map / diagnostics formatting, language registry,
 //! LSP client) live in the `code-intel` crate; these modules are thin
 //! `phi_agent::Tool` adapter shells over them.
+//!
+//! `add_tool` is the tool-socket agent-write entry (human-confirmed): it is
+//! not a context provider but the agent's way to mount a script as a tool.
 
+pub mod add_tool;
 pub mod diagnostics;
 pub mod repomap;
 pub mod ripgrep;

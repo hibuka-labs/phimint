@@ -9,6 +9,7 @@ pub mod approval;
 pub mod banner;
 pub mod config;
 pub mod context_rotation;
+pub mod external;
 pub mod model_store;
 pub mod router;
 pub mod session_birthplace;

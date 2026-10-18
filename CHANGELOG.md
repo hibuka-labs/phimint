@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-10-18
+
+### Added
+
+- **External tools** — plug your own tools into the agent. Three shapes behind
+  one phi-tool contract (WIT + Component Model): MCP servers, user scripts, and
+  wasm plugin packs. `/connect` attaches an MCP server (Streamable HTTP and
+  stdio), `/tools` shows every tool's source, namespace and tier with one-key
+  disable, and `plugin add` / `plugin remove` manage plugin packs with the
+  capability manifest shown at confirm time. A built-in catalog offers common
+  servers as one-line adds; a setup wizard parses pasted config and extracts
+  secrets into `${ENV:VAR}` references — literal secrets are never written to
+  disk, and a missing variable is named on the spot at connect time.
+- **`add_tool`** — the agent can write and register a tool for you (root-only).
+  The confirmation card shows the full picture (argv, absolute path, timeout)
+  before anything lands; literal secrets and malformed entries never reach the
+  card. Registered tools hot-refresh into the next turn's tool list.
+- **External-tool approval ledger** — per-tool tiers (always-ask / allow / deny)
+  keyed by identity (`mcp.` / `script.` / `plugin.` namespaces), persisted to
+  `~/.phimint/approvals.json`, fail-closed. Sub-agents never see external tools
+  (the namespaces are dropped from spawn sets with a warning).
+- **Workspace-scoped resume** — `/resume` restores a session with its full
+  history and its home workspace (cwd + provenance) back in place.
+- On quit the session is replayed onto the terminal, so the scrollback shows
+  what just happened.
+- A tips line under the transcript and a flat wordmark lockup in the banner.
+
 ### Changed
 
 - The bottom status bar is Claude Code style: the mode badge reads `auto mode
@@ -14,6 +41,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (auto and ask share the brand warm color; only deny is red), and the right
   slot carries the upgrade hint or the scroll position. The composer sits
   flush between its rules, with no blank rows around it.
+
+### Fixed
+
+- Popup decision buttons are never clipped: the popup's bottom row is
+  guaranteed visible and overflow trims away from it.
+- Approval popups can no longer be answered by a single stray key — decision
+  keys need focus or a modifier.
+- Long notices no longer garble the transcript when the terminal is resized:
+  old wrap continuation fragments are dropped precisely (wide chars included).
+- `Ctrl+L` forces a repaint, and resize/paste no longer lose visibility —
+  the user-turn state is committed at the send site, so the spinner can't
+  outlive a turn (phantom spinner fix).
+- Script tools whose file is missing (or not executable) are refused at
+  install time instead of installing silently.
+- `add_tool` no longer trips a fake 600s timeout when the tool registers
+  itself mid-call (registry lock fix upstream), and the TUI no longer hard
+  freezes when an MCP child clobbers the terminal (children spawn detached;
+  a termios guard probes for external clobber).
 
 ## [0.4.1] — 2026-10-12
 

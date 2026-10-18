@@ -777,7 +777,8 @@ mod prompt_guard_tests {
         let provider = Arc::new(CapturingMockProvider {
             system_prompts: Mutex::new(Vec::new()),
         });
-        let (approval, policy, _approval_rx, _mode) = crate::approval::build_live_approval("auto");
+        let (approval, policy, _approval_rx, _mode) =
+            crate::approval::build_live_approval("auto", None);
         let (agent, _resolver, _telemetry, _bg_registry) = super::build(
             provider.clone() as Arc<dyn LlmProvider>,
             approval,
@@ -876,7 +877,8 @@ mod prompt_guard_tests {
         let provider = Arc::new(CapturingMockProvider {
             system_prompts: Mutex::new(Vec::new()),
         });
-        let (approval, policy, _approval_rx, _mode) = crate::approval::build_live_approval("auto");
+        let (approval, policy, _approval_rx, _mode) =
+            crate::approval::build_live_approval("auto", None);
         let (agent, resolver, _telemetry, _bg_registry) = super::build(
             provider.clone() as Arc<dyn LlmProvider>,
             approval,
@@ -1161,11 +1163,11 @@ mod prompt_guard_tests {
     fn system_prompt_demands_disjoint_file_sets_for_parallel_writers() {
         assert!(
             SYSTEM_PROMPT.contains("DISJOINT FILE SETS"),
-            "父 prompt 必须要求按文件不相交分派并行写任务"
+            "the parent prompt must demand disjoint file sets when dispatching parallel write tasks"
         );
         assert!(
             SYSTEM_PROMPT.contains("file locked by"),
-            "父 prompt 必须解释写门指名错误及其处置（重新分界）"
+            "the parent prompt must explain the write-gate naming error and its handling (re-partitioning)"
         );
     }
 
@@ -1174,11 +1176,11 @@ mod prompt_guard_tests {
     fn system_prompt_states_default_read_only_with_opt_in_write() {
         assert!(
             SYSTEM_PROMPT.contains("read-only investigators by default"),
-            "子 agent 默认只读的新表述必须存在"
+            "the new wording that sub-agents are read-only by default must be present"
         );
         assert!(
             SYSTEM_PROMPT.contains("tools: \"write\""),
-            "父 prompt 必须告诉父 agent 如何为单个 spawn 请求写能力"
+            "the parent prompt must tell the parent agent how to spell out the capability for a single spawn request"
         );
     }
 
@@ -1270,7 +1272,10 @@ mod prompt_guard_tests {
             &cfg.control.write_tools,
         );
         for t in ["write_file", "edit_file", "execute_command"] {
-            assert!(!res.excluded_tools.contains(t), "write 子 agent 需 {t}");
+            assert!(
+                !res.excluded_tools.contains(t),
+                "a write sub-agent needs {t}"
+            );
         }
         // Only write_tools members are exempt -- notes.* is not in write_tools, so it stays excluded.
         assert!(res.excluded_tools.contains("notes.write_file"));

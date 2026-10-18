@@ -220,7 +220,7 @@ fn is_default_noise(
 /// `args_json` is a syntax dump — `{"limit": 60, "path": "/Users/…/x.md"}` —
 /// whose braces, quoted keys and full paths eat the line budget while adding
 /// nothing the tool name doesn't already say. The transcript shows the values
-/// (rule 3: 工具名 + 可读参数); the raw JSON stays in the log. Values that
+/// (rule 3: tool name + readable arguments); the raw JSON stays in the log. Values that
 /// merely spell out a schema default are dropped entirely — see
 /// [`is_default_noise`].
 ///

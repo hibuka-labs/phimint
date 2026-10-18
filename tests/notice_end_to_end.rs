@@ -104,7 +104,8 @@ async fn build_agent(
 
     let provider = Arc::new(ScriptedProvider::new(script));
     let workspace = tempfile::tempdir().unwrap();
-    let (approval, policy, _approval_rx, _mode) = phimint::approval::build_live_approval("auto");
+    let (approval, policy, _approval_rx, _mode) =
+        phimint::approval::build_live_approval("auto", None);
     let (agent, _resolver, _telemetry, _bg) = phimint::agent::build(
         provider as Arc<dyn LlmProvider>,
         approval,

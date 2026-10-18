@@ -1,7 +1,7 @@
 //! Tests for App state machine and event handling.
 
 use super::*;
-use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
+use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 use phi_agent::SessionId;
 use phi_agent::{PlanItem, PlanStepStatus, UserEvent};
 use phi_tui::lines::{DiffLineKind, LineDetail, MetaHead, ToolState};
@@ -1176,7 +1176,9 @@ fn pending_approval(app: &mut App) {
 }
 
 #[test]
-fn approval_popup_routes_yan_and_swallows_others() {
+fn approval_letters_only_select_and_enter_commits() {
+    // BUG 4 (final form): letters select, bare Enter commits. A decision can
+    // no longer be produced by a single keypress — see the typing-burst test.
     let mut app = App::new();
     pending_approval(&mut app);
     assert_eq!(
@@ -1185,28 +1187,151 @@ fn approval_popup_routes_yan_and_swallows_others() {
     );
     assert!(app.has_pending_approval());
 
-    // y/a/n route to the matching decision.
+    // Letters only select — no decision leaves the key handler.
+    assert_eq!(app.handle_key(KeyCode::Char('y'), KeyModifiers::NONE), None);
+    assert_eq!(app.approval_selection, Some(ApprovalDecision::AllowOnce));
+    assert_eq!(app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE), None);
+    assert_eq!(app.approval_selection, Some(ApprovalDecision::AllowAlways));
+    assert_eq!(app.handle_key(KeyCode::Char('n'), KeyModifiers::NONE), None);
+    assert_eq!(app.approval_selection, Some(ApprovalDecision::Deny));
+
+    // Enter commits the selection — and only then.
     assert_eq!(
-        app.handle_key(KeyCode::Char('y'), KeyModifiers::NONE),
-        Some(Action::Approve(ApprovalDecision::AllowOnce))
-    );
-    assert_eq!(
-        app.handle_key(KeyCode::Char('a'), KeyModifiers::NONE),
-        Some(Action::Approve(ApprovalDecision::AllowAlways))
-    );
-    assert_eq!(
-        app.handle_key(KeyCode::Char('n'), KeyModifiers::NONE),
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE),
         Some(Action::Approve(ApprovalDecision::Deny))
     );
+    app.approve_front(ApprovalDecision::Deny);
+    assert!(!app.has_pending_approval());
+    assert_eq!(app.approval_selection, None);
 
-    // Other keys (including Enter/submit) are swallowed while a popup is up.
-    assert_eq!(app.handle_key(KeyCode::Char('x'), KeyModifiers::NONE), None);
-    assert_eq!(app.handle_key(KeyCode::Enter, KeyModifiers::NONE), None);
-
-    // Ctrl+C cancels even when a popup is up (and no turn is running).
+    // Ctrl+C still cancels with a popup up (and no turn running).
+    pending_approval(&mut app);
     assert_eq!(
         app.handle_key(KeyCode::Char('c'), KeyModifiers::CONTROL),
         Some(Action::Cancel)
+    );
+}
+
+#[test]
+fn approval_enter_without_selection_is_swallowed() {
+    let mut app = App::new();
+    pending_approval(&mut app);
+
+    // Bare Enter with nothing selected commits nothing: it must not fall
+    // through to submit, and the prompt must stay put.
+    assert_eq!(app.handle_key(KeyCode::Enter, KeyModifiers::NONE), None);
+    assert!(app.has_pending_approval());
+
+    // Esc is not a decision and not a cancel either — an IME cancel sends Esc.
+    assert_eq!(app.handle_key(KeyCode::Esc, KeyModifiers::NONE), None);
+    assert!(app.has_pending_approval());
+    assert_eq!(app.approval_selection, None);
+
+    // Other keys are swallowed.
+    assert_eq!(app.handle_key(KeyCode::Char('x'), KeyModifiers::NONE), None);
+}
+
+#[test]
+fn approval_typing_run_never_decides() {
+    // BUG 4 repro (`/plugin`'s n was once read as Deny): letters inside a
+    // typing run are text — every key is swallowed and no key decides.
+    let mut app = App::new();
+    pending_approval(&mut app);
+    for c in ['/', 'p', 'l', 'u', 'g', 'i', 'n'] {
+        assert_eq!(app.handle_key(KeyCode::Char(c), KeyModifiers::NONE), None);
+    }
+    assert!(
+        app.has_pending_approval(),
+        "typing must never decide a pending prompt"
+    );
+}
+
+#[test]
+fn approval_first_letter_of_a_typing_burst_is_not_a_decision() {
+    // The live misfire (session 20261018_0affd119): typing "anyday", the `a`
+    // fired AllowAlways the instant the popup opened — the first key of a
+    // burst passes any isolation-gap check, so timing cannot be the gate. It
+    // is now select-then-Enter: not one letter of the burst decides.
+    let mut app = App::new();
+    pending_approval(&mut app);
+    for c in "anyday".chars() {
+        assert_eq!(
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE),
+            None,
+            "letter {c:?} must not decide (or submit anything)"
+        );
+        assert!(
+            app.has_pending_approval(),
+            "letter {c:?} decided the prompt — the BUG 4 misfire is back"
+        );
+    }
+    // Residual (accepted): the burst may leave the last y/a/n it typed
+    // highlighted ("anyday" ends on `y` → AllowOnce selected). Committing that
+    // still takes a deliberate Enter afterwards, and the highlight shows what
+    // Enter would do — typing alone can no longer decide.
+}
+
+#[test]
+fn approval_decision_keys_reject_chords_and_repeat() {
+    let mut app = App::new();
+    pending_approval(&mut app);
+
+    // Chords never select or commit: Ctrl+A must not mean AllowAlways.
+    assert_eq!(
+        app.handle_key(KeyCode::Char('a'), KeyModifiers::CONTROL),
+        None
+    );
+    assert_eq!(app.approval_selection, None);
+    // Ctrl+Y is CopyLastReply in normal mode; with a popup up it is swallowed
+    // rather than allowed to select AllowOnce.
+    assert_eq!(
+        app.handle_key(KeyCode::Char('y'), KeyModifiers::CONTROL),
+        None
+    );
+    assert_eq!(app.approval_selection, None);
+    assert!(app.has_pending_approval());
+
+    // Auto-Repeat never selects or commits: holding `a` must not burn a queue.
+    assert_eq!(
+        app.handle_key_event(KeyCode::Char('a'), KeyModifiers::NONE, KeyEventKind::Repeat),
+        None
+    );
+    assert_eq!(app.approval_selection, None);
+    app.approval_selection = Some(ApprovalDecision::AllowAlways);
+    assert_eq!(
+        app.handle_key_event(KeyCode::Enter, KeyModifiers::NONE, KeyEventKind::Repeat),
+        None
+    );
+    assert!(app.has_pending_approval());
+}
+
+#[test]
+fn approval_selection_resets_between_prompts() {
+    // Two prompts queued: the selection made for one prompt must never commit
+    // the next. After a commit, Enter alone is inert again until re-selected.
+    let mut app = App::new();
+    pending_approval(&mut app);
+    pending_approval(&mut app);
+
+    assert_eq!(app.handle_key(KeyCode::Char('y'), KeyModifiers::NONE), None);
+    assert_eq!(
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE),
+        Some(Action::Approve(ApprovalDecision::AllowOnce))
+    );
+    app.approve_front(ApprovalDecision::AllowOnce);
+    assert!(app.has_pending_approval(), "second prompt still pending");
+    assert_eq!(
+        app.approval_selection, None,
+        "selection must not survive a commit"
+    );
+
+    // The second prompt needs its own select-then-Enter.
+    assert_eq!(app.handle_key(KeyCode::Enter, KeyModifiers::NONE), None);
+    assert!(app.has_pending_approval());
+    assert_eq!(app.handle_key(KeyCode::Char('n'), KeyModifiers::NONE), None);
+    assert_eq!(
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE),
+        Some(Action::Approve(ApprovalDecision::Deny))
     );
 }
 
@@ -2309,6 +2434,49 @@ fn slash_esc_cancels() {
     assert!(
         app.composer.is_empty(),
         "composer should be empty after cancel"
+    );
+}
+
+/// Zero matches + Enter = the real command is still sent (`/tools off <key>`),
+/// not swallowed whole. Regression: in session 20261015_35ab9031
+/// `/tools off add_tool` was erased every time by the picker's Cancelled
+/// semantics, so the command never reached parse_command.
+#[test]
+fn slash_enter_with_no_match_submits_the_typed_command() {
+    let mut app = app_with_skills();
+    app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+    for c in "tools off add_tool".chars() {
+        app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    // Zero matches (the fixture has no tools skill) — the picker is still open.
+    assert_eq!(app.slash().unwrap().entries_count(), 0);
+    let action = app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+    assert!(app.slash().is_none(), "picker should close after Enter");
+    assert_eq!(
+        action,
+        Some(Action::Submit("/tools off add_tool".into())),
+        "no-match Enter must submit the typed text verbatim"
+    );
+    assert!(app.composer.is_empty(), "composer cleared on submit");
+}
+
+/// Zero matches + Enter, but the agent is running: no submit (same criterion as
+/// a plain Enter), just close the picker.
+#[test]
+fn slash_enter_with_no_match_while_running_closes_picker_without_submit() {
+    let mut app = app_with_skills();
+    app.running = true;
+    app.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+    for c in "tools off add_tool".chars() {
+        app.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+    }
+    let action = app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+    assert!(app.slash().is_none(), "picker should close after Enter");
+    assert_eq!(action, None, "no submit while running");
+    assert_eq!(
+        app.composer.text(),
+        "/tools off add_tool",
+        "text stays in the composer for later"
     );
 }
 
