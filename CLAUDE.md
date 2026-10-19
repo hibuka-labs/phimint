@@ -3,7 +3,9 @@
 ## Project: phimint
 
 A terminal AI coding agent in Rust, built on [phi-agent](https://github.com/hibuka-labs/phi-agent).
-Product first; it is also the real-world stress test for the framework.
+Product first: phimint ships on its own — releases, one-line install, docs,
+users. The phi family crates underneath are production libraries in their own
+right.
 
 ### Architecture Principle
 

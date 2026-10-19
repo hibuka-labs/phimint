@@ -2,7 +2,7 @@
 name = "phimint"
 version = "0.5.0"
 edition = "2024"
-description = "phimint — an AI coding agent built on phi-agent, used to stress-test the framework by writing code."
+description = "phimint — a terminal AI coding agent built on phi-agent. Not just good at chat: it reads the code, changes it, compiles and tests until the job is done."
 license = "MIT"
 repository = "https://github.com/hibuka-labs/phimint"
 keywords = ["ai", "agent", "tui", "coding-assistant", "llm"]
