@@ -219,6 +219,42 @@ pub async fn run_tui(
         let perf_path = session_ctx.session_dir.join("perf.log");
         let composer_log_path = session_ctx.session_dir.join("composer.log");
 
+        // Design canvas (M3): per-session canvas server + the three canvas
+        // tools, registered root-only like `add_tool`. Per-session because the
+        // store is `~/.phimint/canvas/<session>/` — a /resume switch must not
+        // write one session's screens into another's directory (row 18's
+        // "会话切换不串"). The click mailbox (M2) turns browser picks into user
+        // answers at a turn boundary — see the drain next to the bg_wake block.
+        // The launcher is the host's `y` consent gate (1C): `canvas_open` may
+        // only ask, and `canvas_push`'s implicit open never launches a browser.
+        let (canvas_prompts_tx, mut canvas_prompts_rx) = mpsc::unbounded_channel::<ApprovalItem>();
+        let canvas_host = super::canvas_host::CanvasHost::new(canvas_prompts_tx);
+        let canvas_tools = crate::tools::canvas::new_canvas_tools(
+            &base_dir,
+            &session_id,
+            Arc::new(super::canvas_host::ConsentLauncher(canvas_host.clone())),
+        );
+        {
+            let registry = agent.runtime().tools_mut();
+            for tool in crate::tools::canvas::canvas_tool_adapters(canvas_tools.clone()) {
+                registry.write().await.register_arc(Arc::new(tool));
+            }
+        }
+        let mut click_mailbox = super::click_mailbox::ClickMailbox::new();
+        let mut canvas_events: Option<mpsc::UnboundedReceiver<phi_canvas::CanvasEvent>> = None;
+        let mut canvas_subscribed: Option<Arc<phi_canvas::Canvas>> = None;
+        // Row 18 / resume: a session that ever had a canvas comes back closed
+        // and reopenable (Ctrl+B) — never auto-relaunched. Sessions with no
+        // canvas history show no status at all.
+        if base_dir
+            .join("canvas")
+            .join(&session_id)
+            .join("server-info")
+            .exists()
+        {
+            canvas_host.note_closed();
+        }
+
         // Two channels: events flow agent → TUI, commands flow TUI → agent. Both
         // unbounded — the TUI drains eagerly and the agent must never be throttled
         // (a full bounded queue would drop events or stall `run_turn`).
@@ -485,6 +521,11 @@ pub async fn run_tui(
             let loop_start = Instant::now();
 
             // Drain any events queued since the last frame into state.
+            // `running_before` captures the root-turn falling edge (1C row
+            // 15's boundary) before anything below can start another turn —
+            // child inject / bg wake / click drain all re-raise `running` at
+            // their send sites.
+            let running_before = app.running;
             while let Ok(ev) = event_rx.try_recv() {
                 // Thought deltas only feed the thinking panel, which animates on
                 // the 250 ms UI_TICK — redrawing per delta bought nothing but a
@@ -499,6 +540,7 @@ pub async fn run_tui(
                     dirty = true;
                 }
             }
+            let turn_fell = running_before && !app.running;
 
             // Check for window rotation after turn ends.
             {
@@ -590,6 +632,166 @@ pub async fn run_tui(
                 dirty = true;
             }
 
+            // Design canvas clicks (M2): queue every event into the mailbox —
+            // never injected into an active turn — then drain at the boundary.
+            // Idle is ≤ one coalesce window away (M2a: second-level, not
+            // bg_wake's 15s quiet window). A running turn holds the debt until
+            // it settles; sub-agents and background jobs deliberately do NOT
+            // hold it (a pick is a user answer — the fan-in router already
+            // holds its own injection while a turn runs, so the two never
+            // interleave inside one turn).
+            {
+                // The canvas is created lazily by canvas_push/canvas_open;
+                // (re)subscribe whenever the live handle is not the one whose
+                // events we forward (port 0 ⇒ a rebind is a new Canvas).
+                let live = canvas_tools.canvas().await;
+                let needs_sub = match (&live, &canvas_subscribed) {
+                    (Some(current), Some(subscribed)) => !Arc::ptr_eq(current, subscribed),
+                    (Some(_), None) => true,
+                    (None, _) => false,
+                };
+                if needs_sub {
+                    let canvas = live.clone().expect("Some whenever needs_sub");
+                    let (tx, rx) = mpsc::unbounded_channel();
+                    let mut sub = canvas.subscribe();
+                    tokio::spawn(async move {
+                        loop {
+                            match sub.recv().await {
+                                Ok(event) => {
+                                    if tx.send(event).is_err() {
+                                        break; // UI loop gone
+                                    }
+                                }
+                                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                                    tracing::warn!(
+                                        skipped = n,
+                                        "canvas click events consumer lagged"
+                                    );
+                                }
+                                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                            }
+                        }
+                    });
+                    canvas_events = Some(rx);
+                    canvas_subscribed = live.clone();
+                    // A rebind rebuilds canvas state from the session store
+                    // (seq continues, the last screen comes back), but the
+                    // mailbox's per-screen bookkeeping belongs to the old
+                    // Canvas and its pending events died with the old
+                    // subscription — start it fresh.
+                    click_mailbox = super::click_mailbox::ClickMailbox::new();
+                    // PTY harness seam (row 16): kill the first server task
+                    // without a close to exercise the crash face. One-shot per
+                    // process — recovery (Ctrl+B) re-subscribes, and a seam
+                    // re-armed there would kill the recovered canvas again
+                    // every interval ("why does it keep dying?").
+                    if let Ok(ms) = std::env::var("PHIMINT_CANVAS_CRASH_AFTER_MS")
+                        && let Ok(ms) = ms.parse::<u64>()
+                    {
+                        static CRASH_SEAM_USED: std::sync::atomic::AtomicBool =
+                            std::sync::atomic::AtomicBool::new(false);
+                        if !CRASH_SEAM_USED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                            let canvas = live.clone().expect("Some whenever needs_sub");
+                            tokio::spawn(async move {
+                                tokio::time::sleep(Duration::from_millis(ms)).await;
+                                canvas.shutdown().await;
+                            });
+                        }
+                    }
+                }
+                // 1C lifecycle poll: the phase the status bar reports. The bind
+                // is noted before anything acts on its screens, so the host's
+                // bookkeeping is reset to the (possibly restored) history the
+                // replay below refills — never a mix of two canvases.
+                if let Some(canvas) = live.as_ref() {
+                    if canvas.is_failed() {
+                        canvas_host.note_failed();
+                    } else if canvas.close_reason().is_some() {
+                        canvas_host.note_closed();
+                    } else {
+                        canvas_host.note_canvas(&canvas.url(), canvas.port());
+                        // An implicit `canvas_push` binds the server without
+                        // consulting the launcher (M3) — somebody still has to
+                        // ask the user about the browser. Idempotent per URL:
+                        // an explicit `canvas_open` already asked.
+                        let _ = canvas_host.request_model_launch(&canvas.url());
+                    }
+                    // Push replay. The broadcast subscription would race the
+                    // tool's first push (it holds its state lock across `push`),
+                    // so the host polls the full history — recording is
+                    // idempotent by seq.
+                    for receipt in canvas.pushed_screens() {
+                        canvas_host.on_push(&receipt);
+                    }
+                }
+            }
+            if let Some(rx) = canvas_events.as_mut() {
+                while let Ok(event) = rx.try_recv() {
+                    let screen = canvas_subscribed
+                        .as_ref()
+                        .and_then(|canvas| canvas.screen_envelope(event.screen));
+                    click_mailbox.push_event(Instant::now(), &event, screen.as_ref());
+                }
+            }
+            let composer_holds = !app.composer.is_empty();
+            let busy = app.running || matches!(app.status, super::app::AgentStatus::Running { .. });
+            let mut drain_started_this_tick = false;
+            if let Some(text) = click_mailbox.take_submit(Instant::now(), busy, composer_holds) {
+                tracing::info!("tui: click mailbox -> user answer");
+                // M2c: a click IS a real user answer — commit user-turn state
+                // at the send site, exactly like the Enter path (never from
+                // key handling, never via push_system). The pick lines are the
+                // waiting summary's 已定 (M2d).
+                drain_started_this_tick = true;
+                canvas_host.on_answered(&super::canvas_host::canvas_answer_lines(&text));
+                app.begin_user_turn(&text);
+                if cmd_tx.send(Cmd::Run(text)).is_ok() {
+                    app.running = true;
+                    user_msg_count += 1;
+                } else {
+                    app.settle_status_from_inflight();
+                }
+                dirty = true;
+            }
+
+            // Root-turn falling edge → the waiting screen (1C row 15). The
+            // policy lives in canvas_host; this block only executes the push.
+            let canvas_facts = super::canvas_host::AnswerFacts {
+                answered: click_mailbox.answered_screens().into_iter().collect(),
+                pending: click_mailbox.pending_screens().into_iter().collect(),
+                queued: click_mailbox.queued_screens().into_iter().collect(),
+            };
+            if turn_fell
+                && let Some(envelope) =
+                    canvas_host.on_root_turn_end(&canvas_facts, drain_started_this_tick)
+                && let Some(canvas) = canvas_tools.canvas().await
+                && let Ok(receipt) = canvas.push(envelope).await
+            {
+                canvas_host.on_push(&receipt);
+                canvas_host.on_waiting_push(receipt.screen);
+                dirty = true;
+            }
+
+            // Consent gate resolution (M3): the user's answer reaches the host
+            // here, and the tool's cached launch state follows it so a later
+            // `canvas_open` cannot report a stale `awaiting consent`.
+            if let Some(decision) = canvas_host.poll_consent() {
+                canvas_tools.set_launch_decision(decision).await;
+                dirty = true;
+            }
+            while let Some(note) = canvas_host.take_note() {
+                app.push_system(&note);
+                dirty = true;
+            }
+
+            // Status-bar face (1C row 13). Cheap enough to recompute per tick;
+            // only a real change redraws.
+            let status = canvas_host.status_line(&canvas_facts);
+            if app.canvas_status != status {
+                app.canvas_status = status;
+                dirty = true;
+            }
+
             // Cleanup completed sub-agents (auto-remove after 3 seconds)
             if app.cleanup_completed_agents() {
                 dirty = true;
@@ -617,9 +819,15 @@ pub async fn run_tui(
             }
 
             // Drain queued approval requests into the popup queue (one popup at a
-            // time — the front of the queue is what gets rendered).
+            // time — the front of the queue is what gets rendered). Canvas
+            // consent prompts (1C) ride their own channel into the same queue:
+            // they are prompts like any other, only their key legend differs.
             let had_approval = app.has_pending_approval();
             while let Ok(item) = approval_rx.try_recv() {
+                app.approval_queue.push_back(item);
+                dirty = true;
+            }
+            while let Ok(item) = canvas_prompts_rx.try_recv() {
                 app.approval_queue.push_back(item);
                 dirty = true;
             }
@@ -740,6 +948,18 @@ pub async fn run_tui(
                                         });
                                         break;
                                     }
+                                    // M2e: at the Enter boundary, pending
+                                    // canvas picks merge behind the typed text
+                                    // (typed first, blank line, then the
+                                    // `(画布选择)` lines) as one user message.
+                                    // A `/`-leading submit skips the merge and
+                                    // keeps the picks queued (M2c slash guard).
+                                    let text = click_mailbox.take_for_enter(&text).unwrap_or(text);
+                                    // Merged or not, any pick lines are now sent
+                                    // — they belong in the waiting summary's 已定.
+                                    canvas_host.on_answered(
+                                        &super::canvas_host::canvas_answer_lines(&text),
+                                    );
                                     // Commit the turn's UI state at the send
                                     // site — key handling only yields
                                     // Action::Submit, and this branch is past
@@ -808,13 +1028,51 @@ pub async fn run_tui(
                                     dirty = true;
                                     app.set_notice("screen redrawn");
                                 }
+                                Action::CanvasReopen => {
+                                    // Ctrl+B (1C row 16): reopen the design
+                                    // canvas in the browser. The user's own
+                                    // request — never a consent prompt. After a
+                                    // close/crash this rebinds a fresh server
+                                    // first (new port ⇒ new URL).
+                                    match canvas_tools.rebind().await {
+                                        Ok(url) => {
+                                            let port = canvas_tools
+                                                .canvas()
+                                                .await
+                                                .map(|canvas| canvas.port())
+                                                .unwrap_or(0);
+                                            // Note the URL before granting: a
+                                            // later note for a *different* URL
+                                            // resets consent, and the grant must
+                                            // not be clobbered by the tick.
+                                            canvas_host.note_canvas(&url, port);
+                                            canvas_host.request_user_launch(&url);
+                                            canvas_tools
+                                                .set_launch_decision(
+                                                    phi_canvas::LaunchDecision::Launched,
+                                                )
+                                                .await;
+                                            dirty = true;
+                                        }
+                                        Err(err) => {
+                                            tracing::warn!(error = %err, "ctrl+b: canvas reopen failed");
+                                            app.push_system(&format!(
+                                                "! Canvas reopen failed: {err}"
+                                            ));
+                                            dirty = true;
+                                        }
+                                    }
+                                }
                                 Action::Cancel => {
                                     agent.cancel();
                                     // Dismiss the popup(s) and drop any in-flight
                                     // request not yet drained (the cancelled handler
-                                    // stops sending once its token fires).
+                                    // stops sending once its token fires). A consent
+                                    // prompt dropped mid-air is answered as "nothing
+                                    // was opened" — safe direction (no browser).
                                     app.clear_approvals();
                                     while approval_rx.try_recv().is_ok() {}
+                                    while canvas_prompts_rx.try_recv().is_ok() {}
                                 }
                                 Action::Quit => {
                                     agent.cancel();
@@ -1022,6 +1280,17 @@ pub async fn run_tui(
         // Ensure the agent task is told to stop and has a chance to finish.
         let _ = cmd_tx.send(Cmd::Quit);
         let _ = agent_task.await;
+
+        // M1: this session is over. The canvas closes gracefully first (open
+        // tabs land on the farewell page) and only then stops serving — a bare
+        // `shutdown` is exactly the crash shape `is_failed` reports. Covers both
+        // outcomes: Quit, and a `/resume` switch aborting the old server (row
+        // 18) before the next iteration opens its own.
+        if let Some(canvas) = canvas_tools.canvas().await {
+            tracing::info!("tui: session over -> canvas close(SessionEnded) + shutdown");
+            let _ = canvas.close(phi_canvas::CloseReason::SessionEnded).await;
+            canvas.shutdown().await;
+        }
 
         tracing::info!("tui: agent task joined, flushing logs");
         frames.flush();

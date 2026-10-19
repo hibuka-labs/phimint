@@ -264,6 +264,10 @@ pub enum Action {
     /// composites after an alt-screen bounce — by invalidating ratatui's cache
     /// (see the `Event::Resize` note in `run.rs`).
     Redraw,
+    /// Reopen / rebind the design canvas in the browser (Ctrl+B, 1C row 16).
+    /// The user's own consent — launches without the `y` gate; after a failure
+    /// it rebinds a fresh server first.
+    CanvasReopen,
 }
 
 /// An event delivered from the agent task to the TUI.
@@ -405,6 +409,9 @@ pub struct App {
     /// upgrade phimint"), rendered on the bottom status bar's right slot.
     /// Survives keypresses; cleared on /upgrade or when already up-to-date.
     pub(crate) upgrade_hint: Option<String>,
+    /// Design-canvas face for the bottom status bar's left slot (1C row 13),
+    /// refreshed each frame from the canvas host. `None` until a canvas exists.
+    pub(crate) canvas_status: Option<super::canvas_host::StatusLine>,
     /// When the current Running/Waiting stretch began — drives the spinner and
     /// the elapsed readout in the status bar. `None` while Idle. The event loop
     /// has no other clock source: with zero events it never redraws, so a
@@ -506,6 +513,7 @@ impl App {
             tool_drafts: HashMap::new(),
             notice: None,
             upgrade_hint: None,
+            canvas_status: None,
             activity_since: None,
             last_turn_summary: None,
             final_status_pending: false,

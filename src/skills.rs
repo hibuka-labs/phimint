@@ -4,7 +4,9 @@
 //! surgery, `skill` tool, per-turn refresh middleware, telemetry) lives in
 //! agent-works' `skill` module and arrives through phi-agent's re-exports.
 //! This module keeps only phimint's own policy: which directories phimint
-//! scans by default. ops-agent/db-agent just supply their own directory lists.
+//! scans by default, and the bundled `design-canvas` routing skill (1C task 9)
+//! that is materialized next to them at startup. ops-agent/db-agent just
+//! supply their own directory lists.
 
 use std::path::PathBuf;
 
@@ -101,11 +103,18 @@ pub(crate) fn save_active_skills(
     std::fs::rename(&tmp, &path)
 }
 
+/// The bundled design-canvas skill (1C task 9): canvas routing judgment, when
+/// to push a screen, and what goes on it. Compiled into the binary and
+/// materialized into [`builtin_skills_dir`] at startup — install scripts know
+/// nothing about skills.
+pub const DESIGN_CANVAS_SKILL: &str = include_str!("assets/design-canvas/SKILL.md");
+
 /// Skill directories phimint scans by default (policy: the family `.claude/` convention).
 ///
-/// User-level is lower priority, project-level higher -- same-name overrides
-/// fall out of `SkillResolver::from_dirs`'s scan order (later wins). Future
-/// configuration (`.claude/phimint.toml` `[skills] dirs`) swaps in here; callers unchanged.
+/// Order is scan priority (later wins on name collision): the bundled
+/// `~/.phimint/skills` copy is the floor, then user-level, then project-level.
+/// Future configuration (`.claude/phimint.toml` `[skills] dirs`) swaps in here;
+/// callers unchanged.
 pub fn default_skill_dirs() -> Vec<PathBuf> {
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
@@ -113,9 +122,42 @@ pub fn default_skill_dirs() -> Vec<PathBuf> {
         .unwrap_or_else(|_| PathBuf::from("."));
 
     vec![
-        home.join(".claude").join("skills"), // user level (lower priority)
-        PathBuf::from(".claude/skills"),     // project level (higher priority)
+        builtin_skills_dir(),                // bundled (lowest priority)
+        home.join(".claude").join("skills"), // user level
+        PathBuf::from(".claude/skills"),     // project level (highest)
     ]
+}
+
+/// Where phimint's bundled skills live on disk — the lowest-priority scan
+/// dir. Overridable by the same skill name in `~/.claude/skills` or the
+/// project's `.claude/skills`.
+pub fn builtin_skills_dir() -> PathBuf {
+    std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join(".phimint")
+        .join("skills")
+}
+
+/// Materialize the bundled skills under `root` (normally
+/// [`builtin_skills_dir`]). Each skill is written when missing or stale —
+/// the bundled copy is an owned asset and is refreshed to match the binary,
+/// so customize by placing a same-named skill in a higher-priority scan dir
+/// rather than editing files here. Returns the paths written.
+pub fn materialize_builtin_skills(root: &Path) -> io::Result<Vec<PathBuf>> {
+    let skill_dir = root.join("design-canvas");
+    let path = skill_dir.join("SKILL.md");
+    if std::fs::read_to_string(&path).is_ok_and(|s| s == DESIGN_CANVAS_SKILL) {
+        return Ok(Vec::new());
+    }
+    std::fs::create_dir_all(&skill_dir)?;
+    // tmp+rename (same pattern as `save_active_skills`): a crash mid-write
+    // must never leave a half-written SKILL.md behind.
+    let tmp = skill_dir.join("SKILL.md.tmp");
+    std::fs::write(&tmp, DESIGN_CANVAS_SKILL)?;
+    std::fs::rename(&tmp, &path)?;
+    Ok(vec![path])
 }
 
 #[cfg(test)]
@@ -123,19 +165,161 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_dirs_layer_project_over_user() {
+    fn default_dirs_layer_builtin_lowest_project_highest() {
         let dirs = default_skill_dirs();
-        assert_eq!(dirs.len(), 2);
+        assert_eq!(dirs.len(), 3);
+        assert_eq!(
+            dirs[0],
+            builtin_skills_dir(),
+            "bundled skills scan first (lowest priority)"
+        );
         assert!(
-            dirs[0].ends_with(".claude/skills"),
-            "user level first: {:?}",
-            dirs[0]
+            dirs[1].ends_with(".claude/skills"),
+            "user level second: {:?}",
+            dirs[1]
         );
         assert_eq!(
-            dirs[1],
+            dirs[2],
             PathBuf::from(".claude/skills"),
-            "project level second"
+            "project level last (highest priority)"
         );
+    }
+
+    #[test]
+    fn builtin_skills_dir_sits_beside_sessions() {
+        assert!(builtin_skills_dir().ends_with(".phimint/skills"));
+    }
+
+    mod materialize {
+        use super::*;
+
+        #[test]
+        fn writes_design_canvas_skill() {
+            let tmp = tempfile::tempdir().unwrap();
+            let written = materialize_builtin_skills(tmp.path()).unwrap();
+            assert_eq!(written, vec![tmp.path().join("design-canvas/SKILL.md")]);
+            let on_disk = std::fs::read_to_string(&written[0]).unwrap();
+            assert_eq!(on_disk, DESIGN_CANVAS_SKILL);
+        }
+
+        #[test]
+        fn second_call_is_a_noop() {
+            let tmp = tempfile::tempdir().unwrap();
+            materialize_builtin_skills(tmp.path()).unwrap();
+            assert!(
+                materialize_builtin_skills(tmp.path()).unwrap().is_empty(),
+                "unchanged bundled content must not be rewritten"
+            );
+        }
+
+        /// The bundled copy is an owned asset: a stale on-disk version is
+        /// refreshed to the binary's content on the next startup.
+        #[test]
+        fn stale_copy_is_refreshed() {
+            let tmp = tempfile::tempdir().unwrap();
+            let dir = tmp.path().join("design-canvas");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("SKILL.md"), "stale user edit").unwrap();
+            let written = materialize_builtin_skills(tmp.path()).unwrap();
+            assert_eq!(written.len(), 1);
+            assert_eq!(
+                std::fs::read_to_string(&written[0]).unwrap(),
+                DESIGN_CANVAS_SKILL
+            );
+        }
+
+        /// Directory name must match the frontmatter `name` — the loader
+        /// rejects a mismatch, which would silently cost the model the skill.
+        #[test]
+        fn materialized_layout_scans_as_a_skill() {
+            let tmp = tempfile::tempdir().unwrap();
+            materialize_builtin_skills(tmp.path()).unwrap();
+            let resolver = SkillResolver::from_dirs(&[tmp.path().to_path_buf()]);
+            assert!(resolver.skill_names().contains(&"design-canvas"));
+        }
+    }
+
+    /// Guard: the routing doctrine is the product (1C task 9) — if these
+    /// lines drift out, the model loses the "when to use the canvas" rules.
+    mod design_canvas_content {
+        use super::*;
+
+        /// Load the bundled skill through the real loader. Doubles as the
+        /// YAML quoting guard: a colon in `description` unquoted would make
+        /// `serde_yaml` reject the whole skill and silently cost the model
+        /// the routing rules.
+        fn load_bundled() -> SkillResolver {
+            let tmp = tempfile::tempdir().unwrap();
+            materialize_builtin_skills(tmp.path()).unwrap();
+            SkillResolver::from_dirs(&[tmp.path().to_path_buf()])
+        }
+
+        /// Content match that ignores wrapping: the SKILL.md is hard-wrapped,
+        /// so a sentinel phrase must be free to straddle a line break.
+        fn contains_rule(needle: &str) -> bool {
+            let flatten = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+            flatten(DESIGN_CANVAS_SKILL).contains(&flatten(needle))
+        }
+
+        fn assert_rules(context: &str, needles: &[&str]) {
+            for needle in needles {
+                assert!(contains_rule(needle), "{context} missing: {needle}");
+            }
+        }
+
+        #[test]
+        fn bundled_skill_loads_and_is_model_visible() {
+            let resolver = load_bundled();
+            assert!(
+                resolver.skill_names().contains(&"design-canvas"),
+                "bundled skill must parse as design-canvas"
+            );
+            let catalog = render_catalog(&resolver).expect("catalog for a model-visible skill");
+            assert!(
+                catalog.contains("- design-canvas: "),
+                "catalog entry missing: {catalog}"
+            );
+        }
+
+        #[test]
+        fn routing_rules_are_present() {
+            assert_rules(
+                "routing rule",
+                &[
+                    // 纯文字选择不起画布
+                    "answer inline in the terminal",
+                    // 「长什么样」开画布
+                    "Appearance questions",
+                    // 判断困难宁开不省 + 理由是「不开错更贵」
+                    "When unsure, open the canvas",
+                    "Not opening is the more expensive mistake",
+                    // 升降维不重新描述需求
+                    "用图给我看",
+                    "never make them restate the question",
+                ],
+            );
+        }
+
+        #[test]
+        fn host_owns_waiting_screen_and_model_never_forces_a_browser() {
+            assert_rules(
+                "lifecycle rule",
+                &[
+                    "继续在终端讨论…", // waiting 屏由 host 自动推
+                    "You never craft that screen",
+                    "never retry `canvas_open` to force a browser open",
+                    "(画布选择)", // M2 answer prefix the model must recognize
+                ],
+            );
+        }
+
+        #[test]
+        fn screen_composition_names_the_real_component_classes() {
+            assert_rules(
+                "component class",
+                &[".cards", ".mockup", ".split", ".placeholder", "body_html"],
+            );
+        }
     }
 
     mod active_skills {

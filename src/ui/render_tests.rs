@@ -255,7 +255,7 @@ fn approval_popup_sizes_to_a_small_request() {
 
 #[test]
 fn approval_footer_spans_concatenate_to_the_budgeted_legend() {
-    // The popup's width/height budget is measured from APPROVAL_FOOTER; the
+    // The popup's width/height budget is measured from the prompt's legend; the
     // styled footer line must concatenate to exactly that text or the box
     // under-measures what it renders (or clips the legend).
     let mut app = App::new();
@@ -267,9 +267,29 @@ fn approval_footer_spans_concatenate_to_the_budgeted_legend() {
         Some(ApprovalDecision::Deny),
     ] {
         app.approval_selection = sel;
-        let line = approval_footer_line(&app);
+        let line = approval_footer_line(&app, false);
         let joined: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(joined, APPROVAL_FOOTER);
+        assert_eq!(joined, footer_legend(false));
+    }
+}
+
+#[test]
+fn consent_footer_spans_concatenate_to_the_budgeted_legend() {
+    // Canvas consent (1C) wears the two-key legend — same honesty contract.
+    let mut app = App::new();
+    push_approval_with_message(&mut app, "Open the design canvas?".into());
+    for sel in [
+        None,
+        Some(ApprovalDecision::AllowOnce),
+        Some(ApprovalDecision::Deny),
+    ] {
+        app.approval_selection = sel;
+        let line = approval_footer_line(&app, true);
+        let joined: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(joined, footer_legend(true));
+        assert!(joined.contains("[y] open browser"), "legend: {joined}");
+        assert!(joined.contains("[n] skip"), "legend: {joined}");
+        assert!(!joined.contains("[a]"), "no standing consent key: {joined}");
     }
 }
 
@@ -280,7 +300,7 @@ fn approval_footer_highlights_the_selected_option() {
     let mut app = App::new();
     push_approval_with_message(&mut app, "Write file: src/lib.rs".into());
     app.approval_selection = Some(ApprovalDecision::AllowAlways);
-    let line = approval_footer_line(&app);
+    let line = approval_footer_line(&app, false);
     let bold: Vec<&str> = line
         .spans
         .iter()
@@ -289,13 +309,98 @@ fn approval_footer_highlights_the_selected_option() {
         .collect();
     assert_eq!(bold, vec!["[a] allow always", "[Enter] confirm"]);
     app.approval_selection = None;
-    let line = approval_footer_line(&app);
+    let line = approval_footer_line(&app, false);
     assert!(
         line.spans
             .iter()
             .all(|s| !s.style.add_modifier.contains(Modifier::BOLD)),
         "nothing selected → nothing highlighted:\n{line:?}"
     );
+}
+
+#[test]
+fn consent_footer_highlights_the_selected_option() {
+    // Same select-then-Enter contract on the consent gate.
+    let mut app = App::new();
+    push_approval_with_message(&mut app, "Open the design canvas?".into());
+    app.approval_selection = Some(ApprovalDecision::AllowOnce);
+    let line = approval_footer_line(&app, true);
+    let bold: Vec<&str> = line
+        .spans
+        .iter()
+        .filter(|s| s.style.add_modifier.contains(Modifier::BOLD))
+        .map(|s| s.content.as_ref())
+        .collect();
+    assert_eq!(bold, vec!["[y] open browser", "[Enter] confirm"]);
+}
+
+/// Locate `needle`'s first cell and return its style. The row is walked the way
+/// `buffer_to_text` does it (step over a wide glyph's continuation cell) and
+/// the needle's byte offset maps back to a screen column, since CJK cells are
+/// multi-byte — the same trick as the banner test.
+fn cell_style_for(buf: &Buffer, width: usize, needle: &str) -> Option<Style> {
+    let area = buf.area;
+    for y in 0..area.height as usize {
+        let mut row = String::new();
+        let mut col_of_byte: Vec<usize> = Vec::new();
+        let mut x = 0usize;
+        while x < width {
+            let sym = buf.content()[y * width + x].symbol();
+            for _ in 0..sym.len() {
+                col_of_byte.push(x);
+            }
+            row.push_str(sym);
+            x += sym.width().max(1);
+        }
+        if let Some(byte) = row.find(needle) {
+            return Some(buf.content()[y * width + col_of_byte[byte]].style());
+        }
+    }
+    None
+}
+
+#[test]
+fn status_bar_shows_the_canvas_state_words() {
+    // Row 13: the state words are spec-locked and ride the left slot, with the
+    // mode block keeping its columns beside them.
+    let mut app = App::new();
+    app.canvas_status = Some(crate::ui::canvas_host::StatusLine {
+        text: "canvas ● localhost:4242 · 3 个选项待选".into(),
+        alert: false,
+    });
+    let text = snapshot_text(&mut app, 100, 12);
+    assert!(
+        text.contains("canvas ● localhost:4242 · 3 个选项待选"),
+        "canvas face missing from the status bar:\n{text}"
+    );
+    assert!(
+        text.contains("(shift+tab to cycle)"),
+        "the mode block keeps its columns:\n{text}"
+    );
+
+    // The live face is calm green, not the crash face's shout.
+    let mut terminal = Terminal::new(TestBackend::new(100, 12)).unwrap();
+    terminal.draw(|f| draw(f, &mut app)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+    let style = cell_style_for(&buf, 100, "canvas ● localhost").expect("canvas face rendered");
+    assert_eq!(style.fg, Some(theme::good(app.scheme())));
+    assert!(!style.add_modifier.contains(Modifier::BOLD));
+}
+
+#[test]
+fn status_bar_crash_face_is_red_and_bold() {
+    // Row 16: the disconnected face is the one that shouts.
+    let mut app = App::new();
+    app.canvas_status = Some(crate::ui::canvas_host::StatusLine {
+        text: "canvas ● 已断开 (ctrl+b 重开)".into(),
+        alert: true,
+    });
+    let mut terminal = Terminal::new(TestBackend::new(100, 12)).unwrap();
+    terminal.draw(|f| draw(f, &mut app)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+    let style = cell_style_for(&buf, 100, "canvas ● 已断开").expect("crash face rendered");
+    assert_eq!(style.fg, Some(Color::Red));
+    assert!(style.add_modifier.contains(Modifier::BOLD));
 }
 
 #[test]
@@ -2763,4 +2868,151 @@ fn status_bar_elides_long_right_notices() {
         !bar.contains("xxxxxxxxxx"),
         "the elision must cut the overflow away:\n{snap}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Real terminal cursor (IME anchoring)
+//
+// The composer used to paint its caret as a REVERSED span and leave the
+// hardware cursor wherever the last diff cell landed. After a scroll redraw
+// that is the status bar — and macOS Terminal.app draws IME marked text at
+// the hardware cursor even when it is hidden, so the characters the user is
+// typing showed up outside the input until Ctrl+L forced a full repaint.
+// `draw` now parks the real cursor on the composer caret instead.
+// ---------------------------------------------------------------------------
+
+/// Screen cell of the composer's caret: `"> "` prefix + display width of the
+/// text before the cursor. Panics if the composer band is not where the
+/// layout says it is (single-row input, rules above and below).
+fn caret_cell(app: &App, height: u16) -> (u16, u16) {
+    let input_row = height - 3;
+    let (line, byte) = app.composer.cursor();
+    let text = app.composer.lines().get(line).cloned().unwrap_or_default();
+    // Every composer row is indented two columns (`"> "` on the first).
+    let mut w = 2u16;
+    let mut b = 0usize;
+    for ch in text.chars() {
+        if b >= byte {
+            break;
+        }
+        w += unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0) as u16;
+        b += ch.len_utf8();
+    }
+    (w, input_row)
+}
+
+/// After every redraw the hardware cursor must sit on the composer caret —
+/// including the redraw right after a scroll, which is where it used to be
+/// left on the status bar.
+#[test]
+fn real_cursor_sits_on_composer_caret_across_scroll_and_typing() {
+    let (w, h) = (100u16, 40u16);
+    let backend = TestBackend::new(w, h);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut app = App::new();
+    for i in 0..120 {
+        app.transcript.push(OutputLine {
+            spans: None,
+            original: None,
+            detail: None,
+            text: format!("history row {i} 一些中文内容"),
+            kind: LineKind::Normal,
+            tool_state: None,
+        });
+    }
+
+    // Phase 1: fresh draw.
+    terminal.draw(|f| draw(f, &mut app)).unwrap();
+    assert_cursor_on_caret(&terminal, &app, h, "fresh draw");
+
+    // Phase 2: scroll up out of follow-bottom — the status bar gains a scroll
+    // counter, so the diff's last cell is on the status bar. This is the frame
+    // that used to strand the pen there.
+    for _ in 0..20 {
+        app.scroll_wheel_up();
+    }
+    terminal.draw(|f| draw(f, &mut app)).unwrap();
+    assert_cursor_on_caret(&terminal, &app, h, "after scroll up");
+
+    // Phase 3: type CJK at the caret while still scrolled.
+    app.composer.insert_str("在办完给");
+    terminal.draw(|f| draw(f, &mut app)).unwrap();
+    assert_cursor_on_caret(&terminal, &app, h, "after typing CJK scrolled");
+
+    // Phase 4: move the caret back across the wide glyphs.
+    app.composer.move_left();
+    app.composer.move_left();
+    terminal.draw(|f| draw(f, &mut app)).unwrap();
+    assert_cursor_on_caret(&terminal, &app, h, "after caret walk back");
+}
+
+fn assert_cursor_on_caret(terminal: &Terminal<TestBackend>, app: &App, h: u16, when: &str) {
+    let backend = terminal.backend();
+    assert!(
+        backend.cursor_visible(),
+        "{when}: the IME needs a visible hardware cursor"
+    );
+    let (x, y) = caret_cell(app, h);
+    let pos = backend.cursor_position();
+    assert_eq!(
+        (pos.x, pos.y),
+        (x, y),
+        "{when}: cursor must sit on the composer caret"
+    );
+    // Explicit regression statement: never leave it on the status bar.
+    assert_ne!(pos.y, h - 1, "{when}: cursor stranded on the status bar");
+}
+
+/// The caret column is display-width aware: on CJK each glyph is two columns.
+#[test]
+fn real_cursor_caret_column_counts_wide_glyphs() {
+    let (w, h) = (80u16, 24u16);
+    let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+    let mut app = App::new();
+    app.composer.insert_str("在办完给");
+    app.composer.move_home();
+    terminal.draw(|f| draw(f, &mut app)).unwrap();
+    let pos = terminal.backend().cursor_position();
+    assert_eq!((pos.x, pos.y), (2, h - 3), "home is right after '> '");
+
+    app.composer.move_right();
+    terminal.draw(|f| draw(f, &mut app)).unwrap();
+    let pos = terminal.backend().cursor_position();
+    assert_eq!(
+        (pos.x, pos.y),
+        (4, h - 3),
+        "one wide glyph right is two columns"
+    );
+
+    app.composer.move_end();
+    terminal.draw(|f| draw(f, &mut app)).unwrap();
+    let pos = terminal.backend().cursor_position();
+    assert_eq!(
+        (pos.x, pos.y),
+        (2 + 8, h - 3),
+        "end of four wide glyphs is eight columns"
+    );
+}
+
+/// The fake REVERSED caret must be gone: a block cursor over a REVERSED cell
+/// double-inverts and disappears, and the two would fight for the same cell.
+#[test]
+fn composer_caret_is_no_longer_a_reversed_span() {
+    let (w, h) = (80u16, 24u16);
+    let mut app = App::new();
+    app.composer.insert_str("在办完给");
+    let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+    terminal.draw(|f| draw(f, &mut app)).unwrap();
+    let buf = terminal.backend().buffer().clone();
+    let cells = buf.content();
+    let width = buf.area.width as usize;
+    let input_row = (h - 3) as usize;
+    for x in 0..width {
+        let cell = &cells[input_row * width + x];
+        assert!(
+            !cell.modifier.contains(Modifier::REVERSED),
+            "composer row must not paint a fake caret at col {x}: {:?}",
+            cell.symbol()
+        );
+    }
 }

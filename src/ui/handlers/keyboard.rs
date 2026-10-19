@@ -132,6 +132,15 @@ impl App {
             return Some(Action::Redraw);
         }
 
+        // Ctrl+B: reopen the design canvas (1C row 16). Global for the same
+        // reason as Ctrl+L — the crash face advertises "ctrl+b 重开", and an
+        // approval popup (a canvas consent prompt is exactly the one that is
+        // up when the server dies) must not swallow the recovery key it
+        // advertises. A chord can never be an approval decision.
+        if ctrl && code == Char('b') {
+            return Some(Action::CanvasReopen);
+        }
+
         // Right-click copy menu: Up/Down move the highlight, Enter copies (or
         // cancels), Esc closes; everything else is swallowed.
         if self.selection_state.menu_is_open() {
@@ -175,10 +184,18 @@ impl App {
         if !self.approval_queue.is_empty() {
             let bare = !modifiers
                 .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER);
+            // Canvas-consent prompts (1C) offer no standing consent: `a` is not
+            // in their legend, so it aliases to the one-shot grant rather than
+            // AllowAlways (which nothing would honor as standing anyway).
+            let consent = self
+                .approval_queue
+                .front()
+                .is_some_and(|item| crate::ui::canvas_host::is_canvas_consent(&item.request));
             return match code {
                 Char(c) if kind == KeyEventKind::Press && bare => {
                     let choice = match c.to_ascii_lowercase() {
                         'y' => Some(ApprovalDecision::AllowOnce),
+                        'a' if consent => Some(ApprovalDecision::AllowOnce),
                         'a' => Some(ApprovalDecision::AllowAlways),
                         'n' => Some(ApprovalDecision::Deny),
                         _ => None,

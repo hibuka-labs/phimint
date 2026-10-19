@@ -1018,6 +1018,35 @@ fn ctrl_l_requests_full_repaint() {
 }
 
 #[test]
+fn ctrl_b_reopens_the_canvas_even_mid_approval() {
+    // Row 16: the crash face advertises "ctrl+b 重开", and the consent prompt
+    // of the canvas that just died is exactly the popup that would otherwise
+    // swallow the key. A chord can never be an approval decision, so it must
+    // route globally like Ctrl+L.
+    let mut app = App::new();
+    assert_eq!(
+        app.handle_key(KeyCode::Char('b'), KeyModifiers::CONTROL),
+        Some(Action::CanvasReopen)
+    );
+    // Plain 'b' types — only the chord reopens.
+    assert_eq!(app.handle_key(KeyCode::Char('b'), KeyModifiers::NONE), None);
+    assert!(app.composer.text().contains('b'));
+    app.composer.clear();
+
+    pending_approval(&mut app);
+    assert_eq!(
+        app.handle_key(KeyCode::Char('b'), KeyModifiers::CONTROL),
+        Some(Action::CanvasReopen),
+        "an approval popup must not swallow the recovery key it advertises"
+    );
+    assert!(
+        app.has_pending_approval(),
+        "and it must not decide the prompt"
+    );
+    assert_eq!(app.approval_selection, None);
+}
+
+#[test]
 fn turn_error_appends_red_line_and_resets() {
     let mut app = App::new();
     app.running = true;

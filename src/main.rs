@@ -288,6 +288,13 @@ async fn main() -> Result<()> {
     // Cleanup expired session data (history, notes, sessions) at startup.
     cleanup_expired_data(&base_dir, cli.session_retention_days);
 
+    // Materialize the bundled design-canvas skill before the agent scans
+    // skill dirs (1C task 9). Non-fatal: a failed write just costs the model
+    // the routing skill for this run.
+    if let Err(e) = skills::materialize_builtin_skills(&skills::builtin_skills_dir()) {
+        tracing::warn!(error = %e, "failed to materialize bundled skills");
+    }
+
     // Sessions created before the workspace tag existed have no home folder,
     // which makes the resume picker's folder view look like the history is
     // gone. File them once, from the repos their paths touched. Declining to

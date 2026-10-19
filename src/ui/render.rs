@@ -643,13 +643,18 @@ fn render_composer(f: &mut Frame, app: &App, area: Rect) {
     // to exactly one ratatui row. This avoids double-wrapping (our slice +
     // Paragraph::wrap) which caused misaligned display.
     let mut items: Vec<Line> = Vec::new();
+    // Caret position in (wrapped-row, column) space — and, once the box is
+    // laid out, on screen. The caret is the REAL terminal cursor (see below),
+    // not a REVERSED stand-in.
+    let mut caret_item: Option<usize> = None;
+    let mut caret_col: usize = 0;
+    let mut item_base = 0usize;
     for (idx, line) in lines.iter().enumerate() {
         let prefix = if idx == 0 { "> " } else { "  " };
         let full = format!("{prefix}{line}");
         let wrapped = wrap(&full, inner_width);
 
-        // Find which visual row the cursor falls on and its byte offset
-        // within that wrapped row.
+        // Find which visual row the cursor falls on and its column in that row.
         let cursor_pos = if idx == cursor.0 {
             let cursor_byte = prefix_w + cursor.1;
             let mut col = 0usize;
@@ -687,32 +692,12 @@ fn render_composer(f: &mut Frame, app: &App, area: Rect) {
             if let Some((vis_row, vis_col)) = cursor_pos
                 && j == vis_row
             {
-                // Byte offset into the wrapped row for the cursor.
-                let mut b = 0usize;
-                let mut c = 0usize;
-                for ch in row.chars() {
-                    if c >= vis_col {
-                        break;
-                    }
-                    c += UnicodeWidthChar::width(ch).unwrap_or(0);
-                    b += ch.len_utf8();
-                }
-                let before = &row[..b];
-                let at = row[b..].chars().next();
-                let after_start = b + at.map(|ch| ch.len_utf8()).unwrap_or(0);
-                let after = &row[after_start..];
-                let cursor_style = Style::default().add_modifier(Modifier::REVERSED);
-                let mut spans = vec![Span::raw(before.to_string())];
-                match at {
-                    Some(ch) => spans.push(Span::styled(ch.to_string(), cursor_style)),
-                    None => spans.push(Span::styled(" ".to_string(), cursor_style)),
-                }
-                spans.push(Span::raw(after.to_string()));
-                items.push(Line::from(spans));
-                continue;
+                caret_item = Some(item_base + j);
+                caret_col = vis_col;
             }
             items.push(Line::from(row.clone()));
         }
+        item_base += wrapped.len();
     }
 
     // Scroll to show the bottom of the buffer (cursor is usually at the end).
@@ -727,6 +712,24 @@ fn render_composer(f: &mut Frame, app: &App, area: Rect) {
         .border_type(BorderType::Plain)
         .border_style(Style::default().fg(theme::faint(app.scheme())));
     f.render_widget(Paragraph::new(items).block(block).scroll((scroll, 0)), area);
+
+    // Park the REAL terminal cursor on the input caret. A REVERSED stand-in
+    // draws the caret but leaves the hardware cursor wherever the last diff
+    // cell landed — after a scroll redraw that is the status bar — and macOS
+    // Terminal.app draws the IME composition (marked text) at that stale
+    // position, so typed CJK shows up in the wrong place until Ctrl+L. The
+    // terminal's own cursor is what anchors an IME; show it instead of faking
+    // it (a block cursor over a REVERSED cell double-inverts and vanishes).
+    if let Some(item) = caret_item
+        && inner_height > 0
+    {
+        let visible_row = (item as u32).saturating_sub(scroll as u32);
+        if visible_row < inner_height as u32 {
+            let x = area.x + (caret_col as u16).min(area.width.saturating_sub(1));
+            let y = area.y + 1 + visible_row as u16;
+            f.set_cursor_position((x, y));
+        }
+    }
 }
 
 /// The process-status line (Claude Code style) that sits between the
@@ -771,10 +774,10 @@ fn tip_line_text(app: &App) -> Option<String> {
 }
 
 /// Bottom status bar (Claude Code style): left, the live approval mode badge
-/// with its switch hint; right, the highest-priority status-driven notice —
-/// the persistent upgrade hint, else the transcript scroll position. The
-/// right slot stays empty when there is nothing to report; rotating tips
-/// ride the process row, never here.
+/// with its switch hint plus the design-canvas face (1C row 13); right, the
+/// highest-priority status-driven notice — the persistent upgrade hint, else
+/// the transcript scroll position. The right slot stays empty when there is
+/// nothing to report; rotating tips ride the process row, never here.
 fn render_status(f: &mut Frame, app: &App, area: Rect) {
     let scheme = app.scheme();
     let mode = app.approval_switch.get();
@@ -791,6 +794,19 @@ fn render_status(f: &mut Frame, app: &App, area: Rect) {
         Span::raw(" "),
         Span::styled(MODE_CYCLE_HINT, Style::default().fg(theme::hint(scheme))),
     ];
+    // Canvas face (1C): the spec-locked state words, green when the canvas is
+    // simply there and red-bold on the crash face (row 16).
+    if let Some(status) = &app.canvas_status {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(
+            status.text.clone(),
+            if status.alert {
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme::good(scheme))
+            },
+        ));
+    }
     if let Some((text, style)) = status_bar_right(app) {
         let width = area.width as usize;
         let left_w: usize = spans
@@ -998,20 +1014,36 @@ fn wrapped_rows(s: &str, inner_w: u16) -> u16 {
         .div_ceil(inner_w.max(1) as usize) as u16
 }
 
-/// The approval decision legend. The one line that must never be clipped: it is
-/// pinned to the last row(s) of the popup, sized for, and rendered apart from
-/// the message body.
+/// The approval decision legend (tool prompts). The one line that must never be
+/// clipped: it is pinned to the last row(s) of the popup, sized for, and
+/// rendered apart from the message body.
 ///
 /// BUG 4 (final form): letters only SELECT an option, bare Enter COMMITS it.
-/// The footer is built from spans whose concatenated text equals this constant
-/// exactly ([`approval_footer_line`] — see its test), so the width budget stays
-/// honest while the selected option and the commit key can be highlighted.
+/// The footer is built from spans whose concatenated text equals
+/// [`footer_legend`] for the prompt kind exactly ([`approval_footer_line`] — see
+/// its tests), so the width budget stays honest while the selected option and
+/// the commit key can be highlighted.
 const APPROVAL_FOOTER: &str = "[y] allow once   [a] allow always   [n] deny   -   [Enter] confirm";
+
+/// The canvas-consent legend (1C). The canvas launch gate is not a tool
+/// approval: there is no standing consent to give (a later implicit
+/// `canvas_push` must never pop a browser on its own), so `a` is not offered.
+/// `y`/`n` map to AllowOnce/Deny exactly as on the tool popup.
+const CONSENT_FOOTER: &str = "[y] open browser   [n] skip   -   [Enter] confirm";
+
+/// Which legend this prompt wears — see [`approval_footer_line`].
+fn footer_legend(consent: bool) -> &'static str {
+    if consent {
+        CONSENT_FOOTER
+    } else {
+        APPROVAL_FOOTER
+    }
+}
 
 /// The footer as a styled line: the selected option (and a live commit key when
 /// one is selected) carry the highlight; the rest stay cyan. Concatenating the
-/// spans yields [`APPROVAL_FOOTER`] verbatim.
-fn approval_footer_line(app: &App) -> Line<'static> {
+/// spans yields [`footer_legend`] for the prompt kind verbatim.
+fn approval_footer_line(app: &App, consent: bool) -> Line<'static> {
     let sel_bg = theme::selection_bg(app.scheme());
     let option = |text: &str, decision: ApprovalDecision| {
         if app.approval_selection.as_ref() == Some(&decision) {
@@ -1038,15 +1070,31 @@ fn approval_footer_line(app: &App) -> Line<'static> {
         )
     };
     let gap = Span::styled("   ".to_string(), Style::default().fg(Color::Cyan));
-    Line::from(vec![
-        option("[y] allow once", ApprovalDecision::AllowOnce),
-        gap.clone(),
-        option("[a] allow always", ApprovalDecision::AllowAlways),
-        gap.clone(),
-        option("[n] deny", ApprovalDecision::Deny),
-        Span::styled("   -   ".to_string(), Style::default().fg(Color::Cyan)),
-        commit,
-    ])
+    let choices: &[(&str, ApprovalDecision)] = if consent {
+        &[
+            ("[y] open browser", ApprovalDecision::AllowOnce),
+            ("[n] skip", ApprovalDecision::Deny),
+        ]
+    } else {
+        &[
+            ("[y] allow once", ApprovalDecision::AllowOnce),
+            ("[a] allow always", ApprovalDecision::AllowAlways),
+            ("[n] deny", ApprovalDecision::Deny),
+        ]
+    };
+    let mut spans = Vec::new();
+    for (text, decision) in choices {
+        if !spans.is_empty() {
+            spans.push(gap.clone());
+        }
+        spans.push(option(text, decision.clone()));
+    }
+    spans.push(Span::styled(
+        "   -   ".to_string(),
+        Style::default().fg(Color::Cyan),
+    ));
+    spans.push(commit);
+    Line::from(spans)
 }
 
 /// A centered modal popup showing the current approval request + the decision
@@ -1062,6 +1110,10 @@ fn render_approval_popup(f: &mut Frame, app: &App) {
     let Some(request) = app.current_approval() else {
         return;
     };
+    // One legend per prompt kind: canvas consent wears the two-key gate (no
+    // standing "always"), tool approvals the three-key one.
+    let consent = super::canvas_host::is_canvas_consent(request);
+    let legend = footer_legend(consent);
 
     let (risk, risk_color) = risk_label(&request.risk_level);
     let mut head_lines = vec![
@@ -1105,7 +1157,7 @@ fn render_approval_popup(f: &mut Frame, app: &App) {
         }),
         UnicodeWidthStr::width(request.title.as_str()),
         UnicodeWidthStr::width(format!("Risk: {risk}").as_str()),
-        UnicodeWidthStr::width(APPROVAL_FOOTER),
+        UnicodeWidthStr::width(legend),
     ]
     .into_iter()
     .chain(message_lines.iter().map(|s| UnicodeWidthStr::width(*s)))
@@ -1120,7 +1172,7 @@ fn render_approval_popup(f: &mut Frame, app: &App) {
         .max(3)
         .min(screen.width.max(1));
     let inner_w = width.saturating_sub(2);
-    let footer_rows = wrapped_rows(APPROVAL_FOOTER, inner_w).max(1);
+    let footer_rows = wrapped_rows(legend, inner_w).max(1);
     // Head lines are short and counted unwrapped; message lines are budgeted
     // for the wrap width actually chosen above.
     let body_rows = head_lines
@@ -1171,7 +1223,7 @@ fn render_approval_popup(f: &mut Frame, app: &App) {
     body.extend(message_lines.iter().map(|s| Line::from(*s)));
     f.render_widget(Paragraph::new(body).wrap(Wrap { trim: true }), body_rect);
     f.render_widget(
-        Paragraph::new(approval_footer_line(app)).wrap(Wrap { trim: true }),
+        Paragraph::new(approval_footer_line(app, consent)).wrap(Wrap { trim: true }),
         footer_rect,
     );
 }

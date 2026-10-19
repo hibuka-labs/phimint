@@ -10,8 +10,13 @@
 //!
 //! `add_tool` is the tool-socket agent-write entry (human-confirmed): it is
 //! not a context provider but the agent's way to mount a script as a tool.
+//!
+//! `canvas` adapts the phi-canvas design-canvas tools (M3); the click mailbox
+//! and message synthesis (M2) live in `ui::click_mailbox`.
 
 pub mod add_tool;
+pub mod browser;
+pub mod canvas;
 pub mod diagnostics;
 pub mod repomap;
 pub mod ripgrep;
