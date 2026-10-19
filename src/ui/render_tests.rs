@@ -2692,6 +2692,24 @@ fn status_bar_right_slot_prefers_upgrade_hint() {
 }
 
 #[test]
+fn upgrade_notice_is_committed_to_transcript() {
+    // Session 20261018_7844215b: the hint lived only in the status slot, which
+    // dies with the alt-screen — a quick start/exit showed the user nothing.
+    // The committed transcript is what the exit replay reprints.
+    let mut app = App::new();
+    app.handle_event(TuiEvent::UpdateAvailable {
+        version: "0.9.9".into(),
+        download_url: "https://example.invalid/phimint".into(),
+    });
+    assert!(app.upgrade_hint.is_some(), "status-slot hint must remain");
+    let snap = snapshot_text(&mut app, 80, 24);
+    assert!(
+        snap.contains("0.9.9 available"),
+        "notice must be in the committed transcript (exit replay source):\n{snap}"
+    );
+}
+
+#[test]
 fn status_bar_right_slot_shows_scroll_position_off_bottom() {
     let mut app = App::new();
     for i in 0..100 {

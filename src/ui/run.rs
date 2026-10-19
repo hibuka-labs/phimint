@@ -400,6 +400,14 @@ pub async fn run_tui(
             app.push_system(&format!("! {notice}"));
         }
 
+        // Two phimint binaries on PATH is the "installed the new one, ran the
+        // old one" trap (session 20261018_7844215b: 0.5.0 landed in
+        // ~/.local/bin, a stale 0.4.1 in ~/.cargo/bin kept winning). Name the
+        // shadows up front so the version mix-up is visible, not mysterious.
+        if let Some(notice) = crate::bin_shadow::notice() {
+            app.push_system(&format!("! {notice}"));
+        }
+
         // Replay historical messages into the transcript so the user sees the
         // previous conversation (not just a blank screen) after --resume.
         if let Some(messages) = &resume_messages {

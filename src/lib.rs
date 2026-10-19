@@ -7,6 +7,7 @@
 pub mod agent;
 pub mod approval;
 pub mod banner;
+pub mod bin_shadow;
 pub mod config;
 pub mod context_rotation;
 pub mod external;

@@ -635,7 +635,15 @@ impl App {
                 // Channel-aware: brew/npm/cargo own their upgrades, standalone
                 // self-replaces via `phimint update` (see update::install_source).
                 let cmd = crate::update::install_source::detect().upgrade_command();
-                self.upgrade_hint = Some(format!("⬆ phimint {version} available - run: {cmd}"));
+                let hint = format!("⬆ phimint {version} available - run: {cmd}");
+                // Commit it to the transcript as well: the status slot lives on
+                // the alt-screen and dies with it, so a quick start/exit left
+                // the user with no trace of the notice (session
+                // 20261018_7844215b). The committed transcript is what the exit
+                // replay reprints into scrollback.
+                self.flush_pending();
+                self.push_system(&hint);
+                self.upgrade_hint = Some(hint);
                 tracing::info!(version = %version, "upgrade available");
             }
             TuiEvent::TipsUpdated { items } => {
