@@ -155,6 +155,39 @@ fn multiple_due_screens_compose_one_message() {
     );
 }
 
+#[test]
+fn the_same_pick_twice_is_one_answer() {
+    // The model re-pushes the same question mid-turn (v2) and cannot see the
+    // click on the earlier screen — the user answers both and both queue. One
+    // question, one answer: identical lines collapse into the newest.
+    let mut mailbox = ClickMailbox::new();
+    let t0 = Instant::now();
+    let env = envelope();
+    mailbox.push_event(t0, &select(1, "b"), Some(&env));
+    mailbox.push_event(t0, &select(2, "b"), Some(&env));
+
+    assert_eq!(
+        mailbox.take_submit(t0 + CLICK_COALESCE, false, false),
+        Some("(画布选择) 已选 b · 顶部横向导航".to_string())
+    );
+}
+
+#[test]
+fn different_picks_on_two_versions_keep_the_trail() {
+    // The user changed their mind between the two versions: both answers are
+    // real, in order — the last line is the live one.
+    let mut mailbox = ClickMailbox::new();
+    let t0 = Instant::now();
+    let env = envelope();
+    mailbox.push_event(t0, &select(1, "b"), Some(&env));
+    mailbox.push_event(t0, &select(2, "c"), Some(&env));
+
+    assert_eq!(
+        mailbox.take_submit(t0 + CLICK_COALESCE, false, false),
+        Some("(画布选择) 已选 b · 顶部横向导航\n(画布选择) 已选 c · 混合式".to_string())
+    );
+}
+
 // --- rows 6 + 12: label hygiene --------------------------------------------
 
 #[test]
@@ -179,7 +212,11 @@ fn label_sanitize_strips_newlines_and_leading_slash() {
             },
         ],
         body_html: String::new(),
+        screen: None,
         multiselect: false,
+        reference: None,
+        escape: None,
+        interstitial: false,
     };
     mailbox.push_event(t0, &select(1, "a"), Some(&env));
 

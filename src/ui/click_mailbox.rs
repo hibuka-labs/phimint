@@ -354,7 +354,19 @@ impl ClickMailbox {
             lines.push(synthesize(state, &draft));
             state.submitted = true;
         }
-        lines
+        // Two versions of one question can each queue a pick: the model re-pushes
+        // mid-turn and cannot see the click on the earlier screen, so the user
+        // answers again. When both read the same, the user answered once — keep
+        // the newest line only. A differing repeat stays as the trail (the last
+        // line is the live answer).
+        let mut out: Vec<String> = Vec::with_capacity(lines.len());
+        for line in lines {
+            if let Some(pos) = out.iter().position(|kept| *kept == line) {
+                out.remove(pos);
+            }
+            out.push(line);
+        }
+        out
     }
 }
 

@@ -282,6 +282,14 @@ fn waiting_envelope_is_the_fixed_line_plus_summary() {
 }
 
 #[test]
+fn waiting_envelope_is_interstitial_not_a_version() {
+    // The canvas version rail is the design history. If the waiting screen
+    // counted as a version, every pause in the discussion would sit in it.
+    let env = waiting_envelope(&[], &[]);
+    assert!(env.interstitial);
+}
+
+#[test]
 fn waiting_envelope_escapes_model_supplied_labels() {
     let env = waiting_envelope(&["已选 <script>alert(1)</script>".to_string()], &[]);
     assert!(

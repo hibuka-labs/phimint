@@ -240,6 +240,16 @@ pub async fn run_tui(
                 registry.write().await.register_arc(Arc::new(tool));
             }
         }
+        // `ask_user` — the text half of the design routing: a concept choice
+        // ("do we do this / which first / which tech") answered in a terminal
+        // picker instead of on the canvas. Root-only like `canvas_*` (post-
+        // build registration never reaches a child's tool face). The run loop
+        // below services the receiver one modal picker at a time.
+        let (ask_user_tool, mut ask_rx) = crate::tools::ask_user::new_ask_user_tool();
+        {
+            let registry = agent.runtime().tools_mut();
+            registry.write().await.register_arc(ask_user_tool);
+        }
         let mut click_mailbox = super::click_mailbox::ClickMailbox::new();
         let mut canvas_events: Option<mpsc::UnboundedReceiver<phi_canvas::CanvasEvent>> = None;
         let mut canvas_subscribed: Option<Arc<phi_canvas::Canvas>> = None;
@@ -831,6 +841,44 @@ pub async fn run_tui(
                 app.approval_queue.push_back(item);
                 dirty = true;
             }
+            // `ask_user` (concept routing): a modal terminal picker, shown
+            // before the turn can go on — the tool is parked on its oneshot
+            // until the user picks or skips. Blocking by design, same
+            // alternate-screen bounce as /resume (hence the clear: ratatui
+            // diffs against a cache the bounce invalidated).
+            while let Ok(item) = ask_rx.try_recv() {
+                // BUG 4's rule, applied to this prompt too: keys typed before
+                // it appeared were aimed at the composer, not at the picker.
+                // Resizes are re-applied (the 1 Hz probe would self-heal them
+                // anyway); everything else is dropped.
+                while crossterm::event::poll(Duration::ZERO)? {
+                    if let Event::Resize(w, h) = crossterm::event::read()? {
+                        terminal.resize(Rect::new(0, 0, w, h))?;
+                        terminal.clear()?;
+                        last_size = (w, h);
+                    }
+                }
+                let rows: Vec<super::picker::ChoiceRow> = item
+                    .options
+                    .iter()
+                    .map(|option| super::picker::ChoiceRow {
+                        label: option.label.clone(),
+                        note: option.note.clone(),
+                    })
+                    .collect();
+                let picked =
+                    super::picker::show_choice_from_tui(&item.question, &rows, app.scheme())?;
+                terminal.clear()?;
+                dirty = true;
+                let answer = match picked.and_then(|idx| item.options.get(idx)) {
+                    Some(option) => crate::tools::ask_user::AskAnswer::Picked {
+                        id: option.id.clone(),
+                        label: option.label.clone(),
+                    },
+                    None => crate::tools::ask_user::AskAnswer::Skipped,
+                };
+                let _ = item.answer_tx.send(answer);
+            }
             // BUG 4: a popup that just opened must never see keys typed before it
             // appeared — those were aimed at the composer, not at a prompt nobody
             // had seen yet (`/plugin`'s trailing n once decided Deny this way).
@@ -1073,6 +1121,11 @@ pub async fn run_tui(
                                     app.clear_approvals();
                                     while approval_rx.try_recv().is_ok() {}
                                     while canvas_prompts_rx.try_recv().is_ok() {}
+                                    // A question nobody is waiting on any more:
+                                    // dropping the item answers the tool right
+                                    // away instead of parking a picker over a
+                                    // cancelled turn.
+                                    while ask_rx.try_recv().is_ok() {}
                                 }
                                 Action::Quit => {
                                     agent.cancel();

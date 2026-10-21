@@ -204,6 +204,10 @@ pub fn should_push_waiting(input: &WaitingInput<'_>) -> bool {
 /// The host's waiting screen (spec-locked): one fixed line plus the
 /// decided/pending summary. Every fragment of user-supplied text is
 /// HTML-escaped (labels come from the model, so do titles).
+///
+/// It is interstitial, not a design version: it gets a seq and a page like
+/// any other screen, but it stays out of the canvas version rail and the
+/// compare pickers so the history the user scrolls is the design.
 pub fn waiting_envelope(decided: &[String], pending: &[String]) -> ScreenEnvelope {
     let mut body = String::new();
     let section = |heading: &str, items: &[String], body: &mut String| {
@@ -223,7 +227,11 @@ pub fn waiting_envelope(decided: &[String], pending: &[String]) -> ScreenEnvelop
         subtitle: None,
         options: Vec::new(),
         body_html: body,
+        screen: None,
         multiselect: false,
+        reference: None,
+        escape: None,
+        interstitial: true,
     }
 }
 

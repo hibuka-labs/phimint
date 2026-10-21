@@ -13,8 +13,12 @@
 //!
 //! `canvas` adapts the phi-canvas design-canvas tools (M3); the click mailbox
 //! and message synthesis (M2) live in `ui::click_mailbox`.
+//!
+//! `ask_user` is the text half of that routing: a concept question answered
+//! in a terminal picker rather than on the canvas.
 
 pub mod add_tool;
+pub mod ask_user;
 pub mod browser;
 pub mod canvas;
 pub mod diagnostics;

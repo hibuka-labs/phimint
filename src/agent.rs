@@ -21,6 +21,7 @@ use phi_kernel_tools::background_shell::{BackgroundTaskRegistry, TaskCancelTool,
 use phi_kernel_tools::context_rotation::{
     HistoryStore, NotesStore, create_history_tools, create_notes_tools,
 };
+use phi_tools::{BrowserToolset, LaunchOptions as BrowserLaunchOptions};
 
 /// Coding-oriented system prompt (adapted from Codex).
 const SYSTEM_PROMPT: &str = r#"You are phimint, a coding agent running in a terminal-based TUI. You are expected to be precise, safe, and helpful.
@@ -39,7 +40,7 @@ Your default personality and tone is concise, direct, and friendly. You communic
 - `task_cancel` — terminate a running background task by task_id.
 - `diagnostics` — pull LSP errors/warnings (fast, no recompile). Use after editing for a quick check.
 - `update_plan` — structured checklist for complex tasks (3+ steps); skip for simple requests.
-- `canvas_open` / `canvas_push` / `canvas_close` — visual design canvas in the user's browser (options and mockups they click). The `design-canvas` skill has the routing rules (when to open it) and what to put on each screen.
+- `canvas_open` / `canvas_push` / `canvas_close` — visual design canvas in the user's browser (options and mockups they click). The `design-canvas` skill has the routing rules (when to open it); its `nodes.md` has the vocabulary for composing a screen.
 
 ## How to work
 
@@ -197,7 +198,7 @@ pub struct TokenBudgetOptions {
 /// eng-review finding 1: `notes.write_file` / `notes.append_to_file` are
 /// mutating tools in business_tools and must be excluded explicitly (a
 /// sub-agent must not pollute parent notes). `history.*` is read-only: kept.
-fn child_multi_agent_config(has_policy: bool) -> MultiAgentConfig {
+fn child_multi_agent_config(has_policy: bool, browser_tools: &[String]) -> MultiAgentConfig {
     MultiAgentConfig {
         // Sub-agent permission follows the approval mode (codex-style
         // delegation lives in agent-works): with a policy the child's calls
@@ -215,15 +216,24 @@ fn child_multi_agent_config(has_policy: bool) -> MultiAgentConfig {
         // Sub-agents are read-only investigators by default (read/search/report).
         // The hard gate is this exclusion table; write capability means write_tools
         // members are exempted from it (framework rule), so the table only lists tools no sub-agent should get.
-        child_excluded_tools: vec![
-            "write_file".to_string(),
-            "edit_file".to_string(),
-            "execute_command".to_string(),
-            "task_output".to_string(),
-            "task_cancel".to_string(),
-            "notes.write_file".to_string(),
-            "notes.append_to_file".to_string(),
-        ],
+        child_excluded_tools: {
+            let mut excluded = vec![
+                "write_file".to_string(),
+                "edit_file".to_string(),
+                "execute_command".to_string(),
+                "task_output".to_string(),
+                "task_cancel".to_string(),
+                "notes.write_file".to_string(),
+                "notes.append_to_file".to_string(),
+            ];
+            // Every browser tool stays with the parent, read-only child or
+            // write: the suite drives one Chrome session behind one lock, so a
+            // sub-agent that navigates or clicks would move the view out from
+            // under the parent's self-check. None of them are in
+            // `write_tools`, so the write exemption does not bring them back.
+            excluded.extend(browser_tools.iter().cloned());
+            excluded
+        },
         // Sub-agents get a narrow slice; reasoning depth is capped to stop them running away (the deepseek-v4-pro lesson).
         child_reasoning_effort: Some(ReasoningEffort::Low),
         // D3.1: the global nudge is off; the per-child rule owns it.
@@ -461,10 +471,29 @@ pub fn build(
         workspace_root.clone(),
     ));
 
+    // Browser automation (phi-tools' 22 CDP tools). The agent drives a Chrome
+    // of its own so it can look at what it just showed the user — the design
+    // canvas self-check and the reference-patch flow. `lazy` keeps that Chrome
+    // out of runs that never ask for it: the tools register now, the process
+    // spawns on the first call. The same names are excluded from sub-agents
+    // (one session, one owner — see `child_multi_agent_config`).
+    let browser_tools =
+        phi_tools::browser_tools(&BrowserToolset::lazy(BrowserLaunchOptions::default()));
+    let browser_tool_names: Vec<String> = browser_tools
+        .iter()
+        .map(|tool| tool.name().to_string())
+        .collect();
+    for tool in browser_tools {
+        builder = builder.register_tool_arc(tool);
+    }
+
     // Single construction point for the child multi-agent config (the
     // argument now only picks the permission mode; the write switch is
     // fully open since T11 — see the function docs).
-    builder = builder.with_multi_agent(child_multi_agent_config(policy.is_some()));
+    builder = builder.with_multi_agent(child_multi_agent_config(
+        policy.is_some(),
+        &browser_tool_names,
+    ));
 
     // A policy is what makes approval meaningful (see approval.rs). Only `ask`
     // and `deny` modes carry one; `auto` leaves it unset, so every call is
@@ -1159,6 +1188,18 @@ mod prompt_guard_tests {
 
     use phi_agent::{ChildToolCapability, resolve_capability};
 
+    /// The browser-tool names, taken from the suite itself rather than listed
+    /// here: a tool added to phi-tools must show up in the exclusion assertions
+    /// without anyone remembering to extend a list.
+    fn browser_tool_names() -> Vec<String> {
+        phi_tools::browser_tools(&phi_tools::BrowserToolset::lazy(
+            phi_tools::LaunchOptions::default(),
+        ))
+        .iter()
+        .map(|tool| tool.name().to_string())
+        .collect()
+    }
+
     /// T9 (outside voice finding 4): the task-boundary guidance for parallel write sub-agents must stay resident.
     #[test]
     fn system_prompt_demands_disjoint_file_sets_for_parallel_writers() {
@@ -1190,7 +1231,7 @@ mod prompt_guard_tests {
     /// argument only picks the permission mode.
     #[test]
     fn child_config_wiring_write_open_and_notes_excluded() {
-        let ask = super::child_multi_agent_config(true);
+        let ask = super::child_multi_agent_config(true, &browser_tool_names());
         assert!(
             ask.allow_child_write,
             "D0: ask/deny (with policy) allows write children"
@@ -1200,7 +1241,7 @@ mod prompt_guard_tests {
             phi_agent::ChildPermissionMode::None,
             "approval-mode children go through the delegation chain"
         );
-        let auto = super::child_multi_agent_config(false);
+        let auto = super::child_multi_agent_config(false, &browser_tool_names());
         assert!(
             auto.allow_child_write,
             "T11 (2026-09-20 acceptance run): auto also allows write children"
@@ -1236,8 +1277,8 @@ mod prompt_guard_tests {
             "notes.append_to_file",
         ];
         for cfg in [
-            super::child_multi_agent_config(true),
-            super::child_multi_agent_config(false),
+            super::child_multi_agent_config(true, &browser_tool_names()),
+            super::child_multi_agent_config(false, &browser_tool_names()),
         ] {
             for cap in [None, Some(ChildToolCapability::ReadOnly)] {
                 let res = resolve_capability(
@@ -1264,7 +1305,7 @@ mod prompt_guard_tests {
     /// The write sub-agent surface (D0, ask mode): under a write request the write tools are exempt and registerable.
     #[test]
     fn ask_mode_write_request_exempts_write_tools() {
-        let cfg = super::child_multi_agent_config(true);
+        let cfg = super::child_multi_agent_config(true, &browser_tool_names());
         let res = resolve_capability(
             Some(&ChildToolCapability::Write),
             cfg.control.autonomy,
@@ -1281,7 +1322,46 @@ mod prompt_guard_tests {
         // Only write_tools members are exempt -- notes.* is not in write_tools, so it stays excluded.
         assert!(res.excluded_tools.contains("notes.write_file"));
         assert!(res.excluded_tools.contains("task_output"));
+        // Browser tools are not in write_tools either, so the write exemption
+        // must not hand a child the shared Chrome session.
+        for t in browser_tool_names() {
+            assert!(
+                res.excluded_tools.contains(&t),
+                "{t} must stay excluded even for a write child"
+            );
+        }
         assert!(res.degraded_reason.is_none());
+    }
+
+    /// Every browser tool belongs to the parent alone. The suite is derived
+    /// from phi-tools, not listed here, so this pins "all of them" rather than
+    /// "the ones we remembered".
+    #[test]
+    fn browser_tools_never_reach_sub_agents() {
+        let names = browser_tool_names();
+        assert!(!names.is_empty(), "the browser suite must be non-empty");
+        for cfg in [
+            super::child_multi_agent_config(true, &names),
+            super::child_multi_agent_config(false, &names),
+        ] {
+            for t in &names {
+                assert!(
+                    cfg.child_excluded_tools.contains(t),
+                    "{t} must be in child_excluded_tools"
+                );
+            }
+            // And the resolved set keeps them out for a default (read-only) spawn.
+            let res = resolve_capability(
+                Some(&ChildToolCapability::ReadOnly),
+                cfg.control.autonomy,
+                cfg.allow_child_write,
+                &cfg.child_excluded_tools,
+                &cfg.control.write_tools,
+            );
+            for t in &names {
+                assert!(res.excluded_tools.contains(t), "{t} must stay excluded");
+            }
+        }
     }
 
     /// Write-child surface (T11 auto mode): a write request exempts the
@@ -1290,7 +1370,7 @@ mod prompt_guard_tests {
     /// child_config_wiring test).
     #[test]
     fn auto_mode_write_request_exempts_write_tools() {
-        let cfg = super::child_multi_agent_config(false);
+        let cfg = super::child_multi_agent_config(false, &browser_tool_names());
         let res = resolve_capability(
             Some(&ChildToolCapability::Write),
             cfg.control.autonomy,

@@ -165,6 +165,94 @@ fn describe_write(tool_name: &str, args: &Value) -> String {
     }
 }
 
+/// What the browser action is about to touch, for the prompt and the grant key.
+fn browser_target(args: &Value) -> String {
+    args.get("selector")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| {
+            args.get("index")
+                .and_then(Value::as_u64)
+                .map(|i| format!("element #{i}"))
+        })
+        .unwrap_or_else(|| "(page)".to_string())
+}
+
+/// A one-line description of a browser action for the approval prompt.
+fn describe_browser(tool_name: &str, args: &Value) -> String {
+    let target = browser_target(args);
+    match tool_name {
+        "browser_click" => format!("Browser: click {target}"),
+        "browser_input_fill" => {
+            let text = args.get("text").and_then(Value::as_str).unwrap_or("");
+            format!("Browser: type into {target}: {text:?}")
+        }
+        "browser_select" => {
+            let value = args.get("value").and_then(Value::as_str).unwrap_or("?");
+            format!("Browser: select {value:?} in {target}")
+        }
+        "browser_press_key" => {
+            let key = args.get("key").and_then(Value::as_str).unwrap_or("?");
+            format!("Browser: press key {key}")
+        }
+        "browser_evaluate" => {
+            let script = args.get("script").and_then(Value::as_str).unwrap_or("");
+            format!("Browser: run JavaScript:\n{}", short_title(script))
+        }
+        "browser_navigate" => {
+            let url = args.get("url").and_then(Value::as_str).unwrap_or("?");
+            format!("Browser: open {url}")
+        }
+        other => other.to_string(),
+    }
+}
+
+/// Whether a URL points back at this machine.
+///
+/// The design canvas is served on `127.0.0.1`, so the agent looking at what it
+/// just showed the user is not network access and must not cost an approval.
+/// Everywhere else is — same rule `curl` already follows.
+fn is_loopback_url(url: &str) -> bool {
+    let Some(rest) = url
+        .trim()
+        .strip_prefix("http://")
+        .or_else(|| url.trim().strip_prefix("https://"))
+    else {
+        return false;
+    };
+    // Authority, then host: drop path/query, any userinfo, then the port.
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host_port = authority.rsplit('@').next().unwrap_or(authority);
+    let host = match host_port.strip_prefix('[') {
+        // IPv6 literal: `[::1]:8080` → `::1`
+        Some(after) => after.split(']').next().unwrap_or(""),
+        None => host_port.split(':').next().unwrap_or(""),
+    };
+    matches!(host, "127.0.0.1" | "localhost" | "::1")
+}
+
+/// Scope a browser action to the control it touches, the way `write_file` is
+/// scoped to a path: "allow always" on click `#save` must not also allow
+/// clicking everything else on the page.
+fn browser_action_key(tool_name: &str, args: &Value) -> String {
+    let target = args
+        .get("selector")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| {
+            args.get("index")
+                .and_then(Value::as_u64)
+                .map(|i| format!("element #{i}"))
+        })
+        .or_else(|| {
+            args.get("key")
+                .and_then(Value::as_str)
+                .map(|k| format!("key {k}"))
+        })
+        .unwrap_or_else(|| "(page)".to_string());
+    format!("{tool_name}:{target}")
+}
+
 /// Description of an external (three-prefix) tool call for the approval prompt.
 ///
 /// The confirmation dialog must show the full picture (name + args) — a bare
@@ -242,6 +330,81 @@ fn classify_request(tool_name: &str, args: &Value) -> Option<ApprovalRequest> {
                 }),
             }
         }
+
+        // Browser automation (phi-tools' 22-tool suite). The read half only
+        // looks at a page the agent is already driving — no prompt. The arms
+        // below it prompt. The `browser_*` tail is fail-closed on purpose: a
+        // tool added to the suite later asks until someone classifies it,
+        // instead of landing in the auto-approve fallback.
+        "browser_screenshot"
+        | "browser_snapshot"
+        | "browser_get_markdown"
+        | "browser_extract_content"
+        | "browser_read_links"
+        | "browser_tab_list"
+        | "browser_wait"
+        | "browser_scroll"
+        | "browser_hover"
+        | "browser_go_back"
+        | "browser_go_forward"
+        | "browser_new_tab"
+        | "browser_switch_tab"
+        | "browser_close_tab"
+        | "browser_close"
+        | "browser_restart" => None,
+
+        // Opening a page is network access. The canvas lives on loopback, so
+        // looking at your own work is free; anything else is the same ask
+        // `curl` already triggers.
+        "browser_navigate" => {
+            let url = args.get("url").and_then(Value::as_str).unwrap_or("");
+            if is_loopback_url(url) {
+                None
+            } else {
+                Some(ApprovalRequest {
+                    title: tool_name.to_string(),
+                    message: describe_browser(tool_name, args),
+                    action_key: Some(format!("browser_navigate:{url}")),
+                    risk_level: RiskLevel::Sensitive,
+                    raw: Some(args.clone()),
+                    source: None,
+                })
+            }
+        }
+
+        // These change page state: clicking, typing, picking, keystrokes.
+        "browser_click" | "browser_input_fill" | "browser_select" | "browser_press_key" => {
+            Some(ApprovalRequest {
+                title: tool_name.to_string(),
+                message: describe_browser(tool_name, args),
+                action_key: Some(browser_action_key(tool_name, args)),
+                risk_level: RiskLevel::Sensitive,
+                raw: Some(args.clone()),
+                source: None,
+            })
+        }
+
+        // Arbitrary JavaScript in a page. The payload is a fresh script every
+        // call, so no standing grant exists that is narrower than "all JS" —
+        // leave `action_key` unset and the engine re-asks each time instead of
+        // caching "allow always" as a permanent license.
+        "browser_evaluate" => Some(ApprovalRequest {
+            title: tool_name.to_string(),
+            message: describe_browser(tool_name, args),
+            action_key: None,
+            risk_level: RiskLevel::Sensitive,
+            raw: Some(args.clone()),
+            source: None,
+        }),
+
+        name if name.starts_with("browser_") => Some(ApprovalRequest {
+            title: name.to_string(),
+            message: describe_browser(name, args),
+            action_key: None,
+            risk_level: RiskLevel::Sensitive,
+            raw: Some(args.clone()),
+            source: None,
+        }),
 
         _ if is_external_identity_key(tool_name) => {
             // Three prefixes (`mcp.` / `script.` / `plugin.`): fail-closed —
@@ -809,6 +972,148 @@ mod tests {
         let req = classify_request("execute_command", &serde_json::json!({"command": "make"}))
             .expect("make should prompt");
         assert_eq!(req.risk_level, RiskLevel::Sensitive);
+    }
+
+    #[test]
+    fn classify_request_covers_the_whole_browser_suite() {
+        // The read half: looking at a page the agent is already driving is not
+        // a decision. Everything else in the suite must prompt.
+        const READS: &[&str] = &[
+            "browser_screenshot",
+            "browser_snapshot",
+            "browser_get_markdown",
+            "browser_extract_content",
+            "browser_read_links",
+            "browser_tab_list",
+            "browser_wait",
+            "browser_scroll",
+            "browser_hover",
+            "browser_go_back",
+            "browser_go_forward",
+            "browser_new_tab",
+            "browser_switch_tab",
+            "browser_close_tab",
+            "browser_close",
+            "browser_restart",
+        ];
+
+        // The suite is derived from phi-tools and the arms are hand-written;
+        // this is what keeps the two in step. A tool added over there and not
+        // classified here must fail the "must prompt" half, not slip through
+        // the auto-approve tail.
+        let names: Vec<String> = phi_tools::browser_tools(&phi_tools::BrowserToolset::lazy(
+            phi_tools::LaunchOptions::default(),
+        ))
+        .iter()
+        .map(|tool| tool.name().to_string())
+        .collect();
+        assert!(!names.is_empty(), "the browser suite must be non-empty");
+
+        for name in &names {
+            let classified = classify_request(name, &serde_json::json!({}));
+            if READS.contains(&name.as_str()) {
+                assert!(classified.is_none(), "{name} is a browser read");
+            } else {
+                assert!(
+                    classified.is_some(),
+                    "{name} is not in the read list, so it must prompt"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn classify_request_prompts_on_browser_actions() {
+        // The five that change page state or run code.
+        let click = classify_request("browser_click", &serde_json::json!({"selector": "#save"}))
+            .expect("browser_click should prompt");
+        assert_eq!(click.risk_level, RiskLevel::Sensitive);
+        assert_eq!(click.action_key.as_deref(), Some("browser_click:#save"));
+        assert!(click.message.contains("#save"));
+
+        // The grant is scoped to the control: a different selector is a
+        // different action, so "allow always" does not cover it.
+        let other = classify_request("browser_click", &serde_json::json!({"selector": "#delete"}))
+            .expect("browser_click should prompt");
+        assert_ne!(click.action_key, other.action_key);
+
+        let fill = classify_request(
+            "browser_input_fill",
+            &serde_json::json!({"selector": "#email", "text": "a@b.c"}),
+        )
+        .expect("browser_input_fill should prompt");
+        assert_eq!(
+            fill.action_key.as_deref(),
+            Some("browser_input_fill:#email")
+        );
+        assert!(fill.message.contains("a@b.c"));
+
+        let key = classify_request("browser_press_key", &serde_json::json!({"key": "Enter"}))
+            .expect("browser_press_key should prompt");
+        assert_eq!(
+            key.action_key.as_deref(),
+            Some("browser_press_key:key Enter")
+        );
+    }
+
+    #[test]
+    fn browser_evaluate_never_gets_a_standing_grant() {
+        // A fresh script every call: caching "allow always" would mean "allow
+        // arbitrary JavaScript forever", so the key stays unset and every call
+        // is re-decided (tool_engine treats a missing key as not-approved).
+        let req = classify_request(
+            "browser_evaluate",
+            &serde_json::json!({"script": "fetch('http://evil')"}),
+        )
+        .expect("browser_evaluate should prompt");
+        assert_eq!(req.risk_level, RiskLevel::Sensitive);
+        assert!(req.action_key.is_none());
+    }
+
+    #[test]
+    fn unclassified_browser_tools_fail_closed() {
+        // A browser tool the classifier has never seen must ask, not fall
+        // through to the auto-approve tail. Without this, growing the suite
+        // silently grants whatever the new tool does.
+        let req = classify_request(
+            "browser_not_a_real_tool",
+            &serde_json::json!({"selector": "#x"}),
+        )
+        .expect("an unknown browser tool must prompt");
+        assert_eq!(req.risk_level, RiskLevel::Sensitive);
+        assert!(req.action_key.is_none());
+    }
+
+    #[test]
+    fn browser_navigate_is_free_on_loopback_only() {
+        // Looking at your own canvas must not cost an approval; opening the
+        // internet is the same ask `curl` triggers.
+        for url in [
+            "http://127.0.0.1:8765",
+            "http://127.0.0.1:8765/?x=1",
+            "http://localhost:8765/canvas",
+            "https://localhost:9/",
+            "http://[::1]:8765",
+            "http://user@127.0.0.1:8080/x",
+        ] {
+            assert!(
+                classify_request("browser_navigate", &serde_json::json!({"url": url})).is_none(),
+                "{url} is loopback and must auto-approve"
+            );
+        }
+
+        for url in [
+            "https://example.com",
+            "http://127.0.0.1.evil.com",
+            "http://evil.com/?next=127.0.0.1",
+            "http://evil.com@127.0.0.1.evil.com",
+            "file:///etc/passwd",
+            "",
+        ] {
+            let req = classify_request("browser_navigate", &serde_json::json!({"url": url}))
+                .unwrap_or_else(|| panic!("{url} is not loopback and must prompt"));
+            assert_eq!(req.risk_level, RiskLevel::Sensitive);
+        }
     }
 
     #[test]

@@ -109,6 +109,12 @@ pub(crate) fn save_active_skills(
 /// nothing about skills.
 pub const DESIGN_CANVAS_SKILL: &str = include_str!("assets/design-canvas/SKILL.md");
 
+/// On-demand detail for [`DESIGN_CANVAS_SKILL`]: the kind tables, theme
+/// tokens, variant mechanics, and `body_html` component classes. Kept out of
+/// the skill body on purpose — the skill stays a lean judgment core and the
+/// vocabulary loads only when a screen is being composed.
+pub const DESIGN_CANVAS_NODES: &str = include_str!("assets/design-canvas/nodes.md");
+
 /// Skill directories phimint scans by default (policy: the family `.claude/` convention).
 ///
 /// Order is scan priority (later wins on name collision): the bundled
@@ -141,23 +147,33 @@ pub fn builtin_skills_dir() -> PathBuf {
 }
 
 /// Materialize the bundled skills under `root` (normally
-/// [`builtin_skills_dir`]). Each skill is written when missing or stale —
-/// the bundled copy is an owned asset and is refreshed to match the binary,
-/// so customize by placing a same-named skill in a higher-priority scan dir
+/// [`builtin_skills_dir`]). Each file is written when missing or stale — the
+/// bundled copy is an owned asset and is refreshed to match the binary, so
+/// customize by placing a same-named skill in a higher-priority scan dir
 /// rather than editing files here. Returns the paths written.
 pub fn materialize_builtin_skills(root: &Path) -> io::Result<Vec<PathBuf>> {
+    // A skill is a directory: the lean SKILL.md the loader reads, plus the
+    // on-demand detail beside it. Both are bundled assets and refresh
+    // together.
     let skill_dir = root.join("design-canvas");
-    let path = skill_dir.join("SKILL.md");
-    if std::fs::read_to_string(&path).is_ok_and(|s| s == DESIGN_CANVAS_SKILL) {
-        return Ok(Vec::new());
+    let mut written = Vec::new();
+    for (name, body) in [
+        ("SKILL.md", DESIGN_CANVAS_SKILL),
+        ("nodes.md", DESIGN_CANVAS_NODES),
+    ] {
+        let path = skill_dir.join(name);
+        if std::fs::read_to_string(&path).is_ok_and(|s| s == body) {
+            continue;
+        }
+        std::fs::create_dir_all(&skill_dir)?;
+        // tmp+rename (same pattern as `save_active_skills`): a crash mid-write
+        // must never leave a half-written skill file behind.
+        let tmp = skill_dir.join(format!("{name}.tmp"));
+        std::fs::write(&tmp, body)?;
+        std::fs::rename(&tmp, &path)?;
+        written.push(path);
     }
-    std::fs::create_dir_all(&skill_dir)?;
-    // tmp+rename (same pattern as `save_active_skills`): a crash mid-write
-    // must never leave a half-written SKILL.md behind.
-    let tmp = skill_dir.join("SKILL.md.tmp");
-    std::fs::write(&tmp, DESIGN_CANVAS_SKILL)?;
-    std::fs::rename(&tmp, &path)?;
-    Ok(vec![path])
+    Ok(written)
 }
 
 #[cfg(test)]
@@ -194,12 +210,24 @@ mod tests {
         use super::*;
 
         #[test]
-        fn writes_design_canvas_skill() {
+        fn writes_design_canvas_skill_and_its_on_demand_detail() {
             let tmp = tempfile::tempdir().unwrap();
             let written = materialize_builtin_skills(tmp.path()).unwrap();
-            assert_eq!(written, vec![tmp.path().join("design-canvas/SKILL.md")]);
-            let on_disk = std::fs::read_to_string(&written[0]).unwrap();
-            assert_eq!(on_disk, DESIGN_CANVAS_SKILL);
+            assert_eq!(
+                written,
+                vec![
+                    tmp.path().join("design-canvas/SKILL.md"),
+                    tmp.path().join("design-canvas/nodes.md"),
+                ]
+            );
+            assert_eq!(
+                std::fs::read_to_string(&written[0]).unwrap(),
+                DESIGN_CANVAS_SKILL
+            );
+            assert_eq!(
+                std::fs::read_to_string(&written[1]).unwrap(),
+                DESIGN_CANVAS_NODES
+            );
         }
 
         #[test]
@@ -220,11 +248,16 @@ mod tests {
             let dir = tmp.path().join("design-canvas");
             std::fs::create_dir_all(&dir).unwrap();
             std::fs::write(dir.join("SKILL.md"), "stale user edit").unwrap();
+            std::fs::write(dir.join("nodes.md"), "stale vocabulary").unwrap();
             let written = materialize_builtin_skills(tmp.path()).unwrap();
-            assert_eq!(written.len(), 1);
+            assert_eq!(written.len(), 2);
             assert_eq!(
-                std::fs::read_to_string(&written[0]).unwrap(),
+                std::fs::read_to_string(dir.join("SKILL.md")).unwrap(),
                 DESIGN_CANVAS_SKILL
+            );
+            assert_eq!(
+                std::fs::read_to_string(dir.join("nodes.md")).unwrap(),
+                DESIGN_CANVAS_NODES
             );
         }
 
@@ -261,6 +294,12 @@ mod tests {
             flatten(DESIGN_CANVAS_SKILL).contains(&flatten(needle))
         }
 
+        /// Same, against the on-demand vocabulary file.
+        fn nodes_contain(needle: &str) -> bool {
+            let flatten = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+            flatten(DESIGN_CANVAS_NODES).contains(&flatten(needle))
+        }
+
         fn assert_rules(context: &str, needles: &[&str]) {
             for needle in needles {
                 assert!(contains_rule(needle), "{context} missing: {needle}");
@@ -286,8 +325,11 @@ mod tests {
             assert_rules(
                 "routing rule",
                 &[
-                    // 纯文字选择不起画布
-                    "answer inline in the terminal",
+                    // 纯文字选择不起画布，走终端 picker
+                    "ask with `ask_user`",
+                    "Do NOT open the canvas",
+                    // 开放式问题不是选择题
+                    "is not a pick",
                     // 「长什么样」开画布
                     "Appearance questions",
                     // 判断困难宁开不省 + 理由是「不开错更贵」
@@ -296,6 +338,116 @@ mod tests {
                     // 升降维不重新描述需求
                     "用图给我看",
                     "never make them restate the question",
+                    // 画 mock 不用翻代码库——除非用户问的就是真实存在的页面
+                    "A mock needs no codebase",
+                ],
+            );
+        }
+
+        /// The text half of the routing: a concept pick is a terminal picker,
+        /// the answer lands this turn, and a skip is an answer too.
+        #[test]
+        fn concept_picks_land_in_the_terminal_picker() {
+            assert_rules(
+                "concept pick rule",
+                &[
+                    "`ask_user`",
+                    "the answer is the tool result in this turn",
+                    "A skip is an answer too",
+                    "never re-ask it",
+                    "One live question at a time",
+                    "name the candidates first, then the picker",
+                ],
+            );
+        }
+
+        /// The model can look at what it sent. A `body_html` escape is always
+        /// looked at (hand-written markup can overflow); a deterministic
+        /// `screen` render is on demand. Both halves are load-bearing: without
+        /// the first the browser tools sit unused, without the second every
+        /// push costs a Chrome round trip.
+        #[test]
+        fn self_check_is_on_demand_and_looks_first() {
+            assert_rules(
+                "self-check rule",
+                &[
+                    "browser_screenshot",
+                    // Hand-written HTML is always looked at before it ships
+                    "A `body_html` escape: always look",
+                    // Screen renders are deterministic — look on demand, not after every push
+                    "on demand, not after every push",
+                    "anything you would not bet on blind",
+                    // Look, then fix, then show — never send the user to look
+                    "look, then fix, then show",
+                    // The loop is budgeted: a third measuring round is stalling,
+                    // and every re-push re-asks a question the user may have answered
+                    "one look, one fix, one confirming look",
+                    "Only bring the user in when a decision is left",
+                ],
+            );
+        }
+
+        /// A reference is something to go see, not to remember.
+        #[test]
+        fn reference_material_is_looked_at_not_remembered() {
+            assert_rules(
+                "reference rule",
+                &[
+                    "go look before you propose anything",
+                    "Never work from memory of what a product looks like",
+                    // 没见过的参考物不要编
+                    "ask where it lives rather than inventing one",
+                ],
+            );
+        }
+
+        /// Looking is half the job: the reference goes on the screen beside
+        /// the candidates, and a page reference lands there via `save_to`.
+        #[test]
+        fn a_reference_can_be_shown_beside_the_candidates() {
+            assert_rules(
+                "reference patch rule",
+                &[
+                    "reference: { src, caption }",
+                    "browser_screenshot",
+                    "save_to",
+                    "Caption it in the user's words",
+                    "One image per screen",
+                ],
+            );
+        }
+
+        /// Version history is the host's surface. The model's part is the
+        /// title, and not re-pushing what the user went back to look at.
+        #[test]
+        fn versions_are_the_hosts_and_looking_is_not_repushing() {
+            assert_rules(
+                "version rule",
+                &[
+                    "Every screen you push becomes a version",
+                    "Nothing here is yours to build",
+                    "Put the version in the title",
+                    "not asking you to push it again",
+                ],
+            );
+        }
+
+        /// The decision record is the bridge into `/spec`: fixed headings, and
+        /// a pick is only ever what the user actually chose — `(画布选择)` or
+        /// the `ask_user` result — so the record must not grow a rationale the
+        /// user never gave.
+        #[test]
+        fn decision_record_is_shaped_for_the_next_step() {
+            assert_rules(
+                "decision record rule",
+                &[
+                    "notes/design-decisions.md",
+                    "## 定了什么",
+                    "## 为什么",
+                    "## 还有什么没定",
+                    "选了 <label>",
+                    "or from `ask_user`",
+                    "never a rationale you invented after the fact",
                 ],
             );
         }
@@ -315,10 +467,76 @@ mod tests {
 
         #[test]
         fn screen_composition_names_the_real_component_classes() {
+            for needle in [".cards", ".mockup", ".split", ".placeholder", "body_html"] {
+                assert!(nodes_contain(needle), "component class missing: {needle}");
+            }
+        }
+
+        /// The law is judgment and stays in the core: never shrink the request
+        /// to fit the vocabulary, and when you escape, the gap is recorded.
+        /// The other direction is just as load-bearing — the vocabulary is
+        /// what saves the user money, so a screen the kinds hold is not an
+        /// escape candidate.
+        #[test]
+        fn never_downgrade_and_tag_the_escape() {
             assert_rules(
-                "component class",
-                &[".cards", ".mockup", ".split", ".placeholder", "body_html"],
+                "escape law",
+                &[
+                    "Never downgrade the request to fit the vocabulary",
+                    "never shrink the request to make it fit",
+                    "If a kind holds the shape the user described, `screen` is not optional",
+                    "`escape: \"timeline\"`",
+                    "the same tag showing up twice is the evidence",
+                ],
             );
+        }
+
+        /// Progressive disclosure: the core is a lean judgment file that
+        /// points at the vocabulary — with a path the model can actually
+        /// resolve, since "beside this file" cost a session three tool calls
+        /// of hunting — and the vocabulary carries the closed kind set. The
+        /// core must also fit the skill tool's body budget:
+        /// `MAX_SKILL_BODY_CHARS` (16_000) in agent-works truncates anything
+        /// longer and costs the model the tail of the skill.
+        #[test]
+        fn the_core_is_lean_and_the_vocabulary_is_on_demand() {
+            assert!(
+                contains_rule("~/.phimint/skills/design-canvas/nodes.md"),
+                "the core must point at the on-demand detail with a resolvable path"
+            );
+            assert!(
+                DESIGN_CANVAS_SKILL.chars().count() < 16_000,
+                "skill body is past the skill tool's truncation budget: {}",
+                DESIGN_CANVAS_SKILL.chars().count()
+            );
+            // The closed vocabulary lives in the detail file — layout, chrome,
+            // controls, data — not re-typed into the judgment core.
+            for needle in [
+                "phone_shell",
+                "topbar",
+                "tabbar",
+                "toolbar",
+                "dialog",
+                "list_row",
+                "switch",
+                "segment",
+                "table",
+                "tree",
+                "frost",
+                "elevation",
+                "emph",
+                "content",
+            ] {
+                assert!(nodes_contain(needle), "vocabulary missing: {needle}");
+            }
+            // The core may name the kinds (that is coverage the model needs
+            // before it decides the medium) but never their field tables.
+            for needle in ["| kind | fields |", "frost 1–3", "chevron?"] {
+                assert!(
+                    !contains_rule(needle),
+                    "the core is re-typing the field tables: {needle}"
+                );
+            }
         }
     }
 
