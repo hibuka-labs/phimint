@@ -272,6 +272,28 @@ anything they raised and left hanging. 为什么 is the reason they gave, in
 their words where you have them — never a rationale you invented after the
 fact.
 
+## From mock to page
+
+When it lands on "make it real", the settled mock is the contract for the code.
+
+- **Default stack:** React + Vite + Ant Design — unless the user names another
+  (their existing `package.json` is a name). Swapping the library swaps the
+  component mapping, not this discipline. Name the stack in the decision record
+  so a later session can pick it up cold. If `npm install` stalls against the
+  default registry, retry against a fast mirror (e.g.
+  `--registry=https://registry.npmmirror.com`) — a stall is network, not a
+  broken project.
+- **Implementation is a mechanical translation of the mock.** Keep the chosen
+  forms exactly — chart type, plain text where the mock shows plain text, no
+  legend the mock didn't have. Never add decoration the mock didn't show:
+  pills, badges, icons, "view all" links. Embellishing the settled mock is the
+  same error as shrinking it — the user must correct a page instead of
+  describing a wish.
+- **Tokens land on every visual surface.** Theme tokens go into the app theme
+  (antd `ConfigProvider`) and into chart colors (e.g. `@ant-design/plots`
+  `scale.color.range`). A surface painting library-default colors over the
+  chosen palette is a bug — `browser_screenshot` before calling the page done.
+
 ## While the canvas is open
 
 - The browser opens only after the user consents (a one-time prompt). Accept
