@@ -212,6 +212,35 @@ impl App {
             };
         }
 
+        // While an ask_user popup is showing, the list owns the keyboard:
+        // ↑↓ move the cursor, Enter commits the row under it, Esc skips (a
+        // skip is an answer too — the tool's contract says so). Everything
+        // else is swallowed so it never lands in the composer behind the
+        // popup.
+        if !self.ask_queue.is_empty() {
+            let bare = !modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER);
+            return match code {
+                Up if kind == KeyEventKind::Press && bare => {
+                    self.ask_move(-1);
+                    None
+                }
+                Down if kind == KeyEventKind::Press && bare => {
+                    self.ask_move(1);
+                    None
+                }
+                Enter if kind == KeyEventKind::Press && bare => {
+                    self.answer_ask_front(Some(self.ask_selection));
+                    None
+                }
+                Esc if kind == KeyEventKind::Press && bare => {
+                    self.answer_ask_front(None);
+                    None
+                }
+                _ => None,
+            };
+        }
+
         // While the @ mention picker is open, every key drives the picker — the
         // composer only receives the final path on Enter/Esc.
         if self.mention.is_some() {

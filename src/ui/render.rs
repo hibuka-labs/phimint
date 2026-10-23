@@ -8,7 +8,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap},
+    widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph, Wrap},
 };
 use std::time::Instant;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -108,6 +108,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     if app.has_pending_approval() {
         render_approval_popup(f, app);
+    } else if app.has_pending_ask() {
+        // One modal at a time: an approval in front hides the question behind
+        // it, and the approval's key rules own the keyboard until it clears.
+        render_ask_popup(f, app);
     }
     if app.context_menu().is_some() {
         render_context_menu(f, app);
@@ -1224,6 +1228,164 @@ fn render_approval_popup(f: &mut Frame, app: &App) {
     f.render_widget(Paragraph::new(body).wrap(Wrap { trim: true }), body_rect);
     f.render_widget(
         Paragraph::new(approval_footer_line(app, consent)).wrap(Wrap { trim: true }),
+        footer_rect,
+    );
+}
+
+/// A centered modal popup for a pending `ask_user` question — the same window
+/// language as the approval popup: the transcript stays visible underneath,
+/// the box sizes to its content (clamped to the terminal), and the way out is
+/// on reserved footer rows so a long question can never crowd it off screen.
+fn render_ask_popup(f: &mut Frame, app: &App) {
+    let Some(item) = app.current_ask() else {
+        return;
+    };
+    let rows = super::picker::choice_rows(&item.options);
+    draw_choice_popup(f, &item.question, &rows, app.ask_selection, app.scheme());
+}
+
+/// The choice popup's frame: question on top, option list under it, key legend
+/// on reserved footer rows. Split from [`render_ask_popup`] so the layout can
+/// be asserted without parking a real question on an [`App`].
+///
+/// An empty option list is a question nobody can answer — nothing is drawn.
+fn draw_choice_popup(
+    f: &mut Frame,
+    question: &str,
+    rows: &[super::picker::ChoiceRow],
+    selection: usize,
+    scheme: ColorScheme,
+) {
+    use super::picker::{choice_footer, choice_lines, choice_list_height};
+
+    if rows.is_empty() {
+        return;
+    }
+    let screen = f.area();
+    if screen.width < 3 || screen.height < 3 {
+        return;
+    }
+
+    // Width from content — the legend is part of the budget so the way out
+    // fits on one row on any reasonable terminal. Then the legend is re-picked
+    // for the width actually chosen (the ladder sheds words as the box narrows).
+    // The question pads 1 column each side, so it budgets those columns too —
+    // without them the trailing character clips whenever the question is the
+    // widest content in the box.
+    let content_w = [
+        UnicodeWidthStr::width(" Choose "),
+        UnicodeWidthStr::width(question) + 2,
+        UnicodeWidthStr::width(choice_footer(u16::MAX)),
+    ]
+    .into_iter()
+    .chain(rows.iter().flat_map(|row| {
+        let label = UnicodeWidthStr::width(row.label.as_str()) + 2; // cursor column
+        let note = row
+            .note
+            .as_deref()
+            .map_or(0, |note| UnicodeWidthStr::width(note) + 4); // indent
+        [label, note]
+    }))
+    .max()
+    .unwrap_or(0);
+    let width = (content_w as u16 + 2)
+        .min(screen.width.saturating_sub(2).max(3))
+        .max(3)
+        .min(screen.width.max(1));
+    let inner_w = width.saturating_sub(2);
+
+    let legend = choice_footer(inner_w);
+    // Footer first and unconditionally (BUG 1's rule, from the approval
+    // popup): the legend owns its rows even when the height budget shrinks.
+    let footer_rows = wrapped_rows(legend, inner_w).max(1);
+    // The question wraps at the padded text width, not the full inner width.
+    let question_rows = wrapped_rows(question, inner_w.saturating_sub(2).max(1)).max(1);
+    let list_rows = choice_list_height(rows).max(1);
+    let height = (question_rows + list_rows + footer_rows + 2)
+        .min(screen.height.saturating_sub(2).max(3))
+        .max(footer_rows + 3)
+        .min(screen.height.max(1));
+
+    let area = Rect::new(
+        screen.width.saturating_sub(width) / 2,
+        screen.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme::faint(scheme)))
+        .title(" Choose ");
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    if inner.height == 0 {
+        return;
+    }
+
+    let footer_h = footer_rows.min(inner.height);
+    let footer_rect = Rect {
+        y: inner.y + inner.height - footer_h,
+        height: footer_h,
+        ..inner
+    };
+    let body_rect = Rect {
+        height: inner.height - footer_h,
+        ..inner
+    };
+    if body_rect.height == 0 {
+        f.render_widget(
+            Paragraph::new(Span::styled(
+                legend,
+                Style::default().fg(theme::faint(scheme)),
+            ))
+            .wrap(Wrap { trim: true }),
+            footer_rect,
+        );
+        return;
+    }
+
+    // Squeeze priority, same as the old full-frame layout: the option list
+    // and the legend hold their rows and the question absorbs the clamp. A
+    // question that clips is still readable behind the window; a list that
+    // clips hides options the user cannot see.
+    let list_h = list_rows.min(body_rect.height);
+    let q_h = body_rect.height - list_h;
+    let question_rect = Rect {
+        height: q_h,
+        ..body_rect
+    };
+    let list_rect = Rect {
+        y: body_rect.y + q_h,
+        height: list_h,
+        ..body_rect
+    };
+
+    if q_h > 0 {
+        f.render_widget(
+            Paragraph::new(question)
+                .wrap(Wrap { trim: true })
+                .block(Block::default().padding(Padding::horizontal(1))),
+            question_rect,
+        );
+    }
+
+    let selected = selection.min(rows.len().saturating_sub(1));
+    let option_lines: Vec<Line<'static>> = rows
+        .iter()
+        .enumerate()
+        .flat_map(|(index, row)| choice_lines(row, index == selected, scheme))
+        .collect();
+    f.render_widget(Paragraph::new(option_lines), list_rect);
+
+    f.render_widget(
+        Paragraph::new(Span::styled(
+            legend,
+            Style::default().fg(theme::faint(scheme)),
+        ))
+        .wrap(Wrap { trim: true }),
         footer_rect,
     );
 }

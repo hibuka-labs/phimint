@@ -33,8 +33,11 @@
 //!
 //! Drafts are synthesized at the boundary, not at click time: an unsent pick
 //! is still mutable ("连点窗内只报最后一次"), and `更正` marks only screens that
-//! already sent an answer ("提交后再点同一屏"). Multi-select toggle sets stay
-//! live until Confirm freezes them (M2b: "点「确认」才提交").
+//! already sent an answer ("提交后再点同一屏") **with a different answer** —
+//! re-clicking what was already sent is the user confirming, and a second
+//! `更正` line for it is noise (session 20261022_bb8c2dc3: rapid re-clicks on
+//! one option burned a correction turn). Multi-select toggle sets stay live
+//! until Confirm freezes them (M2b: "点「确认」才提交").
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -86,8 +89,11 @@ struct ScreenState {
     /// mirroring what was already sent.
     toggles_dirty: bool,
     draft: Option<Draft>,
-    /// An answer for this screen was already sent → further lines say 更正.
-    submitted: bool,
+    /// The answer already sent for this screen, as its option ids (an empty
+    /// list = a sent skip). `None` until the first send. Two jobs: `更正` marks
+    /// only screens that already answered, and a later draft carrying the same
+    /// ids is absorbed silently (a re-click is confirmation, not a correction).
+    submitted: Option<Vec<String>>,
 }
 
 impl ScreenState {
@@ -103,7 +109,7 @@ impl ScreenState {
             toggled: Vec::new(),
             toggles_dirty: false,
             draft: None,
-            submitted: false,
+            submitted: None,
         }
     }
 
@@ -115,7 +121,7 @@ impl ScreenState {
             toggled: Vec::new(),
             toggles_dirty: false,
             draft: None,
-            submitted: false,
+            submitted: None,
         }
     }
 
@@ -304,7 +310,7 @@ impl ClickMailbox {
     pub(crate) fn answered_screens(&self) -> Vec<u64> {
         self.screens
             .iter()
-            .filter(|(_, state)| state.submitted)
+            .filter(|(_, state)| state.submitted.is_some())
             .map(|(seq, _)| *seq)
             .collect()
     }
@@ -333,10 +339,32 @@ impl ClickMailbox {
             .collect()
     }
 
+    /// Display labels for the frozen drafts behind [`Self::queued_screens`],
+    /// in screen order — the status bar's "which one did I click?" face. A
+    /// skip is named too (`跳过`): the ack must never say 已选 with nothing
+    /// named.
+    pub(crate) fn queued_labels(&self) -> Vec<String> {
+        self.screens
+            .values()
+            .filter(|state| state.draft.is_some())
+            .flat_map(
+                |state| match state.draft.as_ref().expect("filtered on some") {
+                    Draft::Single { option_id, .. } => vec![state.label_for(option_id)],
+                    Draft::Confirmed { ids } => ids.iter().map(|id| state.label_for(id)).collect(),
+                    Draft::Skipped => vec!["跳过".to_string()],
+                },
+            )
+            .collect()
+    }
+
     /// Collect due drafts into synthesized lines and consume them (report-once,
-    /// same accounting as `bg_wake`: flip `submitted` before returning so a
+    /// same accounting as `bg_wake`: record the answer before returning so a
     /// crash between collect and send can never double-report). `flush` skips
     /// the coalesce window (Enter boundary).
+    ///
+    /// A draft that repeats the answer already sent is consumed with no line:
+    /// re-clicking the same option (or skipping twice) is the user confirming,
+    /// not a correction (session 20261022_bb8c2dc3).
     fn collect_lines(&mut self, now: Instant, flush: bool) -> Vec<String> {
         let mut lines = Vec::new();
         for state in self.screens.values_mut() {
@@ -351,8 +379,12 @@ impl ClickMailbox {
                 continue;
             }
             let draft = state.draft.take().expect("draft checked above");
+            let ids = draft_ids(&draft);
+            if is_same_answer(state.submitted.as_ref(), &ids) {
+                continue;
+            }
             lines.push(synthesize(state, &draft));
-            state.submitted = true;
+            state.submitted = Some(ids);
         }
         // Two versions of one question can each queue a pick: the model re-pushes
         // mid-turn and cannot see the click on the earlier screen, so the user
@@ -373,7 +405,11 @@ impl ClickMailbox {
 /// One M2d line for a consumed draft. `更正` marks only screens that already
 /// sent an answer ("提交后再点同一屏").
 fn synthesize(state: &ScreenState, draft: &Draft) -> String {
-    let correction = if state.submitted { "更正：" } else { "" };
+    let correction = if state.submitted.is_some() {
+        "更正："
+    } else {
+        ""
+    };
     match draft {
         Draft::Single { option_id, .. } => {
             pick_line(state, std::slice::from_ref(option_id), correction)
@@ -381,6 +417,33 @@ fn synthesize(state: &ScreenState, draft: &Draft) -> String {
         Draft::Confirmed { ids } => pick_line(state, ids, correction),
         Draft::Skipped => format!("{ANSWER_PREFIX} {correction}跳过 · 不做选择"),
     }
+}
+
+/// The draft as its option ids: Single → one, Confirmed → the frozen set,
+/// Skipped → none (an empty answer).
+fn draft_ids(draft: &Draft) -> Vec<String> {
+    match draft {
+        Draft::Single { option_id, .. } => vec![option_id.clone()],
+        Draft::Confirmed { ids } => ids.clone(),
+        Draft::Skipped => Vec::new(),
+    }
+}
+
+/// Same answer as the one already sent? Compare as sets — a re-picked order is
+/// still the same choice — and `Some([])` (a sent skip) matches only another
+/// empty answer.
+fn is_same_answer(submitted: Option<&Vec<String>>, ids: &[String]) -> bool {
+    let Some(sent) = submitted else {
+        return false;
+    };
+    if sent.len() != ids.len() {
+        return false;
+    }
+    let mut sent = sent.clone();
+    let mut ids = ids.to_vec();
+    sent.sort();
+    ids.sort();
+    sent == ids
 }
 
 /// `(画布选择) [更正：]已选 {ids} · {labels}` — ids in click order joined by

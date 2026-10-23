@@ -120,6 +120,85 @@ fn skip_after_submit_is_also_a_correction() {
     );
 }
 
+// --- P2: a re-click of the sent answer is confirmation, not a correction ----
+
+#[test]
+fn same_pick_after_submit_is_absorbed_silently() {
+    // Session 20261022_bb8c2dc3: rapid clicks on one option sent the answer,
+    // then one more click synthesized a wasted 更正 turn. The same option id
+    // again is the user confirming — consume it, say nothing.
+    let mut mailbox = ClickMailbox::new();
+    let t0 = Instant::now();
+    let env = envelope();
+    mailbox.push_event(t0, &select(1, "b"), Some(&env));
+    let _ = mailbox.take_submit(t0 + CLICK_COALESCE, false, false);
+
+    for _ in 0..3 {
+        mailbox.push_event(t0, &select(1, "b"), Some(&env));
+    }
+    assert_eq!(
+        mailbox.take_submit(t0 + CLICK_COALESCE, false, false),
+        None,
+        "same-value re-pick must not produce a correction line"
+    );
+    assert!(!mailbox.has_pending());
+}
+
+#[test]
+fn double_skip_is_absorbed_silently() {
+    let mut mailbox = ClickMailbox::new();
+    let t0 = Instant::now();
+    let env = envelope();
+    mailbox.push_event(t0, &event(1, EventAction::Skip), Some(&env));
+    let _ = mailbox.take_submit(t0, false, false);
+
+    mailbox.push_event(t0, &event(1, EventAction::Skip), Some(&env));
+    assert_eq!(
+        mailbox.take_submit(t0, false, false),
+        None,
+        "skip twice = once"
+    );
+}
+
+#[test]
+fn same_multiselect_set_after_submit_is_absorbed_silently() {
+    // Set equality, order ignored: re-confirming the same choices is the user
+    // confirming. (A re-click toggles an option *off* — so "same set again" is
+    // a bare re-Confirm, or a toggle-off/on pair that only reorders the set.)
+    let mut mailbox = ClickMailbox::new();
+    let t0 = Instant::now();
+    let env = multi_envelope();
+    mailbox.push_event(t0, &select(1, "a"), Some(&env));
+    mailbox.push_event(t0, &select(1, "b"), Some(&env));
+    mailbox.push_event(t0, &event(1, EventAction::Confirm), Some(&env));
+    let _ = mailbox.take_submit(t0, false, false);
+
+    mailbox.push_event(t0, &event(1, EventAction::Confirm), Some(&env));
+    assert_eq!(
+        mailbox.take_submit(t0, false, false),
+        None,
+        "re-Confirm = same"
+    );
+
+    // Toggle `a` off and on: the set is again {a, b}, in click order [b, a].
+    mailbox.push_event(t0, &select(1, "a"), Some(&env));
+    mailbox.push_event(t0, &select(1, "a"), Some(&env));
+    mailbox.push_event(t0, &event(1, EventAction::Confirm), Some(&env));
+    assert_eq!(
+        mailbox.take_submit(t0, false, false),
+        None,
+        "same set in another order is the same answer"
+    );
+
+    // A genuinely different set is still a correction.
+    mailbox.push_event(t0, &select(1, "a"), Some(&env));
+    mailbox.push_event(t0, &event(1, EventAction::Confirm), Some(&env));
+    assert_eq!(
+        mailbox.take_submit(t0, false, false),
+        Some("(画布选择) 更正：已选 b · 顶部横向导航".to_string())
+    );
+}
+
 #[test]
 fn display_only_screen_produces_no_message() {
     let mut mailbox = ClickMailbox::new();
@@ -334,13 +413,12 @@ fn skip_clears_multiselect_toggles() {
         Some("(画布选择) 跳过 · 不做选择".to_string())
     );
 
-    // The cleared set means a later empty confirm is another "nothing" (a
-    // correction line) — not the toggled option resurrected.
+    // The cleared set means a later empty confirm is another "nothing" —
+    // the same answer already sent. Absorbed silently: not the toggled option
+    // resurrected, and not a wasted 更正 turn (P2).
     mailbox.push_event(t0, &event(1, EventAction::Confirm), Some(&env));
-    assert_eq!(
-        mailbox.take_submit(t0, false, false),
-        Some("(画布选择) 更正：跳过 · 不做选择".to_string())
-    );
+    assert_eq!(mailbox.take_submit(t0, false, false), None);
+    assert!(!mailbox.has_pending(), "a repeated answer owes nothing");
 }
 
 #[test]
@@ -471,6 +549,35 @@ fn queued_screens_report_frozen_answers_not_live_toggles() {
         mailbox.queued_screens().is_empty(),
         "delivered → ack clears"
     );
+}
+
+#[test]
+fn queued_labels_name_the_frozen_picks() {
+    // The status bar's "which one did I click?" face: labels in screen order,
+    // a skip named as such — the ack must never say 已选 with nothing named.
+    let mut mailbox = ClickMailbox::new();
+    let t0 = Instant::now();
+    let env = envelope();
+    let multi = multi_envelope();
+
+    mailbox.push_event(t0, &select(1, "b"), Some(&env));
+    mailbox.push_event(t0, &select(2, "a"), Some(&multi));
+    assert_eq!(
+        mailbox.queued_labels(),
+        vec!["顶部横向导航".to_string()],
+        "a lone multi-toggle is not a frozen pick, so it names nothing"
+    );
+
+    mailbox.push_event(t0, &event(2, EventAction::Confirm), Some(&multi));
+    assert_eq!(
+        mailbox.queued_labels(),
+        vec!["顶部横向导航".to_string(), "侧边栏导航".to_string()],
+        "frozen picks are named in screen order"
+    );
+
+    let mut skipped = ClickMailbox::new();
+    skipped.push_event(t0, &event(1, EventAction::Skip), Some(&env));
+    assert_eq!(skipped.queued_labels(), vec!["跳过".to_string()]);
 }
 
 #[test]

@@ -770,6 +770,7 @@ pub async fn run_tui(
                 answered: click_mailbox.answered_screens().into_iter().collect(),
                 pending: click_mailbox.pending_screens().into_iter().collect(),
                 queued: click_mailbox.queued_screens().into_iter().collect(),
+                queued_labels: click_mailbox.queued_labels(),
             };
             if turn_fell
                 && let Some(envelope) =
@@ -784,10 +785,17 @@ pub async fn run_tui(
 
             // Consent gate resolution (M3): the user's answer reaches the host
             // here, and the tool's cached launch state follows it so a later
-            // `canvas_open` cannot report a stale `awaiting consent`.
-            if let Some(decision) = canvas_host.poll_consent() {
-                canvas_tools.set_launch_decision(decision).await;
-                dirty = true;
+            // `canvas_open` cannot report a stale `awaiting consent`. A yes
+            // that lands after the canvas died recovers like Ctrl+B.
+            match canvas_host.poll_consent() {
+                Some(super::canvas_host::ConsentOutcome::Decision(decision)) => {
+                    canvas_tools.set_launch_decision(decision).await;
+                    dirty = true;
+                }
+                Some(super::canvas_host::ConsentOutcome::ReopenAndLaunch) => {
+                    dirty = reopen_canvas(&canvas_tools, &canvas_host, &mut app).await || dirty;
+                }
+                None => {}
             }
             while let Some(note) = canvas_host.take_note() {
                 app.push_system(&note);
@@ -841,43 +849,15 @@ pub async fn run_tui(
                 app.approval_queue.push_back(item);
                 dirty = true;
             }
-            // `ask_user` (concept routing): a modal terminal picker, shown
-            // before the turn can go on — the tool is parked on its oneshot
-            // until the user picks or skips. Blocking by design, same
-            // alternate-screen bounce as /resume (hence the clear: ratatui
-            // diffs against a cache the bounce invalidated).
+            // `ask_user` (concept routing): a question parked in the popup
+            // queue — the tool is parked on its oneshot until the user picks
+            // or skips, and the transcript stays visible behind the window.
+            // No alternate-screen bounce any more: the question is a popup in
+            // this frame, like an approval prompt.
+            let had_ask = app.has_pending_ask();
             while let Ok(item) = ask_rx.try_recv() {
-                // BUG 4's rule, applied to this prompt too: keys typed before
-                // it appeared were aimed at the composer, not at the picker.
-                // Resizes are re-applied (the 1 Hz probe would self-heal them
-                // anyway); everything else is dropped.
-                while crossterm::event::poll(Duration::ZERO)? {
-                    if let Event::Resize(w, h) = crossterm::event::read()? {
-                        terminal.resize(Rect::new(0, 0, w, h))?;
-                        terminal.clear()?;
-                        last_size = (w, h);
-                    }
-                }
-                let rows: Vec<super::picker::ChoiceRow> = item
-                    .options
-                    .iter()
-                    .map(|option| super::picker::ChoiceRow {
-                        label: option.label.clone(),
-                        note: option.note.clone(),
-                    })
-                    .collect();
-                let picked =
-                    super::picker::show_choice_from_tui(&item.question, &rows, app.scheme())?;
-                terminal.clear()?;
+                app.ask_queue.push_back(item);
                 dirty = true;
-                let answer = match picked.and_then(|idx| item.options.get(idx)) {
-                    Some(option) => crate::tools::ask_user::AskAnswer::Picked {
-                        id: option.id.clone(),
-                        label: option.label.clone(),
-                    },
-                    None => crate::tools::ask_user::AskAnswer::Skipped,
-                };
-                let _ = item.answer_tx.send(answer);
             }
             // BUG 4: a popup that just opened must never see keys typed before it
             // appeared — those were aimed at the composer, not at a prompt nobody
@@ -886,12 +866,14 @@ pub async fn run_tui(
             // the 1 Hz geometry probe anyway if they were lost). Keys that survive
             // into the popup can at worst select an option — bare Enter is still
             // required to commit.
-            if !had_approval && app.has_pending_approval() {
+            let popup_opened = (!had_approval && app.has_pending_approval())
+                || (!had_ask && app.has_pending_ask());
+            if popup_opened {
                 let mut dropped_keys = 0usize;
                 while crossterm::event::poll(Duration::ZERO)? {
                     match crossterm::event::read()? {
                         Event::Resize(w, h) => {
-                            tracing::info!(w, h, "tui: resize during approval-open input drain");
+                            tracing::info!(w, h, "tui: resize during popup-open input drain");
                             terminal.resize(Rect::new(0, 0, w, h))?;
                             terminal.clear()?;
                             last_size = (w, h);
@@ -902,10 +884,7 @@ pub async fn run_tui(
                     }
                 }
                 if dropped_keys > 0 {
-                    tracing::info!(
-                        dropped_keys,
-                        "tui: drained pre-popup input at approval open"
-                    );
+                    tracing::info!(dropped_keys, "tui: drained pre-popup input at popup open");
                 }
             }
 
@@ -1082,34 +1061,9 @@ pub async fn run_tui(
                                     // request — never a consent prompt. After a
                                     // close/crash this rebinds a fresh server
                                     // first (new port ⇒ new URL).
-                                    match canvas_tools.rebind().await {
-                                        Ok(url) => {
-                                            let port = canvas_tools
-                                                .canvas()
-                                                .await
-                                                .map(|canvas| canvas.port())
-                                                .unwrap_or(0);
-                                            // Note the URL before granting: a
-                                            // later note for a *different* URL
-                                            // resets consent, and the grant must
-                                            // not be clobbered by the tick.
-                                            canvas_host.note_canvas(&url, port);
-                                            canvas_host.request_user_launch(&url);
-                                            canvas_tools
-                                                .set_launch_decision(
-                                                    phi_canvas::LaunchDecision::Launched,
-                                                )
-                                                .await;
-                                            dirty = true;
-                                        }
-                                        Err(err) => {
-                                            tracing::warn!(error = %err, "ctrl+b: canvas reopen failed");
-                                            app.push_system(&format!(
-                                                "! Canvas reopen failed: {err}"
-                                            ));
-                                            dirty = true;
-                                        }
-                                    }
+                                    dirty = reopen_canvas(&canvas_tools, &canvas_host, &mut app)
+                                        .await
+                                        || dirty;
                                 }
                                 Action::Cancel => {
                                     agent.cancel();
@@ -1125,6 +1079,7 @@ pub async fn run_tui(
                                     // dropping the item answers the tool right
                                     // away instead of parking a picker over a
                                     // cancelled turn.
+                                    app.clear_asks();
                                     while ask_rx.try_recv().is_ok() {}
                                 }
                                 Action::Quit => {
@@ -1462,6 +1417,38 @@ pub async fn run_tui(
             }
         }
     } // end outer loop
+}
+
+/// Recover a closed/crashed canvas (1C row 16): rebind a fresh server (new
+/// port ⇒ new URL), note it, and open the browser directly. The caller's path
+/// is already the user's consent — Ctrl+B's own key, or a `y` that landed
+/// after the canvas died. Returns whether the screen should redraw.
+async fn reopen_canvas(
+    canvas_tools: &Arc<phi_canvas::CanvasTools>,
+    canvas_host: &Arc<super::canvas_host::CanvasHost>,
+    app: &mut App,
+) -> bool {
+    match canvas_tools.rebind().await {
+        Ok(url) => {
+            let port = canvas_tools
+                .canvas()
+                .await
+                .map(|canvas| canvas.port())
+                .unwrap_or(0);
+            // Note the URL before granting: a later note for a *different* URL
+            // resets consent, and the grant must not be clobbered by the tick.
+            canvas_host.note_canvas(&url, port);
+            canvas_host.request_user_launch(&url);
+            canvas_tools
+                .set_launch_decision(phi_canvas::LaunchDecision::Launched)
+                .await;
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "canvas reopen failed");
+            app.push_system(&format!("! Canvas reopen failed: {err}"));
+        }
+    }
+    true
 }
 
 /// Copy `text` to the clipboard (if available), surfacing a status-bar notice.

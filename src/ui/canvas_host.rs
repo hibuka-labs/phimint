@@ -36,11 +36,14 @@ pub const CANVAS_LAUNCH_KEY: &str = "canvas_launch";
 /// `pending` = one is still owed (draft / moved toggle set); `queued` = the
 /// subset of `pending` whose answer is frozen and only waits for a boundary
 /// (the busy-click ack — see `click_mailbox::queued_screens`). Screen seqs.
+/// `queued_labels` names those frozen picks (see
+/// `click_mailbox::queued_labels`) for the status bar.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AnswerFacts {
     pub answered: BTreeSet<u64>,
     pub pending: BTreeSet<u64>,
     pub queued: BTreeSet<u64>,
+    pub queued_labels: Vec<String>,
 }
 
 /// What the current screen is, as the status bar needs it (row 13: the number
@@ -88,8 +91,8 @@ pub fn screen_status(face: Option<&ScreenFace>, answered: bool, draft: bool) -> 
 }
 
 /// Inputs to [`status_line`] — the lifecycle phase plus the screen face, and
-/// the mailbox's frozen-undelivered count.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// the mailbox's frozen-undelivered count and labels.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusInput {
     pub port: u16,
     /// The user has not answered whether a browser may open (待同意).
@@ -103,6 +106,9 @@ pub struct StatusInput {
     /// [`AnswerFacts::queued`]). When non-zero the ack face wins — "did my
     /// click land?" outranks what the screen is showing.
     pub queued: usize,
+    /// What those picks *are* (`AnswerFacts::queued_labels`) — the ack names
+    /// them so "which one did I click?" needs no trip back to the browser.
+    pub queued_labels: Vec<String>,
 }
 
 /// The status-bar line: spec-locked wording, plus the alert flag (red + the
@@ -111,6 +117,29 @@ pub struct StatusInput {
 pub struct StatusLine {
     pub text: String,
     pub alert: bool,
+}
+
+/// One status-bar-worth of pick labels: joined in click order, then cut to a
+/// display budget so a long CJK label cannot shove the rest of the bar off.
+fn fit_labels(labels: &[String]) -> String {
+    const BUDGET: usize = 20;
+    let joined = labels.join("、");
+    if unicode_width::UnicodeWidthStr::width(joined.as_str()) <= BUDGET {
+        return joined;
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    for ch in joined.chars() {
+        let width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        // Room for the ellipsis that ends the cut.
+        if used + width + 1 > BUDGET {
+            out.push('…');
+            return out;
+        }
+        out.push(ch);
+        used += width;
+    }
+    out
 }
 
 /// The status-bar line (spec-locked state words after `canvas ● localhost:`).
@@ -132,8 +161,16 @@ pub fn status_line(input: &StatusInput) -> StatusLine {
     } else if input.queued > 0 {
         // Busy-click ack: the pick is recorded, the boundary (turn end /
         // Enter) will send it. Without this face a click during a long turn
-        // looks like nothing happened (walkthrough 烦②).
-        format!("{} 个已选待送", input.queued)
+        // looks like nothing happened (walkthrough 烦②). The labels answer
+        // the follow-up question the count alone raises — which one?
+        let labels = fit_labels(&input.queued_labels);
+        if labels.is_empty() {
+            format!("{} 个已选待送", input.queued)
+        } else if input.queued == 1 {
+            format!("已选待送：{labels}")
+        } else {
+            format!("{} 个已选待送：{labels}", input.queued)
+        }
     } else {
         match input.screen {
             ScreenStatus::Awaiting { options } => format!("{options} 个选项待选"),
@@ -278,8 +315,21 @@ enum Consent {
     /// The user said yes (or Ctrl+B'd) and the URL was already shown — a
     /// later model request reports `browser launched` without re-opening.
     Granted,
-    /// The user said no — never nag again for this canvas.
+    /// The user said no, or the gate settled without a launch — never nag
+    /// again for this canvas.
     Declined,
+}
+
+/// What a consent answer means for the run loop (M3 + row 16).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConsentOutcome {
+    /// Cache this as the tool layer's launch state (M3 text honesty).
+    Decision(LaunchDecision),
+    /// The user said yes to a canvas that has since closed or crashed — there
+    /// is nothing live to open. Recover the way Ctrl+B does: rebind a fresh
+    /// server and open *that*. The gate promised "y opens it in your browser";
+    /// a dead page is plumbing, not a detour the user should route around.
+    ReopenAndLaunch,
 }
 
 /// One pushed screen, as the status bar and the waiting summary need it.
@@ -527,6 +577,7 @@ impl CanvasHost {
             closed: inner.phase == Phase::Closed,
             screen: screen_status(face.as_ref(), answered, draft),
             queued: facts.queued.len(),
+            queued_labels: facts.queued_labels.clone(),
         }))
     }
 
@@ -570,10 +621,11 @@ impl CanvasHost {
 
     /// Resolve any consent prompt the user has answered (poll seam — keeps
     /// this module free of spawned tasks and fully testable). Returns what the
-    /// tool layer should cache as its launch state once the gate has spoken,
-    /// so a later `canvas_open` on the same live canvas cannot report a stale
-    /// `awaiting consent` (M3 honesty).
-    pub fn poll_consent(&self) -> Option<LaunchDecision> {
+    /// run loop should do with the answer: cache the tool layer's launch state
+    /// once the gate has spoken (so a later `canvas_open` on the same live
+    /// canvas cannot report a stale `awaiting consent` — M3 honesty), or
+    /// recover a dead canvas on a yes.
+    pub fn poll_consent(&self) -> Option<ConsentOutcome> {
         let (decision, url) = {
             let mut inner = self.inner.lock().unwrap();
             let result = match inner.pending.as_mut()?.try_recv() {
@@ -593,23 +645,24 @@ impl CanvasHost {
                     let mut inner = self.inner.lock().unwrap();
                     // The prompt can outlive the server — row 16's crash face
                     // is exactly "it died while the consent was still up". A
-                    // grant cannot open a dead page: surface the URL and leave
-                    // the advertised recovery key (Ctrl+B) as the path back.
+                    // yes is a yes to *seeing the design*, so the run loop
+                    // recovers like Ctrl+B (rebind + open the new URL) instead
+                    // of opening a page that cannot load. Until that happens
+                    // the gate stays settled: no re-nag, no `browser launched`.
                     if matches!(inner.phase, Phase::Failed | Phase::Closed) {
                         inner.consent = Consent::Declined;
                         drop(inner);
-                        self.push_note(format!("Design canvas URL (nothing was opened): {url}"));
-                        return Some(LaunchDecision::AwaitingConsent);
+                        return Some(ConsentOutcome::ReopenAndLaunch);
                     }
                     inner.consent = Consent::Granted;
                 }
                 self.spawn_launch(&url);
-                Some(LaunchDecision::Launched)
+                Some(ConsentOutcome::Decision(LaunchDecision::Launched))
             }
             Ok(ApprovalDecision::Deny) | Err(()) => {
                 self.inner.lock().unwrap().consent = Consent::Declined;
                 self.push_note(format!("Design canvas URL (nothing was opened): {url}"));
-                Some(LaunchDecision::AwaitingConsent)
+                Some(ConsentOutcome::Decision(LaunchDecision::AwaitingConsent))
             }
         }
     }

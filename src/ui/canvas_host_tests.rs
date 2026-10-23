@@ -49,6 +49,7 @@ fn status_count_comes_from_the_envelope_options() {
         closed: false,
         screen: ScreenStatus::Awaiting { options: 3 },
         queued: 0,
+        queued_labels: Vec::new(),
     });
     assert_eq!(line.text, "canvas ● localhost:32123 · 3 个选项待选");
     assert!(!line.alert);
@@ -63,35 +64,36 @@ fn status_states_match_the_spec_wording() {
         closed: false,
         screen: ScreenStatus::Idle,
         queued: 0,
+        queued_labels: Vec::new(),
     };
-    let show = |input: StatusInput| status_line(&input).text;
+    let show = |input: &StatusInput| status_line(input).text;
 
-    assert_eq!(show(base), "canvas ● localhost:80 · 空闲");
+    assert_eq!(show(&base), "canvas ● localhost:80 · 空闲");
     assert_eq!(
-        show(StatusInput {
+        show(&StatusInput {
             awaiting_consent: true,
-            ..base
+            ..base.clone()
         }),
         "canvas ● localhost:80 · 待同意"
     );
     assert_eq!(
-        show(StatusInput {
+        show(&StatusInput {
             screen: ScreenStatus::DisplayOnly,
-            ..base
+            ..base.clone()
         }),
         "canvas ● localhost:80 · 展示中"
     );
     assert_eq!(
-        show(StatusInput {
+        show(&StatusInput {
             screen: ScreenStatus::Waiting,
-            ..base
+            ..base.clone()
         }),
         "canvas ● localhost:80 · 空闲"
     );
     assert_eq!(
-        show(StatusInput {
+        show(&StatusInput {
             closed: true,
-            ..base
+            ..base.clone()
         }),
         "画布已关闭 · 可重开"
     );
@@ -138,7 +140,8 @@ fn screen_status_tracks_the_mailbox_face() {
 fn queued_pick_wins_the_face_so_a_busy_click_stays_visible() {
     // Walkthrough 烦②: a click during a long turn looked like nothing
     // happened. The pick was only queued (M2 never injects mid-turn), and the
-    // old face kept saying `3 个选项待选` — silent. Now the debt is spelled out.
+    // old face kept saying `3 个选项待选` — silent. Now the debt is spelled out
+    // and *named* — the count alone only raises "which one?".
     let base = StatusInput {
         port: 80,
         awaiting_consent: false,
@@ -146,22 +149,47 @@ fn queued_pick_wins_the_face_so_a_busy_click_stays_visible() {
         closed: false,
         screen: ScreenStatus::Awaiting { options: 3 },
         queued: 1,
+        queued_labels: vec!["浅色 SaaS".to_string()],
     };
     assert_eq!(
         status_line(&base).text,
-        "canvas ● localhost:80 · 1 个已选待送",
-        "a frozen pick outranks the screen face"
+        "canvas ● localhost:80 · 已选待送：浅色 SaaS",
+        "a frozen pick outranks the screen face and names itself"
     );
     assert_eq!(
-        status_line(&StatusInput { queued: 2, ..base }).text,
-        "canvas ● localhost:80 · 2 个已选待送",
-        "one line per screen: the count is the queued screens"
+        status_line(&StatusInput {
+            queued: 2,
+            queued_labels: vec!["浅色 SaaS".to_string(), "深色系".to_string()],
+            ..base.clone()
+        })
+        .text,
+        "canvas ● localhost:80 · 2 个已选待送：浅色 SaaS、深色系",
+        "one line per screen: the count is the queued screens, the labels name the picks"
+    );
+    assert_eq!(
+        status_line(&StatusInput {
+            queued_labels: Vec::new(),
+            ..base.clone()
+        })
+        .text,
+        "canvas ● localhost:80 · 1 个已选待送",
+        "the bare count face survives when nothing is named"
+    );
+    // A long CJK label is cut to the bar's budget, never shoved off it.
+    let long = status_line(&StatusInput {
+        queued_labels: vec!["一个非常非常长的候选方案名称会超过状态栏预算".to_string()],
+        ..base.clone()
+    });
+    assert!(
+        long.text.contains("已选待送：") && long.text.ends_with('…'),
+        "truncated, not overflowed: {}",
+        long.text
     );
     // Crash and consent still outrank the ack.
     assert_eq!(
         status_line(&StatusInput {
             failed: true,
-            ..base
+            ..base.clone()
         })
         .text,
         "canvas ● 已断开 (ctrl+b 重开)"
@@ -404,7 +432,10 @@ fn note_canvas_keeps_a_prompt_the_tool_already_raised() {
 
     // The original prompt still resolves into a launch.
     item.decision_tx.send(ApprovalDecision::AllowOnce).unwrap();
-    assert_eq!(host.poll_consent(), Some(LaunchDecision::Launched));
+    assert_eq!(
+        host.poll_consent(),
+        Some(ConsentOutcome::Decision(LaunchDecision::Launched))
+    );
     assert_eq!(launches.load(Ordering::SeqCst), 1);
 }
 
@@ -432,7 +463,10 @@ fn note_canvas_drops_a_prompt_from_a_previous_url() {
         "the stale prompt's receiver was dropped with the old URL"
     );
     fresh.decision_tx.send(ApprovalDecision::AllowOnce).unwrap();
-    assert_eq!(host.poll_consent(), Some(LaunchDecision::Launched));
+    assert_eq!(
+        host.poll_consent(),
+        Some(ConsentOutcome::Decision(LaunchDecision::Launched))
+    );
     assert_eq!(launches.load(Ordering::SeqCst), 1, "the fresh yes, once");
 }
 
@@ -445,7 +479,10 @@ fn consent_yes_launches_exactly_once() {
     item.decision_tx.send(ApprovalDecision::AllowOnce).unwrap();
 
     // The tool layer caches what the gate decided (M3 text honesty).
-    assert_eq!(host.poll_consent(), Some(LaunchDecision::Launched));
+    assert_eq!(
+        host.poll_consent(),
+        Some(ConsentOutcome::Decision(LaunchDecision::Launched))
+    );
     assert_eq!(launches.load(Ordering::SeqCst), 1);
 
     // A later model ask reports `browser launched` and does not re-pop.
@@ -458,38 +495,39 @@ fn consent_yes_launches_exactly_once() {
 }
 
 #[test]
-fn consent_grant_on_a_dead_canvas_opens_nothing() {
+fn consent_grant_on_a_dead_canvas_recovers_by_reopening() {
     // Row 16: the server can die while the consent prompt is still up. A yes
-    // then has nothing to open — launching the dead URL would pop a browser at
-    // a page that cannot load. The URL is surfaced instead, and the advertised
-    // recovery key (Ctrl+B) is the path back.
-    let (host, mut rx, launches) = host_with_counter();
-    host.note_canvas("http://127.0.0.1:4242", 4242);
-    host.request_model_launch("http://127.0.0.1:4242");
-    let item = rx.try_recv().unwrap();
+    // is a yes to *seeing the design*, not to one port — so the gate routes it
+    // to Ctrl+B's recovery (rebind + open the new URL) instead of opening a
+    // page that cannot load or shrugging at the user.
+    for close in [CanvasHost::note_failed, CanvasHost::note_closed] {
+        let (host, mut rx, launches) = host_with_counter();
+        host.note_canvas("http://127.0.0.1:4242", 4242);
+        host.request_model_launch("http://127.0.0.1:4242");
+        let item = rx.try_recv().unwrap();
 
-    host.note_failed(); // server task died without a close
-    item.decision_tx.send(ApprovalDecision::AllowOnce).unwrap();
-    assert_eq!(
-        host.poll_consent(),
-        Some(LaunchDecision::AwaitingConsent),
-        "nothing launched, so the tool may not claim `browser launched`"
-    );
-    assert_eq!(
-        launches.load(Ordering::SeqCst),
-        0,
-        "no browser at a dead page"
-    );
-    let note = host.take_note().expect("the URL is still surfaced");
-    assert!(note.contains("nothing was opened") && note.contains("4242"));
+        close(&host); // crash or graceful close — the recovery is the same
+        item.decision_tx.send(ApprovalDecision::AllowOnce).unwrap();
+        assert_eq!(
+            host.poll_consent(),
+            Some(ConsentOutcome::ReopenAndLaunch),
+            "the yes routes to a rebind, never straight to a dead URL"
+        );
+        assert_eq!(
+            launches.load(Ordering::SeqCst),
+            0,
+            "the gate itself opens nothing — the rebind's launch does"
+        );
 
-    // Same for a gracefully closed canvas.
-    host.note_closed();
-    assert_eq!(
-        host.request_model_launch("http://127.0.0.1:4242"),
-        LaunchDecision::AwaitingConsent,
-        "a declined gate never nags again"
-    );
+        // The gate has settled: no re-nag, and no `browser launched` claim
+        // until the reopen's own launch is noted.
+        assert_eq!(
+            host.request_model_launch("http://127.0.0.1:4242"),
+            LaunchDecision::AwaitingConsent,
+            "a settled gate never nags again"
+        );
+        assert!(rx.try_recv().is_err());
+    }
 }
 
 #[test]
@@ -503,7 +541,10 @@ fn allow_always_still_means_launch_once() {
     item.decision_tx
         .send(ApprovalDecision::AllowAlways)
         .unwrap();
-    assert_eq!(host.poll_consent(), Some(LaunchDecision::Launched));
+    assert_eq!(
+        host.poll_consent(),
+        Some(ConsentOutcome::Decision(LaunchDecision::Launched))
+    );
     assert_eq!(launches.load(Ordering::SeqCst), 1);
 
     // A rebind (new URL) asks again — the yes was for that one URL.
@@ -525,7 +566,7 @@ fn consent_no_shows_the_url_instead_of_a_browser() {
     item.decision_tx.send(ApprovalDecision::Deny).unwrap();
     assert_eq!(
         host.poll_consent(),
-        Some(LaunchDecision::AwaitingConsent),
+        Some(ConsentOutcome::Decision(LaunchDecision::AwaitingConsent)),
         "the tool keeps reporting `awaiting consent` — nothing launched"
     );
 

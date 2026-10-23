@@ -37,7 +37,7 @@ it declares.
 | kind | fields | use for |
 |---|---|---|
 | `frame` | `title?`, `body` | browser/dashboard window chrome around a body |
-| `cols` / `rows` | `ratio?[]`, `children[]` | bands; `ratio` are relative weights (numbers, decimals fine: `[1, 5, 0.7]`) |
+| `cols` / `rows` | `ratio?[]`, `children[]` | bands; `ratio` are relative weights (numbers, decimals fine: `[1, 5, 0.7]`). Without `ratio` every band hugs its content — give weights when bands should share height |
 | `stack` | `count`, `child` | N copies of one cell |
 | `box` | `w?`, `h?`, `text?` | a sized region (`w`/`h` are percentages of the parent — number or string, `18` = `18%`) |
 | `text` | `text` | any one line of copy, including region annotations |
@@ -51,7 +51,7 @@ it declares.
 | `topbar` | `title?`, `back?`, `action?` | mobile screen header (back needs a title) |
 | `tabbar` | `items[]`, `active?` | bottom tab bar; `active` is the selected index |
 | `nav` / `sidebar` | `items[]` | labelled desktop navigation (1–8 items) |
-| `toolbar` | `items[]` | menu bar items or a tool strip |
+| `toolbar` | `items[]` | action strip; `items` are **label strings** (each becomes a small button). A filter or input is its own node, composed beside the strip in `cols` — never inside `items` |
 | `dialog` | `title`, `text?` \| `body?`, `actions[]` | modal card; must say something |
 
 ## High-frequency controls
@@ -80,7 +80,8 @@ it declares.
 | `tree` | `items[{label, depth?}]` | indented tree (`depth` 0–4, items 1–12) |
 
 Bounds that keep a mock a mock: labelled item lists 1–8 (`nav`, `sidebar`,
-`tabbar`, `segment`, `toolbar`), `bars` 1–10, `table` ≤10 rows and every row
+`tabbar`, `segment`, `toolbar`) — label strings only, a node map in `items` is
+always wrong; `bars` 1–10, `table` ≤10 rows and every row
 exactly one cell per column (cols 1–8), `tree` ≤12 items, dialog `actions`
 ≤3, `active` must index a real item. Mock data is decorative — a
 `ring` at 86% and a `sparkline` shape are stand-ins. The canvas is for design

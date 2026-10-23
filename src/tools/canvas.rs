@@ -76,17 +76,30 @@ impl Tool for CanvasTool {
         }
     }
 
-    async fn call(&self, args: &Value, _ctx: &ToolContext) -> AgentResult<Vec<Content>> {
+    async fn call(&self, args: &Value, ctx: &ToolContext) -> AgentResult<Vec<Content>> {
         use phi_canvas::tools::{TOOL_CLOSE, TOOL_OPEN, TOOL_PUSH};
 
-        let result = match self.descriptor.name {
-            TOOL_OPEN => self.tools.open().await,
-            TOOL_PUSH => self.tools.push(args).await,
-            TOOL_CLOSE => self.tools.close().await,
+        // The three verbs answer in the locked M3 texts. `canvas_push` also
+        // reports whether the screen waits on the user's pick — that parks the
+        // run on a human step (the guard must treat the pause as waiting, not
+        // as an incomplete task to nudge along).
+        let result: Result<(String, bool), _> = match self.descriptor.name {
+            TOOL_OPEN => self.tools.open().await.map(|text| (text, false)),
+            TOOL_PUSH => self
+                .tools
+                .push(args)
+                .await
+                .map(|outcome| (outcome.text, outcome.awaiting_selection)),
+            TOOL_CLOSE => self.tools.close().await.map(|text| (text, false)),
             other => unreachable!("descriptor set is locked in phi-canvas: {other}"),
         };
         Ok(vec![Content::text(match result {
-            Ok(text) => text,
+            Ok((text, awaiting_selection)) => {
+                if awaiting_selection {
+                    ctx.mark_waiting_for_human();
+                }
+                text
+            }
             Err(err) => format!("[Error]: {err}"),
         })])
     }

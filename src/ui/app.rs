@@ -19,6 +19,7 @@ use ratatui::style::{Modifier, Style};
 use crate::approval::{ApprovalItem, ApprovalModeSwitch, RuntimeApprovalMode};
 use crate::banner::{BannerRow, BannerStyle, ColorScheme, SpanSpec};
 use crate::tips::TipItem;
+use crate::tools::ask_user::{AskAnswer, AskItem};
 use crate::ui::theme;
 use phi_tui::completer::{CompleterAction, MentionCompleter, SlashCompleter};
 use phi_tui::input::Composer;
@@ -333,6 +334,11 @@ pub struct App {
     pub viewport: Viewport,
     /// Pending approval requests (front = the popup currently shown).
     pub approval_queue: VecDeque<ApprovalItem>,
+    /// Pending `ask_user` questions (front = the popup currently shown).
+    /// Same one-at-a-time queue shape as approvals: the tool is parked on its
+    /// oneshot until the user picks or skips, and the transcript stays visible
+    /// behind the window — the question is a popup, never a screen takeover.
+    pub ask_queue: VecDeque<AskItem>,
     /// Live approval mode switch, shared with the approval gate (Shift+Tab
     /// flips it; the status bar badges the current mode).
     pub approval_switch: Arc<ApprovalModeSwitch>,
@@ -359,6 +365,10 @@ pub struct App {
     /// choice here; Enter commits it. Esc does nothing (an IME cancel sends
     /// Esc). Cleared whenever the front prompt changes.
     pub(crate) approval_selection: Option<ApprovalDecision>,
+    /// Cursor row of the ask popup (`ask_user`). Unlike the approval letter
+    /// highlight this is a list cursor the user moves with ↑↓ — Enter commits
+    /// whatever is under it. Reset whenever the front prompt changes.
+    pub(crate) ask_selection: usize,
     /// `@` mention picker, open while the user is choosing a path.
     pub(crate) mention: Option<MentionCompleter>,
     /// `/` skill picker, open while the user is choosing a skill.
@@ -492,6 +502,7 @@ impl App {
             running: false,
             viewport: Viewport::new(),
             approval_queue: VecDeque::new(),
+            ask_queue: VecDeque::new(),
             approval_switch: Arc::new(ApprovalModeSwitch::new(RuntimeApprovalMode::Auto)),
             sub_agents: BTreeMap::new(),
             task_panel: TaskPanel::default(),
@@ -499,6 +510,7 @@ impl App {
             selection_state: SelectionState::new(),
             quit_hint_at: None,
             approval_selection: None,
+            ask_selection: 0,
             mention: None,
             slash: None,
             popup_style: PopupStyle::default(),
@@ -1432,6 +1444,52 @@ impl App {
     pub fn clear_approvals(&mut self) {
         self.approval_selection = None;
         self.approval_queue.clear();
+    }
+
+    /// The question currently shown by the ask popup (front of the queue).
+    pub fn current_ask(&self) -> Option<&AskItem> {
+        self.ask_queue.front()
+    }
+
+    /// Whether an ask popup is pending.
+    pub fn has_pending_ask(&self) -> bool {
+        !self.ask_queue.is_empty()
+    }
+
+    /// Move the ask cursor by `delta` rows, clamped to the option list.
+    pub fn ask_move(&mut self, delta: isize) {
+        let Some(len) = self.ask_queue.front().map(|item| item.options.len()) else {
+            return;
+        };
+        if len == 0 {
+            return;
+        }
+        let current = self.ask_selection.min(len - 1);
+        self.ask_selection = (current as isize + delta).clamp(0, len as isize - 1) as usize;
+    }
+
+    /// Answer the front ask prompt: `Some(index)` commits that row, `None`
+    /// skips. The cursor never leaks to the next prompt in the queue.
+    pub fn answer_ask_front(&mut self, picked: Option<usize>) {
+        self.ask_selection = 0;
+        if let Some(item) = self.ask_queue.pop_front() {
+            let answer = match picked.and_then(|index| item.options.get(index)) {
+                Some(option) => AskAnswer::Picked {
+                    id: option.id.clone(),
+                    label: option.label.clone(),
+                },
+                None => AskAnswer::Skipped,
+            };
+            let _ = item.answer_tx.send(answer);
+        }
+    }
+
+    /// Dismiss every pending question without answering (cancel path).
+    /// Dropping the item answers the tool right away — the oneshot sees a
+    /// closed channel instead of a question parked over a cancelled turn.
+    pub fn clear_asks(&mut self) {
+        self.ask_selection = 0;
+        self.ask_queue.clear();
     }
 }
 

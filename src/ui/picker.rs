@@ -18,16 +18,17 @@ use crossterm::{
 };
 use phi_agent::SessionInfo;
 use ratatui::{
-    Frame, Terminal,
+    Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Layout},
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Padding, Paragraph, Wrap},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
 
 use crate::banner::ColorScheme;
 use crate::session_scope::{self, Scope};
+use crate::tools::ask_user::AskOption;
 use crate::ui::theme;
 use unicode_width::UnicodeWidthStr;
 
@@ -317,7 +318,7 @@ fn format_date(time: SystemTime) -> String {
     }
 }
 
-// ── Concept-choice picker (ask_user) ────────────────────────────────────────
+// ── Concept-choice rows (ask_user) ─────────────────────────────────────────
 
 /// One row of a question asked in the terminal: the label the user reads, plus
 /// an optional note under it. The caller maps its own answer key to the index
@@ -328,170 +329,59 @@ pub struct ChoiceRow {
     pub note: Option<String>,
 }
 
-/// Ask a question with a fixed set of options in a modal picker — the text
-/// half of the design routing (visual questions go to the design canvas).
-///
-/// Same alternate-screen dance as [`show_picker_from_tui`]: the caller's
-/// screen is left, the question runs in its own, and the caller's screen comes
-/// back. The caller must `terminal.clear()` afterwards — ratatui diffs against
-/// a cache the bounce invalidated and would otherwise not repaint.
-///
-/// Returns the index of the row the user confirmed, or `None` when they
-/// pressed Esc (a skip is an answer too).
-pub fn show_choice_from_tui(
-    question: &str,
-    rows: &[ChoiceRow],
-    scheme: ColorScheme,
-) -> io::Result<Option<usize>> {
-    if rows.is_empty() {
-        return Ok(None);
-    }
-
-    // Leave the caller's alternate screen.
-    let mut stdout = io::stdout();
-    execute!(stdout, LeaveAlternateScreen)?;
-
-    let result = (|| {
-        enable_raw_mode()?;
-        execute!(stdout, EnterAlternateScreen)?;
-        let backend = CrosstermBackend::new(stdout);
-        let mut terminal = Terminal::new(backend)?;
-        let mut state = ListState::default();
-        state.select(Some(0));
-        let r = choice_loop(&mut terminal, question, rows, &mut state, scheme);
-        disable_raw_mode()?;
-        execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-        r
-    })();
-
-    // Re-enter the caller's alternate screen.
-    enable_raw_mode()?;
-    let mut stdout2 = io::stdout();
-    execute!(stdout2, EnterAlternateScreen)?;
-
-    result
+/// The rows a pending question shows — labels and notes only; the answer ids
+/// and the answer channel stay with the prompt itself.
+pub fn choice_rows(options: &[AskOption]) -> Vec<ChoiceRow> {
+    options
+        .iter()
+        .map(|option| ChoiceRow {
+            label: option.label.clone(),
+            note: option.note.clone(),
+        })
+        .collect()
 }
 
-/// The choice event loop — the question, the option list, and the keys.
-fn choice_loop(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    question: &str,
-    rows: &[ChoiceRow],
-    state: &mut ListState,
-    scheme: ColorScheme,
-) -> io::Result<Option<usize>> {
-    loop {
-        terminal.draw(|frame| draw_choice(frame, question, rows, state, scheme))?;
-
-        if event::poll(std::time::Duration::from_millis(100))?
-            && let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
-        {
-            match key.code {
-                KeyCode::Up => {
-                    let selected = state.selected().unwrap_or(0);
-                    if selected > 0 {
-                        state.select(Some(selected - 1));
-                    }
-                }
-                KeyCode::Down => {
-                    let selected = state.selected().unwrap_or(0);
-                    if selected + 1 < rows.len() {
-                        state.select(Some(selected + 1));
-                    }
-                }
-                KeyCode::Enter => return Ok(state.selected()),
-                KeyCode::Esc => return Ok(None),
-                _ => {}
-            }
-        }
-    }
-}
-
-/// One frame of a question picker: the question on top, the bordered option
-/// list under it, the key legend at the bottom. Split out of the loop so the
-/// layout can be asserted against a [`ratatui::backend::TestBackend`].
-fn draw_choice(
-    frame: &mut Frame<'_>,
-    question: &str,
-    rows: &[ChoiceRow],
-    state: &mut ListState,
-    scheme: ColorScheme,
-) {
-    let area = frame.area();
-    let chunks = Layout::vertical([
-        Constraint::Min(1),                                        // question
-        Constraint::Length(choice_list_height(rows, area.height)), // options
-        Constraint::Length(1),                                     // footer hint
-    ])
-    .split(area);
-
-    frame.render_widget(
-        Paragraph::new(question)
-            .wrap(Wrap { trim: true })
-            .block(Block::default().padding(Padding::horizontal(2))),
-        chunks[0],
-    );
-
-    let list = List::new(
-        rows.iter()
-            .map(|row| ListItem::new(choice_lines(row, scheme)))
-            .collect::<Vec<_>>(),
-    )
-    .block(
-        Block::default()
-            .title(" Choose ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(theme::faint(scheme))),
-    )
-    .highlight_style(
+/// One option row: the cursor column, the label, and its note indented
+/// underneath. The cursor reserves the same two columns on every row, so
+/// labels line up whether or not the row is the one under it.
+pub fn choice_lines(row: &ChoiceRow, selected: bool, scheme: ColorScheme) -> Vec<Line<'static>> {
+    let cursor = if selected { "> " } else { "  " };
+    let label_style = if selected {
         Style::default()
             .bg(theme::selection_bg(scheme))
             .fg(theme::selection_fg(scheme))
-            .add_modifier(Modifier::BOLD),
-    )
-    .highlight_symbol("> ");
-    frame.render_stateful_widget(list, chunks[1], state);
-
-    frame.render_widget(
-        Paragraph::new(Span::styled(
-            choice_footer(area.width),
-            Style::default().fg(theme::faint(scheme)),
-        )),
-        chunks[2],
-    );
-}
-
-/// One option row: the label, and its note indented underneath it. The
-/// highlight symbol already reserves the label's column.
-fn choice_lines(row: &ChoiceRow, scheme: ColorScheme) -> Vec<Line<'static>> {
-    let mut lines = vec![Line::from(row.label.clone())];
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+    let mut lines = vec![Line::from(Span::styled(
+        format!("{cursor}{}", row.label),
+        label_style,
+    ))];
     if let Some(note) = &row.note {
         lines.push(Line::styled(
-            format!("  {note}"),
+            format!("    {note}"),
             Style::default().fg(theme::faint(scheme)),
         ));
     }
     lines
 }
 
-/// How many rows the option list takes: every row's lines plus its border,
-/// capped so the question and the footer keep their space.
-fn choice_list_height(rows: &[ChoiceRow], area_height: u16) -> u16 {
-    let content: u16 = rows
-        .iter()
+/// How many rows the option list takes: every label plus every note. The
+/// window's own border is the popup's to budget, not the list's.
+pub fn choice_list_height(rows: &[ChoiceRow]) -> u16 {
+    rows.iter()
         .map(|row| if row.note.is_some() { 2 } else { 1 })
-        .sum();
-    (content + 2).min(area_height.saturating_sub(2).max(3))
+        .sum()
 }
 
-/// The key legend. The way out must never scroll off the frame, so the full
+/// The key legend. The way out must never scroll off the window, so the full
 /// legend gives way to shorter ones as the terminal narrows (and to a bare
 /// key pair as a last resort).
 ///
 /// ASCII only in the chrome: em dashes and middots render double-width in CJK
 /// terminals and shift the box borders.
-fn choice_footer(width: u16) -> &'static str {
+pub fn choice_footer(width: u16) -> &'static str {
     const LEGENDS: [&str; 3] = [
         " ↑↓ navigate  Enter select  Esc skip ",
         " ↑↓ move  Enter select  Esc skip ",
@@ -704,7 +594,7 @@ mod tests {
         assert_eq!(shown[0].session_id, "mine");
     }
 
-    // ── concept-choice picker (ask_user) ──
+    // ── concept-choice rows (ask_user) ──
 
     fn rows(spec: &[(&str, Option<&str>)]) -> Vec<ChoiceRow> {
         spec.iter()
@@ -716,25 +606,23 @@ mod tests {
     }
 
     #[test]
-    fn choice_list_height_is_content_plus_border_and_never_starves_the_rest() {
-        // Two plain rows + border = 4; notes cost a second line each.
+    fn choice_list_height_counts_every_label_and_note() {
+        // Two plain rows take two rows; a note costs a second line each.
+        assert_eq!(choice_list_height(&rows(&[("a", None), ("b", None)])), 2);
         assert_eq!(
-            choice_list_height(&rows(&[("a", None), ("b", None)]), 24),
-            4
+            choice_list_height(&rows(&[("a", Some("n")), ("b", None)])),
+            3
         );
-        assert_eq!(
-            choice_list_height(&rows(&[("a", Some("n")), ("b", None)]), 24),
-            5
-        );
-        // A short terminal must still leave a row for the question and one
-        // for the footer rather than overflowing the frame.
-        assert_eq!(choice_list_height(&rows(&[("a", None)]), 5), 3);
+        // No options is no rows — the popup draws nothing rather than an
+        // empty box to skip.
+        assert_eq!(choice_list_height(&[]), 0);
     }
 
     #[test]
     fn a_choice_note_sits_under_its_label() {
         let lines = choice_lines(
             &rows(&[("side-by-side", Some("dense"))])[0],
+            false,
             ColorScheme::Dark,
         );
         let text: Vec<String> = lines.iter().map(|line| line.to_string()).collect();
@@ -743,6 +631,20 @@ mod tests {
             text[1].contains("dense"),
             "the note must render under the label: {text:?}"
         );
+    }
+
+    #[test]
+    fn the_cursor_column_is_reserved_on_every_row() {
+        // The cursor is the line prefix, so an unselected row must still
+        // carry the two columns — otherwise labels jump when the cursor
+        // moves past them.
+        let unselected = choice_lines(&rows(&[("搜索", None)])[0], false, ColorScheme::Dark);
+        let selected = choice_lines(&rows(&[("搜索", None)])[0], true, ColorScheme::Dark);
+        assert!(
+            unselected[0].to_string().starts_with("  "),
+            "{unselected:?}"
+        );
+        assert!(selected[0].to_string().starts_with("> "), "{selected:?}");
     }
 
     #[test]
@@ -769,57 +671,25 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_choice_list_has_nothing_to_ask() {
-        // `show_choice_from_tui` returns early — pinned here through the
-        // height helper, which must not invent rows for an empty list.
-        assert_eq!(choice_list_height(&[], 24), 2);
-    }
-
-    fn draw_to_text(width: u16, height: u16, question: &str, rows: &[ChoiceRow]) -> String {
-        use ratatui::backend::TestBackend;
-        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-        let mut state = ListState::default();
-        state.select(Some(0));
-        terminal
-            .draw(|frame| draw_choice(frame, question, rows, &mut state, ColorScheme::Dark))
-            .unwrap();
-        crate::ui::render::buffer_to_text(terminal.backend().buffer())
-    }
-
-    #[test]
-    fn a_question_picker_shows_the_question_options_and_the_way_out() {
-        let text = draw_to_text(
-            48,
-            12,
-            "先做哪个？",
-            &rows(&[("搜索", Some("先打通找文件")), ("登录", None)]),
-        );
-        assert!(text.contains("先做哪个？"), "question missing:\n{text}");
-        assert!(text.contains("搜索") && text.contains("登录"), "{text}");
-        assert!(text.contains("先打通找文件"), "note missing:\n{text}");
-        assert!(
-            text.contains("Esc skip"),
-            "the way out must be on screen:\n{text}"
-        );
-    }
-
-    #[test]
-    fn the_first_option_is_the_one_under_the_cursor() {
-        // `> ` is the highlight symbol, so it appears exactly once and on
-        // the first row — Enter on a fresh picker picks the first candidate.
-        let text = draw_to_text(48, 12, "哪个？", &rows(&[("搜索", None), ("登录", None)]));
-        assert_eq!(text.matches("> ").count(), 1, "{text}");
-        assert!(
-            text.contains("> 搜索"),
-            "the cursor must start on the first option:\n{text}"
-        );
-    }
-
-    #[test]
-    fn a_long_question_does_not_crowd_the_options_off_the_frame() {
-        let question = "这一版的搜索结果页，列表和筛选栏的布局先按哪种走：左侧筛选常驻、顶部筛选可折叠、还是只留搜索框？";
-        let text = draw_to_text(30, 8, question, &rows(&[("常驻", None), ("折叠", None)]));
-        assert!(text.contains("常驻") && text.contains("折叠"), "{text}");
-        assert!(text.contains("Esc skip"), "{text}");
+    fn choice_rows_carry_labels_and_notes_but_never_the_ids() {
+        // The rows are the view's projection of the question; the answer ids
+        // and channel stay with the prompt (see App::answer_ask_front).
+        let options = vec![
+            AskOption {
+                id: "a".into(),
+                label: "侧边栏".into(),
+                note: Some("筛选常驻".into()),
+            },
+            AskOption {
+                id: "b".into(),
+                label: "顶部".into(),
+                note: None,
+            },
+        ];
+        let rows = choice_rows(&options);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].label, "侧边栏");
+        assert_eq!(rows[0].note.as_deref(), Some("筛选常驻"));
+        assert_eq!(rows[1].note, None);
     }
 }

@@ -1,6 +1,7 @@
 //! Tests for App state machine and event handling.
 
 use super::*;
+use crate::tools::ask_user::AskOption;
 use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 use phi_agent::SessionId;
 use phi_agent::{PlanItem, PlanStepStatus, UserEvent};
@@ -1414,6 +1415,160 @@ fn approve_front_pops_and_sends() {
     app.approve_front(ApprovalDecision::Deny);
     assert!(!app.has_pending_approval());
     assert_eq!(rx.try_recv().unwrap(), ApprovalDecision::Deny);
+}
+
+fn pending_ask(app: &mut App) -> tokio::sync::oneshot::Receiver<AskAnswer> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.ask_queue.push_back(AskItem {
+        question: "先做哪个？".to_string(),
+        options: vec![
+            AskOption {
+                id: "search".to_string(),
+                label: "搜索".to_string(),
+                note: Some("先打通找文件".to_string()),
+            },
+            AskOption {
+                id: "login".to_string(),
+                label: "登录".to_string(),
+                note: None,
+            },
+        ],
+        answer_tx: tx,
+    });
+    rx
+}
+
+#[test]
+fn ask_arrows_move_the_cursor_and_enter_commits() {
+    let mut app = App::new();
+    let mut answer = pending_ask(&mut app);
+    assert!(app.has_pending_ask());
+
+    // ↑↓ walk the list; the cursor starts on the first row.
+    assert_eq!(app.ask_selection, 0);
+    assert_eq!(app.handle_key(KeyCode::Down, KeyModifiers::NONE), None);
+    assert_eq!(app.ask_selection, 1);
+    // Clamped at both ends.
+    assert_eq!(app.handle_key(KeyCode::Down, KeyModifiers::NONE), None);
+    assert_eq!(app.ask_selection, 1);
+    assert_eq!(app.handle_key(KeyCode::Up, KeyModifiers::NONE), None);
+    assert_eq!(app.ask_selection, 0);
+    assert_eq!(app.handle_key(KeyCode::Up, KeyModifiers::NONE), None);
+    assert_eq!(app.ask_selection, 0);
+
+    // Enter commits the row under the cursor — ids and labels both come back.
+    assert_eq!(app.handle_key(KeyCode::Down, KeyModifiers::NONE), None);
+    assert_eq!(app.handle_key(KeyCode::Enter, KeyModifiers::NONE), None);
+    assert!(!app.has_pending_ask());
+    match answer.try_recv().unwrap() {
+        AskAnswer::Picked { id, label } => {
+            assert_eq!(id, "login");
+            assert_eq!(label, "登录");
+        }
+        other => panic!("expected a pick, got {other:?}"),
+    }
+}
+
+#[test]
+fn ask_esc_skips_and_a_skip_is_an_answer() {
+    // The tool's contract: Esc → `skipped`, never a hang and never a re-ask.
+    let mut app = App::new();
+    let mut answer = pending_ask(&mut app);
+    assert_eq!(app.handle_key(KeyCode::Esc, KeyModifiers::NONE), None);
+    assert!(!app.has_pending_ask());
+    assert!(matches!(answer.try_recv().unwrap(), AskAnswer::Skipped));
+}
+
+#[test]
+fn ask_typing_is_swallowed_and_never_answers() {
+    // The question owns the keyboard: a typing burst aimed at the composer
+    // behind the window must not pick a row (or reach the composer at all).
+    let mut app = App::new();
+    let _answer = pending_ask(&mut app);
+    for c in "hello".chars() {
+        assert_eq!(app.handle_key(KeyCode::Char(c), KeyModifiers::NONE), None);
+    }
+    assert!(app.has_pending_ask(), "typing must never answer a question");
+    assert_eq!(app.ask_selection, 0);
+}
+
+#[test]
+fn ask_decision_keys_reject_chords_and_repeat() {
+    let mut app = App::new();
+    let _answer = pending_ask(&mut app);
+
+    // Chords never move or commit: Ctrl+Enter must not answer.
+    assert_eq!(app.handle_key(KeyCode::Down, KeyModifiers::CONTROL), None);
+    assert_eq!(app.ask_selection, 0);
+    assert_eq!(app.handle_key(KeyCode::Enter, KeyModifiers::CONTROL), None);
+    assert!(app.has_pending_ask());
+
+    // Auto-Repeat never moves or commits either — holding ↓ must not walk
+    // the list into an accidental Enter.
+    assert_eq!(
+        app.handle_key_event(KeyCode::Down, KeyModifiers::NONE, KeyEventKind::Repeat),
+        None
+    );
+    assert_eq!(app.ask_selection, 0);
+}
+
+#[test]
+fn ask_cursor_resets_between_questions() {
+    // Two questions queued: a cursor moved for one must never Enter-commit
+    // the next one's first row without looking.
+    let mut app = App::new();
+    let mut first = pending_ask(&mut app);
+    let mut second = pending_ask(&mut app);
+
+    assert_eq!(app.handle_key(KeyCode::Down, KeyModifiers::NONE), None);
+    assert_eq!(app.ask_selection, 1);
+    assert_eq!(app.handle_key(KeyCode::Enter, KeyModifiers::NONE), None);
+    assert!(app.has_pending_ask(), "second question still pending");
+    assert_eq!(app.ask_selection, 0, "cursor must not survive an answer");
+    assert!(matches!(
+        first.try_recv().unwrap(),
+        AskAnswer::Picked { ref id, .. } if id == "login"
+    ));
+
+    assert_eq!(app.handle_key(KeyCode::Esc, KeyModifiers::NONE), None);
+    assert!(!app.has_pending_ask());
+    assert!(matches!(second.try_recv().unwrap(), AskAnswer::Skipped));
+}
+
+#[test]
+fn clear_asks_answers_everything_with_no_pick() {
+    // Cancel path: a question nobody is waiting on any more must not park a
+    // popup over a cancelled turn. Dropping the item is the answer — the
+    // tool's oneshot sees a closed channel ("skipped: the picker closed
+    // without an answer", or "cancelled" when the token fired first).
+    let mut app = App::new();
+    let mut first = pending_ask(&mut app);
+    let mut second = pending_ask(&mut app);
+    app.clear_asks();
+    assert!(!app.has_pending_ask());
+    assert!(
+        first.try_recv().is_err(),
+        "dropped prompt must close its channel"
+    );
+    assert!(second.try_recv().is_err());
+}
+
+#[test]
+fn an_approval_in_front_swallows_the_question_keys() {
+    // One modal at a time: with both queued, the approval's key rules own the
+    // keyboard — arrows/Enter must never answer the question behind it.
+    let mut app = App::new();
+    pending_approval(&mut app);
+    let mut answer = pending_ask(&mut app);
+
+    assert_eq!(app.handle_key(KeyCode::Down, KeyModifiers::NONE), None);
+    assert_eq!(app.ask_selection, 0);
+    assert_eq!(app.handle_key(KeyCode::Enter, KeyModifiers::NONE), None);
+    assert!(
+        app.has_pending_ask(),
+        "the question behind must stay unanswered"
+    );
+    assert!(answer.try_recv().is_err());
 }
 
 #[test]

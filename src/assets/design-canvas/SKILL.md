@@ -55,6 +55,10 @@ tool result in this turn — nothing to wait for.
   (`id`, `label`, optional one-line `note`), in the user's language.
 - The result is `picked: <label> (id: <id>)`, or `skipped` on Esc. A skip is
   an answer too — carry on with what you have, never re-ask it.
+- The answer is permanent for the whole design task. A checklist step saying
+  「确认概念选择」 is already satisfied by the answer in your transcript — tick
+  it off from there. Never ask the same question again: a re-ask is losing
+  their answer, not being thorough.
 - One live question at a time across both surfaces: if a canvas screen is up,
   its question is the live one.
 
@@ -271,6 +275,12 @@ paraphrase. A question nobody answered goes in 还有什么没定, and so does
 anything they raised and left hanging. 为什么 is the reason they gave, in
 their words where you have them — never a rationale you invented after the
 fact.
+
+定了什么 holds only what the user actually picked. A stand-in you chose
+yourself — 「暂用」「基线」「按他们偏好拍板」 — is not a decision; it stays in
+还有什么没定 as open, and you design the throwaway around it. Timestamp a line
+only with the date you know from this session's clock — never a date carried
+over from older entries in the same file.
 
 ## From mock to page
 
