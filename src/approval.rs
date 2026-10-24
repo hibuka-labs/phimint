@@ -997,16 +997,14 @@ mod tests {
             "browser_restart",
         ];
 
-        // The suite is derived from phi-tools and the arms are hand-written;
-        // this is what keeps the two in step. A tool added over there and not
-        // classified here must fail the "must prompt" half, not slip through
-        // the auto-approve tail.
-        let names: Vec<String> = phi_tools::browser_tools(&phi_tools::BrowserToolset::lazy(
-            phi_tools::LaunchOptions::default(),
-        ))
-        .iter()
-        .map(|tool| tool.name().to_string())
-        .collect();
+        // The suite is derived from phi-tools' registry and the arms are
+        // hand-written; this is what keeps the two in step. A tool added over
+        // there and not classified here must fail the "must prompt" half, not
+        // slip through the auto-approve tail.
+        let names: Vec<String> = phi_tools::browser_tool_names(&[phi_tools::BrowserToolGroup::All])
+            .into_iter()
+            .map(str::to_string)
+            .collect();
         assert!(!names.is_empty(), "the browser suite must be non-empty");
 
         for name in &names {

@@ -255,6 +255,7 @@ pub type BuildOutput = (
     Arc<SkillResolver>,
     Arc<SkillTelemetry>,
     Arc<BackgroundTaskRegistry>,
+    Arc<crate::tools::canvas::CanvasActivity>,
 );
 
 /// `base_agent_builder` already registers the file tools (read/write/edit/list).
@@ -287,6 +288,11 @@ pub fn build(
     // and the TUI's `/` path share one instance.
     let skill_resolver = Arc::new(SkillResolver::from_dirs(&skill_dirs));
     let skill_telemetry = Arc::new(SkillTelemetry::new());
+
+    // Canvas liveness for the browser tool face: created here (the middleware
+    // needs it at build time), bound per session by `run_tui`, read before
+    // every LLM call. See `browser_face`.
+    let canvas_activity = Arc::new(crate::tools::canvas::CanvasActivity::new());
 
     // Background task registry: shared between LocalShellTool, TaskOutputTool,
     // TaskCancelTool, and the TUI tick loop.
@@ -445,6 +451,14 @@ pub fn build(
         .middleware(crate::skills::SkillCatalogRefreshMiddleware::new(
             Arc::clone(&skill_resolver),
         ))
+        // Browser tool-face loading: the 22 browser tools register below, this
+        // middleware narrows the face to the canvas minimum while the design
+        // canvas is live and announces the change in the system prompt. The
+        // canvas opens mid-session, so the composition is per-turn — the
+        // activity is bound per session by `run_tui` (see `browser_face`).
+        .middleware(crate::browser_face::BrowserToolFaceMiddleware::new(
+            Arc::clone(&canvas_activity),
+        ))
         // TESTING: low max_turns to verify nudge feature
         .execution_max_turns(256);
 
@@ -475,8 +489,11 @@ pub fn build(
     // of its own so it can look at what it just showed the user — the design
     // canvas self-check and the reference-patch flow. `lazy` keeps that Chrome
     // out of runs that never ask for it: the tools register now, the process
-    // spawns on the first call. The same names are excluded from sub-agents
-    // (one session, one owner — see `child_multi_agent_config`).
+    // spawns on the first call. Registering is free of prompt cost on its own —
+    // `BrowserToolFaceMiddleware` decides per turn which of them actually reach
+    // the model (the canvas minimum while the design canvas is live). The same
+    // names are excluded from sub-agents (one session, one owner — see
+    // `child_multi_agent_config`).
     let browser_tools =
         phi_tools::browser_tools(&BrowserToolset::lazy(BrowserLaunchOptions::default()));
     let browser_tool_names: Vec<String> = browser_tools
@@ -579,7 +596,13 @@ pub fn build(
         },
     )?;
 
-    Ok((agent, skill_resolver, skill_telemetry, bg_registry))
+    Ok((
+        agent,
+        skill_resolver,
+        skill_telemetry,
+        bg_registry,
+        canvas_activity,
+    ))
 }
 
 #[cfg(test)]
@@ -809,7 +832,7 @@ mod prompt_guard_tests {
         });
         let (approval, policy, _approval_rx, _mode) =
             crate::approval::build_live_approval("auto", None);
-        let (agent, _resolver, _telemetry, _bg_registry) = super::build(
+        let (agent, _resolver, _telemetry, _bg_registry, _canvas_activity) = super::build(
             provider.clone() as Arc<dyn LlmProvider>,
             approval,
             policy,
@@ -909,7 +932,7 @@ mod prompt_guard_tests {
         });
         let (approval, policy, _approval_rx, _mode) =
             crate::approval::build_live_approval("auto", None);
-        let (agent, resolver, _telemetry, _bg_registry) = super::build(
+        let (agent, resolver, _telemetry, _bg_registry, _canvas_activity) = super::build(
             provider.clone() as Arc<dyn LlmProvider>,
             approval,
             policy,
@@ -1188,16 +1211,16 @@ mod prompt_guard_tests {
 
     use phi_agent::{ChildToolCapability, resolve_capability};
 
-    /// The browser-tool names, taken from the suite itself rather than listed
-    /// here: a tool added to phi-tools must show up in the exclusion assertions
-    /// without anyone remembering to extend a list.
+    /// The browser-tool names, taken from phi-tools' registry rather than
+    /// listed here: a tool added over there must show up in the exclusion
+    /// assertions without anyone remembering to extend a list. The registry
+    /// (and its grouping) is the suite — `browser_tools` constructs exactly
+    /// these, and phi-tools' own tests pin the two together.
     fn browser_tool_names() -> Vec<String> {
-        phi_tools::browser_tools(&phi_tools::BrowserToolset::lazy(
-            phi_tools::LaunchOptions::default(),
-        ))
-        .iter()
-        .map(|tool| tool.name().to_string())
-        .collect()
+        phi_tools::browser_tool_names(&[phi_tools::BrowserToolGroup::All])
+            .into_iter()
+            .map(str::to_string)
+            .collect()
     }
 
     /// T9 (outside voice finding 4): the task-boundary guidance for parallel write sub-agents must stay resident.

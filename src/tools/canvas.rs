@@ -33,16 +33,62 @@ pub fn new_canvas_tools(
     )
 }
 
+/// Shared canvas-liveness probe for the browser tool face (design note §7.3).
+///
+/// The tool-face middleware reads this before every LLM call to decide between
+/// the canvas minimum and the full browser suite. `run_tui` binds the current
+/// session's [`CanvasTools`] here; liveness itself is read from the live
+/// canvas, so open / close / crash / Ctrl+B rebind all need no extra
+/// notification path — the next turn just sees the truth.
+pub struct CanvasActivity {
+    bound: tokio::sync::RwLock<Option<Arc<CanvasTools>>>,
+}
+
+impl CanvasActivity {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Bind the current session's canvas tools (once per session).
+    pub async fn bind(&self, tools: Arc<CanvasTools>) {
+        *self.bound.write().await = Some(tools);
+    }
+
+    /// Drop the binding — session switch or exit.
+    pub async fn unbind(&self) {
+        *self.bound.write().await = None;
+    }
+
+    /// True while the design canvas is open and its server task is up.
+    pub async fn is_canvas_live(&self) -> bool {
+        let Some(tools) = self.bound.read().await.clone() else {
+            return false;
+        };
+        let Some(canvas) = tools.canvas().await else {
+            return false;
+        };
+        canvas.is_open() && !canvas.is_failed()
+    }
+}
+
+impl Default for CanvasActivity {
+    fn default() -> Self {
+        Self {
+            bound: tokio::sync::RwLock::new(None),
+        }
+    }
+}
+
 /// One adapter per canvas verb. Name / description / schema come locked from
 /// phi-canvas's [`tool_descriptors`] so the tool face cannot drift from the
 /// M3 contract; only the dispatch is ours.
-pub(crate) struct CanvasTool {
+pub struct CanvasTool {
     descriptor: ToolDescriptor,
     tools: Arc<CanvasTools>,
 }
 
 /// The three canvas tools, ready for `register_arc` on the root registry.
-pub(crate) fn canvas_tool_adapters(tools: Arc<CanvasTools>) -> Vec<CanvasTool> {
+pub fn canvas_tool_adapters(tools: Arc<CanvasTools>) -> Vec<CanvasTool> {
     tool_descriptors()
         .into_iter()
         .map(|descriptor| CanvasTool {

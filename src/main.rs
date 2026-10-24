@@ -360,7 +360,7 @@ async fn main() -> Result<()> {
         session_id: session_ctx.session_id.clone(),
     };
 
-    let (agent, skill_resolver, skill_telemetry, bg_registry) = agent::build(
+    let (agent, skill_resolver, skill_telemetry, bg_registry, canvas_activity) = agent::build(
         llm_client,
         approval,
         policy,
@@ -411,6 +411,7 @@ async fn main() -> Result<()> {
         skill_resolver,
         skill_telemetry,
         bg_registry,
+        canvas_activity,
         session,
         session_ctx,
         base_dir,

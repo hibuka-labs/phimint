@@ -109,6 +109,7 @@ pub async fn run_tui(
     skill_resolver: Arc<SkillResolver>,
     skill_telemetry: Arc<SkillTelemetry>,
     bg_registry: Arc<BackgroundTaskRegistry>,
+    canvas_activity: Arc<crate::tools::canvas::CanvasActivity>,
     session: SessionId,
     session_ctx: SessionContext,
     base_dir: PathBuf,
@@ -234,6 +235,11 @@ pub async fn run_tui(
             &session_id,
             Arc::new(super::canvas_host::ConsentLauncher(canvas_host.clone())),
         );
+        // Browser tool-face loading: the tool-face middleware asks this probe
+        // before every LLM call, so bind this session's canvas here — open /
+        // close / crash need no separate notification (it reads the live
+        // canvas each turn).
+        canvas_activity.bind(canvas_tools.clone()).await;
         {
             let registry = agent.runtime().tools_mut();
             for tool in crate::tools::canvas::canvas_tool_adapters(canvas_tools.clone()) {
@@ -730,9 +736,7 @@ pub async fn run_tui(
                     // tool's first push (it holds its state lock across `push`),
                     // so the host polls the full history — recording is
                     // idempotent by seq.
-                    for receipt in canvas.pushed_screens() {
-                        canvas_host.on_push(&receipt);
-                    }
+                    canvas_host.replay_pushes(canvas);
                 }
             }
             if let Some(rx) = canvas_events.as_mut() {
@@ -785,7 +789,7 @@ pub async fn run_tui(
 
             // Consent gate resolution (M3): the user's answer reaches the host
             // here, and the tool's cached launch state follows it so a later
-            // `canvas_open` cannot report a stale `awaiting consent`. A yes
+            // `canvas_open` cannot report a stale unanswered wait. A yes
             // that lands after the canvas died recovers like Ctrl+B.
             match canvas_host.poll_consent() {
                 Some(super::canvas_host::ConsentOutcome::Decision(decision)) => {
@@ -1299,6 +1303,9 @@ pub async fn run_tui(
             let _ = canvas.close(phi_canvas::CloseReason::SessionEnded).await;
             canvas.shutdown().await;
         }
+        // The tool-face probe must not keep pointing at a dead session's
+        // canvas while the next one boots.
+        canvas_activity.unbind().await;
 
         tracing::info!("tui: agent task joined, flushing logs");
         frames.flush();
@@ -1430,14 +1437,17 @@ async fn reopen_canvas(
 ) -> bool {
     match canvas_tools.rebind().await {
         Ok(url) => {
-            let port = canvas_tools
-                .canvas()
-                .await
-                .map(|canvas| canvas.port())
-                .unwrap_or(0);
+            let canvas = canvas_tools.canvas().await;
+            let port = canvas.as_ref().map(|canvas| canvas.port()).unwrap_or(0);
             // Note the URL before granting: a later note for a *different* URL
             // resets consent, and the grant must not be clobbered by the tick.
             canvas_host.note_canvas(&url, port);
+            // The bind cleared the host's history — refill it from the store
+            // before launching, or the launch target is computed over the
+            // cleared list and lands on the root instead of the design.
+            if let Some(canvas) = &canvas {
+                canvas_host.replay_pushes(canvas);
+            }
             canvas_host.request_user_launch(&url);
             canvas_tools
                 .set_launch_decision(phi_canvas::LaunchDecision::Launched)
