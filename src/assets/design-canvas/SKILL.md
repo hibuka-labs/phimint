@@ -240,14 +240,14 @@ have two references, pick the one the user actually named.
 ## Versions
 
 Every screen you push becomes a version. The canvas keeps the history itself:
-a rail of past screens across the top of every page, and 「对比」 next to it —
-the two versions side by side or wiped over each other with a slider, plus a
-list of which fields actually changed. Nothing here is yours to build.
+a rail of past screens on any screen that is not the newest design, and 「对比」
+next to it. Nothing here is yours to build.
 
 Put the version in the title when you are iterating (「v2 · 深色玻璃」), so the
 rail reads like a history. When the user goes back to an older one — 「回看
 v1」, 「并排看下」 — they are looking at the canvas, not asking you to push it
-again: answer from what is on screen.
+again: answer from what is on screen. Name the URL (`…/screens/N`) — the rail
+is not on every page. `y` and Ctrl+B open the newest design screen.
 
 ## Design decision record
 
@@ -306,9 +306,10 @@ When it lands on "make it real", the settled mock is the contract for the code.
 
 ## While the canvas is open
 
-- The browser opens only after the user consents (a one-time prompt). Accept
-  the tool's return text — `awaiting consent` or `browser launched` — and
-  keep working; never retry `canvas_open` to force a browser open.
+- The browser opens only after the user consents; the `y` key is in the
+  terminal, not a button on the page. Accept the return text and keep
+  working; never retry `canvas_open` to force a browser open, and never
+  click or approve anything on the page — that answer is theirs.
 - A pick arrives as a user message starting with `(画布选择)`. Treat it as
   the user's answer to that screen's question and continue from it — don't
   re-ask what they just answered.

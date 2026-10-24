@@ -23,6 +23,15 @@ fn receipt(seq: u64, title: &str, options: usize, display_only: bool) -> PushRec
         title: title.to_string(),
         option_count: options,
         display_only,
+        interstitial: false,
+    }
+}
+
+/// The host's own pause push (the waiting screen), as its receipt looks.
+fn pause(seq: u64, title: &str) -> PushReceipt {
+    PushReceipt {
+        interstitial: true,
+        ..receipt(seq, title, 0, true)
     }
 }
 
@@ -461,6 +470,209 @@ fn note_canvas_keeps_a_prompt_the_tool_already_raised() {
     assert_eq!(launches.load(Ordering::SeqCst), 1);
 }
 
+// ── the launch target (what y actually opens) ───────────────────────────────
+
+type UrlLog = Arc<std::sync::Mutex<Vec<String>>>;
+
+fn host_recording_urls() -> (
+    Arc<CanvasHost>,
+    mpsc::UnboundedReceiver<ApprovalItem>,
+    UrlLog,
+) {
+    let (tx, rx) = mpsc::unbounded_channel();
+    let urls: UrlLog = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&urls);
+    let host = CanvasHost::with_launch_fn(tx, move |url| {
+        recorded.lock().unwrap().push(url.to_string());
+        LaunchOutcome::Spawned
+    });
+    (host, rx, urls)
+}
+
+fn answer_yes(rx: &mut mpsc::UnboundedReceiver<ApprovalItem>) {
+    let item = rx.try_recv().expect("consent prompt queued");
+    item.decision_tx.send(ApprovalDecision::AllowOnce).unwrap();
+}
+
+fn launched_urls(urls: &UrlLog) -> Vec<String> {
+    urls.lock().unwrap().clone()
+}
+
+#[test]
+fn the_consent_prompt_names_the_design_and_the_terminal_key() {
+    let (host, mut rx, _urls) = host_recording_urls();
+    host.note_canvas("http://127.0.0.1:4242", 4242);
+    host.on_push(&receipt(1, "布局选择", 3, false));
+    assert_eq!(
+        host.request_model_launch("http://127.0.0.1:4242"),
+        LaunchDecision::AwaitingConsent
+    );
+    let item = rx.try_recv().expect("consent prompt queued");
+    let message = &item.request.message;
+    assert!(
+        message.contains("opens the design"),
+        "the promise names the design: {message}"
+    );
+    assert!(
+        message.contains("terminal"),
+        "and where the key lives: {message}"
+    );
+    // The key is in the terminal *and not on the page* — without that clause
+    // the promise reads as "something on the page opens it", which is how a
+    // model came to hunt for a consent button there (see the tool-text tests).
+    assert!(
+        message.contains("not anything on the page"),
+        "the answer's place is named and the page is ruled out: {message}"
+    );
+}
+
+#[test]
+fn y_opens_the_design_screen_not_the_canvas_root() {
+    // The promise is "come look at the design" — the design screen, not
+    // whatever screen happens to be current when the user finally answers.
+    let (host, mut rx, urls) = host_recording_urls();
+    host.note_canvas("http://127.0.0.1:4242", 4242);
+    host.on_push(&receipt(1, "布局选择", 3, false));
+
+    assert_eq!(
+        host.request_model_launch("http://127.0.0.1:4242"),
+        LaunchDecision::AwaitingConsent
+    );
+    answer_yes(&mut rx);
+    assert_eq!(
+        host.poll_consent(),
+        Some(ConsentOutcome::Decision(LaunchDecision::Launched))
+    );
+    assert_eq!(
+        launched_urls(&urls),
+        vec!["http://127.0.0.1:4242/screens/1".to_string()]
+    );
+}
+
+#[test]
+fn the_pause_screen_is_not_the_launch_target() {
+    // Turn end replaces the design with the pause before the user looks —
+    // that replacement must not become what y opens.
+    let (host, mut rx, urls) = host_recording_urls();
+    host.note_canvas("http://127.0.0.1:4242", 4242);
+    host.on_push(&receipt(1, "布局选择", 3, false));
+    host.on_push(&pause(2, "继续在终端讨论…"));
+    host.on_waiting_push(2);
+
+    assert_eq!(
+        host.request_model_launch("http://127.0.0.1:4242"),
+        LaunchDecision::AwaitingConsent
+    );
+    answer_yes(&mut rx);
+    assert_eq!(
+        host.poll_consent(),
+        Some(ConsentOutcome::Decision(LaunchDecision::Launched))
+    );
+    assert_eq!(
+        launched_urls(&urls),
+        vec!["http://127.0.0.1:4242/screens/1".to_string()]
+    );
+}
+
+#[test]
+fn before_any_design_the_root_is_what_opens() {
+    // Nothing pushed yet: the root page is the promise ("the design will
+    // appear here") — keep opening it.
+    let (host, mut rx, urls) = host_recording_urls();
+    host.note_canvas("http://127.0.0.1:4242", 4242);
+
+    assert_eq!(
+        host.request_model_launch("http://127.0.0.1:4242"),
+        LaunchDecision::AwaitingConsent
+    );
+    answer_yes(&mut rx);
+    assert_eq!(
+        host.poll_consent(),
+        Some(ConsentOutcome::Decision(LaunchDecision::Launched))
+    );
+    assert_eq!(
+        launched_urls(&urls),
+        vec!["http://127.0.0.1:4242".to_string()]
+    );
+}
+
+#[test]
+fn the_user_key_opens_the_design_too() {
+    // Ctrl+B is the same promise with the keypress as the consent.
+    let (host, _rx, urls) = host_recording_urls();
+    host.note_canvas("http://127.0.0.1:4242", 4242);
+    host.on_push(&receipt(1, "布局选择", 3, false));
+
+    host.request_user_launch("http://127.0.0.1:4242");
+    assert_eq!(
+        launched_urls(&urls),
+        vec!["http://127.0.0.1:4242/screens/1".to_string()]
+    );
+}
+
+#[test]
+fn a_replayed_history_restores_the_launch_target_after_a_rebind() {
+    // The yes-after-death recovery rebinds a new port (history cleared) and
+    // the run loop replays the store's receipts — the target must survive.
+    let (host, _rx, urls) = host_recording_urls();
+    host.note_canvas("http://127.0.0.1:4242", 4242);
+    host.on_push(&receipt(1, "布局选择", 3, false));
+    host.on_push(&pause(2, "继续在终端讨论…"));
+
+    host.note_canvas("http://127.0.0.1:4243", 4243);
+    for replayed in [
+        receipt(1, "布局选择", 3, false),
+        pause(2, "继续在终端讨论…"),
+    ] {
+        host.on_push(&replayed);
+    }
+
+    host.request_user_launch("http://127.0.0.1:4243");
+    assert_eq!(
+        launched_urls(&urls),
+        vec!["http://127.0.0.1:4243/screens/1".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn replaying_a_real_canvas_history_restores_the_launch_target() {
+    // What `reopen_canvas` must do after noting the new URL: refill the
+    // bookkeeping from the store — the receipts carry which pushes are pauses.
+    let tmp = tempfile::tempdir().unwrap();
+    let config = phi_canvas::CanvasConfig::new(tmp.path().join("canvas"), "sess-replay");
+    let canvas = phi_canvas::Canvas::open(config)
+        .await
+        .expect("canvas opens");
+
+    let design = phi_canvas::ScreenEnvelope {
+        title: "布局选择".to_string(),
+        subtitle: None,
+        options: vec![],
+        body_html: String::new(),
+        screen: None,
+        multiselect: false,
+        reference: None,
+        escape: None,
+        interstitial: false,
+    };
+    canvas.push(design).await.expect("pushes");
+    canvas
+        .push(waiting_envelope(&[], &[]))
+        .await
+        .expect("pushes");
+
+    let (host, _rx, urls) = host_recording_urls();
+    host.note_canvas(&canvas.url(), canvas.port());
+    host.replay_pushes(&canvas);
+    host.request_user_launch(&canvas.url());
+    assert_eq!(
+        launched_urls(&urls),
+        vec![format!("{}/screens/1", canvas.url())]
+    );
+
+    canvas.shutdown().await;
+}
+
 #[test]
 fn note_canvas_drops_a_prompt_from_a_previous_url() {
     // A rebind mid-prompt makes the pending question stale: its URL is gone.
@@ -589,7 +801,7 @@ fn consent_no_shows_the_url_instead_of_a_browser() {
     assert_eq!(
         host.poll_consent(),
         Some(ConsentOutcome::Decision(LaunchDecision::AwaitingConsent)),
-        "the tool keeps reporting `awaiting consent` — nothing launched"
+        "the tool keeps reporting the unanswered wait — nothing launched"
     );
 
     assert_eq!(launches.load(Ordering::SeqCst), 0, "n means no browser");

@@ -294,9 +294,10 @@ fn consent_request(url: &str) -> ApprovalRequest {
         title: "Open the design canvas?".to_string(),
         message: format!(
             "The agent prepared a design canvas at {url}.\n\n\
-             y opens it in your browser — nothing opens without your yes.\n\
-             n keeps the URL here (it is printed in the transcript); the canvas\n\
-             itself keeps working either way."
+             y — a key here in the terminal, not anything on the page — opens the design\n\
+             in your browser; nothing opens without your yes.\n\
+             n leaves the browser closed and prints the URL here (it is printed in the\n\
+             transcript); the canvas itself keeps working either way."
         ),
         action_key: None,
         risk_level: RiskLevel::Safe,
@@ -327,8 +328,8 @@ pub enum ConsentOutcome {
     Decision(LaunchDecision),
     /// The user said yes to a canvas that has since closed or crashed — there
     /// is nothing live to open. Recover the way Ctrl+B does: rebind a fresh
-    /// server and open *that*. The gate promised "y opens it in your browser";
-    /// a dead page is plumbing, not a detour the user should route around.
+    /// server and open *that*. The gate promised the terminal key opens the
+    /// design; a dead page is plumbing, not a detour the user should route around.
     ReopenAndLaunch,
 }
 
@@ -351,6 +352,10 @@ struct Inner {
     consent: Consent,
     /// Every push seen (tool and host alike), newest last. Idempotent by seq.
     screens: Vec<ScreenRecord>,
+    /// The newest design screen (a non-pause push) — the screen a "come look
+    /// at the design" launch must land on. The pause that replaces it at turn
+    /// end is not a design and never takes this.
+    last_design: Option<u64>,
     /// Seq of the host's own waiting screen, if one is up.
     waiting_seq: Option<u64>,
     /// Answer lines already sent — the summary's 已定 list (capped).
@@ -408,6 +413,7 @@ impl CanvasHost {
                 port: 0,
                 consent: Consent::NotRaised,
                 screens: Vec::new(),
+                last_design: None,
                 waiting_seq: None,
                 decided: Vec::new(),
                 turn: 0,
@@ -445,6 +451,7 @@ impl CanvasHost {
                 inner.pending_url = None;
             }
             inner.screens.clear();
+            inner.last_design = None;
             inner.waiting_seq = None;
         }
         inner.port = port;
@@ -473,6 +480,9 @@ impl CanvasHost {
             return;
         }
         let turn = inner.turn;
+        if !receipt.interstitial {
+            inner.last_design = Some(receipt.screen.max(inner.last_design.unwrap_or(0)));
+        }
         inner.screens.push(ScreenRecord {
             seq: receipt.screen,
             title: receipt.title.clone(),
@@ -480,6 +490,16 @@ impl CanvasHost {
             display_only: receipt.display_only,
             push_turn: turn,
         });
+    }
+
+    /// Refill the screen bookkeeping from a canvas's full push history —
+    /// idempotent by seq. A rebind clears the history (`note_canvas`); the run
+    /// loop polls this every tick and `reopen_canvas` must call it before it
+    /// launches, or the launch target is computed over the cleared list.
+    pub fn replay_pushes(&self, canvas: &phi_canvas::Canvas) {
+        for receipt in canvas.pushed_screens() {
+            self.on_push(&receipt);
+        }
     }
 
     /// The host pushed its waiting screen — tag it (status face + no re-push).
@@ -631,7 +651,7 @@ impl CanvasHost {
     /// this module free of spawned tasks and fully testable). Returns what the
     /// run loop should do with the answer: cache the tool layer's launch state
     /// once the gate has spoken (so a later `canvas_open` on the same live
-    /// canvas cannot report a stale `awaiting consent` — M3 honesty), or
+    /// canvas cannot report a stale unanswered wait — M3 honesty), or
     /// recover a dead canvas on a yes.
     pub fn poll_consent(&self) -> Option<ConsentOutcome> {
         let (decision, url) = {
@@ -685,11 +705,28 @@ impl CanvasHost {
     }
 
     fn spawn_launch(&self, url: &str) {
-        let outcome = (self.launch)(url);
+        // The promise is "come look at the design", so the launch lands on the
+        // newest design screen — not the root page, which by then often shows
+        // the pause that replaced it. No design yet: the root page *is* the
+        // promise ("the design will appear here").
+        let target = {
+            let inner = self.inner.lock().unwrap();
+            launch_target(url, inner.last_design)
+        };
+        let outcome = (self.launch)(&target);
         if outcome == LaunchOutcome::ShowUrl {
             // Headless: no opener worked — show the URL instead (M3).
-            self.push_note(format!("Design canvas URL (no browser found): {url}"));
+            self.push_note(format!("Design canvas URL (no browser found): {target}"));
         }
+    }
+}
+
+/// The URL a browser launch lands on: the newest design screen inside the
+/// canvas, or the canvas root before the first design push.
+fn launch_target(root: &str, last_design: Option<u64>) -> String {
+    match last_design {
+        Some(seq) => format!("{}/screens/{}", root.trim_end_matches('/'), seq),
+        None => root.to_string(),
     }
 }
 
