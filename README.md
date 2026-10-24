@@ -20,6 +20,7 @@ phimint runs the full coding loop — understand the request, read the code, cha
 - **Pull-based context** — `repo_map` (tree-sitter symbol/structure index) plus `search_content` (ripgrep). The agent searches and reads on demand instead of stuffing the whole repo into context.
 - **LSP fast inner loop** — lazily started per-language servers (rust-analyzer, typescript-language-server, clangd); `file:line:col` diagnostics in seconds without recompiling. Falls back to shell when a server is missing.
 - **Multi-agent fan-out, push-based fan-in** — `spawn_agent` sends sub-agents to investigate (read-only by default; write capability is requested per spawn when a task must edit). The main agent gets the **full reports at end of turn** (no polling). The TUI task panel tracks each sub-agent live; a 10-minute per-task hard timeout guarantees delivery.
+- **Design canvas & `ask_user`** — the agent can *show* you options instead of describing them: 2–4 candidates land as a screen in your browser (layout mockups, option sets, comparisons) and your click comes back as a real user turn; `ask_user` asks concept picks right in the terminal picker. The browser opens only after a one-time consent, busy clicks queue at the turn boundary, and while a screen awaits your pick the run parks — the agent never decides your design choices for you.
 - **Three approval modes** — `auto` (full auto), `ask` (prompt on writes/risky shell), `deny` (read-only). Sub-agents inherit the main agent's mode: in `ask`, every sub-agent write prompts in a popup that names the requesting sub-agent.
 - **Guardrails** — reasoning-only spin correction, max-turns nudge, provider truncation guard (lying `finish_reason` tolerance, from agent-base), 16k tool-output cap.
 - **Multi-language** — `code-intel` registry (extension → LSP server → build-command fallback): Rust, TypeScript, JavaScript, C, C++ out of the box.
@@ -223,6 +224,8 @@ you: "investigate questions X / Y / Z"
 | `update_plan` | structured checklist for complex tasks (display-only, Codex-style; agent-base) |
 | `spawn_agent` / `send_message` / `wait_agent` / `list_agents` / `close_agent` | sub-agent primitives (agent-works; preferred pattern: spawn, end turn, await push) |
 | `add_tool` | the agent writes and registers a tool for you (root-only; full confirmation card before anything lands) |
+| `canvas_open` / `canvas_push` / `canvas_close` | design canvas — browser screens with clickable options; one-time consent to open the browser ([`phi-canvas`](https://github.com/hibuka-labs/phi-canvas)) |
+| `ask_user` | terminal picker for concept picks (2–4 candidates, one shot, Esc = skip) |
 | `/connect` · `/tools` · `plugin add` / `plugin remove` | external tool surfaces: MCP servers, script tools, wasm plugin packs (approval ledger per tool, fail-closed) |
 
 ## How it works

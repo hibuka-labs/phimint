@@ -22,6 +22,7 @@ phimint 跑「理解需求 → 读码 → 多文件改 → 编译/测试 → 报
 - **拉取式上下文**：`repo_map`（tree-sitter 符号/结构索引）+ `search_content`（ripgrep），agent 主动搜、主动读，而非把整个仓库塞进 context。
 - **LSP 快速内环**：多 server 懒启动（rust-analyzer / typescript-language-server / clangd），改完不重编译秒级拿到 `file:line:col` 诊断；server 起不来降级到 shell。
 - **多 agent 扇出 + 推送式 fan-in**：`spawn_agent` 派子 agent 调查（默认只读；任务需要动手改代码时，按次申请写能力），主 agent **结束回合即收全量报告**（无需轮询）；TUI 任务面板逐子 agent 实时跟踪，单任务 10 分钟超时硬停。
+- **设计画布 & `ask_user`**：agent 可以把选项*展示*给你而不是描述给你——2–4 个候选以屏幕形式落在你的浏览器里（布局样机、选项组、对比图），点一下就变成真实的用户回合；概念选择也可以直接在终端选择器里问（`ask_user`）。浏览器只在一次性同意后才打开，忙碌时的点击排队到回合边界再送达，屏幕等你点选期间 run 会停驻——agent 绝不替你拍板设计选择。
 - **审批三态**：`auto`（全自动）/ `ask`（写操作逐条弹窗）/ `deny`（只读）；子 agent 权限跟随主 agent 模式——`ask` 下每次子 agent 写入都会弹窗确认，弹窗标明是哪个子 agent。
 - **防护栏**：reasoning-only 纠偏（连续空转 → 自动关思考）、max-turns 预警（最后 3 轮逼收尾）、provider 截断守卫（谎报 `finish_reason` 的容错，agent-base 提供）、工具输出 16k 上限。
 - **多语言**：`code-intel` 注册表（扩展名 → LSP server → 构建命令兜底），Rust / TypeScript / JavaScript / C / C++ 开箱即用。
@@ -219,6 +220,8 @@ Commands:
 | `update_plan` | 复杂任务先展示结构化清单（display-only，Codex 风格；agent-base） |
 | `spawn_agent` / `send_message` / `wait_agent` / `list_agents` / `close_agent` | 子 agent 原语（agent-works；推荐用法见上：spawn 后结束回合等推送） |
 | `add_tool` | agent 代写并注册工具（root-only；全貌确认卡点头后才落盘） |
+| `canvas_open` / `canvas_push` / `canvas_close` | 设计画布——浏览器屏幕带可点选项；打开浏览器需一次性同意（[`phi-canvas`](https://github.com/hibuka-labs/phi-canvas)） |
+| `ask_user` | 终端选择器提问概念选择（2–4 个候选，单发，Esc = 跳过） |
 | `/connect` · `/tools` · `plugin add` / `plugin remove` | 外部工具面：MCP 服务、脚本工具、wasm 插件包（逐工具审批档位，fail-closed） |
 
 ## 工作原理

@@ -693,7 +693,7 @@ impl CanvasHost {
     }
 }
 
-/// Minimal screen facts for the waiting decision inside [`Self::on_root_turn_end`].
+/// Minimal screen facts for the waiting decision inside [`CanvasHost::on_root_turn_end`].
 struct ScreenRecordLite {
     seq: u64,
     face: ScreenFace,

@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-10-24
+
+### Added
+
+- **Design canvas** — the agent shows you design options in your browser and
+  you click to pick. `canvas_open` / `canvas_push` / `canvas_close` push 2–4
+  candidates as a screen (layout mockups, option sets, comparisons); your pick
+  comes back as a real user turn. The browser opens only after a one-time
+  consent — never a standing grant — and a `y` that lands after the canvas
+  closed recovers (rebind + the new URL) instead of printing a dead link.
+  Busy clicks queue at the turn boundary and ack as queued with their labels;
+  a canvas move to a new port is announced in the transcript. While a screen
+  awaits your pick the run parks: the agent never decides your design choices
+  for you.
+- **`ask_user`** — the agent asks you a concept question right in the terminal
+  picker: 2–4 candidates as label + note rows, one shot per question, Esc =
+  skip is an answer. Approval-wired and pause-aware (your thinking time never
+  burns a tool budget).
+- **design-canvas skill** — design-to-page laws for turning a settled mock
+  into a page: Ant Design default floor (a user-named stack wins and gets
+  named in the decision record), mechanical translation of the mock with no
+  embellishment, theme tokens on every visual surface, npm mirror retries.
+
+### Added (UI)
+
+- Upgrade notices are committed into the transcript — the status slot dies
+  with the alt-screen and the hint used to evaporate.
+- Startup notice when PATH holds more than one `phimint` binary, marking the
+  running one (a stale `~/.cargo/bin` shadowing `~/.local/bin` made
+  `--version` contradict the installer).
+
+### Changed
+
+- Family dependencies: `phi-agent` 0.19.1, `phi-kernel-tools` 0.11.0 (file
+  tools expand `~`), `phi-tools` 0.7.0 (lazy browser — the agent drives its
+  own Chrome to look at what it just showed you), new `phi-canvas` 0.1.0;
+  the family aligns on `agent-base` 0.11.0 (per-call timeout budgets).
+
 ## [0.5.0] — 2026-10-18
 
 ### Added

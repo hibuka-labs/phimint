@@ -20,7 +20,7 @@ use serde_json::Value;
 
 /// Session-scoped canvas handle: `~/.phimint/canvas/<session>/` (M3 store).
 ///
-/// `launcher` is the host's consent gate (1C) — pass [`ConsentLauncher`]
+/// `launcher` is the host's consent gate (1C) — pass `ConsentLauncher`
 /// (`ui/canvas_host`) so a model open raises the `y` prompt and nothing else.
 pub fn new_canvas_tools(
     base_dir: &Path,
