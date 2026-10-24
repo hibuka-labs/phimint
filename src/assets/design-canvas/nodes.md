@@ -148,3 +148,9 @@ still the contract:
 
 Never hand-write the options panel (`.options` / `.option`) in either path —
 the host generates it from `options`.
+
+## Compare (「对比」)
+
+Two versions side by side, or one wiped over the other with a slider, plus a
+list of the fields that changed. The host's pause screen (「继续在终端讨论…」)
+is not a version — the history is the design only.
