@@ -409,6 +409,28 @@ fn model_launch_asks_once_and_never_spawns_on_its_own() {
 }
 
 #[test]
+fn a_moved_address_is_announced() {
+    // A yes that lands after the canvas died rebinds a fresh port — but the
+    // prompt the user answered still named the old URL. First address is the
+    // tool's to print (its return text has it); the move is ours to say.
+    let (host, _rx, _launches) = host_with_counter();
+    host.note_canvas("http://127.0.0.1:4242", 4242);
+    assert!(
+        host.take_note().is_none(),
+        "the first address comes with the tool's answer"
+    );
+
+    host.note_canvas("http://127.0.0.1:4243", 4243);
+    let note = host.take_note().expect("a moved address is announced");
+    assert!(note.contains("reopened"), "{note}");
+    assert!(note.contains("4243"), "{note}");
+
+    // Same URL again (Ctrl+B on a live canvas) is not a move — quiet.
+    host.note_canvas("http://127.0.0.1:4243", 4243);
+    assert!(host.take_note().is_none(), "no move, no note");
+}
+
+#[test]
 fn note_canvas_keeps_a_prompt_the_tool_already_raised() {
     // The tool's `canvas_open` consults the launcher *before* the run loop's
     // tick can note the bind. The first `note_canvas` for that URL must not

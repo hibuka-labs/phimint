@@ -430,6 +430,14 @@ impl CanvasHost {
     pub fn note_canvas(&self, url: &str, port: u16) {
         let mut inner = self.inner.lock().unwrap();
         if inner.url.as_deref() != Some(url) {
+            // The address moved — a rebind after a close/crash is a new port,
+            // and the consent prompt still on screen (if any) named the old
+            // one. Say where the design lives now.
+            if inner.url.is_some() {
+                inner
+                    .notes
+                    .push(format!("Design canvas URL (reopened): {url}"));
+            }
             inner.url = Some(url.to_string());
             if inner.pending_url.as_deref() != Some(url) {
                 inner.consent = Consent::NotRaised;
