@@ -17,7 +17,14 @@ notes/
 # local release tooling, progress history, internal planning — never public
 deploy/
 
-# personal local instructions (skill routing etc.; CLAUDE.md is the public one)
+# internal planning (turn into GitHub issues before deleting) — never public
+TODOS.md
+
+# local dashboard prototype (vite app with node_modules) — scratch, not shipped
+team-dashboard/
+
+# agent instructions — private (internal strategy/dev workflow must never ship)
+CLAUDE.md
 CLAUDE.local.md
 
 # local phimint data dir (sessions/logs created by in-repo runs)
