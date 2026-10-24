@@ -70,6 +70,17 @@ added.
 
 ### 2. Configure
 
+<!-- System Configurations Section -->
+### Configuration
+
+You can customize the application behavior using `config.json`. 
+
+* **Updates:** Configure update channels and target endpoints for automated checks.
+* **UI Popup:** Customize the UI popup window layout, dimensions, and styling framework.
+
+See `config.json.example` for a complete reference layout.
+
+
 A one-minute step: you need an API key for any supported model provider
 (OpenAI / Anthropic / DeepSeek / Aliyun / Moonshot / Gemini / Ollama …).
 
