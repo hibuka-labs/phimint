@@ -28,27 +28,25 @@
   //   "review": "lite",
   //   "compression": "lite"
   // },
+
+  // System update check (optional) — defaults to the official manifest endpoints
+  // "update": {
+  //   // Manifest URLs tried in order
+  //   "endpoints": [
+  //     "https://github.com/hibuka-labs/phimint/releases/latest/download/manifest.json",
+  //     "https://gitee.com/chenkangzeng_admin/phimint/raw/release-metadata/manifest.json"
+  //   ],
+  //   "channel": "stable",
+  //   "auto_check": true
+  // },
+
+  // Popup band layout (optional) — the `@`/`/` popup
+  // "ui": {
+  //   "popup": {
+  //     "frame": true,
+  //     "width": "fill",  // "fill" or a column count
+  //     "height": 24,     // rows
+  //     "separator": true
+  //   }
+  // }
 }
-
-  ,
-  // System Update Configurations
-  "update": {
-    // List of manifest URLs to check for updates
-    "endpoints": [
-      "https://example.com"
-    ],
-    "channel": "stable",
-    "auto_check": true
-  },
-
-  // User Interface Window Configurations
-  "ui": {
-    "popup": {
-      "frame": true,
-      // Horizontal width layout: set to "fill" or a specific column count integer
-      "width": "fill",
-      // Vertical height layout measured in rows (integer count)
-      "height": 24,
-      "separator": true
-    }
-  }

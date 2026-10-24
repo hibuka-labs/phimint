@@ -70,17 +70,6 @@ added.
 
 ### 2. Configure
 
-<!-- System Configurations Section -->
-### Configuration
-
-You can customize the application behavior using `config.json`. 
-
-* **Updates:** Configure update channels and target endpoints for automated checks.
-* **UI Popup:** Customize the UI popup window layout, dimensions, and styling framework.
-
-See `config.json.example` for a complete reference layout.
-
-
 A one-minute step: you need an API key for any supported model provider
 (OpenAI / Anthropic / DeepSeek / Aliyun / Moonshot / Gemini / Ollama …).
 
@@ -111,6 +100,10 @@ Or pass everything on the command line (see `config.json.example` for the full s
 ```bash
 phimint --model gpt-5.4-mini --base-url https://api.openai.com/v1 --api-key sk-xxx
 ```
+
+`config.json` also carries optional sections: `update` (update channels and
+manifest endpoints for automated update checks) and `ui.popup` (the `@`/`/`
+popup band's layout and dimensions).
 
 ### 3. Run
 

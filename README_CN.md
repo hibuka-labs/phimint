@@ -99,6 +99,9 @@ DeepSeek / Aliyun / Moonshot / Gemini / Ollama …）。
 phimint --model gpt-5.4-mini --base-url https://api.openai.com/v1 --api-key sk-xxx
 ```
 
+`config.json` 还有可选段：`update`（自动更新检查的渠道与 manifest 端点）与
+`ui.popup`（`@`/`/` 补全弹层的布局尺寸）。
+
 ### 3. 运行
 
 ```bash
