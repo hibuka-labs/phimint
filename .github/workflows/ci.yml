@@ -29,6 +29,32 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 
+  # ── Windows compile check ──
+  #
+  # release.sh publishes to crates.io BEFORE the 5-platform release workflow
+  # runs, so a platform-only break used to land the broken crate on crates.io
+  # first (0.7.0: `src/terminal_restore.rs` used `libc` unconditionally while
+  # `libc` is a `cfg(unix)` dependency → the windows-x86_64 build failed with
+  # 56 errors after 0.7.0 was already published).
+  #
+  # Every other CI job runs on ubuntu, so nothing else catches this. This job
+  # compiles the crate for the Windows target BEFORE the publish step, which
+  # turns a late platform break into an early, localizable one.
+  windows-check:
+    name: check (windows)
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Compile for windows
+        run: cargo check --all-targets --target x86_64-pc-windows-msvc
+
   # ── Build & test ──
   test:
     name: test (stable)

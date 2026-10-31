@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] — 2026-10-31
+
+> 0.7.0 was yanked: its Windows build did not compile (see below). 0.7.1
+> carries the same features plus the fix.
+
+### Fixed
+
+- **Windows build** — the terminal-restore mechanism used POSIX `termios`
+  and signal calls directly, but `libc` is a Unix-only dependency, so the
+  Windows binary failed to compile. The repair now lives behind a
+  `cfg(unix)` gate and Windows gets no-ops for the same two entry points:
+  there is no line discipline to restore there, and the API is unchanged on
+  every platform.
+
+  CI now compiles the crate for the Windows target on every push, so a
+  platform-only break is caught before a release reaches crates.io — the
+  5-platform build used to run *after* the publish.
+
 ## [0.7.0] — 2026-10-31
 
 ### Added
