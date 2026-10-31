@@ -11,8 +11,8 @@
 use std::path::PathBuf;
 
 pub use phi_agent::{
-    SkillCatalogRefreshMiddleware, SkillResolver, SkillScope, SkillTelemetry, SkillTool,
-    demote_h2_headings, refresh_catalog, render_catalog,
+    ActiveSkillSet, SkillCatalogRefreshMiddleware, SkillResolver, SkillScope, SkillTelemetry,
+    SkillTool, demote_h2_headings, refresh_catalog, render_catalog,
 };
 
 use std::io;
@@ -67,6 +67,14 @@ pub(crate) fn append_active_skills(prompt: &str, active: &[ActiveSkillEntry]) ->
 /// Path of the per-session active-skills list (resume support).
 pub(crate) fn active_skills_path(session_dir: &Path) -> PathBuf {
     session_dir.join("active_skills.json")
+}
+
+/// Mirror the session's active-skill list into the shared [`ActiveSkillSet`]
+/// that the `skill` tool and catalog consult (single-injection guard, survey
+/// P4). `replace` semantics: a session switch reloads from the new session's
+/// list and must drop the previous session's names.
+pub(crate) fn sync_active_set(set: &ActiveSkillSet, active: &[ActiveSkillEntry]) {
+    set.replace(active.iter().map(|e| e.name.clone()));
 }
 
 /// Load the active-skills list; missing/corrupt file → empty (fresh state).
@@ -204,6 +212,39 @@ mod tests {
     #[test]
     fn builtin_skills_dir_sits_beside_sessions() {
         assert!(builtin_skills_dir().ends_with(".phimint/skills"));
+    }
+
+    #[test]
+    fn sync_active_set_feeds_the_single_injection_guards() {
+        // Survey P4 wiring (single-injection): the mirrored set is the one
+        // fact the `skill` tool and the catalog consult — marking a name must
+        // mark its catalog entry, and a session switch must release both.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("skills").join("deploy");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\nname: deploy\ndescription: d\nuser-invocable: true\n---\n\nsecret body",
+        )
+        .unwrap();
+        let resolver = SkillResolver::from_dirs(&[tmp.path().join("skills")]);
+
+        let active = vec![ActiveSkillEntry {
+            name: "deploy".to_string(),
+            body: "secret body".to_string(),
+        }];
+        sync_active_set(resolver.active(), &active);
+        let catalog = render_catalog(&resolver).unwrap();
+        assert!(catalog.contains("- deploy [active]: "), "{catalog}");
+
+        // Session switch: the list reloads empty → markers and the tool
+        // guard must both release. (Match the entry line, not the bare
+        // `[active]` — the usage-rules hint says the word.)
+        sync_active_set(resolver.active(), &[]);
+        let catalog = render_catalog(&resolver).unwrap();
+        assert!(!catalog.contains("- deploy [active]"), "{catalog}");
+        assert!(catalog.contains("- deploy: "), "{catalog}");
+        assert!(!resolver.active().is_active("deploy"));
     }
 
     mod materialize {

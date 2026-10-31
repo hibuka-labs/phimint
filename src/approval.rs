@@ -207,6 +207,23 @@ fn describe_browser(tool_name: &str, args: &Value) -> String {
     }
 }
 
+/// What the approval prompt shows for a code step: every cell's intent and a
+/// head of its code — enough for a human to see what they are approving.
+/// Only reachable when the `code-exec` feature ships the tool (M3 T10d ②).
+#[cfg(feature = "code-exec")]
+fn describe_code_cell(args: &Value) -> String {
+    let Some(cells) = args.get("cells").and_then(Value::as_array) else {
+        return "code_cell: (no cells)".to_string();
+    };
+    let mut out = format!("Run {} code cell(s):", cells.len());
+    for (i, cell) in cells.iter().enumerate() {
+        let intent = cell.get("intent").and_then(Value::as_str).unwrap_or("");
+        let code = cell.get("code").and_then(Value::as_str).unwrap_or("");
+        out.push_str(&format!("\n{}. {intent}: {}", i + 1, short_title(code)));
+    }
+    out
+}
+
 /// Whether a URL points back at this machine.
 ///
 /// The design canvas is served on `127.0.0.1`, so the agent looking at what it
@@ -391,6 +408,23 @@ fn classify_request(tool_name: &str, args: &Value) -> Option<ApprovalRequest> {
         "browser_evaluate" => Some(ApprovalRequest {
             title: tool_name.to_string(),
             message: describe_browser(tool_name, args),
+            action_key: None,
+            risk_level: RiskLevel::Sensitive,
+            raw: Some(args.clone()),
+            source: None,
+        }),
+
+        // Code cells (CodeAct main road): arbitrary code in a resident
+        // interpreter — one call is one step of side effects. The code is
+        // fresh every call, so no standing grant is narrower than "all code"
+        // (same reasoning as `browser_evaluate`): `action_key` unset, re-ask
+        // each time. Sensitive, not Destructive — what a step does is the
+        // cells' business; the engine's policy/journal seam audits every
+        // side effect underneath.
+        #[cfg(feature = "code-exec")]
+        "code_cell" => Some(ApprovalRequest {
+            title: tool_name.to_string(),
+            message: describe_code_cell(args),
             action_key: None,
             risk_level: RiskLevel::Sensitive,
             raw: Some(args.clone()),
@@ -601,9 +635,13 @@ impl LedgerStore {
     fn persist(&self, ledger: &ApprovalLedger) {
         let Some(path) = &self.path else { return };
         if let Err(e) = ledger.save(path) {
-            eprintln!(
-                "warning: cannot save approvals ledger {}: {e}",
-                path.display()
+            // Not `eprintln!`: this runs while the TUI is up, and a write to
+            // stderr lands on the alternate screen (the renderer never
+            // repaints those cells). The tracing sink owns the session log.
+            tracing::warn!(
+                path = %path.display(),
+                error = %e,
+                "cannot save approvals ledger"
             );
         }
     }

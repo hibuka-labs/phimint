@@ -34,9 +34,9 @@ fn sub_thought(agent_id: &str, text: &str) -> RuntimeEvent {
     }
 }
 
-/// Create a ToolCallStarted event for a sub-agent.
+/// Create a ActionStarted event for a sub-agent.
 fn sub_tool_started(agent_id: &str, tool_name: &str) -> RuntimeEvent {
-    RuntimeEvent::ToolCallStarted {
+    RuntimeEvent::ActionStarted {
         session_id: SessionId::new(1),
         tool_name: tool_name.to_string(),
         args_json: "{}".to_string(),
@@ -45,9 +45,9 @@ fn sub_tool_started(agent_id: &str, tool_name: &str) -> RuntimeEvent {
     }
 }
 
-/// Create a ToolCallFinished event for a sub-agent.
+/// Create a ActionFinished event for a sub-agent.
 fn sub_tool_finished(agent_id: &str, tool_name: &str, summary: &str) -> RuntimeEvent {
-    RuntimeEvent::ToolCallFinished {
+    RuntimeEvent::ActionFinished {
         session_id: SessionId::new(1),
         tool_name: tool_name.to_string(),
         summary: summary.to_string(),
@@ -793,7 +793,7 @@ fn snap(path: &str, status: &str) -> std::sync::Arc<RegistrySnapshot> {
 #[test]
 fn snapshot_creates_entry_at_spawn_before_first_tool_event() {
     // Phase 5's whole point: the event-driven path only discovered a child
-    // at its first ToolCallStarted; the snapshot makes the panel entry
+    // at its first ActionStarted; the snapshot makes the panel entry
     // appear the moment the agent registers.
     let mut app = App::new();
     app.handle_event(TuiEvent::Lifecycle(snap("root/worker", "running")));
@@ -1118,13 +1118,11 @@ fn background_task_reap_after_3_seconds() {
 }
 
 #[test]
-fn background_task_never_enters_task_panel() {
-    // Panel discipline (2026-09-19): background shell tasks render as plain
-    // tool-call records in the transcript (launch line carries
-    // `background: true`, completion arrives via the bg-wake turn) plus the
-    // status-bar counter — the task panel lists sub-agents only. The map
-    // still tracks tasks (waiting counts, wake dedup, ctrl+c cancel), and
-    // the 3s reap still cleans it up.
+fn background_task_opens_the_task_panel_as_a_row() {
+    // Panel policy (2026-10-29): background shell tasks are switchable rows —
+    // selecting one shows its live output tail (the "can't see what the
+    // background work is doing" gap). The map still tracks tasks (waiting
+    // counts, wake dedup, ctrl+c cancel), and the 3s reap still cleans up.
 
     let registry = BackgroundTaskRegistry::new(4);
     let mut app = App::new();
@@ -1139,20 +1137,25 @@ fn background_task_never_enters_task_panel() {
         .register("sleep 5", None, cancel_token, None, 120_000)
         .unwrap();
 
-    // Reconcile: the map tracks the task, but the panel stays hidden.
+    // Reconcile: the task opens the panel as a background row.
     app.reconcile_background_tasks();
     assert_eq!(app.background_tasks.len(), 1);
     assert!(
-        !app.should_show_task_panel(),
-        "bg task alone must NOT open the panel"
+        app.should_show_task_panel(),
+        "bg task opens the panel (it is a row now)"
+    );
+    assert_eq!(
+        app.task_rows(),
+        vec![crate::ui::task_panel::TaskRow::Background(task_id.clone())],
+        "the row is the background task"
     );
 
-    // Finish the task: still no panel (a Done bg task has never earned one).
+    // Finish the task: the row stays through its review window.
     registry.update_status(&task_id, BackgroundTaskStatus::Done);
     app.reconcile_background_tasks();
     assert!(
-        !app.should_show_task_panel(),
-        "done bg task must NOT open the panel"
+        app.should_show_task_panel(),
+        "done bg task keeps its row until the reap"
     );
 
     // The reap still sweeps the map 3s after completion — once the wake has
@@ -1165,6 +1168,83 @@ fn background_task_never_enters_task_panel() {
     }
     app.reconcile_background_tasks();
     assert_eq!(app.background_tasks.len(), 0, "reap still works");
+    assert!(
+        !app.should_show_task_panel(),
+        "panel closes with the last row"
+    );
+}
+
+#[test]
+fn task_rows_put_sub_agents_before_background_tasks() {
+    let mut app = App::new();
+    app.track_agent(Some("root/alpha"));
+    app.track_agent(Some("root/beta"));
+    // Background rows come from the map directly (registry plumbing is
+    // covered by the reconcile tests).
+    app.background_tasks.insert(
+        "bg1".to_string(),
+        BackgroundTaskEntry {
+            id: "bg1".to_string(),
+            command: "cargo test".to_string(),
+            timeout_ms: 0,
+            status: BackgroundTaskStatus::Running,
+            started_at: Instant::now(),
+            finished_at: None,
+            reported: false,
+            output_tail: String::new(),
+            consumed: false,
+        },
+    );
+
+    assert_eq!(
+        app.task_rows(),
+        vec![
+            crate::ui::task_panel::TaskRow::SubAgent("root/alpha".to_string()),
+            crate::ui::task_panel::TaskRow::SubAgent("root/beta".to_string()),
+            crate::ui::task_panel::TaskRow::Background("bg1".to_string()),
+        ]
+    );
+    assert_eq!(app.task_row_count(), 3);
+}
+
+#[test]
+fn background_tail_refreshes_while_running() {
+    let registry = BackgroundTaskRegistry::new(4);
+    let mut app = App::new();
+    app.set_background_registry(registry.clone());
+
+    let cancel_token = tokio_util::sync::CancellationToken::new();
+    let task_id = registry
+        .register("sleep 5", None, cancel_token, None, 120_000)
+        .unwrap();
+    app.reconcile_background_tasks();
+    assert_eq!(app.background_tasks[&task_id].output_tail, "");
+
+    // Output arriving while the task runs lands in the tail per tick — the
+    // row's inspection view is live, not terminal-only.
+    registry.append_output(&task_id, Some("line one"), None);
+    assert!(app.reconcile_background_tasks(), "tail moved the frame");
+    assert!(
+        app.background_tasks[&task_id]
+            .output_tail
+            .contains("line one"),
+        "tail: {:?}",
+        app.background_tasks[&task_id].output_tail
+    );
+
+    // Quiet tick: nothing changed, nothing dirties the frame.
+    assert!(
+        !app.reconcile_background_tasks(),
+        "unchanged tail must not dirty every tick"
+    );
+
+    registry.append_output(&task_id, Some("line two"), None);
+    assert!(app.reconcile_background_tasks());
+    let tail = &app.background_tasks[&task_id].output_tail;
+    assert!(
+        tail.contains("line one") && tail.contains("line two"),
+        "{tail:?}"
+    );
 }
 
 #[test]

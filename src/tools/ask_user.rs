@@ -18,21 +18,14 @@ use phi_agent::{AgentError, AgentResult, Content, Tool, ToolContext, ToolMetadat
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 
-/// One candidate the user can pick. `id` is the model's stable key; `label`
-/// is what the picker shows and what comes back as the answer.
-#[derive(Debug, Clone)]
-pub struct AskOption {
-    pub id: String,
-    pub label: String,
-    pub note: Option<String>,
-}
-
-/// What the user did with a question.
-#[derive(Debug, Clone)]
-pub enum AskAnswer {
-    Picked { id: String, label: String },
-    Skipped,
-}
+/// One candidate the user can pick, and what the user answered.
+///
+/// The vocabulary lives upstream (agent-types: the `ExecCtx` interaction
+/// channel speaks the same shapes a cell's host-call ask does); this module
+/// re-exports it so `crate::tools::ask_user` stays the phimint import path
+/// for the UI. `id` is the model's stable key; `label` is what the picker
+/// shows and what comes back as the answer.
+pub use phi_agent::{AskAnswer, AskOption};
 
 /// A question handed to the UI, carrying the channel the answer comes back on.
 #[derive(Debug)]
@@ -52,6 +45,14 @@ pub struct AskUserTool {
 pub fn new_ask_user_tool() -> (Arc<AskUserTool>, mpsc::UnboundedReceiver<AskItem>) {
     let (request_tx, request_rx) = mpsc::unbounded_channel();
     (Arc::new(AskUserTool { request_tx }), request_rx)
+}
+
+impl AskUserTool {
+    /// The picker queue sender, for the interaction channel (M3 T8): an ask
+    /// from inside a code cell rides the same popup as the tool.
+    pub fn ask_sender(&self) -> mpsc::UnboundedSender<AskItem> {
+        self.request_tx.clone()
+    }
 }
 
 #[async_trait]

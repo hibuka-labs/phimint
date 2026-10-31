@@ -14,6 +14,7 @@ phimint runs the full coding loop — understand the request, read the code, cha
 
 ## Features
 
+- **Code cells (CodeAct)** — `code_cell` runs code in a resident Python session: one call is one step of cells sharing one session, so variables, imports and functions survive across calls. Mechanical multi-step work (bulk edits, renaming, data wrangling) rides a short cell script instead of a long chain of single-purpose tool calls. The engine is behind a compile-time kill switch — `--no-default-features` drops it from the binary entirely.
 - **Streaming TUI** — ratatui + crossterm: fixed bottom composer, token-by-token streaming, inline tool calls, live line-by-line shell output, approval popups, startup banner that detects your terminal's light/dark background.
 - **Slash commands** — `.claude/skills`-compatible skills: `/skill-name args` injects the skill body into the turn. `/resume` reopens a previous session with an interactive picker.
 - **External tools** — plug in your own tools behind one contract (WIT + Component Model): MCP servers (`/connect`), user scripts, and wasm plugin packs (`plugin add` / `plugin remove`). `/tools` shows every tool's source, namespace and tier with one-key disable; secrets live only as `${ENV:VAR}` references — never literal on disk; `add_tool` lets the agent write and register a tool for you behind a full confirmation card (argv, absolute path, timeout).
@@ -21,6 +22,7 @@ phimint runs the full coding loop — understand the request, read the code, cha
 - **LSP fast inner loop** — lazily started per-language servers (rust-analyzer, typescript-language-server, clangd); `file:line:col` diagnostics in seconds without recompiling. Falls back to shell when a server is missing.
 - **Multi-agent fan-out, push-based fan-in** — `spawn_agent` sends sub-agents to investigate (read-only by default; write capability is requested per spawn when a task must edit). The main agent gets the **full reports at end of turn** (no polling). The TUI task panel tracks each sub-agent live; a 10-minute per-task hard timeout guarantees delivery.
 - **Design canvas & `ask_user`** — the agent can *show* you options instead of describing them: 2–4 candidates land as a screen in your browser (layout mockups, option sets, comparisons) and your click comes back as a real user turn; `ask_user` asks concept picks right in the terminal picker. The browser opens only after a one-time consent, busy clicks queue at the turn boundary, and while a screen awaits your pick the run parks — the agent never decides your design choices for you.
+- **Desktop with consent** — the agent can look at your screen and move the pointer. *Looking* and *moving* never ask; changing the machine asks every time, through the same approval gate the tool path already uses.
 - **Three approval modes** — `auto` (full auto), `ask` (prompt on writes/risky shell), `deny` (read-only). Sub-agents inherit the main agent's mode: in `ask`, every sub-agent write prompts in a popup that names the requesting sub-agent.
 - **Guardrails** — reasoning-only spin correction, max-turns nudge, provider truncation guard (lying `finish_reason` tolerance, from agent-base), 16k tool-output cap.
 - **Multi-language** — `code-intel` registry (extension → LSP server → build-command fallback): Rust, TypeScript, JavaScript, C, C++ out of the box.
@@ -220,6 +222,7 @@ you: "investigate questions X / Y / Z"
 
 | Tool | What it does |
 |---|---|
+| `code_cell` | run code cells in a resident Python session — state (variables, imports, functions) survives across calls; the fast lane for bulk edits, renaming and data wrangling |
 | `read_file` / `write_file` / `edit_file` / `list_files` | file I/O and surgical edits (`edit_file` is atomic with 4-level matching; phi-kernel-tools) |
 | `execute_command` | shell (builds/tests/anything; streamed line-by-line, timeout + cancel kills the process group) |
 | `search_content` | ripgrep content search (regex) |

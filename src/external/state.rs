@@ -231,12 +231,14 @@ impl ExternalState {
                 continue;
             }
             match self.connect(host, &entry).await {
-                Ok(0) => notices.push(connected_report(
+                // Success is a receipt too (P3 acceptance finding ①: an N>0
+                // startup connect was completely silent — the `✓ … connected`
+                // line the `/connect` path prints never existed here).
+                Ok(count) => notices.push(connected_report(
                     &format!("`{}`", entry.name),
                     &entry.name,
-                    0,
+                    count,
                 )),
-                Ok(_) => {}
                 Err(e) => notices.push(e),
             }
         }
@@ -1032,6 +1034,20 @@ fn render_capability(cap: &ResolvedCapability) -> String {
     match cap {
         ResolvedCapability::FsRead { paths } => format!("fs:read {}", paths.join(" ")),
         ResolvedCapability::NetHttp { hosts } => format!("net:http {}", hosts.join(" ")),
+        // An empty program list means unrestricted (phi-cap's own meaning) —
+        // say so out loud rather than rendering a bare `process:spawn `.
+        ResolvedCapability::ProcessSpawn { programs } if programs.is_empty() => {
+            "process:spawn (unrestricted)".to_string()
+        }
+        ResolvedCapability::ProcessSpawn { programs } => {
+            format!("process:spawn {}", programs.join(" "))
+        }
+        ResolvedCapability::DeviceInput { targets } => {
+            format!("device:input {}", targets.join(" "))
+        }
+        ResolvedCapability::DeviceCapture { targets } => {
+            format!("device:capture {}", targets.join(" "))
+        }
     }
 }
 
@@ -1132,6 +1148,43 @@ mod tests {
                 attached: Default::default(),
                 detached: Default::default(),
             }
+        }
+
+        /// Register `count` stub `mcp.<name>.*` tools so the startup merge's
+        /// `count_prefix` sees a non-empty exposed set (success-receipt path
+        /// needs N>0; zero tools is the ⚠ branch).
+        async fn expose_mcp_tools(&self, name: &str, count: usize) {
+            let mut guard = self.registry.write().await;
+            for i in 0..count {
+                // `Tool::name` is `&'static str` — leak the dynamic name
+                // (tests only).
+                let leaked: &'static str =
+                    Box::leak(format!("mcp.{name}.tool-{i}").into_boxed_str());
+                guard.register_arc(Arc::new(StubMcpTool(leaked)));
+            }
+        }
+    }
+
+    /// Registry-visible no-op behind [`FakeHost::expose_mcp_tools`].
+    struct StubMcpTool(&'static str);
+
+    #[async_trait]
+    impl phi_agent::Tool for StubMcpTool {
+        fn name(&self) -> &'static str {
+            self.0
+        }
+        fn description(&self) -> &'static str {
+            "stub mcp tool"
+        }
+        fn schema(&self) -> serde_json::Value {
+            serde_json::json!({"type": "object", "properties": {}})
+        }
+        async fn call(
+            &self,
+            _args: &serde_json::Value,
+            _ctx: &phi_agent::ToolContext,
+        ) -> phi_agent::AgentResult<Vec<phi_agent::Content>> {
+            Ok(vec![])
         }
     }
 
@@ -1297,6 +1350,15 @@ mod tests {
                     ResolvedCapability::NetHttp {
                         hosts: vec!["api.example.com".into()],
                     },
+                    ResolvedCapability::ProcessSpawn {
+                        programs: vec!["python3".into()],
+                    },
+                    ResolvedCapability::DeviceInput {
+                        targets: vec!["keyboard".into()],
+                    },
+                    ResolvedCapability::DeviceCapture {
+                        targets: vec!["screen".into()],
+                    },
                 ],
             }],
             skills: vec![],
@@ -1308,7 +1370,20 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("net:http api.example.com"), "{text}");
+        assert!(text.contains("process:spawn python3"), "{text}");
+        assert!(text.contains("device:input keyboard"), "{text}");
+        assert!(text.contains("device:capture screen"), "{text}");
         assert!(text.contains("timeout: 30s"), "{text}");
+    }
+
+    #[test]
+    fn empty_program_allow_list_is_rendered_as_unrestricted() {
+        // A bare `process:spawn ` would read like a pinned (empty) allow-list;
+        // the declaration means the opposite.
+        assert_eq!(
+            render_capability(&ResolvedCapability::ProcessSpawn { programs: vec![] }),
+            "process:spawn (unrestricted)"
+        );
     }
 
     /// Minimal script-form plugin package (`run[0]` is executed directly →
@@ -1665,6 +1740,35 @@ mod tests {
         );
         let attached = host.attached.lock().unwrap().clone();
         assert_eq!(attached, vec!["taobao".to_string()]);
+    }
+
+    /// The startup merge's success path is a receipt, not silence (P3
+    /// acceptance finding ①): a connection exposing N>0 tools must show the
+    /// same `✓ … connected` line the `/connect` command shows.
+    #[tokio::test]
+    async fn startup_merge_reports_successful_connect() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut state = test_state(tmp.path());
+        state.connections.push(ConnectionEntry {
+            name: "taobao".into(),
+            enabled: true,
+            transport: connections::TransportSpec::Http {
+                url: "http://localhost:3654/mcp".into(),
+                headers: Default::default(),
+            },
+        });
+        let host = FakeHost::new();
+        host.expose_mcp_tools("taobao", 2).await;
+        let notices = state.start(&host).await;
+        let receipt = notices
+            .iter()
+            .find(|n| n.contains("`taobao`"))
+            .unwrap_or_else(|| panic!("no taobao notice in {notices:?}"));
+        assert!(receipt.starts_with('✓'), "{receipt}");
+        assert!(
+            receipt.contains("2 tools available (mcp.taobao.*)"),
+            "{receipt}"
+        );
     }
 
     #[tokio::test]

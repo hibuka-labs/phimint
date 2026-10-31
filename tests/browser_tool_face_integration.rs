@@ -4,12 +4,16 @@
 //! Drives the real `build()` → `run_turn()` request path with a scripted
 //! provider and asserts on what the model actually receives in `ChatRequest`:
 //!
-//!   Turn 1 (canvas closed): 22 browser tool schemas, no tool-face note
+//!   Turn 1 (canvas closed, no browser work yet): the browser starter set +
+//!   the idle `## Browser Tools` note
 //!   → the canvas opens mid-session (a live `phi_canvas` server)
-//!   Next LLM call: exactly the 5 canvas tools + the `## Browser Tools` note
+//!   Next LLM call: exactly the 5 canvas tools + the canvas `## Browser Tools` note
 //!   Turn 2 (canvas still live): the constrained face is still what is sent
 //!   → the canvas closes
-//!   Next LLM call: the full suite returns and the note is gone
+//!   Next LLM call: the session's steady face is back (idle here — this
+//!   scripted session never called a `browser_*` tool; once one appears the
+//!   steady face is the full suite, pinned in `browser_face`'s middleware
+//!   tests) and the canvas note is gone
 //!
 //! This is the request-path proof behind the design note's §7.3 / §9.1 open
 //! question: the tool face can change mid-session, and the model is told.
@@ -243,6 +247,7 @@ async fn canvas_open_narrows_the_face_mid_session_and_close_restores_it() {
         vec![],
         None,
     )
+    .await
     .unwrap();
 
     // The canvas side of a session, wired exactly like `run_tui` does: the
@@ -286,17 +291,26 @@ async fn canvas_open_narrows_the_face_mid_session_and_close_restores_it() {
     let reqs = provider.requests();
     assert_eq!(reqs.len(), 5, "one LLM call per script entry: {reqs:?}");
 
-    // Call 1 (turn 1): full face, no note — the canvas is not open yet.
+    // Call 1 (turn 1): the idle starter face — this session has not touched
+    // the browser, so the starter five ride instead of the 22-tool suite
+    // (T12 menu slimming) and the narrowing is announced.
     let before = &reqs[0];
     assert_eq!(
         browser_names(&before.tool_names).len(),
-        22,
-        "full suite before the canvas opens: {:?}",
+        5,
+        "starter five before any browser work: {:?}",
         before.tool_names
     );
     assert!(
-        !before.system.contains("## Browser Tools"),
-        "no note on the full face"
+        before.system.contains("## Browser Tools"),
+        "the idle narrowing is announced"
+    );
+    assert!(
+        before
+            .system
+            .contains("the full browser toolset arrives the next turn"),
+        "the note names the growth path: {}",
+        before.system
     );
 
     // Call 2 (turn 1, after `canvas_open` ran) and call 3 (turn 2): the
@@ -336,12 +350,20 @@ async fn canvas_open_narrows_the_face_mid_session_and_close_restores_it() {
     // Call 4 (turn 3, before `canvas_close` runs): still the constrained face.
     assert_eq!(browser_names(&reqs[3].tool_names).len(), 5);
 
-    // Call 5 (turn 3, after `canvas_close` ran): the full suite is back and
-    // the note is gone — the face restores itself mid-session too.
+    // Call 5 (turn 3, after `canvas_close` ran): the session's steady face is
+    // back and the canvas note is gone — the face restores itself mid-session
+    // too. This scripted session never called a `browser_*` tool, so steady
+    // is the idle starter face (with its own note), not the full suite; the
+    // full-suite restoration after real browser work is pinned in
+    // `browser_face`'s middleware tests.
     let after = &reqs[4];
-    assert_eq!(browser_names(&after.tool_names).len(), 22);
+    assert_eq!(browser_names(&after.tool_names).len(), 5);
     assert!(
-        !after.system.contains("## Browser Tools"),
-        "the note is removed with the constraint"
+        after.system.contains("## Browser Tools"),
+        "the idle face carries its own note"
+    );
+    assert!(
+        !after.system.contains("only the canvas minimum"),
+        "the canvas note is removed with the constraint"
     );
 }

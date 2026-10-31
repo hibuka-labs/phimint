@@ -5,8 +5,8 @@
 
 // Modules live in the lib crate (src/lib.rs) so tests/ can exercise them.
 use phimint::{
-    agent, approval, banner, config, external, model_store, router, session_birthplace,
-    session_history, session_scope, skills, title_gen, ui,
+    agent, approval, banner, config, external, file_face, interact_slot, model_store, router,
+    session_birthplace, session_history, session_scope, skills, title_gen, ui,
 };
 
 use std::path::{Path, PathBuf};
@@ -158,8 +158,59 @@ enum Commands {
     },
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+/// Where the sidecar transport puts its provider diagnostics.
+///
+/// The transport (phi-wire-client) reads this variable: set, it appends the
+/// diagnostics to the named file; unset, it forwards them to **stderr** —
+/// which in a TUI is the alternate screen. The text then lands on the
+/// user's display and the renderer never repaints those cells, so the
+/// input line grows garbage the user cannot clear with a redraw.
+const PROVIDER_LOG_ENV: &str = "MAI_UI_PROVIDER_LOG";
+
+fn main() -> Result<()> {
+    // The TUI owns the terminal while it is up: nothing may write to
+    // stderr. Point the sidecar transport's diagnostics at a log file
+    // before the runtime starts any thread — `set_var` is not thread-safe,
+    // so this is the one place it can be set soundly.
+    install_provider_log(&sessions_base_dir());
+
+    // A previous run may have died without restoring the terminal (raw mode,
+    // alternate screen, mouse reporting): the shell the user is looking at
+    // cannot echo and cannot scroll. Repair it, and make sure this run puts
+    // the terminal back even if it is killed.
+    phimint::terminal_restore::heal_terminal();
+    phimint::terminal_restore::install_signal_restore();
+
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(run())
+}
+
+/// Name the file the sidecar transport puts its diagnostics in, and return
+/// the path it named.
+///
+/// The transport reads the variable when it spawns a sidecar, so one call
+/// here covers every sidecar this process starts.
+fn install_provider_log(base_dir: &Path) -> PathBuf {
+    let path = provider_log_path(base_dir);
+    if let Err(e) = std::fs::create_dir_all(base_dir) {
+        eprintln!("warning: cannot create {}: {e}", base_dir.display());
+    }
+    // SAFETY: called before the runtime is built — no thread exists yet, so
+    // nothing can read the environment concurrently.
+    unsafe { std::env::set_var(PROVIDER_LOG_ENV, &path) };
+    path
+}
+
+/// The provider diagnostics file: one append-only stream per install,
+/// next to the other base-level state (`approvals.json`).
+fn provider_log_path(base_dir: &Path) -> PathBuf {
+    base_dir.join("provider.log")
+}
+
+/// The runtime body of [`main`] — everything that needs the async runtime.
+async fn run() -> Result<()> {
     let cli = Cli::parse();
 
     // Subcommands run without a workspace and without starting the TUI, so
@@ -251,6 +302,12 @@ async fn main() -> Result<()> {
     let update_config = model_config.update.clone();
     let tips_config = model_config.ui.tips.clone();
     let exit_dump_mode = model_config.ui.exit_dump;
+    // The code road (M3 T10d layer ③): `code_exec.mode` decides at the
+    // assembly point what code wiring the runtime gets. `resolve_road`
+    // (file_face) probes for the Python 3 the code road needs first: missing
+    // interpreter → the road degrades to the file-tool shape and one notice
+    // explains, instead of the engine dying at build looking for a worker.
+    let code_exec_mode = file_face::resolve_road(model_config.code_exec.mode);
 
     let popup_style = model_config
         .ui
@@ -284,6 +341,9 @@ async fn main() -> Result<()> {
     // always asks a human and ignores the tier). `agent::build` takes the
     // approval away, so keep a copy of the Arc here.
     let external_ledger = Arc::clone(&approval);
+    // The act road's interaction slot (M3 T10d): mounted at build time, armed
+    // per session inside run_tui with that session's `ask_user` picker queue.
+    let interact_slot = Arc::new(interact_slot::InteractSlot::new(Arc::clone(&approval)));
 
     // Cleanup expired session data (history, notes, sessions) at startup.
     cleanup_expired_data(&base_dir, cli.session_retention_days);
@@ -360,18 +420,22 @@ async fn main() -> Result<()> {
         session_id: session_ctx.session_id.clone(),
     };
 
-    let (agent, skill_resolver, skill_telemetry, bg_registry, canvas_activity) = agent::build(
-        llm_client,
-        approval,
-        policy,
-        cli.shell_timeout_ms,
-        workspace.clone(),
-        cli.thinking_budget,
-        &cli.reasoning_effort,
-        llm_config.model.clone(),
-        skills::default_skill_dirs(),
-        Some(token_budget_opts),
-    )?;
+    let (agent, skill_resolver, skill_telemetry, bg_registry, canvas_activity) =
+        agent::build_with_code_exec(
+            code_exec_mode,
+            Some(interact_slot.clone()),
+            llm_client,
+            approval,
+            policy,
+            cli.shell_timeout_ms,
+            workspace.clone(),
+            cli.thinking_budget,
+            &cli.reasoning_effort,
+            llm_config.model.clone(),
+            skills::default_skill_dirs(),
+            Some(token_budget_opts),
+        )
+        .await?;
 
     // Create or resume the runtime session.
     let (session, resume_messages) = if cli.resume {
@@ -406,6 +470,15 @@ async fn main() -> Result<()> {
         external::state::ExternalState::load(&base_dir, &workspace, external_ledger),
     ));
 
+    // The consent bridge's cancel token is the *run's* live one — the runtime
+    // resets its token before every turn, so the slot takes a source, not a
+    // token. With it, a desktop action waiting on the approval popup is
+    // released when the turn is cancelled (Ctrl+C) instead of hanging.
+    {
+        let runtime = agent.runtime().clone();
+        interact_slot.arm_cancel(Arc::new(move || runtime.cancel_token()));
+    }
+
     ui::run_tui(
         agent,
         skill_resolver,
@@ -418,6 +491,7 @@ async fn main() -> Result<()> {
         workspace,
         approval_rx,
         approval_mode,
+        interact_slot,
         scheme,
         popup_style,
         show_banner,
@@ -438,7 +512,17 @@ async fn main() -> Result<()> {
 /// Base directory for all phimint session data (~/.phimint).
 fn sessions_base_dir() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".phimint")
+    let dir = PathBuf::from(home).join(".phimint");
+    // Absolutize at the exit point (survey P6): downstream joins assume an
+    // absolute base, and the `"."` fallback (HOME unset) used to leave a
+    // relative base whose double-join produced `.phimint/sessions/sessions/`.
+    if dir.is_absolute() {
+        dir
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(&dir))
+            .unwrap_or(dir)
+    }
 }
 
 /// Cleanup expired session data at startup.
@@ -624,4 +708,34 @@ fn run_uninstall_command(keep_data: bool, yes: bool) -> Result<()> {
     let plan = uninstall::plan(!keep_data)?;
     print!("{}", plan.describe());
     uninstall::run(&plan, yes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The diagnostics file is base-level (next to `approvals.json`) and
+    /// named after the variable the transport reads — the two are a pair,
+    /// so they travel together.
+    #[test]
+    fn provider_log_path_pairs_with_the_env_var_name() {
+        assert_eq!(
+            provider_log_path(Path::new("/tmp/phimint-base")),
+            PathBuf::from("/tmp/phimint-base/provider.log")
+        );
+        assert_eq!(PROVIDER_LOG_ENV, "MAI_UI_PROVIDER_LOG");
+    }
+
+    /// The wiring the fix rests on: the transport's diagnostics need a file
+    /// named, and the name has to be the one the transport reads.
+    #[test]
+    fn installing_the_provider_log_names_the_file_for_the_transport() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = install_provider_log(dir.path());
+        assert_eq!(path, dir.path().join("provider.log"));
+        assert_eq!(
+            std::env::var(PROVIDER_LOG_ENV).unwrap(),
+            path.to_str().unwrap()
+        );
+    }
 }

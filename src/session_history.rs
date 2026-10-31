@@ -226,6 +226,7 @@ mod tests {
             tool_call_id: "tc".into(),
             name: Some(name.into()),
             content: content.into(),
+            images: Vec::new(),
         }
     }
 

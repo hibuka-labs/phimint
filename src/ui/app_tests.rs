@@ -26,7 +26,7 @@ fn thought(s: &str) -> RuntimeEvent {
 }
 
 fn tool_started(name: &str) -> RuntimeEvent {
-    RuntimeEvent::ToolCallStarted {
+    RuntimeEvent::ActionStarted {
         session_id: SessionId::new(1),
         tool_name: name.to_string(),
         args_json: "{}".to_string(),
@@ -36,7 +36,7 @@ fn tool_started(name: &str) -> RuntimeEvent {
 }
 
 fn tool_started_with(name: &str, args_json: &str) -> RuntimeEvent {
-    RuntimeEvent::ToolCallStarted {
+    RuntimeEvent::ActionStarted {
         session_id: SessionId::new(1),
         tool_name: name.to_string(),
         args_json: args_json.to_string(),
@@ -46,7 +46,7 @@ fn tool_started_with(name: &str, args_json: &str) -> RuntimeEvent {
 }
 
 fn tool_finished(name: &str, denied: bool) -> RuntimeEvent {
-    RuntimeEvent::ToolCallFinished {
+    RuntimeEvent::ActionFinished {
         session_id: SessionId::new(1),
         tool_name: name.to_string(),
         summary: "done".to_string(),
@@ -84,7 +84,7 @@ fn child_thought(agent: &str, s: &str) -> RuntimeEvent {
 }
 
 fn child_tool_started(agent: &str, name: &str) -> RuntimeEvent {
-    RuntimeEvent::ToolCallStarted {
+    RuntimeEvent::ActionStarted {
         session_id: SessionId::new(1),
         tool_name: name.to_string(),
         args_json: "{}".to_string(),
@@ -94,7 +94,7 @@ fn child_tool_started(agent: &str, name: &str) -> RuntimeEvent {
 }
 
 fn child_tool_finished(agent: &str, name: &str) -> RuntimeEvent {
-    RuntimeEvent::ToolCallFinished {
+    RuntimeEvent::ActionFinished {
         session_id: SessionId::new(1),
         tool_name: name.to_string(),
         summary: "done".to_string(),
@@ -296,10 +296,15 @@ fn submit_requires_nonempty_and_not_running() {
     let action = submit(&mut app, "do a thing");
     assert_eq!(action, Action::Submit("do a thing".to_string()));
 
-    // Already running → Enter ignored (the send side raised the flag).
+    // Already running → Enter queues a steer (delivered at the next tool
+    // boundary), never a silent drop and never a Submit — the send side
+    // raised the flag, so only `Steer`/`ForceSend` may reach the engine.
     app.running = true;
     app.composer.insert_str("second");
-    assert_eq!(app.handle_key(KeyCode::Enter, KeyModifiers::NONE), None);
+    assert_eq!(
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE),
+        Some(Action::Steer("second".to_string()))
+    );
 }
 
 /// Regression (session 20261013_075bb995): `/resume` is intercepted before
@@ -472,7 +477,7 @@ fn spawn_agent_invocation_line_is_compacted() {
         "task": "分析 /Users/me/pi 工程的 agent 循环\n然后还要看工具系统\n报告带文件行号"
     })
     .to_string();
-    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallStarted {
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ActionStarted {
         session_id: SessionId::new(1),
         tool_name: "spawn_agent".to_string(),
         args_json: args,
@@ -610,7 +615,7 @@ fn submit_starts_activity_clock_and_keeps_origin() {
 }
 
 fn draft(index: usize, name: &str, args_len: usize, count: usize) -> RuntimeEvent {
-    RuntimeEvent::ToolCallDraft {
+    RuntimeEvent::ActionDraft {
         session_id: SessionId::new(1),
         index,
         name: name.to_string(),
@@ -666,7 +671,7 @@ fn child_tool_drafts_never_touch_root_state() {
     let mut app = App::new();
     // A child's draft belongs to the task panel's liveness, not the root
     // status strip — and must not flip the root to Running.
-    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallDraft {
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ActionDraft {
         session_id: SessionId::new(1),
         index: 0,
         name: "read_file".to_string(),
@@ -681,7 +686,7 @@ fn child_tool_drafts_never_touch_root_state() {
     // A root draft survives a child's call materializing (the root's calls
     // materialize together only after the root's own stream drains).
     app.handle_event(TuiEvent::Runtime(draft(0, "spawn_agent", 32, 1)));
-    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallStarted {
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ActionStarted {
         session_id: SessionId::new(1),
         tool_name: "read_file".to_string(),
         args_json: "{}".to_string(),
@@ -701,7 +706,7 @@ fn spawn_task_brief_rides_the_preview_ladder() {
     // Short first line → the meta row shows it whole; the fold's body owns
     // rows[1..], and the full brief is whole on the ladder.
     let task = "看一眼 pi 的 agent 循环\n然后还要看工具系统\n报告带文件行号";
-    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallStarted {
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ActionStarted {
         session_id: SessionId::new(1),
         tool_name: "spawn_agent".to_string(),
         args_json: serde_json::json!({"task_name": "analyze-pi", "task": task}).to_string(),
@@ -731,7 +736,7 @@ fn spawn_task_head_is_abbreviated_when_the_first_line_is_long() {
     // truncation never loses text.
     let head = "分析".repeat(40); // 160 display cols > the 56-col gist
     let task = format!("{head}\n第二行");
-    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallStarted {
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ActionStarted {
         session_id: SessionId::new(1),
         tool_name: "spawn_agent".to_string(),
         args_json: serde_json::json!({"task_name": "analyze-pi", "task": task}).to_string(),
@@ -755,7 +760,7 @@ fn spawn_task_head_is_abbreviated_when_the_first_line_is_long() {
 #[test]
 fn spawn_result_is_humanized_with_raw_preserved() {
     let mut app = App::new();
-    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallStarted {
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ActionStarted {
         session_id: SessionId::new(1),
         tool_name: "spawn_agent".to_string(),
         args_json: serde_json::json!({"task_name": "analyze-pi", "task": "看看 pi"}).to_string(),
@@ -767,7 +772,7 @@ fn spawn_result_is_humanized_with_raw_preserved() {
         "message": "Agent spawned successfully (tools: read_only; registered: read_file, grep)"
     })
     .to_string();
-    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallFinished {
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ActionFinished {
         session_id: SessionId::new(1),
         tool_name: "spawn_agent".to_string(),
         summary: summary.clone(),
@@ -798,7 +803,7 @@ fn spawn_result_is_humanized_with_raw_preserved() {
 fn spawn_result_label_keeps_recycled_and_degraded_facts() {
     let mut app = App::new();
     let spawn = |app: &mut App| {
-        app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallStarted {
+        app.handle_event(TuiEvent::Runtime(RuntimeEvent::ActionStarted {
             session_id: SessionId::new(1),
             tool_name: "spawn_agent".to_string(),
             args_json: serde_json::json!({"task_name": "t", "task": "x"}).to_string(),
@@ -807,7 +812,7 @@ fn spawn_result_label_keeps_recycled_and_degraded_facts() {
         }));
     };
     let finish = |app: &mut App, message: &str| {
-        app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallFinished {
+        app.handle_event(TuiEvent::Runtime(RuntimeEvent::ActionFinished {
             session_id: SessionId::new(1),
             tool_name: "spawn_agent".to_string(),
             summary: serde_json::json!({"agent_path": "root/t", "message": message}).to_string(),
@@ -850,7 +855,7 @@ fn background_start_result_is_humanized_with_raw_preserved() {
         "message": "Command started in background. Use task_output to check."
     })
     .to_string();
-    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallFinished {
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ActionFinished {
         session_id: SessionId::new(1),
         tool_name: "execute_command".to_string(),
         summary: summary.clone(),
@@ -884,7 +889,7 @@ fn write_file_content_head_is_never_restored() {
     // the ladder from re-drawing that head on top of itself at full expansion
     // — the meta row is `* write_file <path>`, a label, never the content.
     let content = "fn main() { /* a deliberately long first line that wraps on any terminal and must not be drawn twice when the fold expands */ }\nsecond line\n";
-    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallStarted {
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ActionStarted {
         session_id: SessionId::new(1),
         tool_name: "write_file".to_string(),
         args_json: serde_json::json!({"path": "/tmp/x.rs", "content": content}).to_string(),
@@ -2696,7 +2701,7 @@ fn edit_file_produces_diff_detail() {
             { "old_text": "fn main() {\n    println!(\"hello\");\n}", "new_text": "fn main() {\n    println!(\"world\");\n}" }
         ]
     });
-    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallStarted {
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ActionStarted {
         session_id: SessionId::new(1),
         tool_name: "edit_file".to_string(),
         args_json: args.to_string(),
@@ -2730,7 +2735,7 @@ fn write_file_create_folds_the_written_content() {
         "path": "src/new.rs",
         "content": "fn hello() {\n    println!(\"hi\");\n}\n"
     });
-    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallStarted {
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ActionStarted {
         session_id: SessionId::new(1),
         tool_name: "write_file".to_string(),
         args_json: args.to_string(),
@@ -2761,7 +2766,7 @@ fn write_file_overwrite_becomes_a_real_diff() {
         "content": "fn hello() {\n    println!(\"bye\");\n}\n",
         "overwrite": true
     });
-    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallStarted {
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ActionStarted {
         session_id: SessionId::new(1),
         tool_name: "write_file".to_string(),
         args_json: args.to_string(),
@@ -2774,7 +2779,7 @@ fn write_file_overwrite_becomes_a_real_diff() {
         Some(LineDetail::Folded { .. })
     ));
 
-    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallFinished {
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ActionFinished {
         session_id: SessionId::new(1),
         tool_name: "write_file".to_string(),
         summary: "Updated file: src/new.rs".to_string(),
@@ -2825,7 +2830,7 @@ fn edit_file_diff_lines_appear_in_transcript() {
             { "old_text": "old_fn()", "new_text": "new_fn()" }
         ]
     });
-    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallStarted {
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ActionStarted {
         session_id: SessionId::new(1),
         tool_name: "edit_file".to_string(),
         args_json: args.to_string(),
@@ -3577,4 +3582,187 @@ fn tips_updated_event_replaces_pool_and_resets_rotation() {
         "phimint is built on phi-agent - docs: https://docs.phiagent.dev/"
     );
     assert_eq!(app.tip_index, 0, "a fresh pool restarts the rotation");
+}
+
+// ── Queue steering: Enter while running ──────────────────────────────────
+
+/// Collect the echoed user-message texts in the transcript.
+fn user_echoes(app: &App) -> Vec<String> {
+    app.transcript
+        .output
+        .iter()
+        .filter(|l| l.kind == LineKind::User)
+        .map(|l| l.text.clone())
+        .collect()
+}
+
+#[test]
+fn enter_while_running_queues_instead_of_dropping() {
+    let mut app = App::new();
+    app.running = true;
+    app.composer.insert_str("hold that thought");
+    let action = app.handle_key(KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(action, Some(Action::Steer("hold that thought".to_string())));
+    assert!(
+        app.composer.is_empty(),
+        "the draft leaves the composer when queued"
+    );
+}
+
+#[test]
+fn enter_while_running_with_empty_composer_queues_nothing() {
+    let mut app = App::new();
+    app.running = true;
+    assert_eq!(app.handle_key(KeyCode::Enter, KeyModifiers::NONE), None);
+}
+
+#[test]
+fn enter_while_idle_still_submits() {
+    let mut app = App::new();
+    app.composer.insert_str("hello");
+    assert_eq!(
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE),
+        Some(Action::Submit("hello".to_string()))
+    );
+}
+
+#[test]
+fn ctrl_enter_force_sends_the_draft() {
+    let mut app = App::new();
+    app.running = true;
+    app.composer.insert_str("stop and answer");
+    assert_eq!(
+        app.handle_key(KeyCode::Enter, KeyModifiers::CONTROL),
+        Some(Action::ForceSend("stop and answer".to_string()))
+    );
+}
+
+#[test]
+fn ctrl_enter_with_empty_composer_flushes_the_queue() {
+    let mut app = App::new();
+    app.running = true;
+    app.queued_steer.push("one".to_string());
+    assert_eq!(
+        app.handle_key(KeyCode::Enter, KeyModifiers::CONTROL),
+        Some(Action::ForceSend(String::new()))
+    );
+    // Nothing queued and nothing drafted: a no-op, never an accidental submit.
+    app.queued_steer.clear();
+    assert_eq!(app.handle_key(KeyCode::Enter, KeyModifiers::CONTROL), None);
+}
+
+#[test]
+fn up_takes_back_queued_messages_from_the_first_line() {
+    let mut app = App::new();
+    app.queued_steer = vec!["one".to_string(), "two".to_string()];
+    assert_eq!(
+        app.handle_key(KeyCode::Up, KeyModifiers::NONE),
+        Some(Action::TakeBackQueued)
+    );
+}
+
+#[test]
+fn up_moves_the_cursor_first_when_not_on_the_first_line() {
+    let mut app = App::new();
+    app.queued_steer = vec!["one".to_string()];
+    app.composer.insert_str("a\nb"); // cursor rests on row 1
+    assert_eq!(app.composer.cursor().0, 1);
+    assert_eq!(app.handle_key(KeyCode::Up, KeyModifiers::NONE), None);
+    assert_eq!(app.composer.cursor().0, 0, "first Up moves the cursor");
+    // Now on the first line: the next Up takes the queue back.
+    assert_eq!(
+        app.handle_key(KeyCode::Up, KeyModifiers::NONE),
+        Some(Action::TakeBackQueued)
+    );
+}
+
+// ── Queue steering: mirror sync + take-back + strip ──────────────────────
+
+#[test]
+fn sync_steer_queue_echoes_delivered_messages_exactly_once() {
+    let mut app = App::new();
+    app.queued_steer = vec!["one".to_string(), "two".to_string()];
+    // The engine drained "one" at a tool boundary: it is now delivered.
+    assert!(app.sync_steer_queue(vec!["two".to_string()]));
+    assert_eq!(app.queued_steer, vec!["two".to_string()]);
+    let echoes = user_echoes(&app);
+    assert!(
+        echoes.iter().any(|e| e.contains("one")),
+        "delivered message echoed: {echoes:?}"
+    );
+    assert!(
+        !echoes.iter().any(|e| e.contains("two")),
+        "pending message not echoed yet: {echoes:?}"
+    );
+    // A second sync with the same snapshot is a no-op — never a double echo.
+    assert!(!app.sync_steer_queue(vec!["two".to_string()]));
+    assert_eq!(user_echoes(&app).len(), echoes.len());
+}
+
+#[test]
+fn sync_steer_queue_adopts_engine_order() {
+    let mut app = App::new();
+    app.queued_steer = vec!["one".to_string()];
+    // Nothing delivered; the engine queue is the source of truth.
+    assert!(app.sync_steer_queue(vec!["one".to_string(), "two".to_string()]));
+    assert_eq!(app.queued_steer, vec!["one".to_string(), "two".to_string()]);
+    assert!(
+        user_echoes(&app).is_empty(),
+        "nothing delivered, nothing echoed"
+    );
+}
+
+#[test]
+fn take_back_into_composer_restores_above_the_draft() {
+    let mut app = App::new();
+    app.composer.insert_str("draft");
+    app.take_back_into_composer(vec!["one".to_string(), "two".to_string()]);
+    assert_eq!(app.composer.text(), "one\ntwo\ndraft");
+    assert!(
+        app.queued_steer.is_empty(),
+        "the mirror empties with the queue"
+    );
+    assert!(user_echoes(&app).is_empty(), "take-back never echoes");
+}
+
+#[test]
+fn queued_strip_lines_bound_rows_and_mark_the_rest() {
+    let mut app = App::new();
+    app.queued_steer = (0..3).map(|i| format!("m{i}")).collect();
+    app.queued_cmds.push("/review".to_string());
+    let rows = app.queued_strip_lines();
+    assert_eq!(rows.len(), 3, "capped at three rows");
+    assert!(rows[0].contains("queued -> m0"), "row: {}", rows[0]);
+    assert!(rows[1].contains("queued -> m1"), "row: {}", rows[1]);
+    assert!(rows[2].contains("+2 more"), "tail row: {}", rows[2]);
+}
+
+#[test]
+fn queued_strip_lines_mark_held_commands() {
+    let mut app = App::new();
+    app.queued_cmds.push("/review".to_string());
+    let rows = app.queued_strip_lines();
+    assert_eq!(rows.len(), 1);
+    assert!(
+        rows[0].contains("queued after turn -> /review"),
+        "row: {}",
+        rows[0]
+    );
+}
+
+#[test]
+fn queued_strip_lines_elide_long_first_lines() {
+    let mut app = App::new();
+    let long = "x".repeat(200);
+    app.queued_steer.push(long);
+    let rows = app.queued_strip_lines();
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].ends_with("..."), "row: {}", rows[0]);
+    assert!(rows[0].chars().count() <= 60 + " queued -> ".chars().count() + 3);
+}
+
+#[test]
+fn queued_strip_is_empty_without_a_queue() {
+    let app = App::new();
+    assert!(app.queued_strip_lines().is_empty());
 }

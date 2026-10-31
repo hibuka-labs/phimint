@@ -16,6 +16,7 @@ phimint 跑「理解需求 → 读码 → 多文件改 → 编译/测试 → 报
 
 ## 特性
 
+- **代码单元（CodeAct）**：`code_cell` 在常驻 Python 会话里跑代码——一次调用就是共享同一会话的一个 cell，变量、import、函数在多次调用之间存活。机械性的多步活（批量改、重命名、数据整理）走一段短 cell 脚本，而不是一长串单用途工具调用。引擎挂在编译期开关后面——`--no-default-features` 可以把它整个从二进制里摘掉。
 - **流式 TUI**：ratatui + crossterm，底部固定输入栏、逐字流式输出、工具调用内联、shell 命令逐行实时回显、审批弹窗、启动 banner（自动识别终端明暗配色）。
 - **斜杠命令**：兼容 `.claude/skills` 的 skill 体系，`/skill-name args` 把 skill 正文注入本轮；`/resume` 交互式选择并恢复历史会话。
 - **外部工具**：一套契约（WIT + Component Model）接入三种自定义工具——MCP 服务（`/connect`）、用户脚本、wasm 插件包（`plugin add` / `plugin remove`）。`/tools` 一屏列出全部工具的来源/命名空间/档位并可一键关闭；secret 只以 `${ENV:VAR}` 引用落盘、绝不存明文；`add_tool` 让 agent 代写工具，全貌确认卡（argv、绝对路径、超时）点头后才注册。
@@ -23,6 +24,7 @@ phimint 跑「理解需求 → 读码 → 多文件改 → 编译/测试 → 报
 - **LSP 快速内环**：多 server 懒启动（rust-analyzer / typescript-language-server / clangd），改完不重编译秒级拿到 `file:line:col` 诊断；server 起不来降级到 shell。
 - **多 agent 扇出 + 推送式 fan-in**：`spawn_agent` 派子 agent 调查（默认只读；任务需要动手改代码时，按次申请写能力），主 agent **结束回合即收全量报告**（无需轮询）；TUI 任务面板逐子 agent 实时跟踪，单任务 10 分钟超时硬停。
 - **设计画布 & `ask_user`**：agent 可以把选项*展示*给你而不是描述给你——2–4 个候选以屏幕形式落在你的浏览器里（布局样机、选项组、对比图），点一下就变成真实的用户回合；概念选择也可以直接在终端选择器里问（`ask_user`）。浏览器只在一次性同意后才打开，忙碌时的点击排队到回合边界再送达，屏幕等你点选期间 run 会停驻——agent 绝不替你拍板设计选择。
+- **桌面操作 + 同意门**：agent 可以看你的屏幕、挪你的指针。*看*和*挪*从不问；*改*机器则每次都问，走的还是工具路径那扇同意门。
 - **审批三态**：`auto`（全自动）/ `ask`（写操作逐条弹窗）/ `deny`（只读）；子 agent 权限跟随主 agent 模式——`ask` 下每次子 agent 写入都会弹窗确认，弹窗标明是哪个子 agent。
 - **防护栏**：reasoning-only 纠偏（连续空转 → 自动关思考）、max-turns 预警（最后 3 轮逼收尾）、provider 截断守卫（谎报 `finish_reason` 的容错，agent-base 提供）、工具输出 16k 上限。
 - **多语言**：`code-intel` 注册表（扩展名 → LSP server → 构建命令兜底），Rust / TypeScript / JavaScript / C / C++ 开箱即用。
@@ -215,6 +217,7 @@ Commands:
 
 | 工具 | 作用 |
 |---|---|
+| `code_cell` | 在常驻 Python 会话里跑代码单元——状态（变量、import、函数）跨调用存活；批量改、重命名、数据整理的快车道 |
 | `read_file` / `write_file` / `edit_file` / `list_files` | 文件读写与精准编辑（`edit_file` 原子写 + 4 级匹配；phi-kernel-tools） |
 | `execute_command` | shell（跑构建/测试/命令，逐行流式回显 + 超时/取消杀进程组） |
 | `search_content` | ripgrep 内容搜索（regex） |

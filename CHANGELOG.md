@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-10-31
+
+### Added
+
+- **CodeAct (`code_cell`)** — the agent runs code in a resident Python session.
+  One call is one step of cells sharing one session, so state (variables,
+  imports, functions) survives across calls. Mechanical multi-step work —
+  bulk edits, renaming, data wrangling — now rides a short cell script
+  instead of a long chain of single-purpose tool calls. The engine is behind
+  a compile-time kill switch: `--no-default-features` drops it from the
+  binary entirely.
+- **Desktop capability pack (`desk.*`)** — the agent can look at and move the
+  pointer on a real desktop. The pack is mounted at the assembly point, never
+  inside the engine, and the model names the device methods it wants.
+- **Device consent, posture B** — *looking* at the desktop and moving the
+  pointer never asks; changing the machine asks every time, through the same
+  approval gate the tool path already uses. The consent line says who is
+  holding things up and that the page has no button to press, so a model
+  never goes hunting for one.
+- **Interaction channel** — the `ask_user` picker and the consent gate share
+  one live channel, so a question asked mid-run and a consent request both
+  land in the same popup with the same ledger.
+- **Terminal restore** — if phimint dies without its normal exit path, the
+  terminal is put back (raw mode, alternate screen, mouse reporting,
+  bracketed paste) instead of leaving the shell in a broken state.
+
+### Changed
+
+- **Browser tool face per turn** — the browser suite is loaded per turn by
+  usage scenario: the design-canvas self-check only ever needs the canvas
+  group, while full browser automation takes the whole suite. The menu you
+  see now matches what the run actually needs.
+- **`repo_map` carries file sizes** — the outline header states each file's
+  line count, so "read the whole file or just these symbols" is decided from
+  one call.
+- **Tool results can carry pictures** — a tool result that hands the model
+  something to *look at* (a screenshot, a rendered diagram) delivers the image
+  beside its text, and the picture rides the persisted transcript, so a
+  session resumed later still hands the model what it was shown.
+
+### Fixed
+
+- **Design-canvas consent wording** — the awaiting-consent line no longer
+  reads like a task, which had sent a live model hunting for a button that
+  is not on the page.
+- **Compare view** — the design-canvas compare link appears as soon as there
+  is a version behind the current one, instead of only when two versions are
+  already on screen.
+
 ## [0.6.0] — 2026-10-24
 
 ### Added

@@ -41,7 +41,7 @@ use crate::model_store::ModelStore;
 use crate::router::PhimintRouter;
 use crate::skills::{
     ActiveSkillEntry, SkillResolver, SkillScope, SkillTelemetry, append_active_skills,
-    load_active_skills, save_active_skills,
+    load_active_skills, save_active_skills, sync_active_set,
 };
 use crate::title_gen::{generate_session_title, write_pending_title_marker};
 
@@ -116,6 +116,9 @@ pub async fn run_tui(
     workspace: PathBuf,
     approval_rx: mpsc::UnboundedReceiver<ApprovalItem>,
     approval_mode: Arc<crate::approval::ApprovalModeSwitch>,
+    // Armed below with this session's `ask_user` picker queue: the kernel's
+    // interaction channel mounts at build, the queue is born here (M3 T10d).
+    interact_slot: Arc<crate::interact_slot::InteractSlot>,
     scheme: ColorScheme,
     popup_style: phi_tui::popup_list::PopupStyle,
     show_banner: bool,
@@ -252,6 +255,7 @@ pub async fn run_tui(
         // build registration never reaches a child's tool face). The run loop
         // below services the receiver one modal picker at a time.
         let (ask_user_tool, mut ask_rx) = crate::tools::ask_user::new_ask_user_tool();
+        interact_slot.arm(ask_user_tool.ask_sender());
         {
             let registry = agent.runtime().tools_mut();
             registry.write().await.register_arc(ask_user_tool);
@@ -460,6 +464,13 @@ pub async fn run_tui(
             app.push_system(&format!("! {notice}"));
         }
 
+        // Code-road degrade (file_face): the configured road wanted code
+        // cells but the machine has no Python 3 — say so once, up front, with
+        // the way out. The file tools are on the menu either way.
+        if let Some(notice) = crate::file_face::take_startup_notice() {
+            app.push_system(&format!("! {notice}"));
+        }
+
         // Replay historical messages into the transcript so the user sees the
         // previous conversation (not just a blank screen) after --resume.
         if let Some(messages) = &resume_messages {
@@ -557,6 +568,42 @@ pub async fn run_tui(
                 }
             }
             let turn_fell = running_before && !app.running;
+
+            // Turn-end flush (Claude Code: queued messages go out
+            // automatically, in typed order — never a queue that silently
+            // rots). Anything the engine never drained goes out now as its own
+            // turn: steering messages merged as one, held `/` commands one at
+            // a time. The `sync` first echoes anything that WAS delivered in
+            // the turn's last stretch, so the flush owns only what never
+            // reached the model. Fires on any idle frame with a non-empty
+            // queue, not just the falling edge — a queue can outlive its run
+            // (cancel races), and the flush must not depend on catching one.
+            if !app.running && (!app.queued_steer.is_empty() || !app.queued_cmds.is_empty()) {
+                app.sync_steer_queue(agent.runtime().steering_snapshot());
+                let leftover = agent.runtime().take_steering();
+                app.queued_steer.clear();
+                let held_cmds = std::mem::take(&mut app.queued_cmds);
+                if !leftover.is_empty() {
+                    let joined = leftover.join("\n");
+                    app.begin_user_turn(&joined);
+                    if cmd_tx.send(Cmd::Run(joined)).is_ok() {
+                        app.running = true;
+                    } else {
+                        // Channel closed — undo the commit (same rule as the
+                        // Submit send site) so no phantom turn is shown.
+                        app.settle_status_from_inflight();
+                    }
+                }
+                for cmd in held_cmds {
+                    app.begin_user_turn(&cmd);
+                    if cmd_tx.send(Cmd::Run(cmd)).is_ok() {
+                        app.running = true;
+                    } else {
+                        app.settle_status_from_inflight();
+                    }
+                }
+                dirty = true;
+            }
 
             // Check for window rotation after turn ends.
             {
@@ -824,6 +871,14 @@ pub async fn run_tui(
                 dirty = true;
             }
 
+            // Reconcile the steering mirror: what the engine drained at the
+            // last tool boundary is now the model's input, so it leaves the
+            // pending strip and lands in the transcript (one echo per message,
+            // at delivery — not at queue time).
+            if app.sync_steer_queue(agent.runtime().steering_snapshot()) {
+                dirty = true;
+            }
+
             // Detect a dead agent task. `agent_task` is only awaited at exit,
             // so a panic that escaped tool-level isolation would otherwise
             // leave the spinner turning forever with the user typing into a
@@ -1085,6 +1140,53 @@ pub async fn run_tui(
                                     // cancelled turn.
                                     app.clear_asks();
                                     while ask_rx.try_recv().is_ok() {}
+                                }
+                                Action::Steer(text) => {
+                                    if text.trim_start().starts_with('/') {
+                                        // A raw `/foo` steering message is just
+                                        // text to the model — hold the command
+                                        // and run it as its own turn at the end.
+                                        app.queued_cmds.push(text);
+                                        app.set_notice(
+                                            "Command queued - runs after the current turn",
+                                        );
+                                    } else {
+                                        agent.runtime().steer(text.clone());
+                                        app.queued_steer.push(text);
+                                        app.set_notice("Queued - delivered at the next step (Up takes it back)");
+                                    }
+                                    dirty = true;
+                                }
+                                Action::TakeBackQueued => {
+                                    // Undelivered steering messages return to
+                                    // the composer (queue order, above the
+                                    // draft). Delivered ones already echoed
+                                    // and are gone from the engine queue, so
+                                    // `take_steering` can never resurrect a
+                                    // message the model has seen.
+                                    let msgs = agent.runtime().take_steering();
+                                    app.take_back_into_composer(msgs);
+                                    dirty = true;
+                                }
+                                Action::ForceSend(text) => {
+                                    if !text.trim().is_empty() {
+                                        if text.trim_start().starts_with('/') {
+                                            app.queued_cmds.push(text);
+                                        } else {
+                                            agent.runtime().steer(text.clone());
+                                            app.queued_steer.push(text);
+                                        }
+                                    }
+                                    // Interrupt the turn; when it settles the
+                                    // idle-frame flush sends the queue right
+                                    // away (simplified `chat:sendNow`).
+                                    agent.cancel();
+                                    app.clear_approvals();
+                                    while approval_rx.try_recv().is_ok() {}
+                                    while canvas_prompts_rx.try_recv().is_ok() {}
+                                    app.clear_asks();
+                                    while ask_rx.try_recv().is_ok() {}
+                                    dirty = true;
                                 }
                                 Action::Quit => {
                                     agent.cancel();
@@ -1533,6 +1635,9 @@ async fn agent_loop(
         .await
         .unwrap_or_else(|| crate::agent::compose_system_prompt(&skill_resolver));
     let mut active_skills = load_active_skills(&session_ctx.session_dir);
+    // Mirror into the shared set the `skill` tool and catalog consult
+    // (single-injection guard, survey P4).
+    sync_active_set(skill_resolver.active(), &active_skills);
     if !active_skills.is_empty() {
         let prompt = append_active_skills(&bake_base, &active_skills);
         if let Err(e) = agent.set_system_prompt(&session, prompt).await {
@@ -1661,6 +1766,10 @@ async fn agent_loop(
                             } else {
                                 active_skills.push(entry);
                             }
+                            // Single-injection guard (survey P4): the `skill`
+                            // tool and catalog must see the name the moment its
+                            // body goes into the prompt.
+                            sync_active_set(skill_resolver.active(), &active_skills);
                             // Re-bake from the pristine build-time prompt
                             // (`bake_base`): append-only, so re-triggers stay
                             // idempotent and builder-injected sections
@@ -2055,6 +2164,7 @@ mod resume_digest_tests {
                 tool_call_id: "tc1".into(),
                 name: Some("read".into()),
                 content: "x".into(),
+                images: Vec::new(),
             },
             user("继续"),
             assistant("好的"),
@@ -2141,6 +2251,7 @@ mod model_command_tests {
             scene_tiers: None,
             update: Default::default(),
             ui: Default::default(),
+            code_exec: Default::default(),
         };
 
         // Create a mock provider for testing
@@ -2582,6 +2693,7 @@ mod replay_tests {
             tool_call_id: "tc1".into(),
             name: Some("bash".into()),
             content: "中".repeat(200), // 600 bytes — past the old cut
+            images: Vec::new(),
         }];
         replay_messages_to_transcript(&mut app, &[], &msgs);
         let preview = app

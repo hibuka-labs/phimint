@@ -29,7 +29,7 @@ use phi_agent::{
 };
 
 use phi_kernel_tools::context_rotation::{
-    HistoryStore, NotesStore, extract_ledger, read_thread_hint,
+    HistoryStore, NotesStore, extract_artifact_index, extract_ledger, read_thread_hint,
 };
 
 /// Global handle to the token-budget compactor for TUI access.
@@ -60,10 +60,29 @@ pub fn futility_braked() -> bool {
 }
 
 /// Store the compactor handle globally (called during agent build).
+///
+/// This mutates process-global state: in production there is exactly one
+/// agent per process, so the last install wins and is the only one. Tests
+/// build agents in parallel, so a test that installs a compactor and a test
+/// that reads the global must serialize on
+/// `global_compactor_test_lock` — otherwise the reader sees the writer's
+/// compactor (a different reset count) and fails at random.
 pub fn set_global_compactor(compactor: Arc<TokenBudgetCompactor>) {
     if let Ok(mut guard) = TOKEN_BUDGET_COMPACTOR.lock() {
         *guard = Some(compactor);
     }
+}
+
+/// Test-only lock serializing every test that installs or observes the
+/// process-global compactor handle.
+///
+/// A tokio mutex, because one of the two holders is an async test and a
+/// `std` guard must not be held across an await. The sync holder takes it
+/// with `blocking_lock`; the async holder awaits it.
+#[cfg(test)]
+pub(crate) fn global_compactor_test_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    &LOCK
 }
 
 /// Startup notice when the requested budget was clamped to the viability
@@ -202,7 +221,7 @@ impl ContextCompaction for TokenBudgetCompactor {
                 //    fallback nudge is advisory, this is the guarantee
                 //    (session 20260909_e7053736: 9/9 nudges ignored, 10/10
                 //    windows re-read the same files). Mirrored into notes
-                //    so `notes.list_files` is never empty at the minimum
+                //    so `notes_list_files` is never empty at the minimum
                 //    budget. Best effort on both I/O.
                 let ledger = extract_ledger(messages);
                 if let Some(text) = &ledger {
@@ -211,13 +230,17 @@ impl ContextCompaction for TokenBudgetCompactor {
                         tracing::warn!(error = %e, "failed to mirror activity ledger to notes");
                     }
                 }
-                // Ledger goes LAST in the slot — freshest, closest to the
-                // seed where attention is.
-                let thread_hint = match (thread_hint, ledger) {
-                    (Some(hint), Some(ledger)) => Some(format!("{hint}\n\n{ledger}")),
-                    (Some(hint), None) => Some(hint),
-                    (None, ledger) => ledger,
-                };
+                // 2c. Mechanical artifact index (M3c): what the outgoing
+                //    window spilled to the artifact store. The bodies travel
+                //    with the archive but stay fetchable (`obs.fetch('<id>')`)
+                //    — the index is their part in the fresh window.
+                let artifact_index = extract_artifact_index(messages);
+                // Slot order: hint, artifact index, ledger — the ledger goes
+                // LAST, freshest, closest to the seed where attention is.
+                let thread_hint = [thread_hint, artifact_index, ledger]
+                    .into_iter()
+                    .flatten()
+                    .reduce(|acc, part| format!("{acc}\n\n{part}"));
 
                 // 3. Assemble + commit the fresh window.
                 let new_messages =
@@ -550,7 +573,7 @@ mod tests {
             }
             _ => panic!("expected ledger message"),
         }
-        // Mirrored into notes — `notes.list_files` is never empty at the
+        // Mirrored into notes — `notes_list_files` is never empty at the
         // minimum budget.
         let mirrored = tmp
             .path()
@@ -591,6 +614,11 @@ mod tests {
 
     #[test]
     fn global_handle_reports_reset_count() {
+        // The global handle is process-wide: any other test that builds an
+        // agent with token-budget options installs its own compactor and
+        // would overwrite ours mid-test (the reader then sees that other
+        // compactor's reset count and the assertion fails at random).
+        let _guard = global_compactor_test_lock().blocking_lock();
         let tmp = TempDir::new().unwrap();
         let shell = Arc::new(shell_with(small_core(), &tmp));
         set_global_compactor(Arc::clone(&shell));

@@ -198,6 +198,7 @@ mod tests {
             scene_tiers: None,
             update: Default::default(),
             ui: Default::default(),
+            code_exec: Default::default(),
         }
     }
 

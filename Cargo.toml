@@ -1,6 +1,6 @@
 [package]
 name = "phimint"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2024"
 description = "phimint — a terminal AI coding agent built on phi-agent. Not just good at chat: it reads the code, changes it, compiles and tests until the job is done."
 license = "MIT"
@@ -14,6 +14,14 @@ exclude = ["CLAUDE.md", "CLAUDE.local.md"]
 name = "phimint"
 path = "src/main.rs"
 
+[features]
+# CodeAct engine wiring (M3 T10d 可禁用三层 ①): compile-time kill switch.
+# `--no-default-features` drops the engine from the binary entirely — no
+# codexec/phi-ns compiled, no code-cell registration points. On by default
+# (today's behavior); the runtime config switch is layer ③ on top.
+default = ["code-exec"]
+code-exec = ["phi-agent/code-exec", "dep:phi-ns", "dep:phi-ns-desktop"]
+
 [dependencies]
 # The framework (library) we build on. `shell` enables the local_shell tool;
 # `multi-agent` enables the spawn/send/wait/close sub-agent tools; `skill`
@@ -23,24 +31,30 @@ path = "src/main.rs"
 # everything else the product needs (llm_trait, create_provider, guard,
 # max_turns_nudge, registry snapshots, fan-in router) — no direct deps on
 # agent-base / agent-works / phi-kernel-tools / llm-unified.
-phi-agent = { version = "0.19.1", features = ["shell", "multi-agent", "skill", "memory", "plugin-wasm"] }
+phi-agent = { version = "0.20.0", features = ["shell", "multi-agent", "skill", "memory", "plugin-wasm"] }
 # Context rotation tools (notes, history, handoff) — the I/O layer.
-phi-kernel-tools = { version = "0.11.0", features = ["context", "shell"] }
+phi-kernel-tools = { version = "0.12.0", features = ["context", "shell"] }
 # Chat-style TUI components (lines/transcript/stream/markdown/completion/…),
 # extracted from src/ui/ — the product keeps only the shell (app/render/handlers).
 phi-tui = "0.3.0"
 # Language intelligence (lsp/lang/repomap/ripgrep/diagnostics cores), extracted
 # from src/lsp.rs + src/lang.rs + src/tools cores — the product keeps the Tool
 # shells. Features declared explicitly per the distillation plan.
-code-intel = { version = "0.1.0", default-features = false, features = ["lsp", "repomap"] }
+code-intel = { version = "0.1.1", default-features = false, features = ["lsp", "repomap"] }
 # Design canvas (visual design companion): process-local HTTP server, canvas
 # tools, click events. The product keeps the click mailbox / message synthesis
 # (M2) and the consent gate; this crate owns server + token + screens.
-phi-canvas = "0.1.0"
+phi-canvas = "0.1.1"
 # Browser automation (22 CDP tools, `browser` feature): the agent drives its own
 # Chrome so it can look at what it just showed the user — design-canvas
 # self-check and reference patches. Behind the feature because of headless_chrome.
-phi-tools = { version = "0.7.0", features = ["browser"] }
+phi-tools = { version = "0.8.0", features = ["browser"] }
+# Desktop capability pack (`desk.*`) on the code-exec engine. Assembly is the
+# host's job (sdk-assembly §9.3) — phi-agent never sees a capability pack;
+# phimint names them at its own engine assembly points (`src/desk.rs`).
+# `phi-ns` is here for the sidecar transport (`ProcessTransport`) the pack
+phi-ns = { version = "0.1.0", optional = true }
+phi-ns-desktop = { version = "0.1.0", optional = true }
 
 tokio = { version = "1", features = ["full"] }
 # CancellationToken for the interactive approval handler's `approve` signature.
@@ -78,7 +92,7 @@ arboard = "3"
 # session.log file (via log-core's LogCoreLayer) and per-turn event JSONL
 # (via phi_agent::save_turn_log).
 # phi-telemetry: per-turn token usage → session_metrics.json
-phi-telemetry = "0.7.3"
+phi-telemetry = "0.7.4"
 log-core = "0.1.4"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -94,5 +108,7 @@ libc = "0.2"
 tempfile = "3"
 # Streaming response construction for mock LLM (prompt guard tests / integration tests).
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
-
+# The capability vocabulary, for tests that declare a pack (the desk consent
+# posture and the browser face).
+phi-cap = { version = "0.1.0" }
 

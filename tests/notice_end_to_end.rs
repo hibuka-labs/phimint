@@ -89,7 +89,7 @@ impl LlmProvider for ScriptedProvider {
 }
 
 /// Build the real phimint agent stack around the mock LLM plus one temp skill
-/// (so turn 1 has a real tool to call and `run_has_tool_calls` becomes true).
+/// (so turn 1 has a real tool to call and `run_has_actions` becomes true).
 async fn build_agent(
     script: Vec<Vec<StreamChunk>>,
 ) -> (phi_agent::PhiAgent, SessionId, tempfile::TempDir) {
@@ -118,6 +118,7 @@ async fn build_agent(
         vec![tmp.path().join("skills")],
         None,
     )
+    .await
     .unwrap();
     let session = agent.create_session().await;
     (agent, session, tmp)
@@ -212,7 +213,7 @@ async fn judge_degradation_renders_red_line_end_to_end() {
     // ── UI side: the exact event the engine produced renders as the red line ──
     let mut app = App::new();
     // Mid-turn precondition — only then is "does not settle the turn" visible.
-    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallStarted {
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ActionStarted {
         session_id: SessionId::new(1),
         tool_name: "skill".to_string(),
         args_json: "{}".to_string(),

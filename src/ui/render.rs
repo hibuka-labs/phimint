@@ -10,7 +10,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph, Wrap},
 };
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::banner::{BannerStyle, ColorScheme, SpanSpec};
@@ -18,8 +18,9 @@ use crate::ui::app::{
     AgentStatus, App, CONTEXT_MENU_H, CONTEXT_MENU_W, FocusTarget, ResultTier, SubAgentStatus,
     context_menu_pos, fmt_k, is_writing_hint,
 };
-use crate::ui::task_panel::ThinkingPanelState;
+use crate::ui::task_panel::{TaskRow, ThinkingPanelState};
 use crate::ui::theme;
+use phi_kernel_tools::background_shell::BackgroundTaskStatus;
 use phi_tui::completer::{MentionCompleter, SlashCompleter};
 use phi_tui::layout::{Preview, folded_body, opens_block};
 use phi_tui::lines::{LineKind, ToolState};
@@ -74,8 +75,14 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Constraint::Length(1), // process status line (status + tip, Claude Code style)
     ];
     if has_task_panel {
-        let task_count = app.sub_agents.len();
+        let task_count = app.task_row_count();
         constraints.push(Constraint::Length(task_count as u16 + 2)); // task panel
+    }
+    // Queued-message strip: only while something is actually waiting (its
+    // rows are the preview that replaces the echo at delivery time).
+    let queued_rows = app.queued_strip_lines();
+    if !queued_rows.is_empty() {
+        constraints.push(Constraint::Length(queued_rows.len() as u16)); // queued strip
     }
     // The composer's own top/bottom rules are the separators around it —
     // no blank rows between the process band, the rules, and the mode line.
@@ -100,6 +107,10 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     idx += 1;
     if has_task_panel {
         render_task_panel(f, app, chunks[idx]);
+        idx += 1;
+    }
+    if !queued_rows.is_empty() {
+        render_queued_strip(f, app, chunks[idx], &queued_rows);
         idx += 1;
     }
     let composer_area = chunks[idx];
@@ -127,10 +138,23 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
     let height = area.height as usize;
 
-    // Choose which transcript to display based on focus
-    let focused_agent: Option<String> = match &app.task_panel.focus {
-        FocusTarget::TaskList(index) => app.sub_agents.keys().nth(*index).cloned(),
+    // Choose which transcript to display based on focus: a sub-agent row
+    // shows its transcript, a background row shows that task's live output
+    // tail (the inspection view), anything else the root transcript.
+    let focused_row: Option<TaskRow> = match &app.task_panel.focus {
+        FocusTarget::TaskList(index) => app.task_rows().get(*index).cloned(),
         FocusTarget::Input => None,
+    };
+    if let Some(TaskRow::Background(task_id)) = &focused_row {
+        // Auto-scrolling tail window, not a transcript: no selection, no
+        // viewport bookkeeping — `app.visual_map` is deliberately left at the
+        // last root frame so the scroll anchor survives the visit.
+        render_bg_tail(f, app, area, task_id);
+        return;
+    }
+    let focused_agent: Option<String> = match focused_row {
+        Some(TaskRow::SubAgent(id)) => Some(id),
+        _ => None,
     };
     let (transcript, is_sub_agent) = match &focused_agent {
         Some(id) => match app.sub_agent_transcripts.get(id) {
@@ -629,6 +653,25 @@ fn render_output(f: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
+/// Queued-message strip (above the composer): the pending steering messages
+/// and held commands, one row each. Dimmed chrome — the real echo happens in
+/// the transcript exactly once, at delivery (or at the turn-end flush). The
+/// rows themselves carry the `queued ->` / `queued after turn ->` prefixes
+/// (built by `App::queued_strip_lines`, which also bounds the row count).
+fn render_queued_strip(f: &mut Frame, app: &App, area: Rect, rows: &[String]) {
+    let scheme = app.scheme();
+    let lines: Vec<Line> = rows
+        .iter()
+        .map(|row| {
+            Line::from(Span::styled(
+                row.clone(),
+                Style::default().fg(theme::hint(scheme)),
+            ))
+        })
+        .collect();
+    f.render_widget(Paragraph::new(lines), area);
+}
+
 fn render_composer(f: &mut Frame, app: &App, area: Rect) {
     let inner_height = area.height.saturating_sub(2) as usize; // top+bottom rules
     let inner_width = area.width as usize; // no side borders (Claude Code style)
@@ -893,7 +936,8 @@ fn format_time(elapsed: std::time::Duration) -> String {
 /// Render the task panel showing sub-agents and their status.
 fn render_task_panel(f: &mut Frame, app: &App, area: Rect) {
     let scheme = app.scheme();
-    let total = app.sub_agents.len();
+    let rows = app.task_rows();
+    let total = rows.len();
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -907,10 +951,21 @@ fn render_task_panel(f: &mut Frame, app: &App, area: Rect) {
     // columns out of alignment), and the activity column takes whatever width
     // is left. Measuring and padding by char count instead pushes every later
     // column right for a CJK name (1 char = 2 columns) and breaks alignment.
-    let name_w = app
-        .sub_agents
-        .values()
-        .map(|s| UnicodeWidthStr::width(s.name.as_str()))
+    // Background rows label with their command (long), so they pin the cap.
+    let name_w = rows
+        .iter()
+        .map(|row| match row {
+            TaskRow::SubAgent(id) => app
+                .sub_agents
+                .get(id)
+                .map(|s| UnicodeWidthStr::width(s.name.as_str()))
+                .unwrap_or(0),
+            TaskRow::Background(id) => app
+                .background_tasks
+                .get(id)
+                .map(|t| UnicodeWidthStr::width(t.command.as_str()))
+                .unwrap_or(0),
+        })
         .max()
         .unwrap_or(0)
         .clamp(8, 16);
@@ -920,50 +975,9 @@ fn render_task_panel(f: &mut Frame, app: &App, area: Rect) {
     let act_w = (inner.width as usize).saturating_sub(fixed_w).min(30);
 
     let mut lines: Vec<Line> = Vec::new();
-    for (i, (_agent_id, state)) in app.sub_agents.iter().enumerate() {
+    for (i, row) in rows.iter().enumerate() {
         let is_selected = matches!(&app.task_panel.focus, FocusTarget::TaskList(idx) if *idx == i);
         let marker = if is_selected { ">" } else { " " };
-        let (status_icon, status_color) = match state.status {
-            SubAgentStatus::Running => ("*", Color::Cyan),
-            SubAgentStatus::Done => ("+", Color::Green),
-        };
-        let files = format_files(&state.files, 20);
-        // Done agents show their final runtime; only Running ones keep ticking.
-        let time = format_time(match state.completed_at {
-            Some(at) => at.duration_since(state.started_at),
-            None => state.started_at.elapsed(),
-        });
-        // Current activity = the latest tool event (> in flight, + finished).
-        // Kept to a tool name — the child's detail view has the full history.
-        // A Running agent whose tool feed has gone quiet switches to the
-        // `writing...` hint: it is generating prose/thought between tool
-        // calls (the long silent report-writing stretch has no tool events).
-        let activity = if act_w > 6 {
-            if is_writing_hint(state, Instant::now()) {
-                (
-                    elide("writing...", act_w, Elide::Head),
-                    theme::faint(scheme),
-                )
-            } else {
-                state
-                    .events
-                    .last()
-                    .map(|e| {
-                        let (mark, color) = if e.is_finished {
-                            ("+", theme::faint(scheme))
-                        } else {
-                            (">", Color::Reset)
-                        };
-                        (
-                            elide(&format!("{mark} {}", e.tool_name), act_w, Elide::Head),
-                            color,
-                        )
-                    })
-                    .unwrap_or((String::new(), Color::Reset))
-            }
-        } else {
-            (String::new(), Color::Reset)
-        };
         let bg_color = if is_selected {
             theme::selection_bg(scheme)
         } else {
@@ -972,38 +986,200 @@ fn render_task_panel(f: &mut Frame, app: &App, area: Rect) {
 
         // Every cell is elided to its column then padded OUT to it, in display
         // columns: `format!("{:<w$}")` pads by chars and would overshoot.
-        let spans = vec![
-            Span::styled(format!("{marker} "), Style::default().bg(bg_color)),
-            Span::styled(
-                format!("{status_icon} "),
-                Style::default().fg(status_color).bg(bg_color),
-            ),
-            Span::styled(
-                pad_cols(&elide(&state.name, name_w, Elide::Head), name_w),
-                Style::default().bg(bg_color),
-            ),
-            Span::styled(
-                pad_cols(&activity.0, act_w),
-                Style::default().fg(activity.1).bg(bg_color),
-            ),
-            Span::styled(
-                pad_cols(&files, files_w),
-                Style::default().fg(theme::faint(scheme)).bg(bg_color),
-            ),
-            Span::styled(
-                format!("│ {:>5}", time),
-                Style::default().fg(theme::faint(scheme)).bg(bg_color),
-            ),
-        ];
+        let spans = match row {
+            TaskRow::SubAgent(agent_id) => {
+                let Some(state) = app.sub_agents.get(agent_id) else {
+                    continue;
+                };
+                let (status_icon, status_color) = match state.status {
+                    SubAgentStatus::Running => ("*", Color::Cyan),
+                    SubAgentStatus::Done => ("+", Color::Green),
+                };
+                let files = format_files(&state.files, 20);
+                // Done agents show their final runtime; only Running ones keep ticking.
+                let time = format_time(match state.completed_at {
+                    Some(at) => at.duration_since(state.started_at),
+                    None => state.started_at.elapsed(),
+                });
+                // Current activity = the latest tool event (> in flight, + finished).
+                // Kept to a tool name — the child's detail view has the full history.
+                // A Running agent whose tool feed has gone quiet switches to the
+                // `writing...` hint: it is generating prose/thought between tool
+                // calls (the long silent report-writing stretch has no tool events).
+                let activity = if act_w > 6 {
+                    if is_writing_hint(state, Instant::now()) {
+                        (
+                            elide("writing...", act_w, Elide::Head),
+                            theme::faint(scheme),
+                        )
+                    } else {
+                        state
+                            .events
+                            .last()
+                            .map(|e| {
+                                let (mark, color) = if e.is_finished {
+                                    ("+", theme::faint(scheme))
+                                } else {
+                                    (">", Color::Reset)
+                                };
+                                (
+                                    elide(&format!("{mark} {}", e.tool_name), act_w, Elide::Head),
+                                    color,
+                                )
+                            })
+                            .unwrap_or((String::new(), Color::Reset))
+                    }
+                } else {
+                    (String::new(), Color::Reset)
+                };
+                vec![
+                    Span::styled(format!("{marker} "), Style::default().bg(bg_color)),
+                    Span::styled(
+                        format!("{status_icon} "),
+                        Style::default().fg(status_color).bg(bg_color),
+                    ),
+                    Span::styled(
+                        pad_cols(&elide(&state.name, name_w, Elide::Head), name_w),
+                        Style::default().bg(bg_color),
+                    ),
+                    Span::styled(
+                        pad_cols(&activity.0, act_w),
+                        Style::default().fg(activity.1).bg(bg_color),
+                    ),
+                    Span::styled(
+                        pad_cols(&files, files_w),
+                        Style::default().fg(theme::faint(scheme)).bg(bg_color),
+                    ),
+                    Span::styled(
+                        format!("│ {:>5}", time),
+                        Style::default().fg(theme::faint(scheme)).bg(bg_color),
+                    ),
+                ]
+            }
+            TaskRow::Background(task_id) => {
+                let Some(task) = app.background_tasks.get(task_id) else {
+                    continue;
+                };
+                let (status_icon, status_color) = bg_status_glyph(&task.status);
+                let time = format_time(match task.finished_at {
+                    Some(at) => at.duration_since(task.started_at),
+                    None => task.started_at.elapsed(),
+                });
+                // Deadline column: the fuse for bounded jobs, `daemon` for
+                // servers that run until they die.
+                let fuse = if task.is_indefinite() {
+                    "daemon".to_string()
+                } else {
+                    format!("t={}", format_time(Duration::from_millis(task.timeout_ms)))
+                };
+                let activity = (
+                    elide(bg_status_word(&task.status), act_w, Elide::Head),
+                    if task.status == BackgroundTaskStatus::Running {
+                        Color::Reset
+                    } else {
+                        theme::faint(scheme)
+                    },
+                );
+                vec![
+                    Span::styled(format!("{marker} "), Style::default().bg(bg_color)),
+                    Span::styled(
+                        format!("{status_icon} "),
+                        Style::default().fg(status_color).bg(bg_color),
+                    ),
+                    Span::styled(
+                        pad_cols(&elide(&task.command, name_w, Elide::Head), name_w),
+                        Style::default().bg(bg_color),
+                    ),
+                    Span::styled(
+                        pad_cols(&activity.0, act_w),
+                        Style::default().fg(activity.1).bg(bg_color),
+                    ),
+                    Span::styled(
+                        pad_cols(&fuse, files_w),
+                        Style::default().fg(theme::faint(scheme)).bg(bg_color),
+                    ),
+                    Span::styled(
+                        format!("│ {:>5}", time),
+                        Style::default().fg(theme::faint(scheme)).bg(bg_color),
+                    ),
+                ]
+            }
+        };
         lines.push(Line::from(spans));
     }
 
-    // Background shell tasks are NOT panel rows (2026-09-19): they render as
-    // transcript tool-call records (launch line carries `background: true`,
-    // completion via the bg-wake turn) plus the status-bar counter. The
-    // panel's only switchable views were ever the sub-agents.
-
     f.render_widget(Paragraph::new(lines), inner);
+}
+
+/// Status glyph + color for a background task row (shared by the panel row
+/// and the tail-view title). Shape reads the same as sub-agent rows:
+/// `*` running, `+` finished clean, `!` failed/timed out.
+fn bg_status_glyph(status: &BackgroundTaskStatus) -> (&'static str, Color) {
+    match status {
+        BackgroundTaskStatus::Running => ("*", Color::Cyan),
+        BackgroundTaskStatus::Done => ("+", Color::Green),
+        BackgroundTaskStatus::TimedOut => ("!", Color::Yellow),
+        BackgroundTaskStatus::Cancelled => ("-", Color::Yellow),
+        BackgroundTaskStatus::Error(_) => ("!", Color::Red),
+    }
+}
+
+/// One-word status for the activity column / tail title.
+fn bg_status_word(status: &BackgroundTaskStatus) -> &'static str {
+    match status {
+        BackgroundTaskStatus::Running => "running",
+        BackgroundTaskStatus::Done => "done",
+        BackgroundTaskStatus::TimedOut => "timeout",
+        BackgroundTaskStatus::Cancelled => "cancelled",
+        BackgroundTaskStatus::Error(_) => "error",
+    }
+}
+
+/// Inspection view for a focused background task row: the task's live output
+/// tail (last ≤2KB of stdout+stderr, refreshed per tick while running) in an
+/// auto-scrolling window — `tail -f` without leaving the TUI.
+fn render_bg_tail(f: &mut Frame, app: &App, area: Rect, task_id: &str) {
+    let scheme = app.scheme();
+    let dim = Style::default().fg(theme::faint(scheme));
+    let Some(entry) = app.background_tasks.get(task_id) else {
+        return;
+    };
+    let (glyph, color) = bg_status_glyph(&entry.status);
+    let elapsed = match entry.finished_at {
+        Some(at) => at.duration_since(entry.started_at),
+        None => entry.started_at.elapsed(),
+    };
+    let inner_w = area.width.saturating_sub(2).max(1) as usize;
+    let lines: Vec<String> = entry
+        .output_tail
+        .lines()
+        .flat_map(|l| wrap(l, inner_w))
+        .collect();
+    let title = Line::from(vec![
+        Span::styled(format!("{glyph} "), Style::default().fg(color)),
+        Span::styled(
+            elide(
+                &entry.command,
+                inner_w.saturating_sub(24).max(8),
+                Elide::Head,
+            ),
+            dim,
+        ),
+        Span::styled(
+            format!(" - {}", bg_status_word(&entry.status)),
+            Style::default().fg(color),
+        ),
+        Span::styled(format!(" - {}", format_time(elapsed)), dim),
+    ]);
+    f.render_widget(
+        phi_tui::tail_panel::TailPanel {
+            title,
+            lines: &lines,
+            line_style: Style::default().fg(theme::muted(scheme)),
+            border_style: dim,
+        },
+        area,
+    );
 }
 
 /// Rows a content line takes at `inner_w` columns once wrapped (display width).

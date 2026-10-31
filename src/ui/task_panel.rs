@@ -37,6 +37,15 @@ pub(crate) struct ThinkingPanelState {
     pub(crate) chars: usize,
 }
 
+/// One row of the combined task panel: sub-agents first (map order), then
+/// background shell tasks. `FocusTarget::TaskList(i)` indexes this order —
+/// every consumer (render, keyboard nav, focus clamping) must agree on it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TaskRow {
+    SubAgent(String),
+    Background(String),
+}
+
 impl App {
     /// Number of tracked sub-agents still `Running`.
     pub(crate) fn running_sub_agents(&self) -> usize {
@@ -148,14 +157,34 @@ impl App {
         }
     }
 
-    /// Whether the task panel should be shown: sub-agents only. Background
-    /// shell tasks render as transcript tool-call records (launch line with
-    /// `background: true`, completion via the bg-wake turn) plus the
-    /// status-bar counter — a static command string never earned a row, and
-    /// the rows weren't switchable views anyway (`render_output` only
-    /// indexes `sub_agents`).
+    /// The combined panel row order: sub-agents (map order) first, then
+    /// background shell tasks. Built fresh per call — the panel is a handful
+    /// of rows, and a shared list would be one more thing to keep in sync.
+    pub(crate) fn task_rows(&self) -> Vec<TaskRow> {
+        self.sub_agents
+            .keys()
+            .map(|k| TaskRow::SubAgent(k.clone()))
+            .chain(
+                self.background_tasks
+                    .keys()
+                    .map(|k| TaskRow::Background(k.clone())),
+            )
+            .collect()
+    }
+
+    /// Row count of the combined panel (`FocusTarget::TaskList` bounds).
+    pub(crate) fn task_row_count(&self) -> usize {
+        self.sub_agents.len() + self.background_tasks.len()
+    }
+
+    /// Whether the task panel should be shown: anything worth a switchable
+    /// row — sub-agents and background shell tasks. The transcript still
+    /// carries each bg task's launch/completion records and the status bar
+    /// its counter; the panel is where the user *inspects* one (live output
+    /// tail), which is what the incident asked for ("cannot see what the
+    /// background work is doing").
     pub fn should_show_task_panel(&self) -> bool {
-        !self.sub_agents.is_empty()
+        !self.sub_agents.is_empty() || !self.background_tasks.is_empty()
     }
 
     /// Poll the background task registry for status updates (called every tick).
@@ -240,6 +269,15 @@ impl App {
                 // while `Waiting` the status-bar counts must follow, and the
                 // last one flipping to terminal is what arms the bg wake.
                 self.refresh_waiting_count();
+            } else if task.status == BackgroundTaskStatus::Running {
+                // Live tail while running: the row's inspection view shows
+                // output as it grows. The terminal-state capture above is the
+                // final one. Only dirty the frame when the tail moved.
+                let tail = snap.output_tail(MAX_TAIL_PER_TASK);
+                if tail != task.output_tail {
+                    task.output_tail = tail;
+                    changed = true;
+                }
             }
             if is_new {
                 changed = true;
@@ -387,8 +425,9 @@ impl App {
         }
 
         // Reset focus if it's now out of bounds. The panel lists sub-agents
-        // only — background tasks are not focusable rows.
-        let total = self.sub_agents.len();
+        // and background rows (combined `task_row_count`); a stale index
+        // clamps to the new last row, or back to the input when empty.
+        let total = self.task_row_count();
         if let FocusTarget::TaskList(index) = &self.task_panel.focus
             && *index >= total
         {
@@ -524,7 +563,11 @@ impl App {
                 })
             }
             FocusTarget::TaskList(index) => {
-                let id = self.sub_agents.keys().nth(*index).cloned()?;
+                // Background rows have no thought stream — only a sub-agent
+                // row can be the focused "thinking" subject.
+                let TaskRow::SubAgent(id) = self.task_rows().get(*index)?.clone() else {
+                    return None;
+                };
                 let stream = self.child_streams.get(&id)?;
                 let (lines, kind) = stream.tail_lines()?;
                 if kind != LineKind::Thought {

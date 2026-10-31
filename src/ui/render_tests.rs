@@ -688,11 +688,11 @@ fn snapshot_omits_strip_when_no_sub_agents() {
 }
 
 #[test]
-fn task_panel_lists_only_sub_agents() {
-    // Panel discipline (2026-09-19): background shell tasks stay out of the
-    // task panel — they live as transcript tool-call records + the status-bar
-    // counter. A running bg task next to a sub-agent must not add a row, a
-    // count, or width to the panel; and a bg-only app must show no panel.
+fn task_panel_lists_background_tasks_as_rows() {
+    // Panel policy (2026-10-29): background shell tasks are rows next to
+    // sub-agents — command summary, status, deadline — and selecting one
+    // opens its live output tail. They still live as transcript tool-call
+    // records + the status-bar counter; the panel is the inspection surface.
     let mut app = App::new();
     app.sub_agents.insert(
         "root/a".to_string(),
@@ -723,15 +723,20 @@ fn task_panel_lists_only_sub_agents() {
     assert!(app.should_show_task_panel(), "sub-agent opens the panel");
     let text = snapshot_text(&mut app, 100, 40);
     assert!(
-        text.contains("Tasks (1)"),
-        "panel counts sub-agents only:\n{text}"
+        text.contains("Tasks (2)"),
+        "panel counts sub-agents and bg rows:\n{text}"
+    );
+    assert!(text.contains("* a"), "sub-agent row missing:\n{text}");
+    assert!(
+        text.contains("cargo test"),
+        "bg row shows the command summary:\n{text}"
     );
     assert!(
-        !text.contains("bg_aaaa1111"),
-        "bg task must not appear in the panel:\n{text}"
+        text.contains("running"),
+        "bg row shows the status word:\n{text}"
     );
 
-    // Bg-only: no panel at all (transcript + status bar carry the facts).
+    // Bg-only: the panel opens on the bg row alone.
     let mut app = App::new();
     app.background_tasks.insert(
         "bg_aaaa1111".to_string(),
@@ -748,8 +753,76 @@ fn task_panel_lists_only_sub_agents() {
         },
     );
     assert!(
-        !app.should_show_task_panel(),
-        "bg task alone must not open the panel"
+        app.should_show_task_panel(),
+        "bg task alone opens the panel (it is a row now)"
+    );
+    let text = snapshot_text(&mut app, 100, 40);
+    assert!(
+        text.contains("Tasks (1)"),
+        "bg-only panel has one row:\n{text}"
+    );
+}
+
+#[test]
+fn focused_background_row_shows_the_live_tail() {
+    let mut app = App::new();
+    app.background_tasks.insert(
+        "bg_aaaa1111".to_string(),
+        BackgroundTaskEntry {
+            id: "bg_aaaa1111".to_string(),
+            command: "cargo test".to_string(),
+            timeout_ms: 120_000,
+            status: BackgroundTaskStatus::Running,
+            started_at: std::time::Instant::now(),
+            finished_at: None,
+            reported: false,
+            output_tail: "hello from the build\nstill compiling".to_string(),
+            consumed: false,
+        },
+    );
+    app.push_system("root transcript text");
+    app.task_panel.focus = FocusTarget::TaskList(0);
+    let text = snapshot_text(&mut app, 100, 40);
+    assert!(
+        text.contains("hello from the build"),
+        "live tail missing:\n{text}"
+    );
+    assert!(
+        text.contains("still compiling"),
+        "tail shows later lines:\n{text}"
+    );
+    assert!(
+        !text.contains("root transcript text"),
+        "the tail view replaces the root transcript:\n{text}"
+    );
+    assert!(
+        text.contains("cargo test"),
+        "the tail window title names the task:\n{text}"
+    );
+}
+
+#[test]
+fn queued_strip_renders_above_the_composer() {
+    let mut app = App::new();
+    app.running = true;
+    app.queued_steer.push("two words queued msg".to_string());
+    app.queued_cmds.push("/review".to_string());
+    let text = snapshot_text(&mut app, 100, 40);
+    assert!(
+        text.contains("queued -> two words queued msg"),
+        "queued message strip missing:\n{text}"
+    );
+    assert!(
+        text.contains("queued after turn -> /review"),
+        "held command row missing:\n{text}"
+    );
+
+    // Nothing queued: the strip takes no rows at all.
+    let mut app = App::new();
+    let text = snapshot_text(&mut app, 100, 40);
+    assert!(
+        !text.contains("queued ->"),
+        "empty queue renders no strip:\n{text}"
     );
 }
 
@@ -902,7 +975,7 @@ fn snapshot_shows_diff_block() {
             { "old_text": "fn main() {\n    println!(\"hello\");\n}", "new_text": "fn main() {\n    println!(\"world\");\n}" }
         ]
     });
-    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallStarted {
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ActionStarted {
         session_id: SessionId::new(1),
         tool_name: "edit_file".to_string(),
         args_json: args.to_string(),
@@ -995,14 +1068,14 @@ fn call_and_its_folded_result_are_one_block() {
 
 fn app_with_multi_row_result() -> App {
     let mut app = App::new();
-    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallStarted {
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ActionStarted {
         session_id: SessionId::new(1),
         tool_name: "search_files".to_string(),
         args_json: serde_json::json!({"pattern": "TODO"}).to_string(),
         agent_id: None,
         trace_id: None,
     }));
-    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallFinished {
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ActionFinished {
         session_id: SessionId::new(1),
         tool_name: "search_files".to_string(),
         summary: "head line\nalpha\nbeta\ngamma".to_string(),
@@ -1080,7 +1153,7 @@ fn tool_state_glyph_reflects_call_state() {
     // The `*` in `text` is a marker slot, not chrome: the renderer substitutes
     // the state glyph, so a settled call is legible without opening anything.
     let mut app = App::new();
-    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallStarted {
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ActionStarted {
         session_id: SessionId::new(1),
         tool_name: "search_files".to_string(),
         args_json: serde_json::json!({"pattern": "TODO"}).to_string(),
@@ -1097,7 +1170,7 @@ fn tool_state_glyph_reflects_call_state() {
         "marker slot leaked into display: {row:?}"
     );
 
-    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallFinished {
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ActionFinished {
         session_id: SessionId::new(1),
         tool_name: "search_files".to_string(),
         summary: "1 hit".to_string(),
@@ -1116,14 +1189,14 @@ fn tool_state_glyph_reflects_call_state() {
         "done glyph missing: {row:?}"
     );
 
-    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallStarted {
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ActionStarted {
         session_id: SessionId::new(1),
         tool_name: "execute_command".to_string(),
         args_json: serde_json::json!({"command": "rm -rf /"}).to_string(),
         agent_id: None,
         trace_id: None,
     }));
-    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallFinished {
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ActionFinished {
         session_id: SessionId::new(1),
         tool_name: "execute_command".to_string(),
         summary: String::new(),
@@ -1155,7 +1228,7 @@ fn edit_diff_never_folds_at_any_tier() {
             }
         ]
     });
-    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallStarted {
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ActionStarted {
         session_id: SessionId::new(1),
         tool_name: "edit_file".to_string(),
         args_json: args.to_string(),
@@ -1191,7 +1264,7 @@ fn write_create_rides_the_ladder_but_keeps_the_content() {
         "path": "src/new.rs",
         "content": "fn hello() {\n    println!(\"hi\");\n}\n"
     });
-    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallStarted {
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ActionStarted {
         session_id: SessionId::new(1),
         tool_name: "write_file".to_string(),
         args_json: args.to_string(),
@@ -1233,14 +1306,14 @@ fn rendered_chrome_stays_cjk_width_safe() {
     let mut app = App::new();
     // Drive the real event pipeline so production format strings are exercised.
     let args = serde_json::json!({"path": "src/main.rs"});
-    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallStarted {
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ActionStarted {
         session_id: SessionId::new(1),
         tool_name: "read_file".to_string(),
         args_json: args.to_string(),
         agent_id: None,
         trace_id: None,
     }));
-    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ToolCallFinished {
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::ActionFinished {
         session_id: SessionId::new(1),
         tool_name: "read_file".to_string(),
         summary: "10 lines".to_string(),
@@ -2535,7 +2608,7 @@ fn reel_thought(text: &str) -> RuntimeEvent {
 }
 
 fn reel_tool_started(name: &str, args: &str) -> RuntimeEvent {
-    RuntimeEvent::ToolCallStarted {
+    RuntimeEvent::ActionStarted {
         session_id: SessionId::new(1),
         tool_name: name.to_string(),
         args_json: args.to_string(),
@@ -2545,7 +2618,7 @@ fn reel_tool_started(name: &str, args: &str) -> RuntimeEvent {
 }
 
 fn reel_tool_finished(name: &str, summary: &str) -> RuntimeEvent {
-    RuntimeEvent::ToolCallFinished {
+    RuntimeEvent::ActionFinished {
         session_id: SessionId::new(1),
         tool_name: name.to_string(),
         summary: summary.to_string(),

@@ -3,7 +3,7 @@
 //! Handles `RuntimeEvent` from the agent, updating the application state
 //! accordingly. This includes:
 //! - Text streaming (TextDelta, ThoughtDelta)
-//! - Tool calls (ToolCallStarted, ToolCallFinished)
+//! - Tool calls (ActionStarted, ActionFinished)
 //! - Plan updates (PlanUpdated)
 //! - Approval requests (AwaitingApproval)
 //! - Run lifecycle (RunFinished, RunCancelled)
@@ -137,8 +137,8 @@ fn path_label(path: &str) -> String {
 /// carries information when it is `true`.
 const FALSE_DEFAULT_FLAGS: &[(&str, &str)] = &[
     ("execute_command", "background"),
-    ("history.list_items", "recent_first"),
-    ("history.list_windows", "recent_first"),
+    ("history_list_items", "recent_first"),
+    ("history_list_windows", "recent_first"),
     ("list_files", "recursive"),
     ("task_output", "wait"),
     ("write_file", "overwrite"),
@@ -148,16 +148,16 @@ const FALSE_DEFAULT_FLAGS: &[(&str, &str)] = &[
 /// `execute_command.timeout_ms` is conditional on `background` and lives in
 /// [`is_default_noise`].
 const DEFAULT_NUMBERS: &[(&str, &str, u64)] = &[
-    ("history.list_items", "limit", 50),
-    ("history.list_windows", "limit", 20),
-    ("history.read_item", "limit_chars", 3_000),
-    ("history.read_item", "offset_chars", 0),
-    ("history.search_contents", "limit", 10),
+    ("history_list_items", "limit", 50),
+    ("history_list_windows", "limit", 20),
+    ("history_read_item", "limit_chars", 3_000),
+    ("history_read_item", "offset_chars", 0),
+    ("history_search_contents", "limit", 10),
     ("list_files", "limit", 500),
-    ("notes.list_files", "max_results", 50),
-    ("notes.read_file", "start_line", 1),
-    ("notes.search_contents", "max_files", 20),
-    ("notes.search_contents", "max_matches", 5),
+    ("notes_list_files", "max_results", 50),
+    ("notes_read_file", "start_line", 1),
+    ("notes_search_contents", "max_files", 20),
+    ("notes_search_contents", "max_matches", 5),
     ("read_file", "limit", 2_000),
     ("search_content", "max_results", 20),
     ("task_output", "timeout_ms", 120_000),
@@ -500,7 +500,7 @@ fn settle_tool_call(
 
     // Overwrite is a transformation, so it earns a diff. The tool reports
     // `write_mode` + `old_content`; the new content is what we staged on the
-    // line at `ToolCallStarted`.
+    // line at `ActionStarted`.
     let Some(det) = details else { return adjacent };
     if det.get("write_mode").and_then(|v| v.as_str()) != Some("overwrite") {
         return adjacent;
@@ -634,7 +634,7 @@ impl App {
                 }
                 self.note_activity(agent_id.as_deref(), Phase::Thinking);
             }
-            RuntimeEvent::ToolCallStarted {
+            RuntimeEvent::ActionStarted {
                 tool_name,
                 args_json,
                 agent_id,
@@ -659,7 +659,7 @@ impl App {
                     self.tool_drafts.clear();
                 }
                 // Tools render inline in the transcript (Claude Code style): an
-                // invocation line now, a result line on `ToolCallFinished`.
+                // invocation line now, a result line on `ActionFinished`.
                 self.track_agent(agent_id.as_deref());
                 let prefix = agent_prefix(agent_id.as_deref());
                 // Update SubAgentState events
@@ -717,7 +717,7 @@ impl App {
                 }
                 self.note_activity(agent_id.as_deref(), Phase::ToolCall { tool: tool_name });
             }
-            RuntimeEvent::ToolCallFinished {
+            RuntimeEvent::ActionFinished {
                 tool_name,
                 summary,
                 denied,
@@ -1160,7 +1160,7 @@ impl App {
             // instead of freezing on "streaming..." (session
             // 20261006_9264ba3e: ~25 s invisible while four spawn_agent
             // tasks streamed in).
-            RuntimeEvent::ToolCallDraft {
+            RuntimeEvent::ActionDraft {
                 index,
                 name,
                 args_len,

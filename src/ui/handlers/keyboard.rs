@@ -282,11 +282,41 @@ impl App {
                 }
                 None
             }
+            Enter if ctrl => {
+                // Ctrl+Enter: force-send (simplified `chat:sendNow`). Queue
+                // the draft and interrupt the turn so the queue goes out right
+                // away (the terminal flush delivers it). With nothing to send
+                // it is a no-op — never an accidental submit.
+                if self.composer.is_empty() {
+                    if self.running
+                        && (!self.queued_steer.is_empty() || !self.queued_cmds.is_empty())
+                    {
+                        Some(Action::ForceSend(String::new()))
+                    } else {
+                        None
+                    }
+                } else {
+                    let text = self.composer.text();
+                    self.composer.clear();
+                    Some(Action::ForceSend(text))
+                }
+            }
             Enter => {
                 if shift {
                     self.composer.insert_char('\n');
                     None
-                } else if !self.running && !self.composer.is_empty() {
+                } else if self.running {
+                    // Never a silent drop: while the turn runs, Enter queues
+                    // the message (Steer → delivered at the next tool
+                    // boundary). An empty composer queues nothing.
+                    if self.composer.is_empty() {
+                        None
+                    } else {
+                        let text = self.composer.text();
+                        self.composer.clear();
+                        Some(Action::Steer(text))
+                    }
+                } else if !self.composer.is_empty() {
                     let text = self.composer.text();
                     self.composer.clear();
                     // Deliberately no turn state here. The echoed user message,
@@ -321,6 +351,13 @@ impl App {
                 None
             }
             Up => {
+                // Take back queued messages (Claude Code's "Up from the first
+                // line"): undelivered steering messages return to the input
+                // box, ahead of the current draft. Only messages — a held
+                // command stays queued and runs at the turn end as designed.
+                if self.composer.cursor().0 == 0 && !self.queued_steer.is_empty() {
+                    return Some(Action::TakeBackQueued);
+                }
                 // Handle task panel navigation
                 if self.should_show_task_panel() {
                     match &self.task_panel.focus {
@@ -331,9 +368,10 @@ impl App {
                             return None;
                         }
                         FocusTarget::Input => {
-                            // Move focus to task list (select last item). The
-                            // panel lists sub-agents only.
-                            let total = self.sub_agents.len();
+                            // Move focus to the task list (select last row).
+                            // Rows are the combined model: sub-agents then
+                            // background shell tasks.
+                            let total = self.task_row_count();
                             if total > 0 {
                                 self.task_panel.focus = FocusTarget::TaskList(total - 1);
                                 return None;
@@ -349,8 +387,8 @@ impl App {
                 if self.should_show_task_panel() {
                     match &self.task_panel.focus {
                         FocusTarget::TaskList(index) => {
-                            // The panel lists sub-agents only.
-                            let total = self.sub_agents.len();
+                            // Combined rows: sub-agents then background tasks.
+                            let total = self.task_row_count();
                             if *index + 1 < total {
                                 self.task_panel.focus = FocusTarget::TaskList(index + 1);
                             } else {

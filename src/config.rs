@@ -140,6 +140,52 @@ pub struct ModelConfig {
     /// UI configuration (optional, defaults apply if absent).
     #[serde(default)]
     pub ui: UiConfig,
+
+    /// CodeAct engine wiring (optional, defaults apply if absent — `mode`
+    /// defaults to `tool`, today's shipped behavior).
+    #[serde(default)]
+    pub code_exec: CodeExecConfig,
+}
+
+/// `code_exec` — the runtime switch for the code road (M3 T10d, disable
+/// layer ③ on top of the `code-exec` compile feature).
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct CodeExecConfig {
+    /// Which road code work takes. Absent → [`CodeExecMode::Tool`].
+    #[serde(default)]
+    pub mode: CodeExecMode,
+}
+
+/// `code_exec.mode` — which road code work takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum CodeExecMode {
+    /// The `code_cell` tool on the tool-call road (shipped M2 behavior).
+    #[default]
+    Tool,
+    /// The CodeAct action backend on text turns (M3 road): a code step is
+    /// the model's action itself, not a tool call.
+    Act,
+    /// No code road: `code_cell` is not registered and text turns never
+    /// reach a code backend.
+    Off,
+}
+
+impl CodeExecMode {
+    /// The road this binary can actually deliver (disable layer ②): without
+    /// the `code-exec` compile feature there is no engine at all, so every
+    /// mode resolves to [`CodeExecMode::Off`] — prompt and assembly agree.
+    #[cfg(not(feature = "code-exec"))]
+    pub fn resolved(self) -> Self {
+        let _ = self;
+        CodeExecMode::Off
+    }
+
+    /// With the engine compiled in, the config says what it says.
+    #[cfg(feature = "code-exec")]
+    pub fn resolved(self) -> Self {
+        self
+    }
 }
 
 /// UI configuration: the completion popup band, the tips line, and the exit
@@ -602,6 +648,7 @@ mod tests {
             scene_tiers: None,
             update: UpdateConfig::default(),
             ui: Default::default(),
+            code_exec: Default::default(),
         };
         assert!(config.validate().is_err());
     }
@@ -677,6 +724,39 @@ mod tests {
             err.to_string()
                 .contains("ui.popup.height must be at least 1"),
             "unhelpful error: {err}"
+        );
+    }
+
+    // ── code_exec.mode (M3 T10d runtime switch) ──
+
+    /// Absent `code_exec` = `tool` — a config that predates the switch keeps
+    /// today's shipped behavior exactly.
+    #[test]
+    fn code_exec_absent_defaults_to_tool() {
+        let json = r#"{"main": "gpt-5.4-mini"}"#;
+        let config: ModelConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.code_exec.mode, CodeExecMode::Tool);
+    }
+
+    #[test]
+    fn code_exec_mode_parses_all_three_roads() {
+        for (mode, expected) in [
+            ("tool", CodeExecMode::Tool),
+            ("act", CodeExecMode::Act),
+            ("off", CodeExecMode::Off),
+        ] {
+            let json = format!(r#"{{"main": "m", "code_exec": {{"mode": "{mode}"}}}}"#);
+            let config: ModelConfig = serde_json::from_str(&json).unwrap();
+            assert_eq!(config.code_exec.mode, expected, "mode = {mode:?}");
+        }
+    }
+
+    #[test]
+    fn code_exec_mode_rejects_an_unknown_road() {
+        let json = r#"{"main": "m", "code_exec": {"mode": "banana"}}"#;
+        assert!(
+            serde_json::from_str::<ModelConfig>(json).is_err(),
+            "an unknown mode must fail loud at parse, not fall through"
         );
     }
 }

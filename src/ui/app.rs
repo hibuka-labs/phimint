@@ -119,10 +119,11 @@ pub struct BackgroundTaskEntry {
     /// the agent at most once — a later wake (new tasks spawned after the
     /// report turn) lists only the not-yet-reported ones.
     pub reported: bool,
-    /// Last ≤2KB of stdout+stderr, captured once when the terminal state is
-    /// first observed. The wake is self-sufficient with it: even if the
-    /// registry entry is later GC'd (consume-based), the agent can still
-    /// report from this tail.
+    /// Last ≤2KB of stdout+stderr: live while the task runs (refreshed each
+    /// reconcile tick — the row's inspection view tails it), then captured
+    /// final at the terminal state. The wake is self-sufficient with it: even
+    /// if the registry entry is later GC'd (consume-based), the agent can
+    /// still report from this tail.
     pub output_tail: String,
     /// Whether `task_output` already returned this task's terminal output.
     /// Consumed tasks' registry entries are GC-eligible immediately; the wake
@@ -269,6 +270,19 @@ pub enum Action {
     /// The user's own consent — launches without the `y` gate; after a failure
     /// it rebinds a fresh server first.
     CanvasReopen,
+    /// Queue the composer text for the running turn (Enter while running),
+    /// never a silent drop. Plain text goes into the engine's steering queue
+    /// and reaches the model at the next tool boundary; a `/` command cannot
+    /// steer (a raw `/foo` user message is just text to the model) so it waits
+    /// in [`App::queued_cmds`] and runs as its own turn after this one settles.
+    Steer(String),
+    /// Take the not-yet-delivered steering messages back into the composer
+    /// (Up from the first line while messages are queued).
+    TakeBackQueued,
+    /// Queue the composer text like [`Action::Steer`], then interrupt the
+    /// running turn so the queued messages go out right away (Ctrl+Enter).
+    /// With nothing running this is just a submit.
+    ForceSend(String),
 }
 
 /// An event delivered from the agent task to the TUI.
@@ -329,7 +343,18 @@ pub struct App {
     /// (background wake / child fan-in) included — and cleared only by
     /// `settle_after_turn` (i.e. exactly one TurnDone/TurnError per
     /// turn), so a late engine event can never clear the next turn's flag.
+    /// While set, Enter queues a message for the turn instead of submitting
+    /// (see [`Action::Steer`]).
     pub running: bool,
+    /// Steering messages queued while a turn runs (Enter), FIFO. The engine's
+    /// steering queue is the source of truth — this mirror is refreshed from
+    /// `AgentRuntime::steering_snapshot` by `sync_steer_queue` every tick and
+    /// lists exactly what has not yet been delivered at a tool boundary.
+    pub queued_steer: Vec<String>,
+    /// Slash commands queued while a turn runs. They cannot ride the steering
+    /// queue (the model would read `/review` as plain text), so they wait here
+    /// and run as their own turns in order after the current one settles.
+    pub queued_cmds: Vec<String>,
     /// Scrollable output viewport (offset + follow-bottom + rendered size).
     pub viewport: Viewport,
     /// Pending approval requests (front = the popup currently shown).
@@ -410,8 +435,8 @@ pub struct App {
     /// A turn's tool calls only materialize once the whole stream drains, so
     /// during a long argument dump (a `spawn_agent` task brief can run past
     /// 3K chars) this map is the only liveness signal — see
-    /// `RuntimeEvent::ToolCallDraft` and `draft_status_text`. Cleared when the
-    /// calls materialize (root `ToolCallStarted`) or the turn settles.
+    /// `RuntimeEvent::ActionDraft` and `draft_status_text`. Cleared when the
+    /// calls materialize (root `ActionStarted`) or the turn settles.
     pub(crate) tool_drafts: HashMap<usize, (String, usize)>,
     /// Transient status-bar notice (e.g. "📋 copied …"), cleared on the next key.
     pub(crate) notice: Option<String>,
@@ -500,6 +525,8 @@ impl App {
             composer: Composer::new(),
             status: AgentStatus::Idle,
             running: false,
+            queued_steer: Vec::new(),
+            queued_cmds: Vec::new(),
             viewport: Viewport::new(),
             approval_queue: VecDeque::new(),
             ask_queue: VecDeque::new(),
@@ -625,6 +652,82 @@ impl App {
     /// show it). `❯` on the first line, indented continuations after.
     pub fn push_user(&mut self, text: &str) {
         self.transcript.push_user(text);
+    }
+
+    /// Reconcile the pending-steering mirror with the engine's queue and echo
+    /// what the turn just delivered. `snapshot` is the queue's current FIFO
+    /// contents; the loop drains from the front and [`Action::Steer`] appends
+    /// to the back, so the mirror minus its tail is exactly what arrived at the
+    /// last tool boundary — the model is about to see those, so the transcript
+    /// must show them now (gray-until-started is the strip's job, not a second
+    /// echo).
+    ///
+    /// Returns `true` when anything changed (caller sets `dirty`).
+    pub(crate) fn sync_steer_queue(&mut self, snapshot: Vec<String>) -> bool {
+        let delivered = self.queued_steer.len().saturating_sub(snapshot.len());
+        let mut changed = false;
+        let delivered_msgs: Vec<String> = self.queued_steer.drain(..delivered).collect();
+        for msg in &delivered_msgs {
+            self.push_user(msg);
+            changed = true;
+        }
+        if self.queued_steer != snapshot {
+            self.queued_steer = snapshot;
+            changed = true;
+        }
+        changed
+    }
+
+    /// Put taken-back steering messages into the composer: they land above the
+    /// current draft in queue order, one per line, so a re-submit sends them
+    /// as one message again. Nothing was echoed yet (take-back only ever
+    /// touches undelivered messages), so the transcript needs no edit.
+    pub(crate) fn take_back_into_composer(&mut self, msgs: Vec<String>) {
+        if msgs.is_empty() {
+            return;
+        }
+        let existing = self.composer.text();
+        self.composer.clear();
+        let mut restored = msgs.join("\n");
+        if !existing.is_empty() {
+            restored.push('\n');
+            restored.push_str(&existing);
+        }
+        self.composer.insert_str(&restored);
+        self.queued_steer.clear();
+    }
+
+    /// Rows for the queued strip above the composer: one short line per
+    /// pending item (steering messages first, then held commands), capped so a
+    /// queue burst can never push the composer off screen. Chrome stays
+    /// CJK-width-safe: ASCII arrows and `elide`'s ASCII dots (width guard).
+    pub(crate) fn queued_strip_lines(&self) -> Vec<String> {
+        const MAX_ROWS: usize = 3;
+        const MAX_COLS: usize = 60;
+        let one_line = |s: &String| {
+            let head = s.lines().next().unwrap_or("");
+            let mut out = phi_tui::wrap::elide(head, MAX_COLS, phi_tui::wrap::Elide::Head);
+            if s.lines().count() > 1 {
+                out.push_str("...");
+            }
+            out
+        };
+        let mut rows: Vec<String> = self
+            .queued_steer
+            .iter()
+            .map(|m| format!(" queued -> {}", one_line(m)))
+            .collect();
+        rows.extend(
+            self.queued_cmds
+                .iter()
+                .map(|c| format!(" queued after turn -> {}", one_line(c))),
+        );
+        if rows.len() > MAX_ROWS {
+            let extra = rows.len() - MAX_ROWS + 1;
+            rows.truncate(MAX_ROWS - 1);
+            rows.push(format!(" ... +{extra} more queued"));
+        }
+        rows
     }
 
     // ── Event handling ────────────────────────────────────────────────────

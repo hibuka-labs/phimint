@@ -130,6 +130,7 @@ async fn build_with_skills(
         vec![tmp.path().join("skills")],
         None,
     )
+    .await
     .unwrap();
     let session = agent.create_session().await;
     (provider, agent, session, tmp)
