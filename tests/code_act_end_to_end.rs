@@ -243,10 +243,9 @@ async fn the_model_acts_in_code_and_the_session_survives_between_steps() {
     );
 
     // The menu is the other half of the swap: no `code_cell` tool on this
-    // road — code is the action — and the file triad rides the same road
-    // (file_face), so only the surgical/grep-shaped file tools stay.
-    // D13 named exception (file-face cut, 2026-10-29): the pre-cut assertion
-    // was `menu.contains("\"write_file\"")` ("ordinary tools must stay").
+    // road — code is the action — while both file vehicles ride it
+    // (file_face, 2026-11-01: the triad is the single-file path, code steps
+    // are the chain path, and the prompt teaches the dispatch rule).
     let menu = provider.menu_text();
     assert!(
         !menu.contains("\"code_cell\""),
@@ -254,8 +253,8 @@ async fn the_model_acts_in_code_and_the_session_survives_between_steps() {
     );
     for name in ["\"read_file\"", "\"list_files\"", "\"write_file\""] {
         assert!(
-            !menu.contains(name),
-            "the file triad must not ride the act road's menu ({name}):\n{menu}"
+            menu.contains(name),
+            "the file triad must ride the act road's menu ({name}):\n{menu}"
         );
     }
     assert!(
@@ -418,12 +417,13 @@ async fn the_file_chain_lands_whole_in_one_step_with_no_code_cell_in_the_menu() 
         !menu.contains("\"code_cell\""),
         "判别门: the menu must not carry code_cell:\n{menu}"
     );
-    // The whole chain rides code, so the file triad is off this menu too
-    // (file_face) — nothing on the wire offers to redo it in tool steps.
+    // The triad rides this menu too (file_face, 2026-11-01) — the whole chain
+    // landed in one code step by the prompt's dispatch rule, not because the
+    // wire withheld the single-file tools.
     for name in ["\"read_file\"", "\"list_files\"", "\"write_file\""] {
         assert!(
-            !menu.contains(name),
-            "判别门: the file triad is not on the menu either ({name}):\n{menu}"
+            menu.contains(name),
+            "判别门: the file triad rides the menu beside the code road ({name}):\n{menu}"
         );
     }
 

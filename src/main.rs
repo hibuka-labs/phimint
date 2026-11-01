@@ -305,7 +305,8 @@ async fn run() -> Result<()> {
     // The code road (M3 T10d layer ③): `code_exec.mode` decides at the
     // assembly point what code wiring the runtime gets. `resolve_road`
     // (file_face) probes for the Python 3 the code road needs first: missing
-    // interpreter → the road degrades to the file-tool shape and one notice
+    // interpreter → the code road degrades to the no-engine shape (no dead
+    // `code_cell`; the file triad is on the menu either way) and one notice
     // explains, instead of the engine dying at build looking for a worker.
     let code_exec_mode = file_face::resolve_road(model_config.code_exec.mode);
 

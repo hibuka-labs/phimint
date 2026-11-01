@@ -24,7 +24,7 @@ impl Tool for RepoMapTool {
     }
 
     fn description(&self) -> &'static str {
-        "Produce a structural map of the codebase. With no `path`, returns a directory skeleton (module → package tree with file counts) to orient in a large workspace. Pass a workspace-relative `path` to get per-file symbols (classes, methods, fields, …) for that subtree. Call this FIRST."
+        "Produce a structural map of the codebase. With no `path`, returns a directory skeleton (module → package tree with file counts) to orient in a large workspace. Pass a workspace-relative `path` to get per-file symbols (classes, methods, fields, …) with line ranges and each file's line count. Call this FIRST."
     }
 
     fn schema(&self) -> Value {
