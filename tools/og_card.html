@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>phimint social card (en)</title>
+<style>
+  /* Source for docs/assets/og-image.png (1200x630) — the English root page's card.
+     Render: bun run ~/.claude/skills/gstack/bin/gstack-render.ts tools/og_card.html \
+             --screenshot docs/assets/og-image.png --width 1200 --height 630 --viewport-only */
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    width: 1200px; height: 630px; overflow: hidden;
+    background: #2b2f2d;
+    color: #ecf2ed;
+    font-family: "Noto Sans SC", -apple-system, "PingFang SC", system-ui, sans-serif;
+    position: relative;
+  }
+  .glow {
+    position: absolute; inset: -40% -20% auto auto; width: 900px; height: 900px;
+    background: radial-gradient(circle at 60% 40%, rgba(255,106,61,.30), rgba(255,193,94,.10) 45%, transparent 70%);
+    filter: blur(10px);
+  }
+  .glow2 {
+    position: absolute; inset: auto auto -50% -25%; width: 800px; height: 800px;
+    background: radial-gradient(circle at 40% 50%, rgba(74,222,128,.16), transparent 68%);
+  }
+  .wrap { position: relative; padding: 68px 76px; display: flex; flex-direction: column; height: 100%; }
+  .mark {
+    display: inline-block;
+    font-family: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 92px; font-weight: 700; letter-spacing: -2px; line-height: 1;
+    /* Solid warm fill: gradient-clipped text is unreliable in headless renders. */
+    color: #ff7a45;
+    text-shadow: 0 0 46px rgba(255, 106, 61, .35);
+  }
+  .tagline { margin-top: 26px; font-size: 46px; font-weight: 600; letter-spacing: .3px; }
+  .tagline-zh { margin-top: 14px; font-size: 25px; color: #a9baaf; letter-spacing: .5px; }
+  .chips { margin-top: 32px; display: flex; gap: 12px; }
+  .chip {
+    font-family: "JetBrains Mono", ui-monospace, Menlo, monospace;
+    font-size: 20px; color: #a9baaf;
+    border: 1px solid #525c56; border-radius: 999px; padding: 8px 18px;
+    background: rgba(55,61,57,.55);
+  }
+  .chip b { color: #4ade80; font-weight: 600; }
+  .term {
+    margin-top: auto;
+    background: rgba(24,27,26,.82);
+    border: 1px solid #414943; border-radius: 14px;
+    padding: 22px 26px;
+    font-family: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 22px; line-height: 1.62; color: #cfe0d5;
+  }
+  .term .p { color: #4ade80; }
+  .term .dim { color: #84978c; }
+  .term .ok { color: #4ade80; }
+  .foot {
+    position: absolute; right: 76px; bottom: 40px;
+    font-family: "JetBrains Mono", ui-monospace, Menlo, monospace;
+    font-size: 19px; color: #84978c;
+  }
+</style>
+</head>
+<body>
+  <div class="glow"></div>
+  <div class="glow2"></div>
+  <div class="wrap">
+    <div class="mark">phimint</div>
+    <div class="tagline">Open-source AI coding agent</div>
+    <div class="tagline-zh">开源 AI 编程智能体 · 跑在你的终端里</div>
+    <div class="chips">
+      <div class="chip"><b>MIT</b> licensed</div>
+      <div class="chip">Rust</div>
+      <div class="chip">macOS · Linux · Windows</div>
+    </div>
+    <div class="term">
+      <div><span class="p">$</span> phimint</div>
+      <div><span class="dim">&gt;</span> fix the login API timeout</div>
+      <div><span class="ok">✓</span> read 6 files · changed 2 · <span class="ok">tests passed</span></div>
+    </div>
+    <div class="foot">hibuka-labs.github.io/phimint</div>
+  </div>
+</body>
+</html>

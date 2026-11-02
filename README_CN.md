@@ -14,6 +14,8 @@
 
 phimint 跑「理解需求 → 读码 → 多文件改 → 编译/测试 → 报错迭代」的完整编码链路。
 
+产品页：[hibuka-labs.github.io/phimint/zh](https://hibuka-labs.github.io/phimint/zh/) — 中文 / [English](https://hibuka-labs.github.io/phimint/)。
+
 ## 特性
 
 - **代码单元（CodeAct）**：`code_cell` 在常驻 Python 会话里跑代码——一次调用就是共享同一会话的一个 cell，变量、import、函数在多次调用之间存活。机械性的多步活（批量改、重命名、数据整理）走一段短 cell 脚本，而不是一长串单用途工具调用。引擎挂在编译期开关后面——`--no-default-features` 可以把它整个从二进制里摘掉。

@@ -12,6 +12,8 @@
 
 phimint runs the full coding loop — understand the request, read the code, change multiple files, compile and test, iterate on failures.
 
+Project page: [hibuka-labs.github.io/phimint](https://hibuka-labs.github.io/phimint/) — English / [中文](https://hibuka-labs.github.io/phimint/zh/).
+
 ## Features
 
 - **Code cells (CodeAct)** — `code_cell` runs code in a resident Python session: one call is one step of cells sharing one session, so variables, imports and functions survive across calls. Mechanical multi-step work (bulk edits, renaming, data wrangling) rides a short cell script instead of a long chain of single-purpose tool calls. The engine is behind a compile-time kill switch — `--no-default-features` drops it from the binary entirely.
