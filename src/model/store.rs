@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use phi_agent::llm_trait::{LlmError, LlmProvider};
 
-use crate::config::ModelConfig;
+use crate::model::config::ModelConfig;
 
 /// Model store that manages tier → model → provider mappings.
 ///
@@ -185,7 +185,7 @@ impl ModelStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::TierConfig;
+    use crate::model::config::TierConfig;
 
     fn mock_config() -> ModelConfig {
         ModelConfig {

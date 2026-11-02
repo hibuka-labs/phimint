@@ -12,8 +12,8 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::external::state::ExternalState;
-use crate::model_store::ModelStore;
-use crate::router::PhimintRouter;
+use crate::model::router::PhimintRouter;
+use crate::model::store::ModelStore;
 use phi_agent_tui::{CommandAction, CommandSpec, ShellFlow};
 
 /// Build the product's slash-command table: one row per wire name, the
@@ -221,7 +221,7 @@ async fn handle_model_command(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ModelConfig, TierConfig};
+    use crate::model::config::{ModelConfig, TierConfig};
 
     fn setup() -> (Arc<Mutex<ModelStore>>, Arc<PhimintRouter>) {
         let config = ModelConfig {

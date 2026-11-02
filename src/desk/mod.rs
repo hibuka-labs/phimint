@@ -421,3 +421,7 @@ mod tests {
         );
     }
 }
+
+// The device consent posture (posture B) and the bridge to the approval
+// popup — same feature gate as the pack itself: no engine, no consent seam.
+pub mod consent;

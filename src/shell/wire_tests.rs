@@ -15,7 +15,7 @@ use tempfile::TempDir;
 
 use super::*;
 use crate::approval::build_live_approval;
-use crate::skills::{refresh_catalog, render_catalog};
+use crate::shell::skills::{refresh_catalog, render_catalog};
 use phi_agent::{resolve_session, save_turn_log};
 use phi_agent_tui::InteractSlot;
 

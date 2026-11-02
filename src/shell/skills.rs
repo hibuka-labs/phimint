@@ -115,13 +115,13 @@ pub(crate) fn save_active_skills(
 /// to push a screen, and what goes on it. Compiled into the binary and
 /// materialized into [`builtin_skills_dir`] at startup — install scripts know
 /// nothing about skills.
-pub const DESIGN_CANVAS_SKILL: &str = include_str!("assets/design-canvas/SKILL.md");
+pub const DESIGN_CANVAS_SKILL: &str = include_str!("../assets/design-canvas/SKILL.md");
 
 /// On-demand detail for [`DESIGN_CANVAS_SKILL`]: the kind tables, theme
 /// tokens, variant mechanics, and `body_html` component classes. Kept out of
 /// the skill body on purpose — the skill stays a lean judgment core and the
 /// vocabulary loads only when a screen is being composed.
-pub const DESIGN_CANVAS_NODES: &str = include_str!("assets/design-canvas/nodes.md");
+pub const DESIGN_CANVAS_NODES: &str = include_str!("../assets/design-canvas/nodes.md");
 
 /// Skill directories phimint scans by default (policy: the family `.claude/` convention).
 ///

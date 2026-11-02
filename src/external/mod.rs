@@ -6,7 +6,7 @@
 //!
 //! | File | Surface | This module |
 //! |---|---|---|
-//! | `~/.phimint/config.json` | global settings | [`crate::config`] (existing) |
+//! | `~/.phimint/config.json` | global settings | [`crate::model::config`] (existing) |
 //! | `~/.phimint/connections.json` | MCP connections | [`connections`] |
 //! | `~/.phimint/tools.json` | global script tools | [`tools_json`] |
 //! | `~/.phimint/approvals.json` | approval ledger | [`crate::approval`] (existing) |

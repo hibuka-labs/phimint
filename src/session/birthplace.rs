@@ -11,7 +11,7 @@
 //! several it surveyed, and sessions where nothing wins stay untagged rather
 //! than being pinned to whichever repo happened to come first. Being wrong
 //! here puts a conversation in the wrong folder and is worse than leaving it
-//! in [`crate::session_scope::Scope::All`], where it is still reachable.
+//! in [`crate::session::scope::Scope::All`], where it is still reachable.
 //!
 //! Every value this writes carries [`CwdSource::Recovered`], so a stitched
 //! together home is never mistaken for one recorded at birth.

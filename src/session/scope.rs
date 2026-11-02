@@ -73,7 +73,7 @@ fn in_scope(entry: &SessionInfo, scope: Scope, workspace: Option<&Path>) -> bool
 /// Sessions with no recorded birthplace have no home, so they never match —
 /// [`Scope::All`] is the only place they show up.
 ///
-/// Nothing is guessed at this layer. [`crate::session_birthplace`] may have
+/// Nothing is guessed at this layer. [`crate::session::birthplace`] may have
 /// filed a home and written it down, but by the time a session reaches here
 /// the value is recorded fact or it is absent.
 fn is_local(entry: &SessionInfo, workspace: Option<&Path>) -> bool {

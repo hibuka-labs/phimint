@@ -7,33 +7,18 @@
 pub mod agent;
 pub mod approval;
 pub mod banner;
-pub mod bin_shadow;
-pub mod browser_face;
-pub mod canvas_host;
-pub mod click_mailbox;
-pub mod commands;
-pub mod config;
-pub mod context_rotation;
+pub mod external;
+pub mod model;
+pub mod ops;
+pub mod session;
+pub mod shell;
+pub mod tips;
+pub mod tools;
+pub mod update;
+
 // The desktop capability pack (desk.*) on the code-exec engine — compiled out
-// with the engine under `--no-default-features`.
+// with the engine under `--no-default-features`. It carries the device consent
+// posture (posture B) and the bridge to the approval popup: no engine, no
+// consent seam.
 #[cfg(feature = "code-exec")]
 pub mod desk;
-// The device consent posture (posture B) and the bridge to the approval
-// popup — same feature gate: no engine, no consent seam.
-#[cfg(feature = "code-exec")]
-pub mod desk_consent;
-pub mod external;
-pub mod file_face;
-pub mod model_store;
-pub mod router;
-pub mod session_birthplace;
-pub mod session_history;
-pub mod session_scope;
-pub mod shell_wire;
-pub mod skills;
-pub mod terminal_restore;
-pub mod tips;
-pub mod title_gen;
-pub mod tools;
-pub mod uninstall;
-pub mod update;

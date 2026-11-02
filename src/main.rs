@@ -5,8 +5,11 @@
 
 // Modules live in the lib crate (src/lib.rs) so tests/ can exercise them.
 use phimint::{
-    agent, approval, banner, commands, config, external, file_face, model_store, router,
-    session_birthplace, session_history, session_scope, shell_wire, skills, title_gen, tools,
+    agent, approval, banner, external,
+    model::{config, router, store, title},
+    session::{birthplace, history, scope},
+    shell::{commands, file_face, skills, wire},
+    tools,
 };
 
 use std::path::{Path, PathBuf};
@@ -113,10 +116,10 @@ struct Cli {
     /// Days to retain session history and notes (default: 30).
     /// Expired data is cleaned up at startup.
     ///
-    /// Deliberately tied to `session_scope::RECENT_DAYS`: the resume
+    /// Deliberately tied to `scope::RECENT_DAYS`: the resume
     /// picker's default view reaches back a month, so the data has to
     /// survive a month or the window has nothing to show.
-    #[arg(long, default_value_t = session_scope::RECENT_DAYS as i64)]
+    #[arg(long, default_value_t = scope::RECENT_DAYS as i64)]
     session_retention_days: i64,
 
     /// Skip the automatic update check on startup.
@@ -178,8 +181,8 @@ fn main() -> Result<()> {
     // alternate screen, mouse reporting): the shell the user is looking at
     // cannot echo and cannot scroll. Repair it, and make sure this run puts
     // the terminal back even if it is killed.
-    phimint::terminal_restore::heal_terminal();
-    phimint::terminal_restore::install_signal_restore();
+    phimint::ops::terminal_restore::heal_terminal();
+    phimint::ops::terminal_restore::install_signal_restore();
 
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -317,7 +320,7 @@ async fn run() -> Result<()> {
         .context("invalid ui.popup config")?;
 
     // Model store and router for multi-model support
-    let model_store = Arc::new(tokio::sync::Mutex::new(model_store::ModelStore::new(
+    let model_store = Arc::new(tokio::sync::Mutex::new(store::ModelStore::new(
         model_config,
         llm_client.clone(),
     )));
@@ -363,7 +366,7 @@ async fn run() -> Result<()> {
     // which makes the resume picker's folder view look like the history is
     // gone. File them once, from the repos their paths touched. Declining to
     // guess is recorded too, so this is not re-read on every launch.
-    let (filed, unfiled) = session_birthplace::recover_missing_birthplaces(&base_dir);
+    let (filed, unfiled) = birthplace::recover_missing_birthplaces(&base_dir);
     if filed > 0 {
         tracing::info!(
             filed,
@@ -381,7 +384,7 @@ async fn run() -> Result<()> {
         };
         if let Some(p) = pending_provider {
             let sessions_dir = base_dir.join("sessions");
-            if let Err(e) = title_gen::process_pending_title(p, &sessions_dir).await {
+            if let Err(e) = title::process_pending_title(p, &sessions_dir).await {
                 tracing::warn!(error = %e, "failed to process pending title");
             }
         }
@@ -400,7 +403,7 @@ async fn run() -> Result<()> {
 
     // The resume seam's data face (product rows + the workspace verdict),
     // built once: the startup picker and the shell's `/resume` share it.
-    let session_io = shell_wire::session_io();
+    let session_io = wire::session_io();
 
     // Resolve session: --resume shows a picker; otherwise normal resolve.
     // Session is resolved BEFORE agent::build so that token_budget_opts
@@ -455,7 +458,7 @@ async fn run() -> Result<()> {
         // conversation in the history archive and no `messages.jsonl` to
         // resume from. Without this the picker lists it (after the listing
         // fix) but the model comes back with no memory at all.
-        session_history::restore_messages_jsonl(
+        history::restore_messages_jsonl(
             &base_dir,
             &session_ctx.session_id,
             &session_ctx.session_dir,
@@ -548,7 +551,7 @@ async fn run() -> Result<()> {
     // skill routing, title generation, and the design-canvas panel cluster).
     // The wire owns the skill catalog and the per-session canvas kit; the
     // shell only executes the outcomes.
-    let wire = shell_wire::Wire::new(
+    let wire = wire::Wire::new(
         skill_resolver,
         skill_telemetry,
         canvas_activity,
@@ -580,24 +583,22 @@ async fn run() -> Result<()> {
         commands,
         // Session titles: shell trigger (the 10th user turn, the pending
         // marker on exit), product generation + persistence layout.
-        title_gen: Some(shell_wire::title_slot(model_store.clone())),
+        title_gen: Some(wire::title_slot(model_store.clone())),
         // Boot notices (clamp / socket-board errors / binary shadows /
         // code-road degrade), printed once on the first frame.
-        startup_notices: shell_wire::startup_notices(startup_notices),
-        update: Some(shell_wire::update_slot(
+        startup_notices: wire::startup_notices(startup_notices),
+        update: Some(wire::update_slot(
             update_config,
             version,
             !cli.no_update_check,
         )),
-        tips: tips_config
-            .enabled
-            .then(|| shell_wire::tips_slot(&tips_config)),
+        tips: tips_config.enabled.then(|| wire::tips_slot(&tips_config)),
         // Runtime announcements (window rotations, futility brake): wording
         // and de-dup are product policy behind the probe.
-        notices: Some(shell_wire::notice_probe()),
+        notices: Some(wire::notice_probe()),
         // Which approval prompts are canvas-launch consents (two-key legend)
         // rather than tool approvals (three-key tool face).
-        is_consent: Some(shell_wire::consent_probe()),
+        is_consent: Some(wire::consent_probe()),
         // phimint is session-based (/resume): the session slot is on.
         session_io: Some(session_io),
         system_prompt: wire.prompt_source(),
@@ -819,7 +820,7 @@ async fn run_update_command(check_only: bool, config_path: Option<&str>) -> Resu
 /// package manager can see — the `~/.phimint/` tree and the Windows user-PATH
 /// entry `install.ps1` added — are cleaned up here.
 fn run_uninstall_command(keep_data: bool, yes: bool) -> Result<()> {
-    use phimint::uninstall;
+    use phimint::ops::uninstall;
 
     let plan = uninstall::plan(!keep_data)?;
     print!("{}", plan.describe());

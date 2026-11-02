@@ -25,7 +25,7 @@
 //! spawn python worker", "no worker available"), not ordinary cell errors —
 //! a `ValueError` is code failing, not code infrastructure failing.
 //!
-//! The per-turn scan is stateless (the same trick as [`crate::browser_face`]):
+//! The per-turn scan is stateless (the same trick as [`crate::shell::browser_face`]):
 //! the record itself decides, so there is no side state to desync from
 //! resume. Two properties fall out of the scan shape:
 //!
@@ -56,7 +56,7 @@ use async_trait::async_trait;
 use phi_agent::{AgentResult, ChatMessage, Middleware, PreLlmCtx};
 use serde_json::Value;
 
-use crate::config::CodeExecMode;
+use crate::model::config::CodeExecMode;
 
 /// The file-operation triad: the single-file vehicle.
 pub(crate) const FILE_TRIAD: [&str; 3] = ["read_file", "list_files", "write_file"];
@@ -250,7 +250,7 @@ pub(crate) fn degrade(mode: CodeExecMode, python_found: bool) -> (CodeExecMode, 
 /// Resolve the configured road against this machine (startup seam): probe
 /// for Python, degrade the road if it is missing, and stash the notice for
 /// the UI shell. The hermetic rules are `degrade` (with an interpreter) and
-/// the `resolved()` twins in [`crate::config`] (without the feature).
+/// the `resolved()` twins in [`crate::model::config`] (without the feature).
 #[cfg(feature = "code-exec")]
 pub fn resolve_road(mode: CodeExecMode) -> CodeExecMode {
     let (mode, notice) = degrade(mode, probe_python());

@@ -25,7 +25,7 @@ use serde_json::json;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::approval::ApprovalItem;
-use crate::click_mailbox::ANSWER_PREFIX;
+use crate::shell::click_mailbox::ANSWER_PREFIX;
 use crate::tools::browser::{LaunchOutcome, launch_browser};
 
 /// The `raw` payload key that marks a consent prompt as a canvas launch (the
@@ -746,5 +746,5 @@ impl phi_canvas::BrowserLauncher for ConsentLauncher {
 }
 
 #[cfg(test)]
-#[path = "canvas_host_tests.rs"]
+#[path = "canvas_host/tests/mod.rs"]
 mod canvas_host_tests;

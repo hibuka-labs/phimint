@@ -30,10 +30,10 @@ use phi_agent_tui::{
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
 use crate::agent;
-use crate::canvas_host::{self, AnswerFacts, CanvasHost, ConsentLauncher, ConsentOutcome};
-use crate::click_mailbox::ClickMailbox;
-use crate::model_store::ModelStore;
-use crate::skills::{
+use crate::model::store::ModelStore;
+use crate::shell::canvas_host::{self, AnswerFacts, CanvasHost, ConsentLauncher, ConsentOutcome};
+use crate::shell::click_mailbox::ClickMailbox;
+use crate::shell::skills::{
     ActiveSkillEntry, SkillResolver, SkillScope, SkillTelemetry, append_active_skills,
     load_active_skills, save_active_skills, sync_active_set,
 };
@@ -45,7 +45,7 @@ use crate::tools::canvas::{CanvasActivity, canvas_tool_adapters, new_canvas_tool
 /// schedules and displays). `None` from the closure is silence — including on
 /// the manual `/upgrade` path ("already up to date" was always silent).
 pub fn update_slot(
-    config: crate::config::UpdateConfig,
+    config: crate::model::config::UpdateConfig,
     version: &str,
     auto_check: bool,
 ) -> UpdateSlot {
@@ -91,7 +91,7 @@ pub fn update_slot(
 /// The tips seam: built-in defaults (or the cache) render at startup; the
 /// fetch closure swaps in cloud content only when the manifest version
 /// changed. Never blocks boot: a fresh cache makes the pass a no-op.
-pub fn tips_slot(config: &crate::config::TipsConfig) -> TipsSlot {
+pub fn tips_slot(config: &crate::model::config::TipsConfig) -> TipsSlot {
     let endpoints = config.endpoints.clone();
     let interval = Duration::from_secs(config.refresh_interval_secs);
     let fetch: TipsFetchFn = Arc::new(move || {
@@ -128,7 +128,7 @@ pub fn notice_probe() -> NoticeProbe {
     Arc::new(move || {
         let mut out = Vec::new();
         let mut probe = state.lock().unwrap();
-        let current = crate::context_rotation::window_reset_count();
+        let current = crate::shell::context_rotation::window_reset_count();
         if current > probe.last_reset {
             let n = current - probe.last_reset;
             out.push(format!(
@@ -136,7 +136,7 @@ pub fn notice_probe() -> NoticeProbe {
             ));
             probe.last_reset = current;
         }
-        if !probe.brake_announced && crate::context_rotation::futility_braked() {
+        if !probe.brake_announced && crate::shell::context_rotation::futility_braked() {
             probe.brake_announced = true;
             out.push(
                 "! Futility brake: work budget too small - window rotation paused. \
@@ -156,12 +156,12 @@ pub fn notice_probe() -> NoticeProbe {
 pub fn session_io() -> SessionIo {
     SessionIo {
         enumerate: Arc::new(|base_dir: &Path, current: Option<&str>| {
-            let workspace = crate::session_scope::current_workspace();
+            let workspace = crate::session::scope::current_workspace();
             phi_agent::list_sessions(base_dir, current)
                 .into_iter()
                 .map(|entry| {
                     let in_workspace =
-                        crate::session_scope::in_default_scope(&entry, workspace.as_deref());
+                        crate::session::scope::in_default_scope(&entry, workspace.as_deref());
                     SessionRow {
                         session_dir: entry.session_dir,
                         title: entry.title,
@@ -172,10 +172,10 @@ pub fn session_io() -> SessionIo {
                 .collect()
         }),
         archived: Arc::new(|base_dir: &Path, session_id: &str| {
-            crate::session_history::load_archived_messages(base_dir, session_id)
+            crate::session::history::load_archived_messages(base_dir, session_id)
         }),
         restore: Arc::new(|base_dir: &Path, session_id: &str, session_dir: &Path| {
-            crate::session_history::restore_messages_jsonl(base_dir, session_id, session_dir)
+            crate::session::history::restore_messages_jsonl(base_dir, session_id, session_dir)
         }),
         resume_help: "Switch to another session".to_string(),
     }
@@ -196,14 +196,14 @@ pub fn title_slot(model_store: Arc<tokio::sync::Mutex<ModelStore>>) -> TitleSlot
                 store.get_or_create_provider("lite").ok()
             };
             if let Some(p) = provider
-                && let Err(e) = crate::title_gen::generate_session_title(p, &msgs, &dir).await
+                && let Err(e) = crate::model::title::generate_session_title(p, &msgs, &dir).await
             {
                 tracing::warn!(error = %e, "failed to generate session title");
             }
         })
     });
     let write_marker = Arc::new(|sessions_dir: &Path, session_dir: &Path| {
-        crate::title_gen::write_pending_title_marker(sessions_dir, session_dir);
+        crate::model::title::write_pending_title_marker(sessions_dir, session_dir);
     });
     TitleSlot {
         generate,
@@ -228,14 +228,14 @@ pub fn consent_probe() -> ConsentProbe {
 /// road degrade. A session switch never replays them.
 pub fn startup_notices(socket_notices: Vec<String>) -> Vec<String> {
     let mut out = Vec::new();
-    if let Some(notice) = crate::context_rotation::take_clamp_notice() {
+    if let Some(notice) = crate::shell::context_rotation::take_clamp_notice() {
         out.push(notice);
     }
     out.extend(socket_notices);
-    if let Some(notice) = crate::bin_shadow::notice() {
+    if let Some(notice) = crate::ops::bin_shadow::notice() {
         out.push(notice);
     }
-    if let Some(notice) = crate::file_face::take_startup_notice() {
+    if let Some(notice) = crate::shell::file_face::take_startup_notice() {
         out.push(notice);
     }
     out
@@ -906,5 +906,5 @@ async fn poll_live_handle(tools: Arc<phi_canvas::CanvasTools>, shared: Arc<Mutex
 }
 
 #[cfg(test)]
-#[path = "shell_wire_tests.rs"]
+#[path = "wire_tests.rs"]
 mod tests;

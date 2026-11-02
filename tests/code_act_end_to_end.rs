@@ -17,7 +17,7 @@ use phi_agent::llm_trait::{
 };
 use phi_agent_tui::InteractSlot;
 use phimint::agent::TokenBudgetOptions;
-use phimint::config::CodeExecMode;
+use phimint::model::config::CodeExecMode;
 
 /// Mock LLM: `stream()` plays back the script and records what each request
 /// carried to the model (messages AND the tool menu); `chat()` is the judge
