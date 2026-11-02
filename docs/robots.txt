@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://hibuka-labs.github.io/phimint/sitemap.xml
