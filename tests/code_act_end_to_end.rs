@@ -15,9 +15,9 @@ use phi_agent::llm_trait::{
     Capabilities, ChatRequest, ChatResponse, FinishReason, LlmProvider, ProviderInfo, StreamChunk,
     UsageInfo,
 };
+use phi_agent_tui::InteractSlot;
 use phimint::agent::TokenBudgetOptions;
 use phimint::config::CodeExecMode;
-use phimint::interact_slot::InteractSlot;
 
 /// Mock LLM: `stream()` plays back the script and records what each request
 /// carried to the model (messages AND the tool menu); `chat()` is the judge
@@ -165,7 +165,9 @@ async fn the_model_acts_in_code_and_the_session_survives_between_steps() {
     let provider = Arc::new(ScriptedProvider::new(script));
 
     let (gate, policy, _approval_rx, _mode) = phimint::approval::build_live_approval("auto", None);
-    let slot = Arc::new(InteractSlot::new(Arc::clone(&gate)));
+    let slot = Arc::new(InteractSlot::new(
+        Arc::clone(&gate) as Arc<dyn phi_agent::ApprovalHandler>
+    ));
     let session_id = "code-act-e2e".to_string();
     let (agent, _resolver, _telemetry, _bg, _canvas) = phimint::agent::build_with_code_exec(
         CodeExecMode::Act,
@@ -349,7 +351,9 @@ async fn the_file_chain_lands_whole_in_one_step_with_no_code_cell_in_the_menu() 
     let provider = Arc::new(ScriptedProvider::new(script));
 
     let (gate, policy, _approval_rx, _mode) = phimint::approval::build_live_approval("auto", None);
-    let slot = Arc::new(InteractSlot::new(Arc::clone(&gate)));
+    let slot = Arc::new(InteractSlot::new(
+        Arc::clone(&gate) as Arc<dyn phi_agent::ApprovalHandler>
+    ));
     let session_id = "code-act-gate".to_string();
     let (agent, _resolver, _telemetry, _bg, _canvas) = phimint::agent::build_with_code_exec(
         CodeExecMode::Act,
@@ -510,7 +514,9 @@ async fn the_menu_schema_tax_account_names_the_per_request_bytes() {
     let (gate, policy, _rx, _mode) = phimint::approval::build_live_approval("auto", None);
     let (act_agent, ..) = phimint::agent::build_with_code_exec(
         CodeExecMode::Act,
-        Some(Arc::new(InteractSlot::new(Arc::clone(&gate)))),
+        Some(Arc::new(InteractSlot::new(
+            Arc::clone(&gate) as Arc<dyn phi_agent::ApprovalHandler>
+        ))),
         act_provider.clone() as Arc<dyn LlmProvider>,
         gate,
         policy,

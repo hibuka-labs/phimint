@@ -5,8 +5,8 @@
 
 // Modules live in the lib crate (src/lib.rs) so tests/ can exercise them.
 use phimint::{
-    agent, approval, banner, config, external, file_face, interact_slot, model_store, router,
-    session_birthplace, session_history, session_scope, skills, title_gen, ui,
+    agent, approval, banner, commands, config, external, file_face, model_store, router,
+    session_birthplace, session_history, session_scope, shell_wire, skills, title_gen, tools,
 };
 
 use std::path::{Path, PathBuf};
@@ -343,8 +343,11 @@ async fn run() -> Result<()> {
     // approval away, so keep a copy of the Arc here.
     let external_ledger = Arc::clone(&approval);
     // The act road's interaction slot (M3 T10d): mounted at build time, armed
-    // per session inside run_tui with that session's `ask_user` picker queue.
-    let interact_slot = Arc::new(interact_slot::InteractSlot::new(Arc::clone(&approval)));
+    // per session inside the shell's boot closure with that session's
+    // `ask_user` picker queue (shell_wire).
+    let interact_slot = Arc::new(phi_agent_tui::InteractSlot::new(
+        Arc::clone(&approval) as Arc<dyn phi_agent::ApprovalHandler>
+    ));
 
     // Cleanup expired session data (history, notes, sessions) at startup.
     cleanup_expired_data(&base_dir, cli.session_retention_days);
@@ -393,13 +396,18 @@ async fn run() -> Result<()> {
     // `--color-scheme light` or `dark` to override when COLORFGBG is absent.
     let color_fgbg = std::env::var("COLORFGBG").ok();
     let scheme = banner::resolve_scheme(&cli.color_scheme, color_fgbg.as_deref(), None);
+    let theme = phi_agent_tui::Theme::for_scheme(scheme);
+
+    // The resume seam's data face (product rows + the workspace verdict),
+    // built once: the startup picker and the shell's `/resume` share it.
+    let session_io = shell_wire::session_io();
 
     // Resolve session: --resume shows a picker; otherwise normal resolve.
     // Session is resolved BEFORE agent::build so that token_budget_opts
     // (which needs session_id for history/notes stores) is available.
     let session_ctx = if cli.resume {
-        let picked_dir =
-            ui::picker::show_picker(&base_dir, None, scheme)?.context("No session selected")?;
+        let picked_dir = phi_agent_tui::picker::show_picker(&base_dir, None, theme, &session_io)?
+            .context("No session selected")?;
         let picked_id = picked_dir
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -437,6 +445,9 @@ async fn run() -> Result<()> {
             Some(token_budget_opts),
         )
         .await?;
+    // Shared ownership from here on: the shell takes `Arc<PhiAgent>` (T5d —
+    // the product boot work below registers tools against the same instance).
+    let agent = Arc::new(agent);
 
     // Create or resume the runtime session.
     let (session, resume_messages) = if cli.resume {
@@ -464,12 +475,54 @@ async fn run() -> Result<()> {
     let show_banner = cli.banner != "off";
     let version = env!("CARGO_PKG_VERSION");
 
+    // Brand wordmark (T5): the generator stays product code — it captures the
+    // boot-time workspace and version, and answers with rows for the session
+    // log path and terminal width the shell hands it at render time.
+    let wordmark = show_banner.then(|| {
+        let workspace = workspace.clone();
+        let version = version.to_string();
+        phi_agent_tui::Wordmark {
+            build: Box::new(move |log_path, width| {
+                // The brand layer compiles its roles into literal colors here
+                // (design §4.3, Issue 2.2) — the seam never sees the roles.
+                crate::banner::brand_rows(
+                    crate::banner::build(&workspace, log_path, &version, width),
+                    scheme,
+                )
+            }),
+        }
+    });
+
     // tool-socket P3: the socket board (five config surfaces merged). Loading
-    // the files is sync; the startup merge (register/connect) runs inside
-    // run_tui, where the live agent is the ToolHost.
+    // the files is sync; the startup merge (register/connect) is the boot
+    // work right below — the live agent is the ToolHost.
     let external = Arc::new(tokio::sync::Mutex::new(
         external::state::ExternalState::load(&base_dir, &workspace, external_ledger),
     ));
+
+    // T5d: the socket board's startup merge (script tools → plugins →
+    // enabled connections) is product boot work (T1 row 19: moved out of the
+    // shell). Once per process; a session switch never redoes it — the tool
+    // table is global. Graceful load errors ride `startup_notices` into the
+    // transcript, never silently dropped.
+    let startup_notices = {
+        let host = external::PhiToolHost {
+            agent: agent.clone(),
+        };
+        let mut state = external.lock().await;
+        state.start(&host).await
+    };
+    // `add_tool`: the human-review entry point for tools the agent writes on
+    // the user's behalf. **post-build registration = root-only** — a
+    // multi-agent's business_tools is a build-time snapshot, so a child
+    // agent's tool face never sees it (a child must not grow tools for
+    // itself). The registration hook holds a Weak to avoid a cycle.
+    {
+        let registry = agent.runtime().tools_mut();
+        let add_tool =
+            tools::add_tool::AddTool::new(Arc::clone(&external), Arc::downgrade(&registry));
+        registry.write().await.register_arc(Arc::new(add_tool));
+    }
 
     // The consent bridge's cancel token is the *run's* live one — the runtime
     // resets its token before every turn, so the slot takes a source, not a
@@ -480,34 +533,96 @@ async fn run() -> Result<()> {
         interact_slot.arm_cancel(Arc::new(move || runtime.cancel_token()));
     }
 
-    ui::run_tui(
-        agent,
+    // T5d: the product's slash-command table — the model-tier face and the
+    // tool-socket face as CommandSpec rows the shell dispatches on the turn
+    // pump before skill routing (the rows also feed the `/` picker).
+    let commands = commands::command_table(
+        agent.clone(),
+        model_store.clone(),
+        router.clone(),
+        Arc::clone(&external),
+    );
+
+    // T7c: the product side of the shell seam — one wire handing the shell
+    // each fn slot (update check, tips fetch, runtime notices, session I/O,
+    // skill routing, title generation, and the design-canvas panel cluster).
+    // The wire owns the skill catalog and the per-session canvas kit; the
+    // shell only executes the outcomes.
+    let wire = shell_wire::Wire::new(
         skill_resolver,
         skill_telemetry,
-        bg_registry,
         canvas_activity,
-        session,
-        session_ctx,
-        base_dir,
+        interact_slot,
+    );
+
+    // T2 seam cut: two-stage wire-up — `ShellSpec` (data) + `ShellHandles`
+    // (runtime live objects). `--no-update-check` folds into `auto_check`
+    // right here: the flag gates the auto check only, while `/upgrade` keeps
+    // running the same closure unconditionally.
+    let spec = phi_agent_tui::ShellSpec {
+        data_dir: base_dir,
+        // Frame-log instrument trio on, phimint's file names (T11 seam;
+        // `None` would turn the whole trio off).
+        paths: Some(phi_agent_tui::FrameLogPaths::default()),
         workspace,
+        name: "Phimint",
+        version: version.to_string(),
+        wordmark,
+        theme,
+        popup_style,
+        // Product-semantic keys; the default is phimint's keymap (override
+        // per key to customize — design §5.2).
+        keymap: phi_agent_tui::Keymap::default(),
+        // Product wording for the shell chrome; the default is phimint's
+        // voice (CopyTable slot, design §5).
+        copy: phi_agent_tui::CopyTable::default(),
+        // The product's slash commands (dispatch + `/` picker rows).
+        commands,
+        // Session titles: shell trigger (the 10th user turn, the pending
+        // marker on exit), product generation + persistence layout.
+        title_gen: Some(shell_wire::title_slot(model_store.clone())),
+        // Boot notices (clamp / socket-board errors / binary shadows /
+        // code-road degrade), printed once on the first frame.
+        startup_notices: shell_wire::startup_notices(startup_notices),
+        update: Some(shell_wire::update_slot(
+            update_config,
+            version,
+            !cli.no_update_check,
+        )),
+        tips: tips_config
+            .enabled
+            .then(|| shell_wire::tips_slot(&tips_config)),
+        // Runtime announcements (window rotations, futility brake): wording
+        // and de-dup are product policy behind the probe.
+        notices: Some(shell_wire::notice_probe()),
+        // Which approval prompts are canvas-launch consents (two-key legend)
+        // rather than tool approvals (three-key tool face).
+        is_consent: Some(shell_wire::consent_probe()),
+        // phimint is session-based (/resume): the session slot is on.
+        session_io: Some(session_io),
+        system_prompt: wire.prompt_source(),
+        skills: Some(wire.skill_bridge()),
+        // The design-canvas panel: subscriptions, click drains, root-turn
+        // edges, consent — product state behind one tick closure.
+        tick: Some(wire.tick()),
+        on_submit: Some(wire.on_submit()),
+        on_reopen: Some(wire.on_reopen()),
+        exit_dump: exit_dump_mode,
+    };
+    let handles = phi_agent_tui::ShellHandles {
+        session_state: phi_agent_tui::CurrentSession {
+            session_id: session,
+            ctx: session_ctx,
+            resume_messages,
+        },
+        bg_registry,
         approval_rx,
         approval_mode,
-        interact_slot,
-        scheme,
-        popup_style,
-        show_banner,
-        version,
-        model_store,
-        router,
-        external,
-        resume_messages,
-        update_config,
-        cli.no_update_check,
-        tips_config,
-        exit_dump_mode,
         log_sinks,
-    )
-    .await
+        session_boot: wire.session_boot(),
+        session_end: wire.session_end(),
+    };
+    phi_agent_tui::run(spec, agent, handles).await
 }
 
 /// Base directory for all phimint session data (~/.phimint).

@@ -4,8 +4,8 @@
 //! one — "do we do this at all", "which first", "which tech" — is a pick
 //! between named candidates and gets a terminal picker instead of a prose
 //! list. This tool only carries the question to the UI and waits for the
-//! answer: the picker is `ui::picker`, and *when* to use the tool is the
-//! design-canvas skill's call, not the tool's.
+//! answer: the picker is `phi_agent_tui::picker`, and *when* to use the tool
+//! is the design-canvas skill's call, not the tool's.
 //!
 //! The wait is human time, so the call pauses its execution clock
 //! ([`ToolContext::pause_execution_clock`]) — the pipeline's tool budget must
@@ -27,13 +27,9 @@ use tokio::sync::{mpsc, oneshot};
 /// shows and what comes back as the answer.
 pub use phi_agent::{AskAnswer, AskOption};
 
-/// A question handed to the UI, carrying the channel the answer comes back on.
-#[derive(Debug)]
-pub struct AskItem {
-    pub question: String,
-    pub options: Vec<AskOption>,
-    pub answer_tx: oneshot::Sender<AskAnswer>,
-}
+/// A question handed to the UI, carrying the channel the answer comes back on —
+/// the shell's picker-queue vocabulary ([`phi_agent_tui::AskItem`]).
+pub use phi_agent_tui::AskItem;
 
 /// The `ask_user` tool: enqueue a question and wait on the oneshot.
 pub struct AskUserTool {

@@ -12,7 +12,7 @@
 //! not a context provider but the agent's way to mount a script as a tool.
 //!
 //! `canvas` adapts the phi-canvas design-canvas tools (M3); the click mailbox
-//! and message synthesis (M2) live in `ui::click_mailbox`.
+//! and message synthesis (M2) live in `crate::click_mailbox`.
 //!
 //! `ask_user` is the text half of that routing: a concept question answered
 //! in a terminal picker rather than on the canvas.

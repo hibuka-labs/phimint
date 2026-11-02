@@ -24,8 +24,8 @@ use phi_canvas::{LaunchDecision, PushReceipt, ScreenEnvelope};
 use serde_json::json;
 use tokio::sync::{mpsc, oneshot};
 
-use super::click_mailbox::ANSWER_PREFIX;
 use crate::approval::ApprovalItem;
+use crate::click_mailbox::ANSWER_PREFIX;
 use crate::tools::browser::{LaunchOutcome, launch_browser};
 
 /// The `raw` payload key that marks a consent prompt as a canvas launch (the
@@ -112,12 +112,9 @@ pub struct StatusInput {
 }
 
 /// The status-bar line: spec-locked wording, plus the alert flag (red + the
-/// reopen key) for the crash face.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StatusLine {
-    pub text: String,
-    pub alert: bool,
-}
+/// reopen key) for the crash face. The face shape is the shell's band
+/// vocabulary ([`phi_agent_tui::StatusFace`]); the wording above is product.
+pub use phi_agent_tui::StatusFace as StatusLine;
 
 /// One status-bar-worth of pick labels: joined in click order, then cut to a
 /// display budget so a long CJK label cannot shove the rest of the bar off.

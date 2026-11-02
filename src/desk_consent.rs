@@ -32,7 +32,7 @@ use phi_agent::code_cell::{CallCtx, Capability, Policy, PolicyDecision};
 use phi_agent::{ApprovalDecision, ApprovalRequest, InteractionChannel, RiskLevel};
 use serde_json::Value;
 
-use crate::interact_slot::InteractSlot;
+use phi_agent_tui::InteractSlot;
 
 /// The device methods whose effect **changes the machine**: a human decides
 /// each one.

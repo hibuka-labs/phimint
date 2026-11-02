@@ -250,7 +250,7 @@ async fn canvas_open_narrows_the_face_mid_session_and_close_restores_it() {
     .await
     .unwrap();
 
-    // The canvas side of a session, wired exactly like `run_tui` does: the
+    // The canvas side of a session, wired exactly like `run()` does: the
     // three canvas tools on the root registry, the session's CanvasTools
     // bound to the tool-face probe.
     let canvas_tools = phimint::tools::canvas::new_canvas_tools(

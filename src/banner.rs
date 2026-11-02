@@ -7,18 +7,13 @@
 use std::path::Path;
 use std::path::PathBuf;
 
-/// Which palette pair to use. `Dark` is the default (most terminals); `Light`
-/// swaps every hue for a deeper, higher-contrast variant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ColorScheme {
-    #[default]
-    Dark,
-    Light,
-}
+use phi_agent_tui::{BrandRow, ColorScheme, ShellToken};
 
-/// Semantic role of one text run in the banner. The palette is all-warm:
-/// hierarchy comes from lightness steps (bright gold → orange → burnt →
-/// ember-brown), never from neutral gray.
+/// Semantic role of one text run in the banner — the wordmark generator's
+/// internal vocabulary (design §4.3: `BannerStyle` retreats to this file; it
+/// never crosses the shell seam again — see [`brand_rows`]). The palette is
+/// all-warm: hierarchy comes from lightness steps (bright gold → orange →
+/// burnt → ember-brown), never from neutral gray.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BannerStyle {
     /// Uncolored spaces (letter connectors and intra-glyph padding).
@@ -39,8 +34,6 @@ pub enum BannerStyle {
     Ad,
     /// `-` separators and the docs URL.
     Dim,
-    /// Turn-final `- error` status marker (dark red).
-    Error,
 }
 
 /// 7-stop face gradient (stop 0 = leftmost letter). Precomputed so render
@@ -108,10 +101,6 @@ impl BannerStyle {
                 ColorScheme::Light => (0xc4, 0x3e, 0x10),
             },
             BannerStyle::Dim => BannerStyle::Version.rgb(scheme),
-            BannerStyle::Error => match scheme {
-                ColorScheme::Dark => (0xc0, 0x40, 0x30),
-                ColorScheme::Light => (0x8a, 0x22, 0x18),
-            },
         }
     }
 
@@ -164,6 +153,37 @@ impl BannerRow {
         }
         (text, spans)
     }
+}
+
+/// Compile one brand role for `scheme` into the shell's inline-style channel.
+fn compile_style(role: BannerStyle, scheme: ColorScheme) -> ShellToken {
+    ShellToken::Literal {
+        rgb: role.rgb(scheme),
+        bold: role.is_bold(),
+    }
+}
+
+/// Compile generator rows into the shell's brand channel (design §4.3, Issue
+/// 2.2): `Default` runs drop out (renderers fall back to the line's own style),
+/// and each brand role resolves to a literal color for `scheme` — the gradient
+/// ramp lands as per-letter literals, because terminals have no gradient
+/// primitive. This is where the brand vocabulary stops: past this seam the
+/// rows carry literal colors, never [`BannerStyle`].
+pub fn brand_rows(rows: Vec<BannerRow>, scheme: ColorScheme) -> Vec<BrandRow> {
+    rows.into_iter()
+        .map(|row| {
+            let (text, spans) = row.to_runs();
+            let spans = spans
+                .into_iter()
+                .map(|s| phi_tui::lines::SpanSpec {
+                    start: s.start,
+                    len: s.len,
+                    style: compile_style(s.style, scheme),
+                })
+                .collect();
+            BrandRow { text, spans }
+        })
+        .collect()
 }
 
 /// Flat block glyphs for the letters of "phimint": the `ANSI Shadow` figlet
@@ -435,7 +455,6 @@ mod tests {
             BannerStyle::Value,
             BannerStyle::Ad,
             BannerStyle::Dim,
-            BannerStyle::Error,
         ] {
             assert_ne!(s.rgb(ColorScheme::Dark), s.rgb(ColorScheme::Light), "{s:?}");
         }
@@ -453,7 +472,6 @@ mod tests {
                 BannerStyle::Value,
                 BannerStyle::Ad,
                 BannerStyle::Dim,
-                BannerStyle::Error,
             ] {
                 let (r, g, b) = s.rgb(scheme);
                 assert!(
@@ -590,7 +608,6 @@ mod tests {
             BannerStyle::Label,
             BannerStyle::Value,
             BannerStyle::Dim,
-            BannerStyle::Error,
         ] {
             assert!(!s.is_bold(), "{s:?} must not be bold");
         }
@@ -925,4 +942,179 @@ mod tests {
             ]
         );
     }
+
+    /// The seam contract (design §4.3, Issue 2.2): past `brand_rows` the runs
+    /// carry literal colors — Slogan bold, Version quiet — never roles.
+    #[test]
+    fn brand_rows_compile_roles_to_literal_colors() {
+        let rows = brand_rows(vec![tagline_row("0.1.0")], ColorScheme::Dark);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].text,
+            "Forged with intent. Shipped with care.   -   v0.1.0"
+        );
+        let styles: Vec<ShellToken> = rows[0].spans.iter().map(|s| s.style).collect();
+        assert_eq!(
+            styles,
+            vec![
+                ShellToken::Literal {
+                    rgb: (0xff, 0xb0, 0x66),
+                    bold: true
+                },
+                ShellToken::Literal {
+                    rgb: (0xb0, 0x7a, 0x52),
+                    bold: false
+                },
+            ],
+            "role vocabulary leaked past the seam: {styles:?}"
+        );
+    }
+
+    /// The gradient is a computed style: the brand layer flattens it into
+    /// per-letter literals before the rows cross the seam. Runs of one letter
+    /// may split (M/N/T row 0), so the expectation dedupes repeats — the
+    /// distinct stops must arrive left-to-right as the ramp itself.
+    #[test]
+    fn brand_rows_compile_the_ramp_per_letter() {
+        let rows = brand_rows(logo_rows(), ColorScheme::Dark);
+        let mut stops: Vec<(u8, u8, u8)> = Vec::new();
+        for s in &rows[0].spans {
+            match s.style {
+                ShellToken::Literal { rgb, bold: true } => {
+                    if stops.last() != Some(&rgb) {
+                        stops.push(rgb);
+                    }
+                }
+                other => panic!("wordmark must compile to bold literals: {other:?}"),
+            }
+        }
+        assert_eq!(stops, LOGO_STOPS_DARK.to_vec());
+    }
+
+    // ── Brand × render integration (the shell paints what the brand hands
+    //    over; these pin the palette and the no-soft-wrap contract on the
+    //    REAL rows, over the shell's own draw path) ─────────────────────
+
+    /// The brand rows paint their palette on top of the shell's System base:
+    /// face fills are Logo stops, the slogan/ad hang off the wordmark and
+    /// carry their own colors — the shell's muted base shows through the
+    /// glyph padding and the connector.
+    #[test]
+    fn banner_spans_render_palette_on_top_of_system_style() {
+        use phi_agent_tui::Theme;
+        use phi_agent_tui::app::App;
+        use phi_agent_tui::render::draw;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        use ratatui::style::{Color, Modifier};
+
+        let backend = TestBackend::new(120, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new();
+        app.push_banner(brand_rows(
+            build(
+                std::path::Path::new("/tmp/ws"),
+                std::path::Path::new("/tmp/ws/.phimint/s/1/session.log"),
+                "0.1.0",
+                120,
+            ),
+            ColorScheme::Dark,
+        ));
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let w = 120usize;
+        let cell = |x: usize, y: usize| buf.content()[y * w + x].clone();
+
+        // Wordmark row 0: face fill 0 is Logo(0) = dark stop #FF6A3D. The flat
+        // wordmark carries no shadow strokes — cols 6..8 are glyph padding and
+        // the connector, so they fall back to the System base (muted).
+        assert_eq!(cell(0, 0).style().fg, Some(Color::Rgb(0xff, 0x6a, 0x3d)));
+        assert_eq!(cell(5, 0).style().fg, Some(Color::Rgb(0xff, 0x6a, 0x3d)));
+        assert_eq!(cell(6, 0).style().fg, Some(Theme::dark().muted));
+        assert_eq!(cell(8, 0).style().fg, Some(Theme::dark().muted));
+
+        // The lockup hangs the text block off the right of the wordmark,
+        // bottom-aligned: slogan on wordmark row 1, ad on row 2. "Forged…" is
+        // bold Slogan #FFB066; "Built on" is label #F2A462 and "phi-agent" is
+        // Ad #FFC66E (bold).
+        let row_text = |y: usize| -> String {
+            (0..w)
+                .map(|x| buf.content()[y * w + x].symbol().to_string())
+                .collect()
+        };
+        // Column, not byte offset: the wordmark's `█` cells are multi-byte, so
+        // a byte index into the row text is not a screen column.
+        let find_col = |y: usize, needle: &str| -> Option<usize> {
+            let t = row_text(y);
+            t.find(needle).map(|b| t[..b].chars().count())
+        };
+        let x = find_col(1, "Forged").expect("slogan on wordmark row 1");
+        assert_eq!(
+            find_col(2, "Built on"),
+            Some(x),
+            "ad must hang at the same x as the slogan"
+        );
+        let slogan = cell(x, 1).style();
+        assert_eq!(slogan.fg, Some(Color::Rgb(0xff, 0xb0, 0x66)));
+        assert!(slogan.add_modifier.contains(Modifier::BOLD));
+
+        assert_eq!(cell(x, 2).style().fg, Some(Color::Rgb(0xf2, 0xa4, 0x62)));
+        let ad_x = x + "Built on   ".len();
+        let ad = cell(ad_x, 2).style();
+        assert_eq!(ad.fg, Some(Color::Rgb(0xff, 0xc6, 0x6e)));
+        assert!(ad.add_modifier.contains(Modifier::BOLD));
+    }
+
+    /// The opposite contract on `push_styled_line` rows: they must NOT
+    /// soft-wrap. phi-tui documents "**no** soft-wrap (the wordmark must stay
+    /// whole; ratatui clips on narrow terminals), no re-wrap on width change
+    /// (`original: None`)". Banner art and the full-width `─` rule are
+    /// fixed-width chrome — wrapping the rule (no break points) hard-splits
+    /// it into dash fragments and the 58-col wordmark splits at its letter
+    /// gaps. Render a banner wider than the pane and assert the rule stays
+    /// ONE visual row (clipped), not a stack of fragments.
+    #[test]
+    fn styled_banner_rows_stay_whole_and_do_not_soft_wrap() {
+        use phi_agent_tui::app::App;
+        use phi_agent_tui::render::snapshot_text;
+
+        let mut app = App::new();
+        // 100-col rule on a 40-col pane: wider than the backend, no break points.
+        app.push_banner(brand_rows(
+            build(
+                std::path::Path::new("/w"),
+                std::path::Path::new("/l"),
+                "0.1.0",
+                100,
+            ),
+            ColorScheme::Dark,
+        ));
+        let snap = snapshot_text(&mut app, 40, 30);
+        let dash_rows: Vec<&str> = snap
+            .lines()
+            .filter(|l| !l.trim().is_empty() && l.trim().chars().all(|c| c == '─'))
+            .collect();
+        // Dash rows on screen: the banner rule (1) plus the composer's top and
+        // bottom rules (2, Claude Code style chrome). Any wrap fragment of the
+        // 100-col banner rule would push the count above 3.
+        assert_eq!(
+            dash_rows.len(),
+            3,
+            "rule must stay one clipped visual row, not wrap into fragments:\n{snap}"
+        );
+        // And the wordmark keeps one visual row per glyph row (5), not 10 halves.
+        let wordmark_rows = snap.lines().filter(|l| l.contains('█')).count();
+        assert_eq!(
+            wordmark_rows, 5,
+            "wordmark must stay whole (5 rows), not split at letter gaps:\n{snap}"
+        );
+    }
 }
+
+// The product's chrome-sources scan (the shell carries its own over its own
+// paths; the product's chrome — the wordmark banner — scans its own here).
+// Its own file, outside the scanned set: the banned-glyph table and the
+// marker vocabulary must never be mistaken for rendering code.
+#[cfg(test)]
+#[path = "chrome_scan_tests.rs"]
+mod chrome_scan;

@@ -18,8 +18,8 @@ use phi_agent::llm_trait::{
     UsageInfo,
 };
 use phi_agent::{RuntimeEvent, SessionId, UserEvent};
+use phi_agent_tui::app::{AgentStatus, App, TuiEvent};
 use phi_tui::lines::LineKind;
-use phimint::ui::app::{AgentStatus, App, TuiEvent};
 
 /// Mock LLM: `stream()` plays back the script; `chat()` returns empty content
 /// so the completion judge always hits the unparseable → fail-open path.

@@ -36,7 +36,7 @@ pub fn new_canvas_tools(
 /// Shared canvas-liveness probe for the browser tool face (design note §7.3).
 ///
 /// The tool-face middleware reads this before every LLM call to decide between
-/// the canvas minimum and the full browser suite. `run_tui` binds the current
+/// the canvas minimum and the full browser suite. `run` binds the current
 /// session's [`CanvasTools`] here; liveness itself is read from the live
 /// canvas, so open / close / crash / Ctrl+B rebind all need no extra
 /// notification path — the next turn just sees the truth.

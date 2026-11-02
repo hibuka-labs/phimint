@@ -205,18 +205,9 @@ pub struct UiConfig {
 ///
 /// phimint draws on the alternate screen, whose content the terminal discards
 /// on exit, so "keep the record" is a replay printed to the primary screen
-/// (see `ui::exit_dump`). The mode is the replay's completeness.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum ExitDumpMode {
-    /// Replay the whole session (the default, and the Claude Code parity).
-    #[default]
-    Full,
-    /// Header/footer plus the final answer only.
-    Summary,
-    /// Nothing — the alt-screen content is discarded.
-    None,
-}
+/// (see `phi_agent_tui::exit_dump`). The mode is the replay's completeness —
+/// its vocabulary is the shell's; the config parsing that feeds it is product.
+pub use phi_agent_tui::ExitDumpMode;
 
 /// `ui.popup` — the `@`/`/` popup band. Missing fields take the widget defaults.
 #[derive(Debug, Clone, Deserialize)]

@@ -20,56 +20,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::update::error::UpdateError;
 
-/// Whether an item is usage advice or a promotional note. Ads and promos must
-/// use `Note`: the renderer labels them `Note:` and they never masquerade as
-/// `Tip:`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum TipKind {
-    /// Usage advice, rendered as `Tip:`.
-    #[default]
-    Tip,
-    /// Promotional or informational note, rendered as `Note:`.
-    Note,
-}
-
-impl TipKind {
-    /// Render label shown to the user (`"Tip"` / `"Note"`).
-    pub fn label(&self) -> &'static str {
-        match self {
-            TipKind::Tip => "Tip",
-            TipKind::Note => "Note",
-        }
-    }
-}
-
-/// One tips line. `text` must be ASCII-safe for TUI chrome width.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TipItem {
-    /// Kind of item; missing fields default to `Tip`.
-    #[serde(default)]
-    pub kind: TipKind,
-    /// The line's text (without the `Tip:`/`Note:` label).
-    pub text: String,
-}
-
-impl TipItem {
-    /// Build a `Tip` item.
-    pub fn tip(text: impl Into<String>) -> Self {
-        TipItem {
-            kind: TipKind::Tip,
-            text: text.into(),
-        }
-    }
-
-    /// Build a `Note` item.
-    pub fn note(text: impl Into<String>) -> Self {
-        TipItem {
-            kind: TipKind::Note,
-            text: text.into(),
-        }
-    }
-}
+/// Whether an item is usage advice or a promotional note, and one tips line —
+/// the band vocabulary is the shell's ([`phi_agent_tui::TipItem`] /
+/// [`phi_agent_tui::TipKind`]); the manifest format and its validation below
+/// are product.
+pub use phi_agent_tui::{TipItem, TipKind};
 
 /// The cloud tips manifest (see module docs for the JSON format).
 #[derive(Debug, Clone, Serialize, Deserialize)]

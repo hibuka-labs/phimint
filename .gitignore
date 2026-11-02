@@ -5,6 +5,9 @@
 # macOS
 .DS_Store
 
+# Python bytecode caches (scripts/pty_smoke harness runs)
+__pycache__/
+
 # superpowers visual-companion session artifacts
 .superpowers/
 

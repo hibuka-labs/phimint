@@ -20,7 +20,7 @@
 //! Python 3 interpreter the engine spawns (the code road needs one; nothing
 //! auto-installs runtimes): no interpreter means the configured road degrades
 //! to the no-engine shape — no dead `code_cell` on the menu, no code-cell
-//! teaching in the prompt — and one notice says why. Per turn, [`code_road_dead`]
+//! teaching in the prompt — and one notice says why. Per turn, `code_road_dead`
 //! reads the conversation: the markers are worker/env deaths ("could not
 //! spawn python worker", "no worker available"), not ordinary cell errors —
 //! a `ValueError` is code failing, not code infrastructure failing.

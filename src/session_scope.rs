@@ -56,6 +56,12 @@ pub fn visible<'a>(
         .collect()
 }
 
+/// This session's verdict for the picker's default view (this folder, recent
+/// enough) — precomputed into the resume seam's row (`in_workspace`).
+pub fn in_default_scope(entry: &SessionInfo, workspace: Option<&Path>) -> bool {
+    in_scope(entry, Scope::Workspace, workspace)
+}
+
 fn in_scope(entry: &SessionInfo, scope: Scope, workspace: Option<&Path>) -> bool {
     match scope {
         Scope::All => true,

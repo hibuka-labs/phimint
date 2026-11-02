@@ -50,7 +50,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU8, Ordering};
 
 use async_trait::async_trait;
 use phi_agent::approval_ledger::{
@@ -464,85 +463,11 @@ fn classify_request(tool_name: &str, args: &Value) -> Option<ApprovalRequest> {
 
 // ── The live mode switch (Shift+Tab) ────────────────────────────────────────
 
-/// Runtime approval mode — what the next tool call does.
-///
-/// The UI (Shift+Tab) flips it through [`ApprovalModeSwitch`]; the gate reads
-/// it on every tool call, so a flip takes effect immediately.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum RuntimeApprovalMode {
-    /// Every tool call auto-approves (the policy short-circuits to `None`).
-    Auto = 0,
-    /// Writes and risky shell prompt; reads pass. The interactive default.
-    Ask = 1,
-    /// Writes and risky shell are rejected. CLI startup mode only — Shift+Tab
-    /// leaves it (first press enters `ask`), it is not a cycle stop.
-    Deny = 2,
-}
-
-impl RuntimeApprovalMode {
-    /// Parse a CLI `--approval` value. Unknown values fall back to `auto`
-    /// (matches the historical `build_approval` fallback).
-    pub fn parse(s: &str) -> Self {
-        match s {
-            "ask" => Self::Ask,
-            "deny" => Self::Deny,
-            _ => Self::Auto,
-        }
-    }
-
-    /// The status-bar badge for this mode (ASCII — chrome stays width-safe).
-    /// Claude Code style wording: `<mode> mode on`.
-    pub fn badge(self) -> &'static str {
-        match self {
-            Self::Auto => "auto mode on",
-            Self::Ask => "ask mode on",
-            Self::Deny => "deny mode on",
-        }
-    }
-}
-
-/// Shared live switch between the TUI (Shift+Tab) and the approval gate.
-///
-/// One `Arc` handed to both sides: the UI flips it, the gate reads it per
-/// tool call. No locks in the hot path (`AtomicU8`), no channel — the mode is
-/// a single byte of shared state.
-#[derive(Debug)]
-pub struct ApprovalModeSwitch {
-    mode: AtomicU8,
-}
-
-impl ApprovalModeSwitch {
-    pub fn new(initial: RuntimeApprovalMode) -> Self {
-        Self {
-            mode: AtomicU8::new(initial as u8),
-        }
-    }
-
-    pub fn get(&self) -> RuntimeApprovalMode {
-        match self.mode.load(Ordering::SeqCst) {
-            1 => RuntimeApprovalMode::Ask,
-            2 => RuntimeApprovalMode::Deny,
-            _ => RuntimeApprovalMode::Auto,
-        }
-    }
-
-    pub fn set(&self, mode: RuntimeApprovalMode) {
-        self.mode.store(mode as u8, Ordering::SeqCst);
-    }
-
-    /// Shift+Tab cycle: `auto` ⇄ `ask`. `deny` is a CLI startup mode, not a
-    /// cycle stop — the first press leaves it for `ask`.
-    pub fn cycle_auto_ask(&self) -> RuntimeApprovalMode {
-        let next = match self.get() {
-            RuntimeApprovalMode::Auto => RuntimeApprovalMode::Ask,
-            RuntimeApprovalMode::Ask => RuntimeApprovalMode::Auto,
-            RuntimeApprovalMode::Deny => RuntimeApprovalMode::Ask,
-        };
-        self.set(next);
-        next
-    }
-}
+/// Runtime approval mode and its shared live switch: the mechanism face is
+/// the shell's ([`phi_agent_tui::RuntimeApprovalMode`] /
+/// [`phi_agent_tui::ApprovalModeSwitch`]); the grading tables, risk copy and
+/// the ledger below are product policy.
+pub use phi_agent_tui::{ApprovalModeSwitch, RuntimeApprovalMode};
 
 // ── The live gate: policy + handler behind one switch ───────────────────────
 

@@ -685,15 +685,15 @@ impl CodeRoadEngine {
 
 /// [`build`] with the code road chosen at the assembly point (M3 T10d layer ③):
 /// `code_exec.mode` decides what code wiring this runtime gets, and `interact`
-/// is the act road's interaction slot — armed per session by `ui::run.rs` with
-/// that session's `ask_user` picker queue.
+/// is the act road's interaction slot — armed per session by `shell_wire`'s
+/// boot closure with that session's `ask_user` picker queue.
 #[allow(clippy::too_many_arguments)]
 pub async fn build_with_code_exec(
     code_road: CodeExecMode,
     // Consumed only by the act road's mount; the no-engine build (layer ②)
     // has no act road to arm.
     #[cfg_attr(not(feature = "code-exec"), allow(unused_variables))] interact: Option<
-        Arc<crate::interact_slot::InteractSlot>,
+        Arc<phi_agent_tui::InteractSlot>,
     >,
     llm_client: Arc<dyn phi_agent::llm_trait::LlmProvider>,
     approval: Arc<dyn ApprovalHandler>,
@@ -719,7 +719,7 @@ pub async fn build_with_code_exec(
     let skill_telemetry = Arc::new(SkillTelemetry::new());
 
     // Canvas liveness for the browser tool face: created here (the middleware
-    // needs it at build time), bound per session by `run_tui`, read before
+    // needs it at build time), bound per session by `run`, read before
     // every LLM call. See `browser_face`.
     let canvas_activity = Arc::new(crate::tools::canvas::CanvasActivity::new());
 
@@ -990,7 +990,7 @@ pub async fn build_with_code_exec(
         // middleware narrows the face to the canvas minimum while the design
         // canvas is live and announces the change in the system prompt. The
         // canvas opens mid-session, so the composition is per-turn — the
-        // activity is bound per session by `run_tui` (see `browser_face`).
+        // activity is bound per session by `run` (see `browser_face`).
         .middleware(crate::browser_face::BrowserToolFaceMiddleware::new(
             Arc::clone(&canvas_activity),
         ))

@@ -523,8 +523,8 @@ fn grid_sees_wide_char_pen_advance() {
 /// different frame than the terminal — so pin that property.
 #[test]
 fn draw_is_idempotent_for_the_composer_shape() {
-    use phimint::ui::app::App;
-    use phimint::ui::render::draw as app_draw;
+    use phi_agent_tui::app::App;
+    use phi_agent_tui::render::draw as app_draw;
     let mut app = App::new();
     // A composer buffer with CJK and a fake cursor is pure render state; the
     // real risk is the viewport anchor. Feed the app some transcript rows so
