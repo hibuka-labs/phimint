@@ -30,7 +30,7 @@ use crate::tools::{repomap::RepoMapTool, ripgrep::RipgrepTool};
 use code_intel::lsp::{ClientInfo, LspManager, LspServerSpec};
 use phi_kernel_tools::background_shell::{BackgroundTaskRegistry, TaskCancelTool, TaskOutputTool};
 use phi_kernel_tools::context_rotation::{
-    HistoryStore, NotesStore, create_history_tools, create_notes_tools,
+    HistoryStore, NotesStore, SessionScope, create_history_tools, create_notes_tools,
 };
 use phi_tools::{BrowserToolset, LaunchOptions as BrowserLaunchOptions};
 

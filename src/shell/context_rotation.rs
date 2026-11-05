@@ -17,7 +17,6 @@
 //! every Continue point and validates the output against the sendability
 //! contract; this shell (via the core) supplies the strategy.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -29,7 +28,8 @@ use phi_agent::{
 };
 
 use phi_kernel_tools::context_rotation::{
-    HistoryStore, NotesStore, extract_artifact_index, extract_ledger, read_thread_hint,
+    HistoryStore, NotesStore, SessionScope, extract_artifact_index, extract_ledger,
+    read_thread_hint,
 };
 
 /// Global handle to the token-budget compactor for TUI access.
@@ -73,6 +73,27 @@ pub fn set_global_compactor(compactor: Arc<TokenBudgetCompactor>) {
     }
 }
 
+/// Re-point every session-keyed store to a resumed session — the `/resume`
+/// switch. Called from `Wire::session_boot`, the one per-session seam the
+/// shell re-arms every session iteration. The compactor carries the shared
+/// [`SessionScope`] that the history/notes stores and the code-cell factory
+/// also hold (build.rs hands out one handle), so a single re-point here moves
+/// them all; the rotation counter is reseeded from the target's archive
+/// alongside. No compactor installed (token budget off) means no
+/// session-keyed stores exist — nothing to do.
+pub fn repoint_current_session(session_id: &str) {
+    let compactor = TOKEN_BUDGET_COMPACTOR
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone());
+    match compactor {
+        Some(compactor) => compactor.repoint(session_id),
+        None => tracing::debug!(
+            "repoint_current_session: no token-budget compactor installed, nothing to re-point"
+        ),
+    }
+}
+
 /// Test-only lock serializing every test that installs or observes the
 /// process-global compactor handle.
 ///
@@ -106,10 +127,12 @@ pub fn take_clamp_notice() -> Option<String> {
 /// Application shell around [`TokenBudgetCore`] (see module docs).
 pub struct TokenBudgetCompactor {
     core: TokenBudgetCore,
-    /// Base directory for storage (~/.phimint/).
-    base_dir: PathBuf,
-    /// Session ID for this compactor instance.
-    session_id: String,
+    /// The live session's storage scope — history, notes and the session dir
+    /// resolve their paths through it at use time, so one re-point (the
+    /// `/resume` switch) moves every subsequent write. A frozen session id
+    /// kept writing the abandoned bootstrap session's trees after a switch
+    /// (2026-11-04) — the misrouting this scope exists to prevent.
+    scope: Arc<SessionScope>,
     /// Agent name (used for notes path and thread hint lookup).
     agent_name: String,
     /// Number of window resets that have occurred (TUI notification).
@@ -117,19 +140,34 @@ pub struct TokenBudgetCompactor {
 }
 
 impl TokenBudgetCompactor {
-    pub fn new(
-        core: TokenBudgetCore,
-        base_dir: PathBuf,
-        session_id: String,
-        agent_name: String,
-    ) -> Self {
-        Self {
+    pub fn new(core: TokenBudgetCore, scope: Arc<SessionScope>, agent_name: String) -> Self {
+        let this = Self {
             core,
-            base_dir,
-            session_id,
+            scope,
             agent_name,
             reset_count: AtomicUsize::new(0),
-        }
+        };
+        // Seed the rotation counter from the target's archive: a resumed
+        // session may already hold windows 001..N, and a counter restarting
+        // at 1 would truncate `windows/001.jsonl` on the next rotation.
+        this.reseed_window_id();
+        this
+    }
+
+    /// Serve a different session — the `/resume` switch. Every store sharing
+    /// this compactor's scope follows; the rotation counter is reseeded from
+    /// the target's archive so numbering continues instead of clobbering.
+    pub fn repoint(&self, session_id: &str) {
+        self.scope.repoint(session_id);
+        self.reseed_window_id();
+    }
+
+    /// Continue the current session's archive numbering: the next rotation
+    /// archives as `last_window_id + 1` (filenames on disk are the authority
+    /// — see [`HistoryStore::last_window_id`]).
+    fn reseed_window_id(&self) {
+        let next = HistoryStore::new_scoped(Arc::clone(&self.scope)).last_window_id() + 1;
+        self.core.state().window_id.store(next, Ordering::Relaxed);
     }
 
     /// The decision core (window id, base overhead, config access).
@@ -186,17 +224,17 @@ impl ContextCompaction for TokenBudgetCompactor {
                 // 1. Archive the outgoing window (best effort — a failed
                 //    archive is logged and the rotation proceeds; the data
                 //    is lost from history but the session stays healthy).
-                let store = HistoryStore::new(&self.base_dir, &self.session_id);
+                let store = HistoryStore::new_scoped(Arc::clone(&self.scope));
                 if let Err(e) = store.archive_window(previous_window, messages) {
                     tracing::warn!(
-                        session_id = %self.session_id,
+                        session_id = %self.scope.session_id(),
                         window_id = previous_window,
                         error = %e,
                         "failed to archive window messages"
                     );
                 } else {
                     tracing::info!(
-                        session_id = %self.session_id,
+                        session_id = %self.scope.session_id(),
                         window_id = previous_window,
                         message_count = messages.len(),
                         "archived window messages to history"
@@ -212,9 +250,12 @@ impl ContextCompaction for TokenBudgetCompactor {
                 }
 
                 // 2. The model's own handoff note, if it wrote one.
-                let thread_hint =
-                    read_thread_hint(&self.base_dir, &self.session_id, &self.agent_name)
-                        .map(|hint| format!("<thread_hint>\n{hint}\n</thread_hint>"));
+                let thread_hint = read_thread_hint(
+                    self.scope.base_dir(),
+                    &self.scope.session_id(),
+                    &self.agent_name,
+                )
+                .map(|hint| format!("<thread_hint>\n{hint}\n</thread_hint>"));
 
                 // 2b. Mechanical activity ledger (v4): extracted from the
                 //    outgoing window with zero model participation — the
@@ -225,7 +266,7 @@ impl ContextCompaction for TokenBudgetCompactor {
                 //    budget. Best effort on both I/O.
                 let ledger = extract_ledger(messages);
                 if let Some(text) = &ledger {
-                    let notes = NotesStore::new(&self.base_dir, &self.session_id, &self.agent_name);
+                    let notes = NotesStore::new_scoped(Arc::clone(&self.scope), &self.agent_name);
                     if let Err(e) = notes.write_file("activity_ledger.md", text) {
                         tracing::warn!(error = %e, "failed to mirror activity ledger to notes");
                     }
@@ -255,7 +296,7 @@ impl ContextCompaction for TokenBudgetCompactor {
                 //     usually followed by more work in this turn — dying in
                 //     between (a tool panic, a crash) used to leave the
                 //     session invisible to the resume picker.
-                let session_dir = self.base_dir.join("sessions").join(&self.session_id);
+                let session_dir = self.scope.session_dir();
                 if let Err(e) = std::fs::create_dir_all(&session_dir) {
                     tracing::warn!(error = %e, "failed to create session dir for fresh window");
                 }
@@ -264,7 +305,7 @@ impl ContextCompaction for TokenBudgetCompactor {
                 }
 
                 tracing::info!(
-                    session_id = %self.session_id,
+                    session_id = %self.scope.session_id(),
                     from_window = previous_window,
                     to_window = new_window,
                     new_message_count = new_messages.len(),
@@ -293,12 +334,8 @@ mod tests {
     use phi_agent::TokenBudgetConfig;
 
     fn shell_with(core: TokenBudgetCore, tmp: &TempDir) -> TokenBudgetCompactor {
-        TokenBudgetCompactor::new(
-            core,
-            tmp.path().to_path_buf(),
-            "test_session".to_string(),
-            "main".to_string(),
-        )
+        let scope = Arc::new(SessionScope::new(tmp.path(), "test_session"));
+        TokenBudgetCompactor::new(core, scope, "main".to_string())
     }
 
     fn small_core() -> TokenBudgetCore {
@@ -629,5 +666,109 @@ mod tests {
         shell.compact_sync(&msgs).expect("fallback must fire"); // hold
         shell.compact_sync(&msgs).expect("reset must fire");
         assert_eq!(window_reset_count(), 1);
+    }
+
+    /// Regression (2026-11-04 incident): after a `/resume` switch the
+    /// rotation archive and the fresh-window `messages.jsonl` must land in
+    /// the RESUMED session's trees — not the abandoned bootstrap one — and
+    /// the window counter must continue the target's archive numbering
+    /// instead of truncating `windows/001.jsonl`.
+    #[test]
+    fn repoint_routes_rotation_and_resumes_numbering() {
+        let tmp = TempDir::new().unwrap();
+        // The resumed session's past life: one archived window.
+        let resumed_windows = tmp.path().join("history/resumed/windows");
+        std::fs::create_dir_all(&resumed_windows).unwrap();
+        std::fs::write(
+            resumed_windows.join("001.jsonl"),
+            "{\"window\":1,\"index\":0,\"role\":\"user\",\"content\":\"old\",\"ts\":\"t\"}\n",
+        )
+        .unwrap();
+
+        // A compactor built on the then-live bootstrap session...
+        let core = small_core();
+        let reset_point = core.hard_limit() - core.base_overhead();
+        let scope = Arc::new(SessionScope::new(tmp.path(), "bootstrap"));
+        let shell = TokenBudgetCompactor::new(core, scope, "main".to_string());
+
+        // ...switches to the resumed session before any rotation.
+        shell.repoint("resumed");
+
+        let msgs = work_msgs(shell.core(), reset_point);
+        let _ = shell.compact_sync(&msgs).expect("fallback must fire"); // hold
+        let result = shell.compact_sync(&msgs).expect("reset must fire");
+        assert_eq!(result.kind, CompactionKind::Reset);
+
+        // The archive continues the resumed session's numbering (002), and
+        // the existing 001 survives byte-for-byte...
+        let archived_001 = std::fs::read_to_string(resumed_windows.join("001.jsonl")).unwrap();
+        assert!(
+            archived_001.contains("old"),
+            "existing archive must survive"
+        );
+        assert!(
+            resumed_windows.join("002.jsonl").exists(),
+            "rotation must continue the target's numbering, not restart at 001"
+        );
+        // ...the fresh window's messages.jsonl lands beside the resumed
+        // session's files, and the bootstrap tree stays untouched.
+        assert!(tmp.path().join("sessions/resumed/messages.jsonl").exists());
+        assert!(!tmp.path().join("history/bootstrap").exists());
+        assert!(!tmp.path().join("sessions/bootstrap").exists());
+    }
+
+    /// Boot-resume shape: the compactor is constructed on a session that
+    /// already holds archived windows — the counter must start past them so
+    /// the first rotation archives 002, not a truncating rewrite of 001.
+    #[test]
+    fn construction_seeds_window_id_from_existing_archive() {
+        let tmp = TempDir::new().unwrap();
+        let windows = tmp.path().join("history/test_session/windows");
+        std::fs::create_dir_all(&windows).unwrap();
+        std::fs::write(
+            windows.join("001.jsonl"),
+            "{\"window\":1,\"index\":0,\"role\":\"user\",\"content\":\"old\",\"ts\":\"t\"}\n",
+        )
+        .unwrap();
+
+        let core = small_core();
+        let reset_point = core.hard_limit() - core.base_overhead();
+        let shell = shell_with(core, &tmp);
+        let msgs = work_msgs(shell.core(), reset_point);
+        let _ = shell.compact_sync(&msgs).expect("fallback must fire"); // hold
+        let result = shell.compact_sync(&msgs).expect("reset must fire");
+        assert_eq!(result.kind, CompactionKind::Reset);
+
+        assert!(
+            windows.join("002.jsonl").exists(),
+            "the first rotation after a resume must not rewrite 001"
+        );
+    }
+
+    /// The production seam: `Wire::session_boot` calls this every session
+    /// iteration. It must reach the compactor installed globally (the same
+    /// instance the stores share their scope with).
+    #[test]
+    fn global_repoint_forwards_to_the_compactor() {
+        let _guard = global_compactor_test_lock().blocking_lock();
+        let tmp = TempDir::new().unwrap();
+        let core = small_core();
+        let reset_point = core.hard_limit() - core.base_overhead();
+        let scope = Arc::new(SessionScope::new(tmp.path(), "bootstrap"));
+        let shell = Arc::new(TokenBudgetCompactor::new(core, scope, "main".to_string()));
+        set_global_compactor(Arc::clone(&shell));
+
+        repoint_current_session("resumed");
+
+        let msgs = work_msgs(shell.core(), reset_point);
+        let _ = shell.compact_sync(&msgs).expect("fallback must fire"); // hold
+        let result = shell.compact_sync(&msgs).expect("reset must fire");
+        assert_eq!(result.kind, CompactionKind::Reset);
+        assert!(
+            tmp.path()
+                .join("history/resumed/windows/001.jsonl")
+                .exists(),
+            "the global seam must move the compactor's writes"
+        );
     }
 }

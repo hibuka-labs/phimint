@@ -484,6 +484,13 @@ impl Wire {
             let session_id = session_id.to_string();
             let base_dir = base_dir.to_path_buf();
             Box::pin(async move {
+                // Every session-keyed store (rotation archive, notes, code
+                // journal, captures) must serve THIS session: a `/resume`
+                // switch re-points the shared scope here, once per session
+                // iteration, and the stores resolve their paths at use time
+                // (2026-11-04: frozen copies kept writing the abandoned
+                // bootstrap session's trees after a switch).
+                crate::shell::context_rotation::repoint_current_session(&session_id);
                 // Design canvas (M3): per-session canvas server + the three
                 // canvas tools. Per-session because the store is
                 // `~/.phimint/canvas/<session>/` — a switch must not write one

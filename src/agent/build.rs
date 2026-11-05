@@ -1,8 +1,6 @@
 use super::code_road::RootMarkedIds;
 #[cfg(feature = "code-exec")]
-use super::code_road::{
-    CellSessions, CodeRoadEngine, code_artifacts_dir, code_exec_journal, code_session_dir,
-};
+use super::code_road::{CellSessions, CodeRoadEngine, code_artifacts_dir, code_exec_journal};
 use super::prompt::{TOKEN_BUDGET_PROMPT_SUFFIX, compose_system_prompt_for};
 use super::subagents::child_multi_agent_config;
 use super::*;
@@ -114,6 +112,19 @@ pub async fn build_with_code_exec(
             "loaded skills for /skill command"
         );
     }
+    // The live session's storage scope: one shared, re-pointable handle for
+    // every session-keyed tree (rotation archive, notes, code journal,
+    // captures). Frozen copies of the session id kept writing the abandoned
+    // bootstrap session's directories after a mid-session `/resume` switch
+    // (2026-11-04); `Wire::session_boot` re-points this one handle per
+    // session and everything below follows.
+    let session_scope = token_budget_opts.as_ref().map(|opts| {
+        Arc::new(SessionScope::new(
+            opts.base_dir.clone(),
+            opts.session_id.clone(),
+        ))
+    });
+
     // Code road engine assembly (codexec-design §11, M3 T10d layer ③),
     // hoisted above prompt composition (提示面同源, sdk-assembly §3.4): the
     // act prompt's ns seed is `prompt_face()` of the very builder that will
@@ -125,74 +136,76 @@ pub async fn build_with_code_exec(
     // engine itself is built later, once the agent builder exists to
     // receive the tool/backend.
     #[cfg(feature = "code-exec")]
-    let code_engine: Option<CodeRoadEngine> =
-        match (code_road.resolved(), token_budget_opts.as_ref()) {
-            (CodeExecMode::Off, _) | (_, None) => None,
-            (CodeExecMode::Tool, Some(tb_opts)) => {
-                // M2 road: `code_cell` on the tool-call protocol. The whole step
-                // already passes phimint's approval gate (`code_cell` classifies
-                // Sensitive — see approval.rs), so the cell's own mechanics ride
-                // it; what the step cannot express on its own is a *device*
-                // effect, so the device pack's methods carry their own consent
-                // posture (posture B: reads and pointer moves flow, every
-                // mutating input asks a human — see `desk_consent`).
-                let limits = Limits::default();
-                let engine = ExecutorBuilder::new(code_exec_journal(tb_opts)?)
-                    .with_policy(ConsentPolicy::tool_road())
-                    .with_limits(limits)
-                    .with_ns(PhiNsShell::builtin())
-                    .with_artifacts(code_artifacts_dir(tb_opts));
-                // desk.* unmounted — see the note at the factory above.
-                // The consent bridge: a held device action reaches the human
-                // through the product's approval popup — the same queue, mode
-                // switch and ledger a tool call uses. No bridge (no slot) means
-                // a held action stays a hold: fail-closed, never a silent run.
-                // One handle for both ends (the engine's mount and the
-                // factory's fallback engine), so a standing grant the human
-                // gives is remembered by the same bridge.
-                let consent = interact
-                    .as_ref()
-                    .map(|slot| Arc::new(ConsentBridge::new(Arc::clone(slot))));
-                let engine = match consent.as_ref() {
-                    Some(bridge) => {
-                        engine.with_consent(Arc::clone(bridge) as Arc<dyn InteractionBridge>)
-                    }
-                    None => engine,
-                };
-                Some(CodeRoadEngine::Tool {
-                    engine,
-                    limits,
-                    consent,
-                })
-            }
-            (CodeExecMode::Act, Some(tb_opts)) => {
-                // M3 road: text turns are code steps through the action backend
-                // (T10c). No tool-gate approval sits on this road, so the engine
-                // policy IS the human gate: a cell's own mechanics ride (the
-                // journal audits every effect), and every external-effect class
-                // suspends to the consent popup through the interaction channel —
-                // `sh.run` today, `desk.*` now that the device pack mounts (the
-                // device methods follow the same posture as the tool road —
-                // reads and pointer moves flow, mutating input asks), the net
-                // pack when it installs. The `ExecCtxBridge` is one handle on
-                // both ends: long-lived in the engine, armed per step by the
-                // adapter.
-                let bridge = Arc::new(ExecCtxBridge::new());
-                let limits = Limits::default();
-                let engine = ExecutorBuilder::new(code_exec_journal(tb_opts)?)
-                    .with_policy(ConsentPolicy::act_road())
-                    .with_limits(limits)
-                    .with_ns(PhiNsShell::builtin())
-                    .with_artifacts(code_artifacts_dir(tb_opts))
-                    .with_interaction(bridge.clone());
-                // desk.* unmounted — see the note at the factory above.
-                Some(CodeRoadEngine::Act {
-                    engine,
-                    limits,
-                    bridge,
-                })
-            }
-        };
+    let code_engine: Option<CodeRoadEngine> = match (code_road.resolved(), session_scope.as_ref()) {
+        (CodeExecMode::Off, _) | (_, None) => None,
+        (CodeExecMode::Tool, Some(scope)) => {
+            // M2 road: `code_cell` on the tool-call protocol. The whole step
+            // already passes phimint's approval gate (`code_cell` classifies
+            // Sensitive — see approval.rs), so the cell's own mechanics ride
+            // it; what the step cannot express on its own is a *device*
+            // effect, so the device pack's methods carry their own consent
+            // posture (posture B: reads and pointer moves flow, every
+            // mutating input asks a human — see `desk_consent`).
+            let limits = Limits::default();
+            let engine = ExecutorBuilder::new(code_exec_journal(scope)?)
+                .with_policy(ConsentPolicy::tool_road())
+                .with_limits(limits)
+                .with_ns(PhiNsShell::builtin())
+                .with_artifacts(code_artifacts_dir(scope));
+            // desk.* unmounted — see the note at the factory above.
+            // The consent bridge: a held device action reaches the human
+            // through the product's approval popup — the same queue, mode
+            // switch and ledger a tool call uses. No bridge (no slot) means
+            // a held action stays a hold: fail-closed, never a silent run.
+            // One handle for both ends (the engine's mount and the
+            // factory's fallback engine), so a standing grant the human
+            // gives is remembered by the same bridge.
+            let consent = interact
+                .as_ref()
+                .map(|slot| Arc::new(ConsentBridge::new(Arc::clone(slot))));
+            let engine = match consent.as_ref() {
+                Some(bridge) => {
+                    engine.with_consent(Arc::clone(bridge) as Arc<dyn InteractionBridge>)
+                }
+                None => engine,
+            };
+            Some(CodeRoadEngine::Tool {
+                engine,
+                limits,
+                consent,
+            })
+        }
+        (CodeExecMode::Act, Some(scope)) => {
+            // M3 road: text turns are code steps through the action backend
+            // (T10c). No tool-gate approval sits on this road, so the engine
+            // policy IS the human gate: a cell's own mechanics ride (the
+            // journal audits every effect), and every external-effect class
+            // suspends to the consent popup through the interaction channel —
+            // `sh.run` today, `desk.*` now that the device pack mounts (the
+            // device methods follow the same posture as the tool road —
+            // reads and pointer moves flow, mutating input asks), the net
+            // pack when it installs. The `ExecCtxBridge` is one handle on
+            // both ends: long-lived in the engine, armed per step by the
+            // adapter. (The single resident executor pins this session's
+            // journal/captures paths for the life of the process — the
+            // act road has no per-session factory to re-point; see the
+            // Tool road's `CellSessions`.)
+            let bridge = Arc::new(ExecCtxBridge::new());
+            let limits = Limits::default();
+            let engine = ExecutorBuilder::new(code_exec_journal(scope)?)
+                .with_policy(ConsentPolicy::act_road())
+                .with_limits(limits)
+                .with_ns(PhiNsShell::builtin())
+                .with_artifacts(code_artifacts_dir(scope))
+                .with_interaction(bridge.clone());
+            // desk.* unmounted — see the note at the factory above.
+            Some(CodeRoadEngine::Act {
+                engine,
+                limits,
+                bridge,
+            })
+        }
+    };
 
     // The ns seed the act section splices in — the engine's own face, or
     // nothing when no engine mounts (off road / no session context /
@@ -272,10 +285,17 @@ pub async fn build_with_code_exec(
         // still wins at normal budgets.
         tool_output_cap = 16_000.min(core.max_result_tokens().saturating_mul(4));
 
+        // The shared scope every session-keyed store resolves its paths
+        // through — built from the same token-budget options the engine
+        // assembly above consumed (the invariant `expect` names is
+        // construction-order airtight: both derive from `token_budget_opts`).
+        let scope = session_scope
+            .clone()
+            .expect("session scope exists iff token-budget options exist");
+
         let compactor = Arc::new(TokenBudgetCompactor::new(
             core,
-            tb_opts.base_dir.clone(),
-            tb_opts.session_id.clone(),
+            Arc::clone(&scope),
             "main".to_string(),
         ));
 
@@ -283,12 +303,8 @@ pub async fn build_with_code_exec(
         crate::shell::context_rotation::set_global_compactor(Arc::clone(&compactor));
 
         // Register history + notes tools
-        let history_store = Arc::new(HistoryStore::new(&tb_opts.base_dir, &tb_opts.session_id));
-        let notes_store = Arc::new(NotesStore::new(
-            &tb_opts.base_dir,
-            &tb_opts.session_id,
-            "main",
-        ));
+        let history_store = Arc::new(HistoryStore::new_scoped(Arc::clone(&scope)));
+        let notes_store = Arc::new(NotesStore::new_scoped(Arc::clone(&scope), "main"));
 
         let mut builder = builder.context_compactor(compactor);
         for tool in create_history_tools(history_store) {
@@ -398,11 +414,10 @@ pub async fn build_with_code_exec(
                     .build(move |registry| PythonWorker::spawn(registry, limits))
                     .await
                     .context("code-exec engine must assemble")?;
-                let session_dir = token_budget_opts
-                    .as_ref()
-                    .map(code_session_dir)
+                let scope = session_scope
+                    .clone()
                     .context("code-exec needs a session context")?;
-                let factory = CellSessions::new(session_dir, limits, face, executor, consent);
+                let factory = CellSessions::new(scope, limits, face, executor, consent);
                 builder = builder.register_tool(CodeCellTool::per_session(
                     phi_agent::code_cell::TOOL_NAME,
                     Arc::new(factory),

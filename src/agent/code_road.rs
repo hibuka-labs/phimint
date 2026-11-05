@@ -1,27 +1,59 @@
 use super::*;
+#[cfg(feature = "code-exec")]
+use std::path::Path;
 
 /// The code-exec engine's journal for this session's artifacts (M2/M3): one
 /// `code_journal.jsonl` beside the session's own files.
 #[cfg(feature = "code-exec")]
-pub(super) fn code_exec_journal(tb_opts: &TokenBudgetOptions) -> Result<JournalHandle> {
-    let journal_path = code_session_dir(tb_opts).join("code_journal.jsonl");
+pub(super) fn code_exec_journal(scope: &SessionScope) -> Result<JournalHandle> {
+    let journal_path = scope.session_dir().join("code_journal.jsonl");
     let journal = phi_agent::code_cell::FileJournal::open(&journal_path)
         .context("code-exec journal must open")?;
     Ok(JournalHandle::new(Box::new(journal)))
 }
 
-/// The session's artifact directory — code journals live beside the session's
-/// own files.
-#[cfg(feature = "code-exec")]
-pub(super) fn code_session_dir(tb_opts: &TokenBudgetOptions) -> PathBuf {
-    tb_opts.base_dir.join("sessions").join(&tb_opts.session_id)
-}
-
 /// The engine's artifact store — `captures/` beside the journal (M3c, one
 /// accounting: the journal records the cut, the store holds the body).
 #[cfg(feature = "code-exec")]
-pub(super) fn code_artifacts_dir(tb_opts: &TokenBudgetOptions) -> PathBuf {
-    code_session_dir(tb_opts).join("captures")
+pub(super) fn code_artifacts_dir(scope: &SessionScope) -> PathBuf {
+    scope.session_dir().join("captures")
+}
+
+/// Handover gate for the startup probe's host executor.
+///
+/// The probe is built at agent-build time journaling to the *then* live
+/// session's tree. A `/resume` switch before the host session's first cell
+/// would hand that executor — frozen journal, frozen captures — to another
+/// session's work (the 2026-11-04 misrouting: the resumed session's audit
+/// stream landed in the abandoned bootstrap directory). `take_for` hands the
+/// probe over only for the very tree it was built for; on a mismatch it
+/// drops the probe and the caller builds a session-correct executor.
+#[cfg(feature = "code-exec")]
+struct ProbeHandover<T> {
+    probe: std::sync::Mutex<Option<T>>,
+    probe_dir: PathBuf,
+}
+
+#[cfg(feature = "code-exec")]
+impl<T> ProbeHandover<T> {
+    fn new(probe: T, probe_dir: PathBuf) -> Self {
+        Self {
+            probe: std::sync::Mutex::new(Some(probe)),
+            probe_dir,
+        }
+    }
+
+    /// The probe, if `session_dir` is the tree it was built for. A mismatch
+    /// consumes (drops) the probe — its paths are wrong for good.
+    fn take_for(&self, session_dir: &Path) -> Option<T> {
+        let mut slot = self.probe.lock().unwrap_or_else(|e| e.into_inner());
+        if self.probe_dir == session_dir {
+            slot.take()
+        } else {
+            *slot = None;
+            None
+        }
+    }
 }
 
 /// The root engine's session-id generator: process-unique numbers — a host
@@ -56,11 +88,17 @@ impl SessionIdGenerator for RootMarkedIds {
 /// second worker.
 #[cfg(feature = "code-exec")]
 pub(super) struct CellSessions {
-    session_dir: PathBuf,
+    /// The live session's storage scope — journals and captures resolve
+    /// through it at `open` time, so a `/resume` re-point moves every new
+    /// session's streams (frozen copies kept writing the abandoned bootstrap
+    /// session's trees after a switch, 2026-11-04).
+    scope: Arc<SessionScope>,
     limits: Limits,
     face: String,
-    /// The probe-built host executor, handed to the first root session.
-    root: Arc<std::sync::Mutex<Option<CodeCellExecutor<PythonWorker>>>>,
+    /// The probe-built host executor, handed to the first root session — but
+    /// only while the scope still points at the tree the probe journals to
+    /// (see [`ProbeHandover`]).
+    probe: Arc<ProbeHandover<CodeCellExecutor<PythonWorker>>>,
     /// The consent bridge for the host's own cells — a held device action
     /// reaches the human through it (`None` when the product has no
     /// interaction surface: holds stay holds).
@@ -70,17 +108,18 @@ pub(super) struct CellSessions {
 #[cfg(feature = "code-exec")]
 impl CellSessions {
     pub(super) fn new(
-        session_dir: PathBuf,
+        scope: Arc<SessionScope>,
         limits: Limits,
         face: String,
         root: CodeCellExecutor<PythonWorker>,
         consent: Option<Arc<ConsentBridge>>,
     ) -> Self {
+        let probe = Arc::new(ProbeHandover::new(root, scope.session_dir()));
         Self {
-            session_dir,
+            scope,
             limits,
             face,
-            root: Arc::new(std::sync::Mutex::new(Some(root))),
+            probe,
             consent,
         }
     }
@@ -125,16 +164,20 @@ impl SessionFactory<PythonWorker> for CellSessions {
 
     fn open(&self, session: &SessionId) -> SessionFuture<PythonWorker> {
         let root = Self::is_root(session);
-        let journal_path = self.session_dir.join(Self::journal_name(session));
-        let artifacts_path = self.session_dir.join(Self::captures_name(session));
+        // Resolved at call time, not at factory construction: a `/resume`
+        // switch may have re-pointed the scope since the agent was built.
+        let session_dir = self.scope.session_dir();
+        let journal_path = session_dir.join(Self::journal_name(session));
+        let artifacts_path = session_dir.join(Self::captures_name(session));
         let limits = self.limits;
-        let probed = Arc::clone(&self.root);
+        let probe = Arc::clone(&self.probe);
         let consent = self.consent.clone();
         Box::pin(async move {
             if root {
                 // The startup probe's executor IS the host's own — hand it
-                // over instead of spawning a second worker.
-                if let Some(executor) = probed.lock().ok().and_then(|mut slot| slot.take()) {
+                // over instead of spawning a second worker, but only while it
+                // still journals to this session's tree (see `ProbeHandover`).
+                if let Some(executor) = probe.take_for(&session_dir) {
                     return Ok(executor);
                 }
             }
@@ -213,5 +256,34 @@ impl CodeRoadEngine {
         match self {
             Self::Tool { engine, .. } | Self::Act { engine, .. } => engine.prompt_face(),
         }
+    }
+}
+
+#[cfg(all(test, feature = "code-exec"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn probe_hands_over_for_its_own_tree() {
+        let handover = ProbeHandover::new("executor", PathBuf::from("/data/sessions/a"));
+        assert_eq!(
+            handover.take_for(Path::new("/data/sessions/a")),
+            Some("executor")
+        );
+    }
+
+    /// Regression (2026-11-04 incident): a `/resume` switch before the host
+    /// session's first cell must NOT hand the probe — journaling to the
+    /// abandoned bootstrap session's tree — to the resumed session's work.
+    #[test]
+    fn probe_is_dropped_on_tree_mismatch() {
+        let handover = ProbeHandover::new("executor", PathBuf::from("/data/sessions/bootstrap"));
+        assert_eq!(handover.take_for(Path::new("/data/sessions/resumed")), None);
+        // The dropped probe is gone for good: a later switch back through a
+        // consumed slot cannot resurrect a stale handover.
+        assert_eq!(
+            handover.take_for(Path::new("/data/sessions/bootstrap")),
+            None
+        );
     }
 }
