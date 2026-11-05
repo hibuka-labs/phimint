@@ -129,12 +129,18 @@ pub async fn process_pending_title(
     generate_session_title(provider, &messages, &session_dir).await
 }
 
-/// Collect the first N user message texts.
+/// Collect the first N real user message texts. Synthetic rows (the window
+/// seed, tool-failure notices, background wakes) are machine voice — a
+/// title must come from the user's own words.
 fn collect_user_texts(messages: &[ChatMessage]) -> Vec<&str> {
     messages
         .iter()
         .filter_map(|m| match m {
-            ChatMessage::User { content, .. } => Some(content.as_str()),
+            ChatMessage::User {
+                content,
+                synthetic: false,
+                ..
+            } => Some(content.as_str()),
             _ => None,
         })
         .take(TITLE_INPUT_LIMIT)

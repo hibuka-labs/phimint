@@ -349,6 +349,7 @@ mod tests {
                 content: "q".into(),
                 images: vec![],
                 ephemeral: false,
+                synthetic: false,
             },
         ];
         assert!(!history_has_browser_use(&other_work), "no browser names");

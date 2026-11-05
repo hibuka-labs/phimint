@@ -23,14 +23,18 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use async_trait::async_trait;
 
 use phi_agent::{
-    ChatMessage, CompactionKind, CompactionOutcome, ContextCompaction, SessionId,
+    ChatMessage, CompactionKind, CompactionOutcome, ContextCompaction, HintSlot, SessionId,
     TokenBudgetAction, TokenBudgetCore, estimate_messages_tokens, persist_window_messages,
 };
 
 use phi_kernel_tools::context_rotation::{
     HistoryStore, NotesStore, SessionScope, extract_artifact_index, extract_ledger,
-    read_thread_hint,
+    extract_plan_state, read_thread_hint,
 };
+
+/// Note names shown on the hint slot's one-line notes index (see
+/// [`TokenBudgetCompactor::notes_index_line`]).
+const NOTES_INDEX_MAX: usize = 8;
 
 /// Global handle to the token-budget compactor for TUI access.
 /// Set during agent build; the TUI checks `reset_count()` after each turn
@@ -180,6 +184,36 @@ impl TokenBudgetCompactor {
         self.reset_count.load(Ordering::Relaxed)
     }
 
+    /// One-line index of the notes directory for the hint slot: the fresh
+    /// window knows what exists without spending tool calls listing it
+    /// (session 20261103_4206f951: every window paid list/read calls to
+    /// rediscover the same files). One line, capped — the slot is attention,
+    /// not a directory dump.
+    fn notes_index_line(&self) -> Option<String> {
+        let notes = NotesStore::new_scoped(Arc::clone(&self.scope), &self.agent_name);
+        let mut files = notes.list_files(None, NOTES_INDEX_MAX + 1);
+        if files.is_empty() {
+            return None;
+        }
+        let more = files.len() > NOTES_INDEX_MAX;
+        files.truncate(NOTES_INDEX_MAX);
+        let mut names: Vec<String> = files
+            .iter()
+            .map(|f| {
+                if f.chars().count() > 48 {
+                    let head: String = f.chars().take(48).collect();
+                    format!("{head}…")
+                } else {
+                    f.clone()
+                }
+            })
+            .collect();
+        if more {
+            names.push("+more".to_string());
+        }
+        Some(format!("notes/: {}", names.join(", ")))
+    }
+
     /// Append a nudge at the END, right after the latest tool result —
     /// that is where the model's attention is. Prepending buries the nudge
     /// at position 0, thousands of tokens before the work in progress, and
@@ -249,8 +283,12 @@ impl ContextCompaction for TokenBudgetCompactor {
                     // window, which is both non-reinjecting AND restorable.
                 }
 
-                // 2. The model's own handoff note, if it wrote one.
-                let thread_hint = read_thread_hint(
+                // 2. The model's own handoff note, if it wrote one. Its
+                //    presence drives the seed variant in the core: with a
+                //    handoff the seed points at the hint slot above, without
+                //    one it says to write the note — no guaranteed
+                //    `thread_hint.md` probe either way.
+                let handoff = read_thread_hint(
                     self.scope.base_dir(),
                     &self.scope.session_id(),
                     &self.agent_name,
@@ -264,29 +302,55 @@ impl ContextCompaction for TokenBudgetCompactor {
                 //    windows re-read the same files). Mirrored into notes
                 //    so `notes_list_files` is never empty at the minimum
                 //    budget. Best effort on both I/O.
+                let notes = NotesStore::new_scoped(Arc::clone(&self.scope), &self.agent_name);
                 let ledger = extract_ledger(messages);
-                if let Some(text) = &ledger {
-                    let notes = NotesStore::new_scoped(Arc::clone(&self.scope), &self.agent_name);
-                    if let Err(e) = notes.write_file("activity_ledger.md", text) {
-                        tracing::warn!(error = %e, "failed to mirror activity ledger to notes");
-                    }
+                if let Some(text) = &ledger
+                    && let Err(e) = notes.write_file("activity_ledger.md", text)
+                {
+                    tracing::warn!(error = %e, "failed to mirror activity ledger to notes");
+                }
+                // 2b-2. Plan state (privileged channel): the live
+                //    `update_plan` objective+steps, verbatim and uncapped —
+                //    the display-only protocol forgets everything at a
+                //    rotation while the task is still on its checklist.
+                //    Mirrored to notes/plan_state.md; a window that made no
+                //    plan call reads the mirror back, so the plan survives
+                //    rotation until the model actually changes it.
+                let extracted_plan = extract_plan_state(messages);
+                let plan = extracted_plan.clone().or_else(|| {
+                    notes
+                        .read_file("plan_state.md", None, None)
+                        .ok()
+                        .filter(|text| !text.trim().is_empty())
+                });
+                if let Some(text) = &extracted_plan
+                    && let Err(e) = notes.write_file("plan_state.md", text)
+                {
+                    tracing::warn!(error = %e, "failed to mirror plan state to notes");
                 }
                 // 2c. Mechanical artifact index (M3c): what the outgoing
                 //    window spilled to the artifact store. The bodies travel
                 //    with the archive but stay fetchable (`obs.fetch('<id>')`)
                 //    — the index is their part in the fresh window.
                 let artifact_index = extract_artifact_index(messages);
-                // Slot order: hint, artifact index, ledger — the ledger goes
-                // LAST, freshest, closest to the seed where attention is.
-                let thread_hint = [thread_hint, artifact_index, ledger]
-                    .into_iter()
-                    .flatten()
-                    .reduce(|acc, part| format!("{acc}\n\n{part}"));
+                // 2d. Notes index: computed AFTER the mirrors above, so the
+                //    line reflects what the notes directory holds now. Slot
+                //    order (handoff, plan, notes index, artifact index,
+                //    ledger — the ledger LAST, freshest, closest to the seed
+                //    where attention is) is core policy.
+                let notes_index = self.notes_index_line();
+                let hint = HintSlot {
+                    handoff,
+                    plan,
+                    notes_index,
+                    artifact_index,
+                    ledger,
+                };
 
                 // 3. Assemble + commit the fresh window.
-                let new_messages =
-                    self.core
-                        .build_reset_messages(messages, thread_hint, previous_window);
+                let new_messages = self
+                    .core
+                    .build_reset_messages(messages, hint, previous_window);
                 let new_window = self.core.commit_reset();
                 self.reset_count.fetch_add(1, Ordering::Relaxed);
 
@@ -521,12 +585,37 @@ mod tests {
             }
             _ => panic!("expected thread hint message"),
         }
-        match &result[2] {
-            ChatMessage::System { content, .. } => {
-                assert!(content.contains("thread_hint"));
-                assert!(content.contains("remember the flipbook"));
+        match &result[5] {
+            ChatMessage::User { content, .. } => {
+                assert_eq!(
+                    content, "Reconstruct state.",
+                    "handoff present → seed variant"
+                );
             }
-            _ => panic!("expected thread hint message"),
+            _ => panic!("expected seed message"),
+        }
+    }
+
+    /// ③ The hint slot carries a one-line notes index computed AFTER the
+    /// ledger mirror: the fresh window knows what the notes directory holds
+    /// without spending tool calls listing it.
+    #[test]
+    fn reset_hint_slot_carries_notes_index() {
+        let tmp = TempDir::new().unwrap();
+        let core = small_core();
+        let reset_point = core.hard_limit() - core.base_overhead();
+        let shell = shell_with(core, &tmp);
+        let msgs = work_msgs_with_tools(shell.core(), reset_point);
+
+        assert!(shell.compact_sync(&msgs).is_some()); // fallback hold
+        let result = shell.compact_sync(&msgs).expect("reset must fire");
+        assert_eq!(result.kind, CompactionKind::Reset);
+        // The mirror lands first, so the index lists the fresh ledger.
+        match &result.messages[2] {
+            ChatMessage::System { content, .. } => {
+                assert!(content.contains("notes/: activity_ledger.md"), "{content}");
+            }
+            _ => panic!("expected hint slot"),
         }
     }
 
@@ -620,6 +709,96 @@ mod tests {
             .join("activity_ledger.md");
         let text = std::fs::read_to_string(&mirrored).unwrap();
         assert!(text.contains("- read README.md"));
+    }
+
+    #[test]
+    fn reset_hint_carries_plan_state_and_mirrors_it() {
+        let tmp = TempDir::new().unwrap();
+        let core = small_core();
+        let reset_point = core.hard_limit() - core.base_overhead();
+        let shell = shell_with(core, &tmp);
+        let mut msgs = work_msgs_with_tools(shell.core(), reset_point);
+        msgs.push(ChatMessage::Assistant {
+            content: None,
+            reasoning_content: None,
+            thinking_signature: None,
+            tool_calls: Some(vec![phi_agent::llm_trait::ToolCallMessage {
+                id: "p1".into(),
+                name: "update_plan".into(),
+                arguments: serde_json::json!({
+                    "objective": "Ship the flipbook export",
+                    "plan": [{"step": "wire the exporter", "status": "in_progress"}],
+                })
+                .to_string(),
+            }]),
+        });
+
+        assert!(shell.compact_sync(&msgs).is_some()); // fallback hold
+        let result = shell.compact_sync(&msgs).expect("reset must fire");
+        let result = result.messages;
+        match &result[2] {
+            ChatMessage::System { content, .. } => {
+                assert!(content.contains("<plan>"), "{content}");
+                assert!(
+                    content.contains("Objective: Ship the flipbook export"),
+                    "{content}"
+                );
+                assert!(
+                    content.contains("- [in_progress] wire the exporter"),
+                    "{content}"
+                );
+                // Plan travels with the hint, before navigation and the ledger.
+                let plan_pos = content.find("<plan>").unwrap();
+                let ledger_pos = content.find("<activity_ledger>").unwrap();
+                assert!(plan_pos < ledger_pos, "plan must come before the ledger");
+            }
+            _ => panic!("expected combined hint message"),
+        }
+        // Mirrored to notes: the plan outlives the window it came from even
+        // if the model never calls the tool again.
+        let mirrored = tmp
+            .path()
+            .join("notes")
+            .join("test_session")
+            .join("main")
+            .join("plan_state.md");
+        let text = std::fs::read_to_string(&mirrored).unwrap();
+        assert!(
+            text.contains("Objective: Ship the flipbook export"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn plan_state_survives_a_quiet_window_via_the_mirror() {
+        // Window N carried a plan and mirrored it; window N+1 has no
+        // update_plan call at all — the mirror keeps the plan in the hint
+        // (the display-only protocol would otherwise forget it here).
+        let tmp = TempDir::new().unwrap();
+        let hint_dir = tmp.path().join("notes").join("test_session").join("main");
+        std::fs::create_dir_all(&hint_dir).unwrap();
+        std::fs::write(
+            hint_dir.join("plan_state.md"),
+            "<plan>\nObjective: Ship the flipbook export\n- [in_progress] wire the exporter\n</plan>",
+        )
+        .unwrap();
+
+        let core = small_core();
+        let reset_point = core.hard_limit() - core.base_overhead();
+        let shell = shell_with(core, &tmp);
+        let msgs = work_msgs_with_tools(shell.core(), reset_point);
+
+        assert!(shell.compact_sync(&msgs).is_some()); // fallback hold
+        let result = shell.compact_sync(&msgs).expect("reset must fire");
+        match &result.messages[2] {
+            ChatMessage::System { content, .. } => {
+                assert!(
+                    content.contains("Objective: Ship the flipbook export"),
+                    "{content}"
+                );
+            }
+            _ => panic!("expected combined hint message"),
+        }
     }
 
     #[test]
