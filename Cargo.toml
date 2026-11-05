@@ -37,6 +37,10 @@ phi-kernel-tools = { version = "0.12.0", features = ["context", "shell"] }
 # Chat-style TUI components (lines/transcript/stream/markdown/completion/…),
 # extracted from src/ui/ — the product keeps only the shell (app/render/handlers).
 phi-tui = "0.3.0"
+# The product shell (app/render/handlers/run + the ShellSpec/ShellHandles
+# wire-up vocabulary). `version` is mandatory for publishing (a bare path dep
+# is rejected by `cargo publish`).
+phi-agent-tui = "0.1.0"
 # Language intelligence (lsp/lang/repomap/ripgrep/diagnostics cores), extracted
 # from src/lsp.rs + src/lang.rs + src/tools cores — the product keeps the Tool
 # shells. Features declared explicitly per the distillation plan.
@@ -111,4 +115,3 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 # The capability vocabulary, for tests that declare a pack (the desk consent
 # posture and the browser face).
 phi-cap = { version = "0.1.0" }
-
