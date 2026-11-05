@@ -147,7 +147,7 @@ fn the_pause_screen_is_not_the_launch_target() {
     let (host, mut rx, urls) = host_recording_urls();
     host.note_canvas("http://127.0.0.1:4242", 4242);
     host.on_push(&receipt(1, "布局选择", 3, false));
-    host.on_push(&pause(2, "继续在终端讨论…"));
+    host.on_push(&pause(2, "Continue in the terminal…"));
     host.on_waiting_push(2);
 
     assert_eq!(
@@ -208,12 +208,12 @@ fn a_replayed_history_restores_the_launch_target_after_a_rebind() {
     let (host, _rx, urls) = host_recording_urls();
     host.note_canvas("http://127.0.0.1:4242", 4242);
     host.on_push(&receipt(1, "布局选择", 3, false));
-    host.on_push(&pause(2, "继续在终端讨论…"));
+    host.on_push(&pause(2, "Continue in the terminal…"));
 
     host.note_canvas("http://127.0.0.1:4243", 4243);
     for replayed in [
         receipt(1, "布局选择", 3, false),
-        pause(2, "继续在终端讨论…"),
+        pause(2, "Continue in the terminal…"),
     ] {
         host.on_push(&replayed);
     }

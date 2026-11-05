@@ -16,25 +16,28 @@ fn status_walks_the_lifecycle_faces() {
     let text = |facts: &AnswerFacts| host.status_line(facts).unwrap().text;
 
     // Bound, no screen yet, consent open.
-    assert_eq!(text(&facts()), "canvas ● localhost:4242 · 待同意");
+    assert_eq!(text(&facts()), "canvas ● localhost:4242 · awaiting consent");
 
     host.on_push(&receipt(1, "布局选择", 3, false));
     assert_eq!(host.poll_consent(), None); // nothing pending
     // Screen up, still waiting for the y.
-    assert_eq!(text(&facts()), "canvas ● localhost:4242 · 待同意");
+    assert_eq!(text(&facts()), "canvas ● localhost:4242 · awaiting consent");
     host.request_user_launch("http://127.0.0.1:4242"); // consent settled
-    assert_eq!(text(&facts()), "canvas ● localhost:4242 · 3 个选项待选");
+    assert_eq!(
+        text(&facts()),
+        "canvas ● localhost:4242 · 3 options to pick"
+    );
 
     // Answer consumed → 空闲.
     let mut answered = facts();
     answered.answered.insert(1);
-    assert_eq!(text(&answered), "canvas ● localhost:4242 · 空闲");
+    assert_eq!(text(&answered), "canvas ● localhost:4242 · idle");
 
     host.note_closed();
-    assert_eq!(text(&answered), "画布已关闭 · 可重开");
+    assert_eq!(text(&answered), "canvas closed · can reopen");
     host.note_failed();
     let line = host.status_line(&answered).unwrap();
-    assert_eq!(line.text, "canvas ● 已断开 (ctrl+b 重开)");
+    assert_eq!(line.text, "canvas ● disconnected (ctrl+b reopen)");
     assert!(line.alert);
 }
 
@@ -50,7 +53,7 @@ fn push_recording_is_idempotent_per_seq() {
     // The newest screen is current — a display-only one reads 展示中.
     assert_eq!(
         host.status_line(&facts()).unwrap().text,
-        "canvas ● localhost:4242 · 展示中"
+        "canvas ● localhost:4242 · display only"
     );
 
     // The history is not doubled: the waiting summary's 待定 list would name
@@ -65,7 +68,7 @@ fn push_recording_is_idempotent_per_seq() {
     assert_eq!(
         env.body_html.matches("布局选择").count(),
         1,
-        "one 待定 entry, not two"
+        "one Pending entry, not two"
     );
 }
 
@@ -82,15 +85,15 @@ fn turn_end_pushes_the_waiting_screen_once() {
     );
 
     // Turn 1: the pick was consumed during this turn's answer.
-    host.on_answered(&["(画布选择) 已选 B · 顶部横向导航".to_string()]);
+    host.on_answered(&["(canvas pick) picked B · 顶部横向导航".to_string()]);
     let mut answered = facts();
     answered.answered.insert(1);
     let env = host
         .on_root_turn_end(&answered, false)
         .expect("done screen ⇒ waiting screen");
-    assert_eq!(env.title, "继续在终端讨论…");
-    assert!(env.body_html.contains("已定"), "{}", env.body_html);
-    host.on_push(&receipt(2, "继续在终端讨论…", 0, true));
+    assert_eq!(env.title, "Continue in the terminal…");
+    assert!(env.body_html.contains("Decided"), "{}", env.body_html);
+    host.on_push(&receipt(2, "Continue in the terminal…", 0, true));
     host.on_waiting_push(2);
 
     // Turn 2: the waiting screen must not repaint itself.
@@ -116,7 +119,7 @@ fn waiting_summary_carries_the_picks_and_the_open_questions() {
     let host = CanvasHost::with_launch_fn(mpsc::unbounded_channel().0, |_| LaunchOutcome::Spawned);
     host.note_canvas("http://127.0.0.1:4242", 4242);
     host.on_push(&receipt(1, "布局选择", 3, false));
-    host.on_answered(&["(画布选择) 已选 B · 顶部横向导航".to_string()]);
+    host.on_answered(&["(canvas pick) picked B · 顶部横向导航".to_string()]);
     host.on_push(&receipt(2, "配色方向", 2, false)); // never answered
     host.on_push(&receipt(3, "参考 mockup", 0, true)); // display-only, current
 
@@ -133,12 +136,12 @@ fn waiting_summary_carries_the_picks_and_the_open_questions() {
         .on_root_turn_end(&answered, false)
         .expect("stale display-only ⇒ waiting");
     assert!(
-        env.body_html.contains("已选 B · 顶部横向导航"),
+        env.body_html.contains("picked B · 顶部横向导航"),
         "{}",
         env.body_html
     );
     assert!(
-        env.body_html.contains("配色方向 · 2 个选项"),
+        env.body_html.contains("配色方向 · 2 options"),
         "{}",
         env.body_html
     );

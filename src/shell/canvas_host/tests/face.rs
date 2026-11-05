@@ -12,7 +12,7 @@ fn status_count_comes_from_the_envelope_options() {
         queued: 0,
         queued_labels: Vec::new(),
     });
-    assert_eq!(line.text, "canvas ● localhost:32123 · 3 个选项待选");
+    assert_eq!(line.text, "canvas ● localhost:32123 · 3 options to pick");
     assert!(!line.alert);
 }
 
@@ -29,40 +29,40 @@ fn status_states_match_the_spec_wording() {
     };
     let show = |input: &StatusInput| status_line(input).text;
 
-    assert_eq!(show(&base), "canvas ● localhost:80 · 空闲");
+    assert_eq!(show(&base), "canvas ● localhost:80 · idle");
     assert_eq!(
         show(&StatusInput {
             awaiting_consent: true,
             ..base.clone()
         }),
-        "canvas ● localhost:80 · 待同意"
+        "canvas ● localhost:80 · awaiting consent"
     );
     assert_eq!(
         show(&StatusInput {
             screen: ScreenStatus::DisplayOnly,
             ..base.clone()
         }),
-        "canvas ● localhost:80 · 展示中"
+        "canvas ● localhost:80 · display only"
     );
     assert_eq!(
         show(&StatusInput {
             screen: ScreenStatus::Waiting,
             ..base.clone()
         }),
-        "canvas ● localhost:80 · 空闲"
+        "canvas ● localhost:80 · idle"
     );
     assert_eq!(
         show(&StatusInput {
             closed: true,
             ..base.clone()
         }),
-        "画布已关闭 · 可重开"
+        "canvas closed · can reopen"
     );
     let failed = status_line(&StatusInput {
         failed: true,
         ..base
     });
-    assert_eq!(failed.text, "canvas ● 已断开 (ctrl+b 重开)");
+    assert_eq!(failed.text, "canvas ● disconnected (ctrl+b reopen)");
     assert!(failed.alert, "the crash face is the red one (row 16)");
 }
 
@@ -101,7 +101,7 @@ fn screen_status_tracks_the_mailbox_face() {
 fn queued_pick_wins_the_face_so_a_busy_click_stays_visible() {
     // Walkthrough 烦②: a click during a long turn looked like nothing
     // happened. The pick was only queued (M2 never injects mid-turn), and the
-    // old face kept saying `3 个选项待选` — silent. Now the debt is spelled out
+    // old face kept saying `3 options to pick` — silent. Now the debt is spelled out
     // and *named* — the count alone only raises "which one?".
     let base = StatusInput {
         port: 80,
@@ -114,7 +114,7 @@ fn queued_pick_wins_the_face_so_a_busy_click_stays_visible() {
     };
     assert_eq!(
         status_line(&base).text,
-        "canvas ● localhost:80 · 已选待送：浅色 SaaS",
+        "canvas ● localhost:80 · picked, queued: 浅色 SaaS",
         "a frozen pick outranks the screen face and names itself"
     );
     assert_eq!(
@@ -124,7 +124,7 @@ fn queued_pick_wins_the_face_so_a_busy_click_stays_visible() {
             ..base.clone()
         })
         .text,
-        "canvas ● localhost:80 · 2 个已选待送：浅色 SaaS、深色系",
+        "canvas ● localhost:80 · 2 picked, queued: 浅色 SaaS, 深色系",
         "one line per screen: the count is the queued screens, the labels name the picks"
     );
     assert_eq!(
@@ -133,7 +133,7 @@ fn queued_pick_wins_the_face_so_a_busy_click_stays_visible() {
             ..base.clone()
         })
         .text,
-        "canvas ● localhost:80 · 1 个已选待送",
+        "canvas ● localhost:80 · 1 picked, queued",
         "the bare count face survives when nothing is named"
     );
     // A long CJK label is cut to the bar's budget, never shoved off it.
@@ -142,7 +142,7 @@ fn queued_pick_wins_the_face_so_a_busy_click_stays_visible() {
         ..base.clone()
     });
     assert!(
-        long.text.contains("已选待送：") && long.text.ends_with('…'),
+        long.text.contains("picked, queued: ") && long.text.ends_with('…'),
         "truncated, not overflowed: {}",
         long.text
     );
@@ -153,7 +153,7 @@ fn queued_pick_wins_the_face_so_a_busy_click_stays_visible() {
             ..base.clone()
         })
         .text,
-        "canvas ● 已断开 (ctrl+b 重开)"
+        "canvas ● disconnected (ctrl+b reopen)"
     );
     assert_eq!(
         status_line(&StatusInput {
@@ -162,7 +162,7 @@ fn queued_pick_wins_the_face_so_a_busy_click_stays_visible() {
             ..base
         })
         .text,
-        "canvas ● localhost:80 · 待同意"
+        "canvas ● localhost:80 · awaiting consent"
     );
 }
 
@@ -246,15 +246,15 @@ fn waiting_needs_a_screen_to_replace() {
 #[test]
 fn waiting_envelope_is_the_fixed_line_plus_summary() {
     let env = waiting_envelope(
-        &["已选 B · 顶部横向导航".to_string()],
-        &["配色 · 3 个选项".to_string()],
+        &["picked B · 顶部横向导航".to_string()],
+        &["配色 · 3 options".to_string()],
     );
-    assert_eq!(env.title, "继续在终端讨论…");
+    assert_eq!(env.title, "Continue in the terminal…");
     assert!(env.is_display_only(), "the waiting screen offers no choice");
-    assert!(env.body_html.contains("已定"));
-    assert!(env.body_html.contains("已选 B · 顶部横向导航"));
-    assert!(env.body_html.contains("待定"));
-    assert!(env.body_html.contains("配色 · 3 个选项"));
+    assert!(env.body_html.contains("Decided"));
+    assert!(env.body_html.contains("picked B · 顶部横向导航"));
+    assert!(env.body_html.contains("Pending"));
+    assert!(env.body_html.contains("配色 · 3 options"));
 }
 
 #[test]
@@ -267,7 +267,7 @@ fn waiting_envelope_is_interstitial_not_a_version() {
 
 #[test]
 fn waiting_envelope_escapes_model_supplied_labels() {
-    let env = waiting_envelope(&["已选 <script>alert(1)</script>".to_string()], &[]);
+    let env = waiting_envelope(&["picked <script>alert(1)</script>".to_string()], &[]);
     assert!(
         !env.body_html.contains("<script>"),
         "labels are model output — the summary must not inject HTML: {}",
@@ -278,12 +278,12 @@ fn waiting_envelope_escapes_model_supplied_labels() {
 
 #[test]
 fn answer_lines_are_picked_out_of_a_merged_submit() {
-    let merged = "看一下这两个方向\n\n(画布选择) 已选 B · 顶部横向导航\n(画布选择) 跳过 · 不做选择";
+    let merged = "看一下这两个方向\n\n(canvas pick) picked B · 顶部横向导航\n(canvas pick) skipped · no choice";
     assert_eq!(
         canvas_answer_lines(merged),
         vec![
-            "(画布选择) 已选 B · 顶部横向导航".to_string(),
-            "(画布选择) 跳过 · 不做选择".to_string(),
+            "(canvas pick) picked B · 顶部横向导航".to_string(),
+            "(canvas pick) skipped · no choice".to_string(),
         ]
     );
     assert!(canvas_answer_lines("just typed text").is_empty());

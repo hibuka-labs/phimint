@@ -19,16 +19,16 @@
 //!   behind the typed text as one message. Drain never touches the composer
 //!   buffer; the merge is composed only at the Enter submit site.
 //!
-//! Synthesis is locked by M2d — every form carries the `(画布选择)` prefix so
-//! transcript and (later) design-decision records can tell browser picks from
-//! typed text:
+//! Synthesis is locked by M2d — every form carries the `(canvas pick)` prefix
+//! so transcript and (later) design-decision records can tell browser picks
+//! from typed text:
 //!
 //! | case | text |
 //! |---|---|
-//! | single | `(画布选择) 已选 B · 侧边栏导航` |
-//! | multiselect confirm | `(画布选择) 已选 A、C · 侧边栏导航, 混合式` |
-//! | correction after submit | `(画布选择) 更正：已选 C · 混合式` |
-//! | skip | `(画布选择) 跳过 · 不做选择` |
+//! | single | `(canvas pick) picked B · 侧边栏导航` |
+//! | multiselect confirm | `(canvas pick) picked A, C · 侧边栏导航, 混合式` |
+//! | correction after submit | `(canvas pick) correction: picked C · 混合式` |
+//! | skip | `(canvas pick) skipped · no choice` |
 //! | display-only (`options: []`) | no message, clicks carry no semantics |
 //!
 //! Drafts are synthesized at the boundary, not at click time: an unsent pick
@@ -47,7 +47,7 @@ use phi_canvas::{CanvasEvent, EventAction, ScreenEnvelope};
 /// M2d's answer marker: every synthesized pick line starts with it. Also the
 /// 1C waiting summary's filter — merged submits (M2e) can bury picks behind
 /// typed text, and the prefix is what finds them again.
-pub(crate) const ANSWER_PREFIX: &str = "(画布选择)";
+pub(crate) const ANSWER_PREFIX: &str = "(canvas pick)";
 
 /// M2b's rapid-click coalesce window (single-select only; M2b exempts
 /// multiselect). The spec names it a "1 秒连点窗" but also budgets click→echo
@@ -267,7 +267,7 @@ impl ClickMailbox {
     }
 
     /// Enter boundary (M2e): merge pending picks behind the typed text —
-    /// typed first, one blank line, then the `(画布选择)` lines — and consume
+    /// typed first, one blank line, then the `(canvas pick)` lines — and consume
     /// them. Unconfirmed multi-select toggle sets do *not* merge (M2b commits
     /// only on Confirm); they stay queued. Returns `None` when nothing is
     /// pending, so the caller submits its typed text alone.
@@ -327,7 +327,7 @@ impl ClickMailbox {
 
     /// Screen seqs whose answer is frozen but not yet delivered — a draft
     /// sitting behind a held boundary (busy turn / composer holding for Enter).
-    /// This is the busy-click ack (`已选待送`): the pick *did* land, it just
+    /// This is the busy-click ack (the picked, queued face): the pick *did* land, it just
     /// cannot become a user message mid-turn (M2). Stricter than
     /// [`Self::pending_screens`] on purpose: a half-toggled multi-select is
     /// still being interacted with, not waiting to be sent.
@@ -351,7 +351,7 @@ impl ClickMailbox {
                 |state| match state.draft.as_ref().expect("filtered on some") {
                     Draft::Single { option_id, .. } => vec![state.label_for(option_id)],
                     Draft::Confirmed { ids } => ids.iter().map(|id| state.label_for(id)).collect(),
-                    Draft::Skipped => vec!["跳过".to_string()],
+                    Draft::Skipped => vec!["skipped".to_string()],
                 },
             )
             .collect()
@@ -406,7 +406,7 @@ impl ClickMailbox {
 /// sent an answer ("提交后再点同一屏").
 fn synthesize(state: &ScreenState, draft: &Draft) -> String {
     let correction = if state.submitted.is_some() {
-        "更正："
+        "correction: "
     } else {
         ""
     };
@@ -415,7 +415,7 @@ fn synthesize(state: &ScreenState, draft: &Draft) -> String {
             pick_line(state, std::slice::from_ref(option_id), correction)
         }
         Draft::Confirmed { ids } => pick_line(state, ids, correction),
-        Draft::Skipped => format!("{ANSWER_PREFIX} {correction}跳过 · 不做选择"),
+        Draft::Skipped => format!("{ANSWER_PREFIX} {correction}skipped · no choice"),
     }
 }
 
@@ -446,13 +446,13 @@ fn is_same_answer(submitted: Option<&Vec<String>>, ids: &[String]) -> bool {
     sent == ids
 }
 
-/// `(画布选择) [更正：]已选 {ids} · {labels}` — ids in click order joined by
-/// `、`, labels in the same order joined by `, ` (M2d).
+/// `(canvas pick) [correction: ]picked {ids} · {labels}` — ids in click order
+/// joined by `, `, labels in the same order joined by `, ` (M2d).
 fn pick_line(state: &ScreenState, ids: &[String], correction: &str) -> String {
     let labels: Vec<String> = ids.iter().map(|id| state.label_for(id)).collect();
     format!(
-        "{ANSWER_PREFIX} {correction}已选 {} · {}",
-        ids.join("、"),
+        "{ANSWER_PREFIX} {correction}picked {} · {}",
+        ids.join(", "),
         labels.join(", ")
     )
 }

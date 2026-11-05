@@ -152,5 +152,6 @@ the host generates it from `options`.
 ## Compare (「对比」)
 
 Two versions side by side, or one wiped over the other with a slider, plus a
-list of the fields that changed. The host's pause screen (「继续在终端讨论…」)
+list of the fields that changed. The host's pause screen ("Continue in the
+terminal…")
 is not a version — the history is the design only.

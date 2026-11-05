@@ -474,7 +474,7 @@ mod tests {
         }
 
         /// The decision record is the bridge into `/spec`: fixed headings, and
-        /// a pick is only ever what the user actually chose — `(画布选择)` or
+        /// a pick is only ever what the user actually chose — `(canvas pick)` or
         /// the `ask_user` result — so the record must not grow a rationale the
         /// user never gave.
         #[test]
@@ -483,10 +483,10 @@ mod tests {
                 "decision record rule",
                 &[
                     "notes/design-decisions.md",
-                    "## 定了什么",
-                    "## 为什么",
-                    "## 还有什么没定",
-                    "选了 <label>",
+                    "## What was decided",
+                    "## Why",
+                    "## What's still open",
+                    "picked <label>",
                     "or from `ask_user`",
                     "never a rationale you invented after the fact",
                 ],
@@ -498,10 +498,10 @@ mod tests {
             assert_rules(
                 "lifecycle rule",
                 &[
-                    "继续在终端讨论…", // waiting 屏由 host 自动推
+                    "Continue in the terminal…", // the waiting screen is pushed by the host
                     "You never craft that screen",
                     "never retry `canvas_open` to force a browser open",
-                    "(画布选择)", // M2 answer prefix the model must recognize
+                    "(canvas pick)", // M2 answer prefix the model must recognize
                 ],
             );
         }

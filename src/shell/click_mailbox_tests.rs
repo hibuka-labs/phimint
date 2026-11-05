@@ -68,7 +68,7 @@ fn single_select_synthesizes_m2d_format() {
 
     assert_eq!(
         mailbox.take_submit(t0 + CLICK_COALESCE, false, false),
-        Some("(画布选择) 已选 b · 顶部横向导航".to_string())
+        Some("(canvas pick) picked b · 顶部横向导航".to_string())
     );
 }
 
@@ -81,7 +81,7 @@ fn skip_synthesizes_locked_text() {
 
     assert_eq!(
         mailbox.take_submit(t0, false, false),
-        Some("(画布选择) 跳过 · 不做选择".to_string())
+        Some("(canvas pick) skipped · no choice".to_string())
     );
 }
 
@@ -93,7 +93,7 @@ fn correction_prefix_only_after_submit() {
     mailbox.push_event(t0, &select(1, "b"), Some(&env));
     assert_eq!(
         mailbox.take_submit(t0 + CLICK_COALESCE, false, false),
-        Some("(画布选择) 已选 b · 顶部横向导航".to_string())
+        Some("(canvas pick) picked b · 顶部横向导航".to_string())
     );
 
     // Same screen again: "提交后再点同一屏" → correction, new message, no rollback.
@@ -101,7 +101,7 @@ fn correction_prefix_only_after_submit() {
     mailbox.push_event(t1, &select(1, "c"), Some(&env));
     assert_eq!(
         mailbox.take_submit(t1 + CLICK_COALESCE, false, false),
-        Some("(画布选择) 更正：已选 c · 混合式".to_string())
+        Some("(canvas pick) correction: picked c · 混合式".to_string())
     );
 }
 
@@ -116,7 +116,7 @@ fn skip_after_submit_is_also_a_correction() {
     mailbox.push_event(t0, &event(1, EventAction::Skip), Some(&env));
     assert_eq!(
         mailbox.take_submit(t0, false, false),
-        Some("(画布选择) 更正：跳过 · 不做选择".to_string())
+        Some("(canvas pick) correction: skipped · no choice".to_string())
     );
 }
 
@@ -195,7 +195,7 @@ fn same_multiselect_set_after_submit_is_absorbed_silently() {
     mailbox.push_event(t0, &event(1, EventAction::Confirm), Some(&env));
     assert_eq!(
         mailbox.take_submit(t0, false, false),
-        Some("(画布选择) 更正：已选 b · 顶部横向导航".to_string())
+        Some("(canvas pick) correction: picked b · 顶部横向导航".to_string())
     );
 }
 
@@ -230,7 +230,10 @@ fn multiple_due_screens_compose_one_message() {
 
     assert_eq!(
         mailbox.take_submit(t0 + CLICK_COALESCE, false, false),
-        Some("(画布选择) 已选 a · 侧边栏导航\n(画布选择) 已选 b · 顶部横向导航".to_string())
+        Some(
+            "(canvas pick) picked a · 侧边栏导航\n(canvas pick) picked b · 顶部横向导航"
+                .to_string()
+        )
     );
 }
 
@@ -247,7 +250,7 @@ fn the_same_pick_twice_is_one_answer() {
 
     assert_eq!(
         mailbox.take_submit(t0 + CLICK_COALESCE, false, false),
-        Some("(画布选择) 已选 b · 顶部横向导航".to_string())
+        Some("(canvas pick) picked b · 顶部横向导航".to_string())
     );
 }
 
@@ -263,7 +266,7 @@ fn different_picks_on_two_versions_keep_the_trail() {
 
     assert_eq!(
         mailbox.take_submit(t0 + CLICK_COALESCE, false, false),
-        Some("(画布选择) 已选 b · 顶部横向导航\n(画布选择) 已选 c · 混合式".to_string())
+        Some("(canvas pick) picked b · 顶部横向导航\n(canvas pick) picked c · 混合式".to_string())
     );
 }
 
@@ -302,7 +305,7 @@ fn label_sanitize_strips_newlines_and_leading_slash() {
     let message = mailbox
         .take_submit(t0 + CLICK_COALESCE, false, false)
         .expect("pick must synthesize");
-    assert_eq!(message, "(画布选择) 已选 a · ／quit evil");
+    assert_eq!(message, "(canvas pick) picked a · ／quit evil");
     // Row 12: synthesized text can never trip slash-command interception.
     assert!(!message.starts_with('/'));
     assert!(!message.contains('\n'));
@@ -342,7 +345,7 @@ fn multiselect_confirm_click_order_ids_and_labels() {
     // Click order in the ids, same order in the labels (M2d).
     assert_eq!(
         mailbox.take_submit(t0, false, false),
-        Some("(画布选择) 已选 c、a · 混合式, 侧边栏导航".to_string())
+        Some("(canvas pick) picked c, a · 混合式, 侧边栏导航".to_string())
     );
 }
 
@@ -358,7 +361,7 @@ fn multiselect_reclick_toggles_off() {
 
     assert_eq!(
         mailbox.take_submit(t0, false, false),
-        Some("(画布选择) 已选 c · 混合式".to_string())
+        Some("(canvas pick) picked c · 混合式".to_string())
     );
 }
 
@@ -371,7 +374,7 @@ fn multiselect_confirm_without_selection_is_skip() {
 
     assert_eq!(
         mailbox.take_submit(t0, false, false),
-        Some("(画布选择) 跳过 · 不做选择".to_string())
+        Some("(canvas pick) skipped · no choice".to_string())
     );
 }
 
@@ -388,14 +391,14 @@ fn multiselect_confirm_freezes_set_later_toggles_need_new_confirm() {
 
     assert_eq!(
         mailbox.take_submit(t0, false, false),
-        Some("(画布选择) 已选 a · 侧边栏导航".to_string())
+        Some("(canvas pick) picked a · 侧边栏导航".to_string())
     );
     assert!(mailbox.has_pending(), "unconfirmed toggle must stay queued");
 
     mailbox.push_event(t0, &event(1, EventAction::Confirm), Some(&env));
     assert_eq!(
         mailbox.take_submit(t0, false, false),
-        Some("(画布选择) 更正：已选 a、b · 侧边栏导航, 顶部横向导航".to_string())
+        Some("(canvas pick) correction: picked a, b · 侧边栏导航, 顶部横向导航".to_string())
     );
 }
 
@@ -410,7 +413,7 @@ fn skip_clears_multiselect_toggles() {
     // Skip answers "nothing" and empties the toggle set.
     assert_eq!(
         mailbox.take_submit(t0, false, false),
-        Some("(画布选择) 跳过 · 不做选择".to_string())
+        Some("(canvas pick) skipped · no choice".to_string())
     );
 
     // The cleared set means a later empty confirm is another "nothing" —
@@ -432,7 +435,7 @@ fn multiselect_confirm_has_no_coalesce_window() {
 
     assert_eq!(
         mailbox.take_submit(t0, false, false),
-        Some("(画布选择) 已选 a · 侧边栏导航".to_string())
+        Some("(canvas pick) picked a · 侧边栏导航".to_string())
     );
 }
 
@@ -453,7 +456,7 @@ fn single_coalesce_reports_only_the_last_click() {
             false,
             false
         ),
-        Some("(画布选择) 已选 b · 顶部横向导航".to_string())
+        Some("(canvas pick) picked b · 顶部横向导航".to_string())
     );
 }
 
@@ -477,7 +480,7 @@ fn coalesce_window_debounces_on_newer_click() {
             false,
             false
         ),
-        Some("(画布选择) 已选 c · 混合式".to_string())
+        Some("(canvas pick) picked c · 混合式".to_string())
     );
 }
 
@@ -505,13 +508,13 @@ fn clicks_during_busy_are_held_then_drained_at_turn_end() {
     // Turn end is the boundary — drain is immediate, no quiet window.
     assert_eq!(
         mailbox.take_submit(t0 + Duration::from_millis(5_100), false, false),
-        Some("(画布选择) 已选 b · 顶部横向导航".to_string())
+        Some("(canvas pick) picked b · 顶部横向导航".to_string())
     );
 }
 
 #[test]
 fn queued_screens_report_frozen_answers_not_live_toggles() {
-    // The busy-click ack face (`已选待送`) must say "picked, waiting for the
+    // The busy-click ack face (the picked, queued face) must say "picked, waiting for the
     // boundary" — and must *not* fire while the user is still toggling a
     // multi-select (that interaction is not an answer yet).
     let mut mailbox = ClickMailbox::new();
@@ -577,7 +580,7 @@ fn queued_labels_name_the_frozen_picks() {
 
     let mut skipped = ClickMailbox::new();
     skipped.push_event(t0, &event(1, EventAction::Skip), Some(&env));
-    assert_eq!(skipped.queued_labels(), vec!["跳过".to_string()]);
+    assert_eq!(skipped.queued_labels(), vec!["skipped".to_string()]);
 }
 
 #[test]
@@ -597,7 +600,7 @@ fn multiselect_clicks_during_busy_accumulate_without_loss() {
     // Everything survives to the boundary, in click order.
     assert_eq!(
         mailbox.take_submit(t0 + Duration::from_secs(31), false, false),
-        Some("(画布选择) 已选 a、b、c · 侧边栏导航, 顶部横向导航, 混合式".to_string())
+        Some("(canvas pick) picked a, b, c · 侧边栏导航, 顶部横向导航, 混合式".to_string())
     );
 }
 
@@ -618,9 +621,9 @@ fn debt_is_consumed_exactly_once() {
         .expect("all four clicks must drain together");
     assert_eq!(
         message,
-        "(画布选择) 已选 a · 侧边栏导航\n\
-         (画布选择) 已选 b · 顶部横向导航\n\
-         (画布选择) 跳过 · 不做选择"
+        "(canvas pick) picked a · 侧边栏导航\n\
+         (canvas pick) picked b · 顶部横向导航\n\
+         (canvas pick) skipped · no choice"
     );
     assert!(!mailbox.has_pending());
     assert_eq!(
@@ -641,7 +644,7 @@ fn enter_merges_typed_text_first_blank_line_then_pick() {
     let typed = "我喜欢第二个，但是导航要更紧凑";
     assert_eq!(
         mailbox.take_for_enter(typed),
-        Some(format!("{typed}\n\n(画布选择) 已选 b · 顶部横向导航"))
+        Some(format!("{typed}\n\n(canvas pick) picked b · 顶部横向导航"))
     );
 }
 
@@ -663,7 +666,7 @@ fn composer_holds_auto_submit_so_the_merge_can_happen() {
     // Composer cleared without submitting: the idle boundary fires normally.
     assert_eq!(
         mailbox.take_submit(t0 + Duration::from_secs(6), false, false),
-        Some("(画布选择) 已选 b · 顶部横向导航".to_string())
+        Some("(canvas pick) picked b · 顶部横向导航".to_string())
     );
 }
 
@@ -677,7 +680,7 @@ fn enter_flushes_a_pick_still_inside_the_coalesce_window() {
 
     assert_eq!(
         mailbox.take_for_enter("就这个"),
-        Some("就这个\n\n(画布选择) 已选 c · 混合式".to_string())
+        Some("就这个\n\n(canvas pick) picked c · 混合式".to_string())
     );
 }
 
@@ -691,14 +694,14 @@ fn enter_first_later_click_is_a_new_message() {
     mailbox.push_event(t0, &select(1, "b"), Some(&env));
     assert_eq!(
         mailbox.take_for_enter("先按这个做"),
-        Some("先按这个做\n\n(画布选择) 已选 b · 顶部横向导航".to_string())
+        Some("先按这个做\n\n(canvas pick) picked b · 顶部横向导航".to_string())
     );
 
     let t1 = t0 + Duration::from_millis(200); // "晚到" — any time after Enter
     mailbox.push_event(t1, &select(1, "c"), Some(&env));
     assert_eq!(
         mailbox.take_submit(t1 + CLICK_COALESCE, false, false),
-        Some("(画布选择) 更正：已选 c · 混合式".to_string())
+        Some("(canvas pick) correction: picked c · 混合式".to_string())
     );
 }
 
@@ -715,7 +718,7 @@ fn slash_submit_skips_the_merge_and_keeps_the_debt() {
     assert!(mailbox.has_pending(), "picks survive the slash submit");
     assert_eq!(
         mailbox.take_submit(t0 + CLICK_COALESCE, false, false),
-        Some("(画布选择) 已选 b · 顶部横向导航".to_string())
+        Some("(canvas pick) picked b · 顶部横向导航".to_string())
     );
 }
 
@@ -748,7 +751,7 @@ fn unknown_screen_falls_back_to_id_label_and_single_semantics() {
 
     assert_eq!(
         mailbox.take_submit(t0 + CLICK_COALESCE, false, false),
-        Some("(画布选择) 已选 x7 · x7".to_string())
+        Some("(canvas pick) picked x7 · x7".to_string())
     );
 }
 
@@ -825,7 +828,7 @@ async fn canvas_wire_click_becomes_user_answer() {
     mailbox.push_event(now, &event, screen.as_ref());
     assert_eq!(
         mailbox.take_submit(now + CLICK_COALESCE, false, false),
-        Some("(画布选择) 已选 b · 顶部横向导航".to_string())
+        Some("(canvas pick) picked b · 顶部横向导航".to_string())
     );
 
     canvas.shutdown().await;

@@ -81,9 +81,9 @@ have not named: name the candidates first, then the picker.
   design) before asking anything else — a chain of question screens reads as
   an interrogation. A "continue working" nudge means add substance to what
   you owe; never re-ask a question that was already answered.
-- After each turn the host replaces the screen with a "继续在终端讨论…"
-  waiting screen (summary of decided / pending). You never craft that screen;
-  your next `canvas_push` simply overwrites it.
+- After each turn the host replaces the screen with a
+  "Continue in the terminal…" waiting screen (summary of decided / pending).
+  You never craft that screen; your next `canvas_push` simply overwrites it.
 - When the design question is settled, call `canvas_close`. Open tabs then
   show a farewell screen and the user can close the tab.
 
@@ -256,31 +256,29 @@ building it — leave the record behind as `notes/design-decisions.md` (or
 wherever they keep specs). The next step reads it as input, so hold the
 shape:
 
-    # 设计决策记录
+    # Design decisions
 
-    ## 定了什么
-    - 大屏顶部导航 → 选了 侧边栏导航
-    - 配色方向 → 跳过
+    ## What was decided
+    - 大屏顶部导航 → picked 侧边栏导航
+    - 配色方向 → skipped
 
-    ## 为什么
+    ## Why
     - 侧边栏导航：筛选常驻，信息密度更高
 
-    ## 还有什么没定
-    - 图表样式：跳过了，等数据形态定了再说
+    ## What's still open
+    - 图表样式：skipped, 等数据形态定了再说
 
-One line per question the canvas asked, in the order it was asked:
-`<问题> → 选了 <label>`, or `<问题> → 跳过`. A pick is what came back as
-`(画布选择)` or from `ask_user` — quote the label the user saw, not a
-paraphrase. A question nobody answered goes in 还有什么没定, and so does
-anything they raised and left hanging. 为什么 is the reason they gave, in
-their words where you have them — never a rationale you invented after the
-fact.
+One line per question asked, in order:
+`<question> → picked <label>`, or `<question> → skipped`. A pick is what
+came back as `(canvas pick)` or from `ask_user` — quote the label the user
+saw, not a paraphrase. A question nobody answered — or anything they raised
+and left hanging — goes in "What's still open". "Why" is the reason they
+gave, in their words — never a rationale you invented after the fact.
 
-定了什么 holds only what the user actually picked. A stand-in you chose
-yourself — 「暂用」「基线」「按他们偏好拍板」 — is not a decision; it stays in
-还有什么没定 as open, and you design the throwaway around it. Timestamp a line
-only with the date you know from this session's clock — never a date carried
-over from older entries in the same file.
+"What was decided" holds only actual user picks. A stand-in you chose
+yourself — 「暂用」「基线」「按他们偏好拍板」 — is not a decision; it stays open,
+and you design the throwaway around it. Timestamp a line only with this
+session's date — never one carried from older entries.
 
 ## From mock to page
 
@@ -310,6 +308,6 @@ When it lands on "make it real", the settled mock is the contract for the code.
   terminal, not a button on the page. Accept the return text and keep
   working; never retry `canvas_open` to force a browser open, and never
   click or approve anything on the page — that answer is theirs.
-- A pick arrives as a user message starting with `(画布选择)`. Treat it as
+- A pick arrives as a user message starting with `(canvas pick)`. Treat it as
   the user's answer to that screen's question and continue from it — don't
   re-ask what they just answered.

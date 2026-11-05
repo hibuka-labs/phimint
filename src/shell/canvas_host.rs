@@ -120,7 +120,7 @@ pub use phi_agent_tui::StatusFace as StatusLine;
 /// display budget so a long CJK label cannot shove the rest of the bar off.
 fn fit_labels(labels: &[String]) -> String {
     const BUDGET: usize = 20;
-    let joined = labels.join("、");
+    let joined = labels.join(", ");
     if unicode_width::UnicodeWidthStr::width(joined.as_str()) <= BUDGET {
         return joined;
     }
@@ -139,22 +139,23 @@ fn fit_labels(labels: &[String]) -> String {
     out
 }
 
-/// The status-bar line (spec-locked state words after `canvas ● localhost:`).
+/// The status-bar line (spec-locked state words after `canvas ● localhost:`;
+/// English is the product rule — the fixed chrome ships to non-CJK markets).
 pub fn status_line(input: &StatusInput) -> StatusLine {
     if input.failed {
         return StatusLine {
-            text: "canvas ● 已断开 (ctrl+b 重开)".to_string(),
+            text: "canvas ● disconnected (ctrl+b reopen)".to_string(),
             alert: true,
         };
     }
     if input.closed {
         return StatusLine {
-            text: "画布已关闭 · 可重开".to_string(),
+            text: "canvas closed · can reopen".to_string(),
             alert: false,
         };
     }
     let state = if input.awaiting_consent {
-        "待同意".to_string()
+        "awaiting consent".to_string()
     } else if input.queued > 0 {
         // Busy-click ack: the pick is recorded, the boundary (turn end /
         // Enter) will send it. Without this face a click during a long turn
@@ -162,17 +163,17 @@ pub fn status_line(input: &StatusInput) -> StatusLine {
         // the follow-up question the count alone raises — which one?
         let labels = fit_labels(&input.queued_labels);
         if labels.is_empty() {
-            format!("{} 个已选待送", input.queued)
+            format!("{} picked, queued", input.queued)
         } else if input.queued == 1 {
-            format!("已选待送：{labels}")
+            format!("picked, queued: {labels}")
         } else {
-            format!("{} 个已选待送：{labels}", input.queued)
+            format!("{} picked, queued: {labels}", input.queued)
         }
     } else {
         match input.screen {
-            ScreenStatus::Awaiting { options } => format!("{options} 个选项待选"),
-            ScreenStatus::DisplayOnly => "展示中".to_string(),
-            ScreenStatus::Waiting | ScreenStatus::Idle => "空闲".to_string(),
+            ScreenStatus::Awaiting { options } => format!("{options} options to pick"),
+            ScreenStatus::DisplayOnly => "display only".to_string(),
+            ScreenStatus::Waiting | ScreenStatus::Idle => "idle".to_string(),
         }
     };
     StatusLine {
@@ -254,10 +255,10 @@ pub fn waiting_envelope(decided: &[String], pending: &[String]) -> ScreenEnvelop
         }
         body.push_str("</ul>");
     };
-    section("已定", decided, &mut body);
-    section("待定", pending, &mut body);
+    section("Decided", decided, &mut body);
+    section("Pending", pending, &mut body);
     ScreenEnvelope {
-        title: "继续在终端讨论…".to_string(),
+        title: "Continue in the terminal…".to_string(),
         subtitle: None,
         options: Vec::new(),
         body_html: body,
@@ -269,7 +270,7 @@ pub fn waiting_envelope(decided: &[String], pending: &[String]) -> ScreenEnvelop
     }
 }
 
-/// The `(画布选择)` lines inside a synthesized submit (they may be merged
+/// The `(canvas pick)` lines inside a synthesized submit (they may be merged
 /// behind typed text — M2e). The waiting summary keeps them for 已定.
 pub fn canvas_answer_lines(text: &str) -> Vec<String> {
     text.lines()
@@ -504,7 +505,7 @@ impl CanvasHost {
         self.inner.lock().unwrap().waiting_seq = Some(seq);
     }
 
-    /// An answer was synthesized and sent (`(画布选择)` lines, prefix kept —
+    /// An answer was synthesized and sent (`(canvas pick)` lines, prefix kept —
     /// the summary renders them as the transcript does).
     pub fn on_answered(&self, lines: &[String]) {
         let mut inner = self.inner.lock().unwrap();
@@ -571,7 +572,7 @@ impl CanvasHost {
                     && Some(record.seq) != inner.waiting_seq
                     && !answered.contains(&record.seq)
             })
-            .map(|record| format!("{} · {} 个选项", record.title, record.option_count))
+            .map(|record| format!("{} · {} options", record.title, record.option_count))
             .take(SUMMARY_CAP)
             .collect();
         pending.reverse();
