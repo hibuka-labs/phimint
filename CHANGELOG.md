@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`/resume` writes to the right session.** The rotation archive, the
+  notes, the code journal and the captures were built once, with the launch
+  session's id copied into them, so a mid-session switch kept writing the
+  abandoned session's directories — the resumed session's audit stream
+  landed in the bootstrap session's tree. The stores now share one
+  re-pointable session scope, re-pointed once per session.
+
+### Changed
+
+- **The canvas surface speaks English.** The status line, the option labels
+  and the pick marker the model reads (`(canvas pick)`) are English now; the
+  design-canvas skill's decision sections follow.
+
 ## [0.7.1] — 2026-10-31
 
 > 0.7.0 was yanked: its Windows build did not compile (see below). 0.7.1
