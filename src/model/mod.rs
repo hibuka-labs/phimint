@@ -2,6 +2,7 @@
 //! router that picks one, and the title generator that runs on it.
 
 pub mod config;
+pub mod identity;
 pub mod persist;
 pub mod picker_rows;
 pub mod router;

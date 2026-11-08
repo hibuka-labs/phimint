@@ -490,6 +490,19 @@ pub async fn build_with_code_exec(
         RepeatToolLimitConfig::default(),
     ));
 
+    // Live-model identity stamp: names the store's current main model on the
+    // outgoing system message before every LLM call, so "what model am I" is
+    // answerable after a mid-session `/model` swap (the swap lands on the
+    // wire but the context never said so — feedback 2026-11-07).
+    if let Some(store) = model_store {
+        // The identity tool the stamp routes "which model are you" to (the
+        // tool result is fresh context — history cannot pre-fill it).
+        builder = builder.register_tool(crate::tools::current_model::CurrentModel::new(
+            Arc::clone(&store),
+        ));
+        builder = builder.middleware(crate::model::identity::ModelIdentityStamp::new(store));
+    }
+
     let effort = reasoning_effort_from(reasoning_effort);
 
     let agent = PhiAgent::build(

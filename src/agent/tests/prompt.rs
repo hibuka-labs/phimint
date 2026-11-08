@@ -237,6 +237,19 @@ async fn every_wire_tool_name_matches_llm_pattern() {
             wire_names
         );
     }
+
+    // The identity tool reaches the wire under its declared name: the build
+    // registers it only on a store-carrying build, and the identity stamp
+    // routes "which model are you" to it. Pinned from the factory so a rename
+    // cannot pass vacuously.
+    let identity_tool = crate::tools::current_model::CurrentModel::new(Arc::clone(&model_store));
+    let identity_name = phi_agent::Tool::name(&identity_tool);
+    assert!(
+        wire_names.contains(identity_name),
+        "declared tool {} is missing from the wire list ({:?})",
+        identity_name,
+        wire_names
+    );
 }
 
 #[test]

@@ -21,6 +21,7 @@ pub mod add_tool;
 pub mod ask_user;
 pub mod browser;
 pub mod canvas;
+pub mod current_model;
 pub mod diagnostics;
 pub mod repomap;
 pub mod ripgrep;
