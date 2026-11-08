@@ -12,6 +12,16 @@
   "lite": "gpt-4o-mini",
   "advanced": "o1-preview",
 
+  // Selection pointer — written by `/model`, normally not hand-edited.
+  // While present it overrides `main` (the tier definitions above are never
+  // rewritten by a switch). A bare model name, or an object carrying only
+  // the endpoint fields that differ from the defaults above:
+  //   "model": "gpt-5.4",
+  //   "model": { "model": "claude-opus-4", "base_url": "https://api.anthropic.com", "api_key": "sk-ant" }
+  // Clear the selection in `/model` (or delete the key) to return to `main`.
+  // lite/advanced are never touched; an unconfigured tier follows the
+  // effective `main` — the pointer while one is set.
+
   // Example: different provider for advanced
   // "advanced": {
   //   "model": "claude-opus-4",

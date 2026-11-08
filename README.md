@@ -99,6 +99,27 @@ Different provider per tier:
 }
 ```
 
+`/model` switching is stored as a top-level `model` **selection pointer** — a
+separate key that overrides `main` while it is present. A switch never
+rewrites the tier definitions above; only this pointer moves:
+
+```json
+{
+  "main": "gpt-5.4-mini",
+  "model": "gpt-5.4"
+}
+```
+
+The pointer is a bare model name, or an object carrying only the endpoint
+fields that differ from this file's defaults (e.g.
+`"model": { "model": "claude-opus-4", "base_url": "https://api.anthropic.com", "api_key": "sk-ant" }`).
+Bare `/model` opens a picker over the configured models (with a *Clear
+selection* row); `/model <name>` sets one by name. Clearing the selection
+deletes the pointer and falls back to the configured `main`. `lite` and
+`advanced` are never touched by a switch — an unconfigured tier follows the
+effective `main`, which is the pointer while one is set. If a pointer is in
+force at startup, phimint names it in a boot notice.
+
 Or pass everything on the command line (see `config.json.example` for the full schema):
 
 ```bash
@@ -148,7 +169,9 @@ Commands:
                      --keep-data leaves ~/.phimint/ alone. --yes skips the prompt.
 
   -w, --workspace <PATH>       workspace directory (default: current directory)
-      --model <NAME>           main model (overrides config.json)
+      --model <NAME>           main model for this run only (overrides the
+                              config.json `model` pointer and `main`; never
+                              written back to the file)
       --lite-model <NAME>      lite model (overrides config.json)
       --advanced-model <NAME>  advanced model (overrides config.json)
       --base-url <URL>         API base URL (overrides config.json)
@@ -176,15 +199,19 @@ Commands:
 
   | Key | Action |
   |---|---|
-  | `Enter` | send |
-  | `Shift+Enter` | newline |
+  | `Enter` | send (also jumps to the newest lines) |
+  | `Ctrl+J` | newline (works on every terminal; `Shift+Enter` too where the Kitty keyboard protocol is reported) |
+  | `Up` / `Down` | recall sent inputs (fish-style: your current draft cycles with them) |
+  | `Alt+Up` / `Alt+Down` | move the cursor inside a multi-line draft |
   | `Shift+Tab` | toggle approval mode (auto ⇄ ask) |
-  | `Ctrl+O` | expand/collapse thinking blocks |
+  | `Ctrl+O` | expand/collapse thinking blocks and long pasted messages |
+  | `Ctrl+V` | paste a clipboard image (screenshot) — a model that cannot see images is refused |
   | `Ctrl+Y` | copy the last reply |
-  | `Ctrl+C` | context-sensitive: copy selection → cancel run → quit (press twice) |
+  | `Ctrl+C` | context-sensitive: copy selection → cancel run (a draft that produced nothing comes back to the composer) → clear the composer draft → quit (press twice) |
   | `Ctrl+D` | quit |
   | `Esc` | clear selection, else clear the composer |
   | `PageUp` / `PageDown` | scroll the transcript |
+  | `Ctrl+End` | jump to the newest lines |
 
 - **Mouse** — wheel scrolls; left-drag selects lines; right-click opens a copy menu.
 - **Terminal notes** — In macOS Terminal.app, enable **View → Allow Mouse Reporting** for wheel/trackpad scrolling. If it is disabled, use `fn+Up` / `fn+Down` to page through the transcript. Terminal.app does not report the Kitty keyboard protocol, so `Cmd+C` cannot be detected as a copy shortcut; use `Ctrl+C` while a selection is active or the right-click copy menu instead.
@@ -226,15 +253,16 @@ you: "investigate questions X / Y / Z"
 |---|---|
 | `code_cell` | run code cells in a resident Python session — state (variables, imports, functions) survives across calls; the fast lane for bulk edits, renaming and data wrangling |
 | `read_file` / `write_file` / `edit_file` / `list_files` | file I/O and surgical edits (`edit_file` is atomic with 4-level matching; phi-kernel-tools) |
-| `execute_command` | shell (builds/tests/anything; streamed line-by-line, timeout + cancel kills the process group) |
+| `execute_command` | shell (builds/tests/anything; streamed line-by-line, timeout + cancel kills the process group; output over the tool budget spills to a file the agent can read back) |
 | `search_content` | ripgrep content search (regex) |
 | `repo_map` | tree-sitter symbol/structure index (multi-language, pull-based context) |
 | `diagnostics` | LSP diagnostics (fast loop without recompiling; degrades to shell) |
 | `update_plan` | structured checklist for complex tasks (display-only, Codex-style; agent-base) |
+| `current_model` | the model serving this session (the agent calls it before answering "which model are you") |
 | `spawn_agent` / `send_message` / `wait_agent` / `list_agents` / `close_agent` | sub-agent primitives (agent-works; preferred pattern: spawn, end turn, await push) |
 | `add_tool` | the agent writes and registers a tool for you (root-only; full confirmation card before anything lands) |
 | `canvas_open` / `canvas_push` / `canvas_close` | design canvas — browser screens with clickable options; one-time consent to open the browser ([`phi-canvas`](https://github.com/hibuka-labs/phi-canvas)) |
-| `ask_user` | terminal picker for concept picks (2–4 candidates, one shot, Esc = skip) |
+| `ask_user` | terminal picker for concept picks (2–4 candidates, one shot, Esc = skip; you can type a question back instead of picking) |
 | `/connect` · `/tools` · `plugin add` / `plugin remove` | external tool surfaces: MCP servers, script tools, wasm plugin packs (approval ledger per tool, fail-closed) |
 
 ## How it works
@@ -260,6 +288,10 @@ Every run lands a session directory under `~/.phimint/sessions/<id>/`:
 | `session_metrics.json` | per-turn token usage and session totals (phi-telemetry) |
 
 Re-running with `--session <id>` appends new turns to the same directory; `--resume` picks one interactively.
+
+Composer history lives in `~/.phimint/input-history.jsonl`, next to the
+`sessions/` directory (owner-only, one global file; `Up` / `Down` recall it
+per workspace).
 
 ## Project structure
 

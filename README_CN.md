@@ -97,6 +97,23 @@ DeepSeek / Aliyun / Moonshot / Gemini / Ollama …）。
 }
 ```
 
+`/model` 切换会写成顶层的 `model` **选择指针**——一个独立字段，存在时覆盖
+`main`。切换永远不会改写上面三个档位定义，动的只有这个指针：
+
+```json
+{
+  "main": "gpt-5.4-mini",
+  "model": "gpt-5.4"
+}
+```
+
+指针可以是一个裸模型名，也可以是只带「与文件默认值不同」的端点字段的对象
+（例如 `"model": { "model": "claude-opus-4", "base_url": "https://api.anthropic.com", "api_key": "sk-ant" }`）。
+光打 `/model` 会弹出候选模型的挑选框（带一行「清除选择」）；`/model <名字>`
+直接按名设置。清除选择即删除指针、回到配置的 `main`。切换永远不碰 `lite`
+与 `advanced`；未配置的档位跟随生效的 `main`（指针生效时就是指针）。启动时
+若有指针生效，phimint 会在开机提示里点名。
+
 或使用 CLI 参数（完整字段见 `config.json.example`）：
 
 ```bash
@@ -144,7 +161,7 @@ Commands:
                      --yes 跳过确认。
 
   -w, --workspace <PATH>    工作区目录（默认：当前目录）
-      --model <NAME>        主模型名（覆盖 config.json）
+      --model <NAME>        仅本次运行的主模型名（覆盖 `model` 指针与 `main`，不写回文件）
       --lite-model <NAME>   lite 模型名（覆盖 config.json）
       --advanced-model <NAME>  advanced 模型名（覆盖 config.json）
       --base-url <URL>      API base URL（覆盖 config.json）
@@ -172,15 +189,19 @@ Commands:
 
   | 按键 | 行为 |
   |---|---|
-  | `Enter` | 发送 |
-  | `Shift+Enter` | 换行 |
+  | `Enter` | 发送（同时跳到最新内容） |
+  | `Ctrl+J` | 换行（全终端可用；上报 Kitty 键盘协议的终端亦支持 `Shift+Enter`） |
+  | `Up` / `Down` | 翻历史输入（fish 式循环：当前草稿也在环里） |
+  | `Alt+Up` / `Alt+Down` | 多行草稿内移动光标 |
   | `Shift+Tab` | 切换审批档位（auto ⇄ ask） |
-  | `Ctrl+O` | 展开/折叠思考块 |
+  | `Ctrl+O` | 展开/折叠思考块与超长粘贴消息 |
+  | `Ctrl+V` | 粘贴剪贴板里的图片（截图）——模型看不见图时会直接拒收 |
   | `Ctrl+Y` | 复制最后一条 AI 回复 |
-  | `Ctrl+C` | 按状态分流：有选区→复制、运行中/审批中→取消、空闲→提示后再次按下退出 |
+  | `Ctrl+C` | 按状态分流：有选区→复制、运行中/审批中→取消（没跑出内容的草稿回到输入栏）、输入栏有草稿→清空、空闲→提示后再次按下退出 |
   | `Ctrl+D` | 退出 |
   | `Esc` | 清除选区；无选区则清空输入栏 |
   | `PageUp` / `PageDown` | 滚动输出区 |
+  | `Ctrl+End` | 跳到最新内容 |
 
 - **鼠标**：滚轮滚动、左键拖选出行范围、右键弹出拷贝菜单。
 - **终端说明**：在 macOS Terminal.app 中，请启用 **View → Allow Mouse Reporting**，滚轮和触控板滚动才能正常工作。若未启用，可使用 `fn+Up` / `fn+Down` 翻页浏览输出。Terminal.app 不会报告 Kitty 键盘协议，因此无法识别 `Cmd+C` 作为拷贝快捷键；请先选中文本后使用 `Ctrl+C`，或使用右键拷贝菜单。
@@ -221,15 +242,16 @@ Commands:
 |---|---|
 | `code_cell` | 在常驻 Python 会话里跑代码单元——状态（变量、import、函数）跨调用存活；批量改、重命名、数据整理的快车道 |
 | `read_file` / `write_file` / `edit_file` / `list_files` | 文件读写与精准编辑（`edit_file` 原子写 + 4 级匹配；phi-kernel-tools） |
-| `execute_command` | shell（跑构建/测试/命令，逐行流式回显 + 超时/取消杀进程组） |
+| `execute_command` | shell（跑构建/测试/命令，逐行流式回显 + 超时/取消杀进程组；超出工具预算的输出落盘成文件，agent 可回读） |
 | `search_content` | ripgrep 内容搜索（regex） |
 | `repo_map` | tree-sitter 符号/结构索引（多语言，拉取式上下文） |
 | `diagnostics` | LSP 诊断（改完不重编译的快速内环；server 缺失降级到 shell） |
 | `update_plan` | 复杂任务先展示结构化清单（display-only，Codex 风格；agent-base） |
+| `current_model` | 当前会话正在服务的模型（agent 回答「你是什么模型」前会先调它） |
 | `spawn_agent` / `send_message` / `wait_agent` / `list_agents` / `close_agent` | 子 agent 原语（agent-works；推荐用法见上：spawn 后结束回合等推送） |
 | `add_tool` | agent 代写并注册工具（root-only；全貌确认卡点头后才落盘） |
 | `canvas_open` / `canvas_push` / `canvas_close` | 设计画布——浏览器屏幕带可点选项；打开浏览器需一次性同意（[`phi-canvas`](https://github.com/hibuka-labs/phi-canvas)） |
-| `ask_user` | 终端选择器提问概念选择（2–4 个候选，单发，Esc = 跳过） |
+| `ask_user` | 终端选择器提问概念选择（2–4 个候选，单发，Esc = 跳过；也可以不选、直接回一句话让 agent 先答） |
 | `/connect` · `/tools` · `plugin add` / `plugin remove` | 外部工具面：MCP 服务、脚本工具、wasm 插件包（逐工具审批档位，fail-closed） |
 
 ## 工作原理
@@ -255,6 +277,9 @@ phimint 是 [`phi-agent`](https://docs.phiagent.dev/zh/) 框架的 consumer：ag
 | `session_metrics.json` | 每轮 token 用量与会话汇总（phi-telemetry） |
 
 复用 `--session <id>` 会在同一目录续号追加 turn；`--resume` 交互式挑选历史会话恢复。
+
+输入栏历史放在 `~/.phimint/input-history.jsonl`，与 `sessions/` 同在 `~/.phimint/`
+下（仅本人可读，一个全局文件；`Up` / `Down` 按工作区过滤后回放）。
 
 ## 项目结构
 

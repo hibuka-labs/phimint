@@ -456,7 +456,7 @@
     --line-soft: #eae7e0;
     --text:      #1c211e;
     --muted:     #5c665e;
-    --dim:       #8b958c;
+    --dim:       #616b62;
     --mint:      #15803d;
     --mint-deep: #0f6b33;
     --warm-1:    #e2592c;
@@ -568,6 +568,14 @@
 }
 </script>
 <!-- /SEO-HEAD -->
+<!-- Analytics: umami (cookieless, no personal data, self-hostable).
+     Two swappable values:
+       - script host : "https://cloud.umami.is" -> point at the self-hosted endpoint when the backend moves
+       - website id  : the UUID shown in the umami dashboard under Settings -> Websites
+     Data reported here is the only way to measure strangers landing on the page;
+     GitHub's traffic API does not cover Pages. Keep the script defer'd so it never
+     blocks first paint, and keep it cookieless so no consent banner is needed. -->
+<script defer src="https://cloud.umami.is/script.js" data-website-id="REPLACE_WITH_UMAMI_WEBSITE_ID"></script>
 </head>
 <body>
 
