@@ -65,7 +65,9 @@ impl Tool for AskUserTool {
             (`canvas_push`), and an open-ended question (a goal, a path, a number) belongs in \
             your reply text. Returns `picked: <label> (id: <id>)`, or `skipped` when the user \
             presses Esc — a skip is an answer too; carry on with what you have, never re-ask. \
-            One live question at a time."
+            They can also type a question instead of picking: the result then reads `not picked: \
+            the user wants to clarify before answering:` followed by their words on the next \
+            line — address it in your reply text and carry on. One live question at a time."
     }
 
     fn schema(&self) -> Value {
@@ -149,6 +151,11 @@ impl Tool for AskUserTool {
             answer = answer_rx => Ok(vec![Content::text(match answer {
                 Ok(AskAnswer::Picked { id, label }) => format!("picked: {label} (id: {id})"),
                 Ok(AskAnswer::Skipped) => "skipped: the user did not pick".to_string(),
+                // The "Chat about this" pseudo-row: no pick was made, and the
+                // user's question comes first — answer it in the reply.
+                Ok(AskAnswer::Clarify { text }) => format!(
+                    "not picked: the user wants to clarify before answering:\n{text}"
+                ),
                 // The prompt was dropped — by a cancelled turn (the run loop
                 // drains them) or by a UI that went away. Say which.
                 Err(_) if ctx.cancel_token.is_cancelled() => {
@@ -275,6 +282,52 @@ mod tests {
 
         let out = call.await.unwrap().unwrap();
         assert_eq!(text_of(&out), "skipped: the user did not pick");
+    }
+
+    /// protects: the clarify payload shape — a "Chat about this" answer wraps
+    /// the user's words verbatim under the "not picked … clarify" prefix, so
+    /// the model never misreads a question as a pick.
+    /// fails_when: the wrapper text drifts, or the user's text is trimmed,
+    /// reflowed or dropped.
+    /// no_claim: what the model does with the clarification (reply/steer) or
+    /// the picker UI that produced it.
+    #[tokio::test]
+    async fn a_clarification_comes_back_wrapped_for_the_model() {
+        let (tool, mut rx) = tool();
+        let call = tokio::spawn({
+            let tool = tool.clone();
+            let args = two_options();
+            async move { tool.call(&args, &ToolContext::for_test()).await }
+        });
+
+        let item = rx.recv().await.unwrap();
+        item.answer_tx
+            .send(AskAnswer::Clarify {
+                text: "搜索先做的话，登录放第几周？".into(),
+            })
+            .unwrap();
+
+        let out = call.await.unwrap().unwrap();
+        assert_eq!(
+            text_of(&out),
+            "not picked: the user wants to clarify before answering:\n搜索先做的话，登录放第几周？"
+        );
+    }
+
+    /// protects: the tool face teaches the model the third exit exists and
+    /// what its payload looks like.
+    /// fails_when: the description drops the clarify wording (the model would
+    /// improvise on an unknown result shape).
+    /// no_claim: the exact prose beyond those anchors, or the skip/pick arms.
+    #[test]
+    fn the_tool_face_tells_the_model_about_the_clarify_exit() {
+        let (tool, _rx) = tool();
+        let description = tool.description();
+        assert!(description.contains("clarify"), "{description}");
+        assert!(
+            description.contains("not picked: the user wants to clarify before answering:"),
+            "{description}"
+        );
     }
 
     #[tokio::test]
