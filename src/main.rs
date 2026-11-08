@@ -668,6 +668,9 @@ async fn run() -> Result<()> {
         // Which approval prompts are canvas-launch consents (two-key legend)
         // rather than tool approvals (three-key tool face).
         is_consent: Some(wire::consent_probe()),
+        // Whether the current model sees pictures (paste pipeline gate):
+        // the model registry's fact for the live endpoint.
+        vision: Some(wire::vision_probe(model_store.clone())),
         // phimint is session-based (/resume): the session slot is on.
         session_io: Some(session_io),
         system_prompt: wire.prompt_source(),

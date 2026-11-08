@@ -37,10 +37,11 @@ pub fn default_items() -> Vec<TipItem> {
         TipItem::note("phimint is built on phi-agent - docs: https://docs.phiagent.dev/"),
         TipItem::tip("Type @ to reference a file in your message, / for commands"),
         TipItem::tip("Press Ctrl+O to fold or unfold the thinking panel"),
-        TipItem::tip("Enter sends your message, Shift+Enter starts a new line without sending"),
+        TipItem::tip("Enter sends your message, Ctrl+J starts a new line without sending"),
         TipItem::tip("Press Ctrl+C once to cancel the running task"),
         TipItem::tip("Press Ctrl+C twice to quit when idle"),
         TipItem::tip("Press Ctrl+Y to copy the last reply"),
+        TipItem::tip("Press Ctrl+V to paste a screenshot - the terminal keeps Cmd+V"),
         TipItem::tip("Press Ctrl+L to redraw the screen if the display looks wrong"),
         TipItem::tip("Scroll history with the mouse wheel or fn+Up/Down"),
     ]

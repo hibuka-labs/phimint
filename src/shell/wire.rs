@@ -25,7 +25,7 @@ use phi_agent_tui::{
     ConsentProbe, NoticeProbe, PanelTick, PromptSource, ReopenHook, RouteOutcome, SessionBoot,
     SessionBootFn, SessionEndFn, SessionIo, SessionRow, SkillBridge, SkillRebakeFn, SkillRouteFn,
     SubmitHook, Synthetic, TickFacts, TickOut, TipsFetchFn, TipsSlot, TitleGenerator, TitleSlot,
-    UpdateCheckFn, UpdateSlot,
+    UpdateCheckFn, UpdateSlot, VisionProbe,
 };
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
@@ -218,6 +218,35 @@ pub fn title_slot(model_store: Arc<tokio::sync::Mutex<ModelStore>>) -> TitleSlot
 /// product policy ([`canvas_host::is_canvas_consent`]).
 pub fn consent_probe() -> ConsentProbe {
     Arc::new(canvas_host::is_canvas_consent)
+}
+
+/// Vision capability of the live main model (the paste pipeline's gate): the
+/// model registry's fact for the current endpoint — `None` for a model the
+/// registry has never heard of (never guessed from the fallback profile),
+/// when the store lock is momentarily held, or mid-swap while the engine
+/// serves a different model than the tier table names (no registry fact
+/// belongs to it; the paste then rides and the engine's image budget judges
+/// it).
+pub fn vision_probe(model_store: Arc<AsyncMutex<ModelStore>>) -> VisionProbe {
+    Arc::new(move || {
+        let store = model_store.try_lock().ok()?;
+        // Mid-swap (a staged engine swap still pending): the tier table
+        // already names the pick while the old model still serves — step
+        // aside rather than answer for the wrong model.
+        if let Some(serving) = store.serving_model()
+            && serving != store.tier_tuple("main").0
+        {
+            return None;
+        }
+        let (model, base_url, _api_key, protocol) = store.tier_tuple("main");
+        let registry = phi_agent::ModelRegistry::builtin();
+        let profile = registry.lookup_known(
+            model.as_str(),
+            Some(base_url.as_str()),
+            protocol.parse::<phi_agent::llm_trait::Protocol>().ok(),
+        )?;
+        Some(profile.capabilities.supports_vision)
+    })
 }
 
 // ── Boot notices ────────────────────────────────────────────────────────

@@ -412,3 +412,118 @@ fn workspace_scope_filters_real_sessions() {
         shown[0].session_dir
     );
 }
+
+// ── Vision capability probe (the paste pipeline's gate) ─────────────────
+
+/// A store whose live main tier is `model` on `base_url` — the facts the
+/// vision probe reads.
+fn vision_store(model: &str, base_url: &str) -> Arc<AsyncMutex<ModelStore>> {
+    let provider = phi_agent::create_provider(&phi_agent::llm_trait::LlmConfig {
+        model: model.to_string(),
+        base_url: base_url.to_string(),
+        api_key: "sk-test".to_string(),
+        protocol: Some(phi_agent::llm_trait::Protocol::OpenAi),
+        ..Default::default()
+    })
+    .expect("the boot provider builds");
+    let config = crate::model::config::ModelConfig {
+        base_url: Some(base_url.to_string()),
+        api_key: Some("sk-test".to_string()),
+        protocol: Some("openai".to_string()),
+        main: crate::model::config::TierConfig::Simple(model.to_string()),
+        lite: None,
+        advanced: None,
+        model: None,
+        scene_tiers: None,
+        update: Default::default(),
+        ui: Default::default(),
+        code_exec: Default::default(),
+    };
+    Arc::new(AsyncMutex::new(ModelStore::new(config, provider)))
+}
+
+/// protects: the paste gate's vision answer is a REGISTRY FACT of the live
+/// main model — a vision-capable model answers `Some(true)`, a known
+/// non-vision model `Some(false)`, and a model the registry has never heard
+/// of answers `None` (never the fallback profile's guess, and never a
+/// refusal the paste pipeline would have to guess around). fails_when: an
+/// unknown model borrows the default profile's capabilities, or the probe
+/// answers from anything but the live main tier. no_claim: what the shell
+/// does with the answer (phi-agent-tui owns the gate), or the provider's
+/// real capabilities — the registry's recorded facts stand in for them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_vision_probe_answers_the_registry_fact_of_the_live_model() {
+    let capable = vision_store("mimo-v2.5-pro", "https://api.example-mimo.com/v1");
+    assert_eq!(
+        vision_probe(Arc::clone(&capable))(),
+        Some(true),
+        "a vision-capable model answers Some(true)"
+    );
+
+    let text_only = vision_store("deepseek-chat", "https://api.deepseek.com/v1");
+    assert_eq!(
+        vision_probe(Arc::clone(&text_only))(),
+        Some(false),
+        "a known text-only model answers Some(false)"
+    );
+
+    let unknown = vision_store("some-unknown-model", "https://api.example.com/v1");
+    assert_eq!(
+        vision_probe(Arc::clone(&unknown))(),
+        None,
+        "an unknown model answers None — never the fallback profile's guess"
+    );
+}
+
+/// protects: the probe never blocks on the store lock — a `/model` swap
+/// holding the lock answers `None` (the paste rides on and the engine's
+/// image budget judges it) instead of deadlocking the paste pipeline.
+/// fails_when: the probe blocks the composer until the swap lands, or it
+/// answers a stale model while the lock is held. no_claim: which model the
+/// swap was heading for — the store is locked by the test itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_locked_store_answers_the_probe_without_blocking() {
+    let store = vision_store("mimo-v2.5-pro", "https://api.example-mimo.com/v1");
+    let probe = vision_probe(Arc::clone(&store));
+    let held = store.lock().await;
+    assert_eq!(
+        probe(),
+        None,
+        "the lock is held: the probe answers None instead of waiting"
+    );
+    drop(held);
+    assert_eq!(
+        probe(),
+        Some(true),
+        "the lock is free again: the probe answers the live fact"
+    );
+}
+
+/// protects: mid-swap — the engine serving a different model than the tier
+/// table names — the probe steps aside (`None`) instead of answering the
+/// registry fact of a model that is not serving; once the two agree again,
+/// the fact returns. fails_when: the probe answers for the tier-table model
+/// while the serving resolver names another. no_claim: which model the swap
+/// is heading for, or when it lands.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_serving_model_that_differs_from_the_tier_table_answers_none() {
+    let store = vision_store("mimo-v2.5-pro", "https://api.example-mimo.com/v1");
+    let probe = vision_probe(Arc::clone(&store));
+    assert_eq!(probe(), Some(true), "in agreement: the live fact");
+
+    store
+        .lock()
+        .await
+        .bind_serving_name(Arc::new(|| Some("the-old-model".to_string())));
+    assert_eq!(
+        probe(),
+        None,
+        "the engine serves another model: no fact belongs to the pick yet"
+    );
+
+    store
+        .lock()
+        .await
+        .bind_serving_name(Arc::new(|| Some("mimo-v2.5-pro".to_string())));
+    assert_eq!(probe(), Some(true), "in agreement again: the fact returns");
+}
