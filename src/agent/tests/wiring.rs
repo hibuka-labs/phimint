@@ -57,6 +57,7 @@ async fn session_scope_bake_reaches_live_prompt() {
         "mock-model".to_string(),
         vec![skill_dir],
         None,
+        None,
     )
     .await
     .unwrap();

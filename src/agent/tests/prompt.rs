@@ -144,6 +144,27 @@ async fn every_wire_tool_name_matches_llm_pattern() {
     });
     let (approval, policy, _approval_rx, _mode) =
         crate::approval::build_live_approval("auto", None);
+    // The build mounts a model store — without it the identity stamp and the
+    // `current_model` tool are skipped entirely and the sweep below cannot
+    // vouch for the one name that only exists on a store-carrying build.
+    let model_store = Arc::new(tokio::sync::Mutex::new(
+        crate::model::store::ModelStore::new(
+            crate::model::config::ModelConfig {
+                base_url: Some("https://api.example.com/v1".to_string()),
+                api_key: Some("sk-test".to_string()),
+                protocol: Some("openai".to_string()),
+                main: crate::model::config::TierConfig::Simple("mock-model".to_string()),
+                lite: None,
+                advanced: None,
+                model: None,
+                scene_tiers: None,
+                update: Default::default(),
+                ui: Default::default(),
+                code_exec: Default::default(),
+            },
+            provider.clone() as Arc<dyn LlmProvider>,
+        ),
+    ));
     let (agent, _resolver, _telemetry, _bg_registry, _canvas_activity) = build(
         provider.clone() as Arc<dyn LlmProvider>,
         approval,
@@ -160,6 +181,7 @@ async fn every_wire_tool_name_matches_llm_pattern() {
             base_dir: tmp.path().to_path_buf(),
             session_id: "wire-pattern-test".to_string(),
         }),
+        Some(Arc::clone(&model_store)),
     )
     .await
     .unwrap();

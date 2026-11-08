@@ -135,6 +135,7 @@ pub(super) async fn system_prompts_received_in(
         "mock-model".to_string(),
         skill_dirs,
         None,
+        None,
     )
     .await
     .unwrap();

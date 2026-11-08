@@ -30,7 +30,8 @@ struct Cli {
     #[arg(short, long, default_value = ".")]
     workspace: PathBuf,
 
-    /// Model name (overrides main tier model)
+    /// Model name (session-scoped selection: overrides the `model` pointer
+    /// and the configured main tier for this run; never persisted)
     #[arg(long)]
     model: Option<String>,
 
@@ -197,7 +198,17 @@ fn main() -> Result<()> {
 /// here covers every sidecar this process starts.
 fn install_provider_log(base_dir: &Path) -> PathBuf {
     let path = provider_log_path(base_dir);
-    if let Err(e) = std::fs::create_dir_all(base_dir) {
+    // A state dir created now is owner-only (0700): it holds the config's
+    // API key and the input history. An existing dir keeps its own mode —
+    // that is the user's choice, not ours to override.
+    let mut dir = std::fs::DirBuilder::new();
+    dir.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        dir.mode(0o700);
+    }
+    if let Err(e) = dir.create(base_dir) {
         eprintln!("warning: cannot create {}: {e}", base_dir.display());
     }
     // SAFETY: called before the runtime is built — no thread exists yet, so
@@ -235,16 +246,18 @@ async fn run() -> Result<()> {
         .with_context(|| format!("workspace not found: {}", cli.workspace.display()))?;
     std::env::set_current_dir(&workspace)?;
 
-    // Load model configuration: CLI > JSON file
-    let mut model_config = if let Some(config_path) = &cli.config {
+    // Load model configuration: CLI > JSON file. `loaded_from` remembers the
+    // file behind it — a `/model` pick is persisted there (model::persist).
+    let (mut model_config, loaded_from) = if let Some(config_path) = &cli.config {
         // CLI --config flag specified
         let path = PathBuf::from(config_path);
-        config::ModelConfig::from_file(&path).context("Failed to load config file")?
+        let config = config::ModelConfig::from_file(&path).context("Failed to load config file")?;
+        (config, Some(path))
     } else {
         match config::ModelConfig::from_default_location() {
             Ok(Some(config)) => {
                 tracing::info!("loaded model config from JSON file");
-                config
+                (config, config::ModelConfig::resolve_path())
             }
             Ok(None) => {
                 return Err(anyhow::anyhow!(
@@ -258,10 +271,13 @@ async fn run() -> Result<()> {
         }
     };
 
-    // Apply CLI overrides
-    if let Some(ref model) = cli.model {
-        model_config.main = config::TierConfig::Simple(model.clone());
-    }
+    // Apply CLI overrides. `--model` is a session-scoped selection: it writes
+    // the `model` pointer slot (CLI > file pointer > configured `main`) and is
+    // never persisted — the file keeps its own pointer for the next boot, and
+    // the configured `main` definition stays intact (the picker still shows
+    // its row). `--lite_model`/`--advanced_model` keep their own semantics:
+    // session-scoped tier DEFINITION overrides, also never persisted.
+    model_config.apply_cli_model(cli.model.as_deref());
     if let Some(ref lite) = cli.lite_model {
         model_config.lite = Some(config::TierConfig::Simple(lite.clone()));
     }
@@ -320,10 +336,9 @@ async fn run() -> Result<()> {
         .context("invalid ui.popup config")?;
 
     // Model store and router for multi-model support
-    let model_store = Arc::new(tokio::sync::Mutex::new(store::ModelStore::new(
-        model_config,
-        llm_client.clone(),
-    )));
+    let mut model_store_inner = store::ModelStore::new(model_config, llm_client.clone());
+    model_store_inner.set_config_path(loaded_from);
+    let model_store = Arc::new(tokio::sync::Mutex::new(model_store_inner));
     let router = Arc::new(router::PhimintRouter::new());
 
     // Session + logging. Sessions live under `~/.phimint/sessions/<id>/`; the
@@ -446,11 +461,24 @@ async fn run() -> Result<()> {
             llm_config.model.clone(),
             skills::default_skill_dirs(),
             Some(token_budget_opts),
+            Some(model_store.clone()),
         )
         .await?;
     // Shared ownership from here on: the shell takes `Arc<PhiAgent>` (T5d —
     // the product boot work below registers tools against the same instance).
     let agent = Arc::new(agent);
+
+    // The store's serving-name resolver: the engine's provider slot names the
+    // model that actually serves a turn — the tier table moves the moment a
+    // pick is applied, while a staged engine swap lands at the turn boundary,
+    // so only the live slot tells the identity stamp and `current_model` the
+    // truth mid-swap. Carried as a closure: the engine's provider-handle type
+    // is a phi-agent type this product never names.
+    {
+        let handle = agent.runtime().llm_engine().provider_handle();
+        let mut store = model_store.lock().await;
+        store.bind_serving_name(Arc::new(move || Some(handle.current().info().model)));
+    }
 
     // Create or resume the runtime session.
     let (session, resume_messages) = if cli.resume {
@@ -508,13 +536,25 @@ async fn run() -> Result<()> {
     // shell). Once per process; a session switch never redoes it — the tool
     // table is global. Graceful load errors ride `startup_notices` into the
     // transcript, never silently dropped.
-    let startup_notices = {
+    let mut startup_notices = {
         let host = external::PhiToolHost {
             agent: agent.clone(),
         };
         let mut state = external.lock().await;
         state.start(&host).await
     };
+    // The selection pointer is invisible otherwise: a `model` key in
+    // config.json quietly overrides `main`, so name the pointer in force at
+    // boot (finding: the new key was undocumented and silent).
+    {
+        let store = model_store.lock().await;
+        if store.config().model.is_some() {
+            startup_notices.push(format!(
+                "model pointer in force: {} (config.json `model` overrides `main`)",
+                store.tier_model("main")
+            ));
+        }
+    }
     // `add_tool`: the human-review entry point for tools the agent writes on
     // the user's behalf. **post-build registration = root-only** — a
     // multi-agent's business_tools is a build-time snapshot, so a child
@@ -538,12 +578,16 @@ async fn run() -> Result<()> {
 
     // T5d: the product's slash-command table — the model-tier face and the
     // tool-socket face as CommandSpec rows the shell dispatches on the turn
-    // pump before skill routing (the rows also feed the `/` picker).
+    // pump before skill routing (the rows also feed the `/` picker). The pick
+    // queue is the bare `/model` modal's road: the command pushes candidate
+    // rows and parks on the human's answer.
+    let (pick_tx, pick_rx) = tokio::sync::mpsc::unbounded_channel();
     let commands = commands::command_table(
         agent.clone(),
         model_store.clone(),
         router.clone(),
         Arc::clone(&external),
+        Some(pick_tx),
     );
 
     // T7c: the product side of the shell seam — one wire handing the shell
@@ -562,7 +606,32 @@ async fn run() -> Result<()> {
     // (runtime live objects). `--no-update-check` folds into `auto_check`
     // right here: the flag gates the auto check only, while `/upgrade` keeps
     // running the same closure unconditionally.
+    // Composer input history (#7): one global JSONL under the data dir,
+    // recall filtered per workspace. `~/.phimint/history/` stays the
+    // context-rotation store — this file is a sibling, not a tenant.
+    // Pre-created owner-only (0600) before the shell opens it: the file
+    // records every typed line, and its first bytes on disk must never be
+    // group/other readable. `create_new` loses no race — if the file exists
+    // already, its (already shipped) mode stands. Windows has no mode bits.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        if let Err(e) = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(base_dir.join("input-history.jsonl"))
+            && e.kind() != std::io::ErrorKind::AlreadyExists
+        {
+            eprintln!("warning: cannot pre-create input history: {e}");
+        }
+    }
     let spec = phi_agent_tui::ShellSpec {
+        // Composer input history (#7): one global JSONL under the data dir,
+        // recall filtered per workspace. `~/.phimint/history/` stays the
+        // context-rotation store — this file is a sibling, not a tenant.
+        // (Written before `data_dir` because the field moves `base_dir`.)
+        input_history: Some(base_dir.join("input-history.jsonl")),
         data_dir: base_dir,
         // Frame-log instrument trio on, phimint's file names (T11 seam;
         // `None` would turn the whole trio off).
@@ -619,6 +688,7 @@ async fn run() -> Result<()> {
         bg_registry,
         approval_rx,
         approval_mode,
+        pick_rx,
         log_sinks,
         session_boot: wire.session_boot(),
         session_end: wire.session_end(),

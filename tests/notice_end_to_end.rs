@@ -117,6 +117,7 @@ async fn build_agent(
         "mock-model".to_string(),
         vec![tmp.path().join("skills")],
         None,
+        None,
     )
     .await
     .unwrap();

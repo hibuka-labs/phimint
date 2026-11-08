@@ -129,6 +129,7 @@ async fn build_with_skills(
         "mock-model".to_string(),
         vec![tmp.path().join("skills")],
         None,
+        None,
     )
     .await
     .unwrap();

@@ -32,6 +32,10 @@ pub type BuildOutput = (
 /// Builder-style constructor: a params struct is a post-release refactor.
 /// `async` because the code-exec engine handshakes its worker at construction.
 /// The tool-road face of [`build_with_code_exec`] (today's shipped behavior).
+///
+/// `model_store` mounts the live-model identity stamp (`None` skips it —
+/// tests that never swap models don't need the section on the wire); the
+/// store is the session-state source of truth a `/model` pick updates.
 #[allow(clippy::too_many_arguments)]
 pub async fn build(
     llm_client: Arc<dyn phi_agent::llm_trait::LlmProvider>,
@@ -44,6 +48,7 @@ pub async fn build(
     model: String,
     skill_dirs: Vec<PathBuf>,
     token_budget_opts: Option<TokenBudgetOptions>,
+    model_store: Option<Arc<tokio::sync::Mutex<crate::model::store::ModelStore>>>,
 ) -> Result<BuildOutput> {
     build_with_code_exec(
         CodeExecMode::Tool,
@@ -58,6 +63,7 @@ pub async fn build(
         model,
         skill_dirs,
         token_budget_opts,
+        model_store,
     )
     .await
 }
@@ -84,6 +90,7 @@ pub async fn build_with_code_exec(
     model: String,
     skill_dirs: Vec<PathBuf>,
     token_budget_opts: Option<TokenBudgetOptions>,
+    model_store: Option<Arc<tokio::sync::Mutex<crate::model::store::ModelStore>>>,
 ) -> Result<BuildOutput> {
     // Skills catalog (skill-injection design D1): the resolver must exist
     // BEFORE the builder — the catalog joins the system prompt at build time,

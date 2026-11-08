@@ -23,6 +23,9 @@ Security concerns include but are not limited to:
 - Update-manifest tampering (manifest / release artifact verification)
 - Session-log disclosure (logs under `~/.phimint/sessions/` may contain source code)
 
+Local data is created owner-only: the `~/.phimint/` directory (0700) and the
+files inside it, such as the composer input history (0600).
+
 ## Supported versions
 
 | Version | Supported |

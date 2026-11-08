@@ -175,6 +175,7 @@ async fn the_model_steps_code_cells_and_the_session_survives_between_them() {
             base_dir: base.path().to_path_buf(),
             session_id: session_id.clone(),
         }),
+        None,
     )
     .await
     .unwrap();

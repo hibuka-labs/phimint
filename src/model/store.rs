@@ -7,11 +7,20 @@
 //! - Fallback to the main model when a tier is not configured
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use phi_agent::llm_trait::{LlmError, LlmProvider};
 
-use crate::model::config::ModelConfig;
+use crate::model::config::{EndpointTuple, ModelConfig};
+
+/// Resolves the name of the model the engine is serving *right now*.
+///
+/// Carried as a closure (wired up after the agent is built) so the engine's
+/// provider-handle type — a phi-agent engine type phimint cannot name —
+/// never appears in this module's signatures. Returns `None` when no
+/// resolver is bound or nothing is serving yet.
+pub type ServingNameFn = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 
 /// Model store that manages tier → model → provider mappings.
 ///
@@ -20,61 +29,123 @@ use crate::model::config::ModelConfig;
 /// know about this - it only sees `Arc<dyn LlmProvider>`.
 pub struct ModelStore {
     /// Tier name → (model, base_url, api_key, protocol) mapping
-    tiers: HashMap<String, (String, String, String, String)>,
+    tiers: HashMap<String, EndpointTuple>,
 
     /// Model name → provider cache
     providers: HashMap<String, Arc<dyn LlmProvider>>,
 
-    /// The default provider (created from main tier config)
+    /// The default provider (created from the boot effective main)
     default_provider: Arc<dyn LlmProvider>,
 
     /// Default model name
     default_model: String,
 
+    /// The endpoint tuple the default provider was built from. The default
+    /// provider is handed out only when a tier's FULL tuple matches — same
+    /// model name on a different endpoint is a different provider.
+    default_tuple: EndpointTuple,
+
     /// Base configuration for creating new providers
     config: ModelConfig,
+
+    /// The config file this store was loaded from, if any — a `/model` pick
+    /// is persisted there (see [`crate::model::persist`]).
+    config_path: Option<PathBuf>,
+
+    /// Resolver for the name of the model the engine is serving right now
+    /// (see [`ServingNameFn`]). The tier table names the *selection*, which
+    /// moves before a staged engine swap lands — the identity stamp and the
+    /// `current_model` tool read this instead so they cannot lie.
+    serving_name: Option<ServingNameFn>,
 }
 
 impl ModelStore {
     /// Create a new model store from configuration.
     ///
-    /// The default provider is created from `config.main`.
-    /// Other tiers are initialized from their config or fall back to main.
+    /// The tier table is built through THE one resolution rule
+    /// ([`ModelConfig::tier_config`]): the effective `main` is the `model`
+    /// pointer when set, else the configured `main`; unconfigured lite/
+    /// advanced follow the effective `main`. The default provider was built
+    /// from that same effective main (the boot provider in `main.rs`), so
+    /// `default_tuple` records it — boot and session can never disagree
+    /// because both read the one rule.
     pub fn new(config: ModelConfig, default_provider: Arc<dyn LlmProvider>) -> Self {
-        let default_model = config.main.model().to_string();
-
         let mut tiers = HashMap::new();
-        // Resolve all tiers
-        let default_url = config.base_url.as_deref().unwrap_or("");
-        let default_key = config.api_key.as_deref().unwrap_or("");
-        let default_protocol = config.protocol.as_deref().unwrap_or("");
-
-        // Main tier
-        let (model, url, key, proto) =
-            config
-                .main
-                .resolve(default_url, default_key, default_protocol);
-        tiers.insert("main".to_string(), (model, url, key, proto));
-
-        // Lite tier (falls back to main if not configured)
-        let lite_config = config.lite.as_ref().unwrap_or(&config.main);
-        let (model, url, key, proto) =
-            lite_config.resolve(default_url, default_key, default_protocol);
-        tiers.insert("lite".to_string(), (model, url, key, proto));
-
-        // Advanced tier (falls back to main if not configured)
-        let advanced_config = config.advanced.as_ref().unwrap_or(&config.main);
-        let (model, url, key, proto) =
-            advanced_config.resolve(default_url, default_key, default_protocol);
-        tiers.insert("advanced".to_string(), (model, url, key, proto));
+        for tier in ["main", "lite", "advanced"] {
+            if let Some(tuple) = config.tier_config(tier) {
+                tiers.insert(tier.to_string(), tuple);
+            }
+        }
+        let default_tuple = config
+            .tier_config("main")
+            .expect("main tier always resolves");
+        let default_model = default_tuple.0.clone();
 
         Self {
             tiers,
             providers: HashMap::new(),
             default_provider,
             default_model,
+            default_tuple,
             config,
+            config_path: None,
+            serving_name: None,
         }
+    }
+
+    /// Remember the config file behind this store (set once at load time).
+    pub fn set_config_path(&mut self, path: Option<PathBuf>) {
+        self.config_path = path;
+    }
+
+    /// The config file behind this store, if any.
+    pub fn config_path(&self) -> Option<&Path> {
+        self.config_path.as_deref()
+    }
+
+    /// The base configuration (for picker enumeration).
+    pub fn config(&self) -> &ModelConfig {
+        &self.config
+    }
+
+    /// The full endpoint tuple of a tier: `(model, base_url, api_key,
+    /// protocol)`. Unknown tiers fall back to the default tuple.
+    pub fn tier_tuple(&self, tier: &str) -> EndpointTuple {
+        self.tiers.get(tier).cloned().unwrap_or_else(|| {
+            (
+                self.default_model.clone(),
+                self.config.base_url.as_deref().unwrap_or("").to_string(),
+                self.config.api_key.as_deref().unwrap_or("").to_string(),
+                self.config.protocol.as_deref().unwrap_or("").to_string(),
+            )
+        })
+    }
+
+    /// The tuple「clear selection」rolls the main tier back to: the configured
+    /// `main` definition (selections — the pointer and `--model` — ride on
+    /// top of it and never move it).
+    pub fn configured_main(&self) -> EndpointTuple {
+        self.config.configured_main()
+    }
+
+    /// Drop the in-memory selection pointer (part of「clear selection」): the
+    /// `model` slot in the loaded config is a selection, not a definition.
+    pub fn clear_pointer(&mut self) {
+        self.config.model = None;
+    }
+
+    /// Bind the serving-name resolver (wired to the live engine's provider
+    /// slot once the agent is built). Rebinding replaces it.
+    pub fn bind_serving_name(&mut self, resolve: ServingNameFn) {
+        self.serving_name = Some(resolve);
+    }
+
+    /// The name of the model the engine is serving right now: the resolver's
+    /// answer when one is bound and it answers, else `None` — callers fall
+    /// back to the tier table. This is the truth source behind the identity
+    /// stamp and the `current_model` tool.
+    pub fn serving_model(&self) -> Option<String> {
+        self.serving_name.as_ref().and_then(|resolve| resolve())
     }
 
     /// Get the model name for a tier.
@@ -113,35 +184,78 @@ impl ModelStore {
 
     /// Get or create a provider for a tier.
     ///
-    /// If the tier uses the default model, returns the default provider.
-    /// Otherwise, creates a new provider (cached for future use).
+    /// If the tier's full endpoint tuple matches the default provider's, the
+    /// default provider is returned; otherwise a provider is created (cached
+    /// by endpoint tuple for future use).
     pub fn get_or_create_provider(&mut self, tier: &str) -> Result<Arc<dyn LlmProvider>, LlmError> {
         let (model, base_url, api_key, protocol) =
             self.tiers.get(tier).cloned().unwrap_or_else(|| {
-                let default_url = self.config.base_url.as_deref().unwrap_or("");
-                let default_key = self.config.api_key.as_deref().unwrap_or("");
-                let default_protocol = self.config.protocol.as_deref().unwrap_or("");
                 (
                     self.default_model.clone(),
-                    default_url.to_string(),
-                    default_key.to_string(),
-                    default_protocol.to_string(),
+                    self.config.base_url.as_deref().unwrap_or("").to_string(),
+                    self.config.api_key.as_deref().unwrap_or("").to_string(),
+                    self.config.protocol.as_deref().unwrap_or("").to_string(),
                 )
             });
 
-        // If using the default model, return the default provider
-        if model == self.default_model {
+        self.provider_for(&model, &base_url, &api_key, &protocol)
+    }
+
+    /// Install a picked main model (the `/model` swap): create the provider
+    /// FIRST — an error leaves the store untouched — then point the main tier
+    /// at the picked endpoint tuple and cache the provider. An unconfigured
+    /// lite/advanced tier follows the switch (the one resolution rule: an
+    /// unconfigured tier sits on the effective `main`). In-memory here; the
+    /// caller persists the pick to `config.json`'s `model` pointer
+    /// (`model::persist`) so the next boot loads the same selection.
+    pub fn apply_picked(
+        &mut self,
+        model: String,
+        base_url: String,
+        api_key: String,
+        protocol: String,
+    ) -> Result<Arc<dyn LlmProvider>, LlmError> {
+        let provider = self.provider_for(&model, &base_url, &api_key, &protocol)?;
+        let tuple = (model, base_url, api_key, protocol);
+        self.tiers.insert("main".to_string(), tuple.clone());
+        for tier in ["lite", "advanced"] {
+            if self.config.tier_def(tier).is_none() {
+                self.tiers.insert(tier.to_string(), tuple.clone());
+            }
+        }
+        Ok(provider)
+    }
+
+    /// The provider for one endpoint tuple: the default provider when the
+    /// tuple is its own, the cached one when seen before, else a fresh
+    /// creation. One place decides — a tier, a pick, and a re-pick of the
+    /// original model all resolve the same way.
+    fn provider_for(
+        &mut self,
+        model: &str,
+        base_url: &str,
+        api_key: &str,
+        protocol: &str,
+    ) -> Result<Arc<dyn LlmProvider>, LlmError> {
+        // The default provider is the one built from the boot tuple — same
+        // model name on a different endpoint is a different provider.
+        let boot = (
+            self.default_tuple.0.as_str(),
+            self.default_tuple.1.as_str(),
+            self.default_tuple.2.as_str(),
+            self.default_tuple.3.as_str(),
+        );
+        if (model, base_url, api_key, protocol) == boot {
             return Ok(self.default_provider.clone());
         }
 
-        // Check cache
-        if let Some(provider) = self.providers.get(&model) {
+        let key = format!("{model}|{base_url}|{protocol}|{api_key}");
+        if let Some(provider) = self.providers.get(&key) {
             return Ok(provider.clone());
         }
 
-        // Create new provider
-        let provider = self.create_provider(&model, &base_url, &api_key, &protocol)?;
-        self.providers.insert(model, provider.clone());
+        let provider = self.create_provider(model, base_url, api_key, protocol)?;
+        self.providers.insert(key, provider.clone());
         Ok(provider)
     }
 
@@ -195,6 +309,7 @@ mod tests {
             main: TierConfig::Simple("mimo-v2.5-pro".to_string()),
             lite: Some(TierConfig::Simple("mimo-v2.5".to_string())),
             advanced: None,
+            model: None,
             scene_tiers: None,
             update: Default::default(),
             ui: Default::default(),
@@ -237,6 +352,99 @@ mod tests {
 
         let tiers = store.list_tiers();
         assert_eq!(tiers.len(), 3);
+    }
+
+    /// protects: a pick installs the FULL picked endpoint tuple on the main
+    /// tier and the provider that tuple creates. fails_when: the swap lands
+    /// on the wrong tuple or the tier keeps serving the old provider.
+    /// no_claim: whether the model exists at the provider.
+    #[test]
+    fn apply_picked_installs_the_picked_tuple_and_its_provider() {
+        let mut store = ModelStore::new(mock_config(), Arc::new(MockProvider));
+        let provider = store
+            .apply_picked(
+                "qwen-plus".to_string(),
+                "https://api.example.com/v1".to_string(),
+                "sk-x".to_string(),
+                "openai".to_string(),
+            )
+            .expect("provider creation succeeds");
+        assert_eq!(provider.info().model, "qwen-plus");
+        assert_eq!(
+            store.tier_tuple("main"),
+            (
+                "qwen-plus".to_string(),
+                "https://api.example.com/v1".to_string(),
+                "sk-x".to_string(),
+                "openai".to_string(),
+            )
+        );
+        // The main tier now resolves to that exact provider (cache, not a
+        // second construction).
+        let again = store.get_or_create_provider("main").expect("cached");
+        assert!(Arc::ptr_eq(&provider, &again));
+    }
+
+    /// protects: the provider identity is the endpoint tuple, not the name —
+    /// the same model name on a different endpoint is a different provider,
+    /// never the boot default. fails_when: a name match silently hands back
+    /// the default provider on the wrong endpoint. no_claim: how the
+    /// endpoints differ in behavior.
+    #[test]
+    fn same_name_on_a_different_endpoint_is_not_the_default_provider() {
+        let mut store = ModelStore::new(mock_config(), Arc::new(MockProvider));
+        let swapped = store
+            .apply_picked(
+                "mimo-v2.5-pro".to_string(),
+                "https://other.example.com/v1".to_string(),
+                "sk-o".to_string(),
+                "openai".to_string(),
+            )
+            .expect("provider creation succeeds");
+        assert!(
+            !Arc::ptr_eq(&swapped, &store.default_provider()),
+            "same name, different endpoint: not the default provider"
+        );
+        let again = store.get_or_create_provider("main").expect("cached");
+        assert!(Arc::ptr_eq(&swapped, &again));
+    }
+
+    /// protects: the default provider is handed out only when the FULL tuple
+    /// matches the one it was built from. fails_when: a same-name
+    /// different-endpoint tier is answered with the default provider.
+    /// no_claim: which endpoint a product boots on.
+    #[test]
+    fn the_default_provider_comes_back_only_on_a_full_tuple_match() {
+        let mut store = ModelStore::new(mock_config(), Arc::new(MockProvider));
+        let boot = store.get_or_create_provider("main").expect("boot tuple");
+        assert!(Arc::ptr_eq(&boot, &store.default_provider()));
+
+        // Re-picking the exact boot tuple is the default provider again.
+        let repicked = store
+            .apply_picked(
+                "mimo-v2.5-pro".to_string(),
+                "http://localhost:3200".to_string(),
+                "sk-test".to_string(),
+                "openai".to_string(),
+            )
+            .expect("provider creation succeeds");
+        assert!(Arc::ptr_eq(&repicked, &store.default_provider()));
+    }
+
+    /// protects: the serving resolver — not the tier table — names the model
+    /// the engine is serving, and rebinding replaces it; an unbound store
+    /// reports no serving name so callers can fall back to the tier table.
+    /// fails_when: `serving_model` reports the tier name, survives a rebind,
+    /// or returns a name while unbound. no_claim: when the engine lands a
+    /// staged swap.
+    #[test]
+    fn the_serving_resolver_names_the_serving_model() {
+        let mut store = ModelStore::new(mock_config(), Arc::new(MockProvider));
+        assert_eq!(store.serving_model(), None);
+        store.bind_serving_name(Arc::new(|| Some("serving-model".to_string())));
+        assert_eq!(store.serving_model().as_deref(), Some("serving-model"));
+        store.bind_serving_name(Arc::new(|| Some("other-model".to_string())));
+        assert_eq!(store.serving_model().as_deref(), Some("other-model"));
     }
 
     // Mock provider for testing

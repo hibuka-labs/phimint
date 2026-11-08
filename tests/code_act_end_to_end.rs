@@ -187,6 +187,7 @@ async fn the_model_acts_in_code_and_the_session_survives_between_steps() {
             base_dir: base.path().to_path_buf(),
             session_id: session_id.clone(),
         }),
+        None,
     )
     .await
     .unwrap();
@@ -373,6 +374,7 @@ async fn the_file_chain_lands_whole_in_one_step_with_no_code_cell_in_the_menu() 
             base_dir: base.path().to_path_buf(),
             session_id: session_id.clone(),
         }),
+        None,
     )
     .await
     .unwrap();
@@ -494,6 +496,7 @@ async fn the_menu_schema_tax_account_names_the_per_request_bytes() {
             base_dir: tool_base.path().to_path_buf(),
             session_id: "menu-tax-tool".to_string(),
         }),
+        None,
     )
     .await
     .unwrap();
@@ -532,6 +535,7 @@ async fn the_menu_schema_tax_account_names_the_per_request_bytes() {
             base_dir: act_base.path().to_path_buf(),
             session_id: "menu-tax-act".to_string(),
         }),
+        None,
     )
     .await
     .unwrap();
