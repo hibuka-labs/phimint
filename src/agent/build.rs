@@ -2,6 +2,7 @@ use super::code_road::RootMarkedIds;
 #[cfg(feature = "code-exec")]
 use super::code_road::{CellSessions, CodeRoadEngine, code_artifacts_dir, code_exec_journal};
 use super::prompt::{TOKEN_BUDGET_PROMPT_SUFFIX, compose_system_prompt_for};
+use super::spill::HubSpillSink;
 use super::subagents::child_multi_agent_config;
 use super::*;
 use phi_agent::AgentBuilder;
@@ -112,6 +113,11 @@ pub async fn build_with_code_exec(
     // Background task registry: shared between LocalShellTool, TaskOutputTool,
     // TaskCancelTool, and the TUI tick loop.
     let bg_registry = BackgroundTaskRegistry::new(4); // max 4 concurrent bg tasks
+    // Shell-output overflow sink (G3): mounted with the code-exec engine's
+    // artifact store below — registration runs first, so the sink starts
+    // unmounted and every spill before (or without) a mount keeps the plain
+    // truncation marker.
+    let spill_sink = Arc::new(HubSpillSink::new());
     if !skill_resolver.is_empty() {
         tracing::info!(
             count = skill_resolver.len(),
@@ -360,8 +366,12 @@ pub async fn build_with_code_exec(
         // hundred lines; the system prompt tells the agent to paginate beyond.
         // (Token-budget mode lowers it further — see tool_output_cap above.)
         .max_tool_output_chars(tool_output_cap)
-        .register_tool(LocalShellTool::new(shell_timeout_ms).with_registry(bg_registry.clone()))
-        .register_tool(TaskOutputTool::new(bg_registry.clone()))
+        .register_tool(
+            LocalShellTool::new(shell_timeout_ms)
+                .with_registry(bg_registry.clone())
+                .with_spill(spill_sink.clone()),
+        )
+        .register_tool(TaskOutputTool::new(bg_registry.clone()).with_spill(spill_sink.clone()))
         .register_tool(TaskCancelTool::new(bg_registry.clone()))
         .register_tool(RipgrepTool::new(workspace_root.clone()))
         .register_tool(RepoMapTool::new(workspace_root.clone()))
@@ -421,6 +431,10 @@ pub async fn build_with_code_exec(
                     .build(move |registry| PythonWorker::spawn(registry, limits))
                     .await
                     .context("code-exec engine must assemble")?;
+                // Shell overflow spills share this engine's artifact store.
+                if let Some(hub) = executor.registry().artifacts() {
+                    spill_sink.mount(hub);
+                }
                 let scope = session_scope
                     .clone()
                     .context("code-exec needs a session context")?;
@@ -439,6 +453,10 @@ pub async fn build_with_code_exec(
                     .build(move |registry| PythonWorker::spawn(registry, limits))
                     .await
                     .context("code-exec engine must assemble")?;
+                // Shell overflow spills share this engine's artifact store.
+                if let Some(hub) = executor.registry().artifacts() {
+                    spill_sink.mount(hub);
+                }
                 // The observation face wears the same cap the tool road's
                 // render does — one model-face budget, both roads.
                 builder = builder.action_backend(Box::new(

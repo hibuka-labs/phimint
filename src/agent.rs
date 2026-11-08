@@ -50,6 +50,7 @@ mod budget;
 mod build;
 mod code_road;
 mod prompt;
+mod spill;
 mod subagents;
 
 pub use budget::TokenBudgetOptions;
