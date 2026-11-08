@@ -125,6 +125,16 @@ pub async fn build_with_code_exec(
             "loaded skills for /skill command"
         );
     }
+    // Same-name skills whose content drifted apart: the later directory won
+    // (last-wins unchanged), but the shadowing is no longer silent (G1b).
+    for shadow in skill_resolver.shadowed_names() {
+        tracing::warn!(
+            name = %shadow.name,
+            shadowed = ?shadow.shadowed_path,
+            winning = ?shadow.winning_path,
+            "duplicate skill name with different content — later dir won"
+        );
+    }
     // The live session's storage scope: one shared, re-pointable handle for
     // every session-keyed tree (rotation archive, notes, code journal,
     // captures). Frozen copies of the session id kept writing the abandoned
