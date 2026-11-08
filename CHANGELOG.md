@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Your model choice survives restarts.** `/model` used to reset on every
+  launch; now the switch writes one top-level `model` selection pointer into
+  config.json and the next boot serves the pick. The `main`, `lite` and
+  `advanced` definitions never move — the pointer overrides `main` while it is
+  there (an unconfigured lite or advanced follows the effective main — the
+  pointer while one is set), and clearing it in `/model` deletes just the
+  pointer. A pointer you placed by hand is kept
+  and named. A `--model` or endpoint passed on the command line stays session
+  policy and is never written to the file. Typed names nothing vouches for
+  come back with a spelling warning.
+
+- **Paste a screenshot with Ctrl+V.** The composer takes an image paste (the
+  terminal keeps Cmd+V for text) and attaches it to your message. Whether the
+  live model can actually see it is answered from the model registry's own
+  fact — a model the registry has never heard of answers "unknown" rather than
+  a guess.
+
+- **The model says its own name** — the prompt names the live model on every
+  turn, and "which model are you?" routes to a `current_model` answer that
+  beats conversation history — weaker backends used to echo a model name from
+  earlier in the conversation even after a switch.
+
+- **Questions get a chat-about-this door.** When the agent asks with a picker,
+  you can type a question back instead of choosing. Your words come back to
+  the model verbatim, and the model answers them before carrying on.
+
+- **Long shell output spills instead of vanishing.** Output that overflows the
+  tool budget spills to the session's artifact store and is fetched exactly
+  like a code-cell artifact, instead of ending in a truncation marker.
+
+- **Your sent inputs come back on `Up`.** The composer keeps what you send and
+  brings it back with `Up` / `Down` (your current draft cycles along), filtered
+  to the workspace you are in. One file backs it —
+  `~/.phimint/input-history.jsonl`, created 0600 inside a data directory
+  created 0700.
+
 ### Fixed
 
 - **`/resume` writes to the right session.** The rotation archive, the
@@ -16,11 +54,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   landed in the bootstrap session's tree. The stores now share one
   re-pointable session scope, re-pointed once per session.
 
+- **`agent-works` compiles with the `multi_agent` feature alone.** A file
+  split left the `Arc` import gated on the `memory` and `skill` features
+  only, so the multi-agent build paths had no `Arc` in scope and the crate
+  failed to compile with `multi_agent` enabled but the other two disabled.
+
 ### Changed
 
-- **The canvas surface speaks English.** The status line, the option labels
+- **The canvas surface speaks English** — the status line, the option labels
   and the pick marker the model reads (`(canvas pick)`) are English now; the
   design-canvas skill's decision sections follow.
+
+- **The task panel draws a rule, not a box** — the frame keeps its top rule
+  — the row count and the close hint still ride it — and drops the sides
+  and the bottom, so the rows read as a section rather than a box.
+
+- **The live phase word and its hint wear different colors** — the process
+  row's phase word (`thinking...`) takes the brand's bright warm; the
+  parenthetical hint beside it (`(Ctrl+C cancel)`) drops to the gray hint
+  slot. The mode badge keeps its own warm step.
+
+- **Task names get the room they need.** The name column widened from 16 to
+  28 columns and the files column from 8 to 12, so a long task name shows
+  whole instead of being ellipsized. The squeeze order is unchanged.
+
+- **The tips line tells the truth about newlines** — the newline hint is Ctrl+J
+  (Shift+Enter never arrived in the terminal), and the tips mention Ctrl+V for
+  screenshot pastes.
+
+- **Duplicate skill names are no longer silent.** When two skill directories
+  answer to the same name and their content diverged, the startup log says
+  which one won.
 
 ## [0.7.1] — 2026-10-31
 
