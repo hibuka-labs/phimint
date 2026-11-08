@@ -36,7 +36,10 @@ struct CapturedRequest {
 /// script (the same classification the PTY mock applies): title generation and
 /// the guard's completion judge.
 const TITLE_MARK: &str = "You are a title generator";
-const JUDGE_MARK: &str = "You are a task completion judge";
+// Hyphen-agnostic anchor: keys on the phrase "completion judge" (present in
+// the judge prompt's first line regardless of hyphenation) — a full-sentence
+// mark silently broke once when the prompt was reworded (20261107_27dc727a).
+const JUDGE_MARK: &str = "completion judge";
 
 /// Mock provider that records every request and plays back scripted turns.
 struct ScriptedProvider {

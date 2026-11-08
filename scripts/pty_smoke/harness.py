@@ -235,8 +235,11 @@ class Screen:
 
 # ── Mock LLM: scripted OpenAI SSE ───────────────────────────────────────
 
+# Hyphen-agnostic anchor: keys on the phrase "completion judge" (present in
+# the judge prompt's first line regardless of hyphenation) — a full-sentence
+# mark silently broke once when the prompt was reworded (20261107_27dc727a).
 TITLE_MARK = "You are a title generator"
-JUDGE_MARK = "You are a task completion judge"
+JUDGE_MARK = "completion judge"
 
 
 class MockLLM:
