@@ -8,7 +8,7 @@ of `cargo test` — PTY runs are slow and environment-sensitive. Position:
 ## Usage
 
 ```bash
-python3 scripts/pty_smoke/smoke.py            # all scenarios (51 assertions)
+python3 scripts/pty_smoke/smoke.py            # all 11 scenarios
 python3 scripts/pty_smoke/smoke.py 03 06      # selected ids
 PHIMINT_BIN=$PWD/target/release/phimint python3 scripts/pty_smoke/smoke.py
 ```
@@ -35,6 +35,7 @@ i.e. literally what was on screen, not the byte stream.
 | 08 | fixed protocol: Esc layering, Ctrl+C interrupt settles with cancellation notice, Ctrl+L repaint erases foreign paint, unknown OSC query survives |
 | 09 | periodic probes: UI keeps drawing during a slow stream; resize self-heal (shrink + restore) keeps chrome and composer |
 | 10 | shallow-tier injection timing invariant (T16): a synthetic turn (child-report batch, background-task wake) is honored only when no turn is active — never injected into a running one |
+| 11 | screenshot paste pipeline: Ctrl+V writes the chip row, the picture rides the wire request, an empty bracketed paste grabs the clipboard image all the same |
 
 ## The craft (each item earned its place)
 

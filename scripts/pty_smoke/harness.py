@@ -259,6 +259,9 @@ class MockLLM:
         self.script = []
         self.lock = threading.Lock()
         self.trace = []
+        # Full request bodies, in arrival order — scenarios can assert on
+        # wire facts (e.g. "this request carried an image").
+        self.requests = []
         self.child_marks = []
         self.child_reply = "child report: ok"
         self.default_reply = "script exhausted"
@@ -291,6 +294,8 @@ class MockLLM:
             self.script = list(entries)
 
     def handle(self, hs, req):
+        with self.lock:
+            self.requests.append(req)
         text_blob = json.dumps(req.get("messages", []), ensure_ascii=False)
         if TITLE_MARK in text_blob:
             with self.lock:

@@ -15,10 +15,13 @@ Not in `cargo test` — PTY runs are slow and environment-sensitive. Position:
 Env: PHIMINT_BIN overrides the binary (default target/debug/phimint).
 """
 
+import json
 import os
 import re
+import struct
 import sys
 import time
+import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from harness import (  # noqa: E402
@@ -38,9 +41,10 @@ IDLE = "Idle"          # status line when no turn runs
 MODE_HINT = "shift+tab"  # status-bar mode badge
 
 
-def new_session(tag, mock, approval=None):
+def new_session(tag, mock, approval=None, extra_env=None):
     world = World(tag)
-    pid, fd, slave = spawn(BIN, world, mock, f"smoke-{tag}", approval)
+    pid, fd, slave = spawn(BIN, world, mock, f"smoke-{tag}", approval,
+                           extra_env=extra_env)
     drv = Driver(pid, fd, slave)
     ok = boot_ok(drv)
     return world, drv, ok
@@ -349,7 +353,10 @@ def s08_fixed_protocol():
     drv.key(drv.ENTER)
     drv.wait_for(lambda s: s.contains("chunk-0"), 8.0)
     drv.key(drv.CTRL_C)
-    ok = drv.wait_for(lambda s: s.contains("Operation cancelled"), 8.0)
+    # The cancellation marker row (batch 2 renamed it: the old generic
+    # "Operation cancelled" line became the muted "⏹ cancelled" marker that
+    # belongs to RunCancelled).
+    ok = drv.wait_for(lambda s: s.contains("⏹ cancelled"), 8.0)
     expect("08", "Ctrl+C interrupts a running turn (cancellation lands)", ok,
            drv.dump(world, "08-interrupt"))
     ok = drv.wait_for(lambda s: s.contains("crunched for"), 5.0)
@@ -479,6 +486,63 @@ def s10_injection_timing():
     finish(drv, world, "10")
 
 
+# ── 11 screenshot paste pipeline (Ctrl+V) ──────────────────────────────
+
+def tiny_png(w, h):
+    """A real minimal RGB PNG — the paste path parses the header for the
+    chip label, so a magic-byte stub would not do."""
+    def chunk(tag, data):
+        return (struct.pack(">I", len(data)) + tag + data
+                + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
+
+    ihdr = struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)
+    raw = b"".join(b"\x00" + b"\x7f\x7f\x7f" * w for _ in range(h))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr)
+            + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+
+
+def s11_paste_image():
+    """Ctrl+V takes the clipboard's image (helper seam) onto the chip row,
+    the send echoes it and rides the picture to the wire as a user-message
+    attachment; an empty bracketed paste does the same grab (the path a
+    terminal-held Cmd+V leaves behind)."""
+    import tempfile
+    clip = os.path.join(tempfile.mkdtemp(prefix="smoke-clip-"), "clip.png")
+    with open(clip, "wb") as f:
+        f.write(tiny_png(37, 11))
+    mock = MockLLM()
+    mock.set_script([{"text": "screenshot noted. PASTE-DONE."}])
+    world, drv, ok = new_session("11", mock, extra_env={
+        "PHIMINT_CLIPBOARD_IMAGE_HELPER": f"cat {clip}"})
+    if not expect("11", "boot", ok, drv.screen.text()[-300:]):
+        drv.quit()
+        return
+    drv.key(b"\x16")  # Ctrl+V
+    ok = drv.wait_for(lambda s: s.contains("📷 37x11"), 5.0)
+    expect("11", "paste writes the chip row", ok, drv.dump(world, "11-chip"))
+    drv.type("look at this")
+    drv.key(drv.ENTER)
+    ok = drv.wait_for(lambda s: s.contains("PASTE-DONE"), 12.0)
+    ok2 = drv.screen.contains("📷 image 37x11")
+    expect("11", "the send echoes the attachment", ok and ok2,
+           f"reply={ok} echo={ok2} screen={drv.screen.text()[-400:]}")
+    with mock.lock:
+        carried = any("image_url" in json.dumps(r) for r in mock.requests)
+    expect("11", "the picture rides the wire request", carried,
+           f"requests={len(mock.requests)}")
+    # An empty bracketed paste — what a terminal emits when it keeps the
+    # paste key (Cmd+V) for itself and the clipboard holds a picture —
+    # attaches the clipboard image all the same. The file is swapped first
+    # so the new chip label is proof the second grab actually happened.
+    with open(clip, "wb") as f:
+        f.write(tiny_png(5, 7))
+    drv.key(b"\x1b[200~\x1b[201~")
+    ok = drv.wait_for(lambda s: s.contains("📷 5x7"), 5.0)
+    expect("11", "an empty bracketed paste attaches the clipboard image", ok,
+           drv.dump(world, "11-empty-paste"))
+    finish(drv, world, "11")
+
+
 # ── scenario registry ───────────────────────────────────────────────────
 
 SCENARIOS = {
@@ -492,6 +556,7 @@ SCENARIOS = {
     "08": ("fixed protocol (Esc/Ctrl+C/Ctrl+L/OSC)", s08_fixed_protocol),
     "09": ("periodic probes (resize/liveness)", s09_periodic_probes),
     "10": ("injection timing invariant (T16)", s10_injection_timing),
+    "11": ("screenshot paste pipeline (Ctrl+V / empty paste)", s11_paste_image),
 }
 
 
