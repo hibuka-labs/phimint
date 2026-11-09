@@ -23,11 +23,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          # macos-latest (not the pinned macos-14): GitHub retired the
+          # 'macos-14-arm64-us-default' runner configuration, which cancelled
+          # both darwin jobs on 2026-11-09 and left the Release uncreated.
+          # The sibling phi-agent workflow already builds both darwin targets
+          # on macos-latest and cross-compiles x86_64-apple-darwin fine.
+          - os: macos-latest
             target: aarch64-apple-darwin
             asset_key: darwin-aarch64
             archive: tar.gz
-          - os: macos-14
+          - os: macos-latest
             target: x86_64-apple-darwin
             asset_key: darwin-x86_64
             archive: tar.gz
