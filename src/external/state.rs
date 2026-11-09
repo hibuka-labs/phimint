@@ -564,7 +564,7 @@ impl ExternalState {
     /// Security baseline (SC7): before a human confirms the entry's full
     /// picture it is never executed and never allowed by default — the
     /// confirmation goes through [`Confirm`] ([`LiveApprovalGate::confirm_always`],
-    /// ignores the tier), and the copy is [`render_tool_entry_review`]
+    /// ignores the tier), and the copy is `render_tool_entry_review`
     /// (name/description/full argv + absolute path/timeout/env references).
     ///
     /// Secret principle: `env` values accept only whole-value `${ENV:VAR}`

@@ -69,7 +69,7 @@ pub async fn build(
     .await
 }
 
-/// [`build`] with the code road chosen at the assembly point (M3 T10d layer ③):
+/// [`build()`] with the code road chosen at the assembly point (M3 T10d layer ③):
 /// `code_exec.mode` decides what code wiring this runtime gets, and `interact`
 /// is the act road's interaction slot — armed per session by `shell_wire`'s
 /// boot closure with that session's `ask_user` picker queue.

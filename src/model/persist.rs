@@ -70,7 +70,7 @@ impl std::error::Error for PersistError {}
 /// store) is a loud failure: the pick stays session-only and the confirm line
 /// must say so. `runtime` is the endpoint the session is actually running
 /// (the CLI-merged top-level defaults) — never persisted even when the pick
-/// carries it (see [`render_pointer_value`]). The caller reports the outcome
+/// carries it (see `render_pointer_value`). The caller reports the outcome
 /// via [`note`].
 pub fn persist_to(
     path: Option<&Path>,

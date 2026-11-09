@@ -19,18 +19,20 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agent-base"
-version = "0.12.0"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f10bdd678645cfbeeded56eb87246bf6e52029b8ca72b63173e4a560e051f41a"
+checksum = "5306139fcb67cf5e95b04db1c1b99846d5487653f6d6c6da2590e5bd0c2837d9"
 dependencies = [
  "agent-types",
  "anyhow",
  "async-openai",
  "async-trait",
+ "base64 0.23.1",
  "chrono",
  "eventsource-stream",
  "futures-core",
  "futures-util",
+ "image",
  "llm-trait",
  "llm-unified",
  "reqwest",
@@ -46,9 +48,9 @@ dependencies = [
 
 [[package]]
 name = "agent-types"
-version = "0.5.0"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "66abe61f2ace1578d7370669f6f3d282a9b8fe1eb597db8894e2a7dbc02fe47e"
+checksum = "ff2e771602bdccbd19ba21b040ccb9ee7d13157ef6a0169160046b43cf43d97d"
 dependencies = [
  "llm-trait",
  "serde",
@@ -57,9 +59,9 @@ dependencies = [
 
 [[package]]
 name = "agent-works"
-version = "0.12.0"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f9ea499c399ca7faf0cf9457a2f6bc268da50b3ddb7365c2fc43dabf1d1968b"
+checksum = "5f431d6a0bf3f067525ed074d8ecd239257523c019f20b07667927a02d9e9e2f"
 dependencies = [
  "agent-base",
  "async-trait",
@@ -617,9 +619,9 @@ dependencies = [
 
 [[package]]
 name = "codexec"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a99ecee48b2bd9efdfbc0151b584c72fe6d09991cf1aadd5ccc9b03120ff6055"
+checksum = "d85aa2c3ef52291675747c8108473e5a66aa5205ee830fd2952ef250951f4eb8"
 dependencies = [
  "async-trait",
  "phi-cap",
@@ -2357,9 +2359,9 @@ checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 
 [[package]]
 name = "llm-trait"
-version = "0.1.4"
+version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "290fa360c1d94400ebf208ff3c046e44608fe9fc8c9c151a8236b47397472865"
+checksum = "c4fd856d87952643e91c1652d814ecc2af9dc2f96d9a42ae486f4d82c1ff3b9f"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2374,9 +2376,9 @@ dependencies = [
 
 [[package]]
 name = "llm-unified"
-version = "0.1.5"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b0341a40e897ec38f700cb2c74b10f95d8f915ec7457c14f972798f181341903"
+checksum = "5cd059bae957f18930968825618df63767fc6c989ab608add443392e1aec3ac9"
 dependencies = [
  "async-trait",
  "clap",
@@ -3008,9 +3010,9 @@ dependencies = [
 
 [[package]]
 name = "phi-agent"
-version = "0.20.0"
+version = "0.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69e26c937fc7721fa208c474acffb62763791f7d6fdcda25c175c3541aeeaf31"
+checksum = "b1a2f69bd4c63168f7186d53fcdad02244218de670085df7416ce4ff42aaa1e2"
 dependencies = [
  "agent-base",
  "agent-works",
@@ -3039,6 +3041,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "phi-agent-tui"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "faf9629a0847e4017626de6c571a17a49511c7ed91b91d8f7901566acf98e06d"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "async-trait",
+ "chrono",
+ "crossterm 0.28.1",
+ "libc",
+ "log-core",
+ "phi-agent",
+ "phi-kernel-tools",
+ "phi-telemetry",
+ "phi-tui",
+ "ratatui",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "unicode-width 0.1.14",
+]
+
+[[package]]
 name = "phi-canvas"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3064,9 +3092,9 @@ dependencies = [
 
 [[package]]
 name = "phi-kernel-tools"
-version = "0.12.0"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "989484ea15a43421df218ddd4804755777d57ba6a6058937c6ef33c11f41c2ec"
+checksum = "0b7d75b33cc12765e480018ce257607c83d36b606b6712c085c1a4c98d2ad2ed"
 dependencies = [
  "agent-base",
  "agent-works",
@@ -3074,6 +3102,7 @@ dependencies = [
  "chrono",
  "ignore",
  "libc",
+ "reqwest",
  "schemars",
  "serde",
  "serde_json",
@@ -3113,9 +3142,9 @@ dependencies = [
 
 [[package]]
 name = "phi-telemetry"
-version = "0.7.4"
+version = "0.7.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "76740076b0de13eba7ec17b4a1d90dc5b6234b3586bce9af18f55057fce34b88"
+checksum = "4ed45740fc580e716b73d6504af42b916db0ab7b2b551d745ea5a637cc643fd7"
 dependencies = [
  "agent-base",
  "anyhow",
@@ -3128,9 +3157,9 @@ dependencies = [
 
 [[package]]
 name = "phi-tools"
-version = "0.8.0"
+version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0011e3ffec39d124829a3f856ffd65d13a135ae2a5ecd511ec0803b54d0ab735"
+checksum = "317b8b26993c3c07f51c76d4bb0a2d2bdf0adc929e991b725b3dcfb35cbeedab"
 dependencies = [
  "agent-base",
  "anyhow",
@@ -3147,9 +3176,9 @@ dependencies = [
 
 [[package]]
 name = "phi-tui"
-version = "0.3.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9f03bf6f71a223db55c5654c611ff8f95f5efae4f9e93f797a1a211574dde7ee"
+checksum = "ffc6bb3af2997bd108a7d049146d863ca039f8044a81ef31425047341a88fc18"
 dependencies = [
  "crossterm 0.28.1",
  "pulldown-cmark",
@@ -3197,7 +3226,7 @@ dependencies = [
 
 [[package]]
 name = "phimint"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -3215,6 +3244,7 @@ dependencies = [
  "log-core",
  "minisign-verify",
  "phi-agent",
+ "phi-agent-tui",
  "phi-canvas",
  "phi-cap",
  "phi-kernel-tools",

@@ -253,6 +253,7 @@ you: "investigate questions X / Y / Z"
 |---|---|
 | `code_cell` | run code cells in a resident Python session — state (variables, imports, functions) survives across calls; the fast lane for bulk edits, renaming and data wrangling |
 | `read_file` / `write_file` / `edit_file` / `list_files` | file I/O and surgical edits (`edit_file` is atomic with 4-level matching; phi-kernel-tools) |
+| `read_image` | read an image the model can actually see — paste a screenshot with Ctrl+V and the agent looks at it (or point it at a file; phi-kernel-tools) |
 | `execute_command` | shell (builds/tests/anything; streamed line-by-line, timeout + cancel kills the process group; output over the tool budget spills to a file the agent can read back) |
 | `search_content` | ripgrep content search (regex) |
 | `repo_map` | tree-sitter symbol/structure index (multi-language, pull-based context) |

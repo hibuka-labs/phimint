@@ -18,7 +18,9 @@ Env: PHIMINT_BIN overrides the binary (default target/debug/phimint).
 import json
 import os
 import re
+import shutil
 import struct
+import subprocess
 import sys
 import time
 import zlib
@@ -59,6 +61,21 @@ def submit_and_wait_reply(drv, text, done_mark, timeout=12.0):
     drv.type(text)
     drv.key(drv.ENTER)
     return drv.wait_for(lambda s: s.contains(done_mark), timeout)
+
+
+def grid_col_of(scr, r, needle):
+    """Grid column where `needle` starts on screen row `r` — grid cells, so a
+    wide CJK glyph advances two. Mouse coordinates are grid columns, while
+    the selection's text columns are pane-relative; anchoring every press at
+    `grid_col_of(...) + offset` keeps the two in step."""
+    text, cols = "", []
+    for c, cell in enumerate(scr.grid[r]):
+        if cell == "":
+            continue  # wide-glyph continuation cell
+        text += cell
+        cols.append(c)
+    i = text.find(needle)
+    return None if i < 0 else cols[i]
 
 
 # ── 01 hardware cursor + DSR round-trip ─────────────────────────────────
@@ -213,9 +230,10 @@ def s04_scroll():
 # ── 05 mouse selection + copy menu ──────────────────────────────────────
 
 def s05_selection():
-    """Left-drag selects transcript rows; right-click opens the copy menu;
-    activating it closes the menu. Ctrl+C with a selection copies instead of
-    interrupting."""
+    """Left-drag selects exactly the dragged cells (character-precise: the
+    first row cuts at the anchor column, the last at the head column);
+    right-click opens the copy menu; activating it closes the menu. Ctrl+C
+    with a selection copies instead of interrupting."""
     mock = MockLLM()
     mock.set_script([{"text": "select-alpha\nselect-beta\nselect-gamma"}])
     world, drv, ok = new_session("05", mock)
@@ -232,34 +250,42 @@ def s05_selection():
         expect("05", "reply rows on screen", False, s.text()[-500:])
         finish(drv, world, "05")
         return
-    # Drag across the reply rows (SGR press, drag, release — 0-based grid).
-    drv.mouse(0, 5, r, press=True)
-    drv.mouse(32, 25, r + 1, press=True)
-    drv.mouse(0, 25, r + 1, press=False)
+    x0 = grid_col_of(s, r, "select-alpha")
+    # Drag from text col 5 of the first row past the second row's end (SGR
+    # press, drag, release — 0-based grid): "select-alpha"[5:] + whole
+    # "select-beta" = "t-alpha\nselect-beta" = 19 chars.
+    drv.mouse(0, x0 + 5, r, press=True)
+    drv.mouse(32, x0 + 25, r + 1, press=True)
+    drv.mouse(0, x0 + 25, r + 1, press=False)
     drv.drain(0.5)
-    drv.mouse(2, 12, r, press=True)  # right-click on the selection
-    drv.mouse(2, 12, r, press=False)
+    drv.mouse(2, x0 + 12, r, press=True)  # right-click on the selection
+    drv.mouse(2, x0 + 12, r, press=False)
     drv.drain(0.6)
     menu_up = s.contains("Copy")
     expect("05", "right-click opens the copy menu", menu_up, s.text()[-500:])
+    first = None
     if menu_up:
         drv.key(drv.ENTER)  # menu Enter copies and closes
         drv.drain(0.6)
         expect("05", "menu Enter copies and closes",
                not s.contains("Copy"), s.text()[-500:])
+        m = re.search(r"copied (\d+) chars", s.text())
+        first = m.group(1) if m else None
+    expect("05", "menu copy is the char-precise slice (19 chars)",
+           first == "19", f"copied={first} screen={s.text()[-300:]}")
     # Ctrl+C with a selection copies — it never falls through to the quit hint.
-    # Re-select a DIFFERENT span (one row, not two): the menu copy's "copied
-    # 24 chars" notice is cleared by this Ctrl+C, so a changed char count
-    # proves the copy path ran again rather than the stale notice lingering.
-    drv.mouse(0, 5, r, press=True)
-    drv.mouse(32, 25, r, press=True)
-    drv.mouse(0, 25, r, press=False)
+    # Re-select a DIFFERENT, shorter span ("select-alpha"[5:] = 7 chars): the
+    # changed count proves the copy path ran again rather than the stale
+    # notice lingering.
+    drv.mouse(0, x0 + 5, r, press=True)
+    drv.mouse(32, x0 + 25, r, press=True)
+    drv.mouse(0, x0 + 25, r, press=False)
     drv.drain(0.4)
     drv.key(drv.CTRL_C)
     drv.drain(0.6)
     m = re.search(r"copied (\d+) chars", s.text())
     expect("05", "Ctrl+C with selection is copy, not interrupt",
-           m is not None and m.group(1) != "24" and not s.contains("Ctrl+C again"),
+           m is not None and m.group(1) == "7" and not s.contains("Ctrl+C again"),
            s.text()[-300:])
     finish(drv, world, "05")
 
@@ -543,6 +569,67 @@ def s11_paste_image():
     finish(drv, world, "11")
 
 
+# ── 12 character-precise selection (CJK) ────────────────────────────────
+
+def s12_char_select_cjk():
+    """A drag copies exactly the cells it covered, snapped to character
+    edges: a press on a wide glyph's continuation cell takes the whole glyph
+    ("好世界 hello" = 9 chars), a release mid-glyph ends at the glyph edge
+    ("你好世" = 3 chars). On macOS the system clipboard is read back to prove
+    the copy buffer really holds that text."""
+    mock = MockLLM()
+    mock.set_script([{"text": "你好世界 hello\nsecond-line-END"}])
+    world, drv, ok = new_session("12", mock)
+    if not expect("12", "boot", ok, drv.screen.text()[-300:]):
+        drv.quit()
+        return
+    ok = submit_and_wait_reply(drv, "select cjk", "second-line-END", 12.0)
+    if not expect("12", "reply arrives", ok, drv.dump(world, "12-wait")):
+        finish(drv, world, "12")
+        return
+    s = drv.screen
+    r = s.row_of("你好世界 hello")
+    if r is None:
+        expect("12", "cjk row on screen", False, s.text()[-500:])
+        finish(drv, world, "12")
+        return
+    x0 = grid_col_of(s, r, "你好世界 hello")
+    # Press on 好's continuation cell (text cell 3), release past the row
+    # end: both snap outward — the copy is whole characters.
+    drv.mouse(0, x0 + 3, r, press=True)
+    drv.mouse(32, x0 + 25, r, press=True)
+    drv.mouse(0, x0 + 25, r, press=False)
+    drv.drain(0.4)
+    drv.key(drv.CTRL_C)
+    drv.drain(0.6)
+    m = re.search(r"copied (\d+) chars", s.text())
+    expect("12", "mid-glyph press snaps whole (9 chars)",
+           m is not None and m.group(1) == "9", s.text()[-300:])
+    if shutil.which("pbpaste"):
+        got = subprocess.run(["pbpaste"], capture_output=True,
+                             text=True).stdout
+        expect("12", "clipboard holds the snapped slice",
+               got == "好世界 hello", f"pbpaste={got!r}")
+    # Second, shorter drag: press at 你, release mid-世 (text cell 5) — the
+    # head snaps out to 世's edge, "你好世" = 3 chars. The changed count is
+    # itself proof the second copy ran (not a stale notice).
+    drv.mouse(0, x0 + 0, r, press=True)
+    drv.mouse(32, x0 + 5, r, press=True)
+    drv.mouse(0, x0 + 5, r, press=False)
+    drv.drain(0.4)
+    drv.key(drv.CTRL_C)
+    drv.drain(0.6)
+    m = re.search(r"copied (\d+) chars", s.text())
+    expect("12", "release mid-glyph snaps to the glyph edge (3 chars)",
+           m is not None and m.group(1) == "3", s.text()[-300:])
+    if shutil.which("pbpaste"):
+        got = subprocess.run(["pbpaste"], capture_output=True,
+                             text=True).stdout
+        expect("12", "clipboard holds the second slice",
+               got == "你好世", f"pbpaste={got!r}")
+    finish(drv, world, "12")
+
+
 # ── scenario registry ───────────────────────────────────────────────────
 
 SCENARIOS = {
@@ -557,6 +644,7 @@ SCENARIOS = {
     "09": ("periodic probes (resize/liveness)", s09_periodic_probes),
     "10": ("injection timing invariant (T16)", s10_injection_timing),
     "11": ("screenshot paste pipeline (Ctrl+V / empty paste)", s11_paste_image),
+    "12": ("character-precise selection (CJK snap + clipboard)", s12_char_select_cjk),
 }
 
 

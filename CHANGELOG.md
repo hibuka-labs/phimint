@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-09
+
 ### Added
 
 - **Your model choice survives restarts.** `/model` used to reset on every
@@ -45,7 +47,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `~/.phimint/input-history.jsonl`, created 0600 inside a data directory
   created 0700.
 
+- **You can select text with the mouse — character by character.** Press and
+  drag over the transcript selects exactly what is under the pointer instead of
+  whole lines; the right-click menu copies it. A wide CJK glyph selects whole
+  (never half), a double click takes the word, a triple click the block, and
+  dragging past the edge scrolls the view.
+
+- **The plan block follows the tail.** When the agent updates its plan, the
+  block moves to the end of the output instead of being replaced where it
+  first appeared — a long session no longer scrolls the plan out of sight.
+  Reading above the change does not move the screen.
+
+- **The agent can look at a picture.** A new `read_image` tool takes a local
+  path or an http(s) URL and puts the image on the wire. Oversized images are
+  scaled to fit the gateway's request limit, and one that cannot fit is
+  refused with the numbers that say why.
+
 ### Fixed
+
+- **Two skills with the same name no longer shadow each other silently.** The
+  duplicate is reported instead of one quietly winning.
 
 - **`/resume` writes to the right session.** The rotation archive, the
   notes, the code journal and the captures were built once, with the launch

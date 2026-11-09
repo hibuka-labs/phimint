@@ -1,5 +1,5 @@
 //! The model-switch road (the `/model` family's two answer paths): the pick
-//! modal's flow and the typed-name flow, both ending in [`apply_main_model`].
+//! modal's flow and the typed-name flow, both ending in `apply_main_model`.
 //!
 //! This is the one place an effective main model changes. Split out of
 //! `shell::commands` (the command surface) so the switch use-case — resolve,

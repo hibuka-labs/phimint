@@ -8,7 +8,7 @@ of `cargo test` — PTY runs are slow and environment-sensitive. Position:
 ## Usage
 
 ```bash
-python3 scripts/pty_smoke/smoke.py            # all 11 scenarios
+python3 scripts/pty_smoke/smoke.py            # all 12 scenarios
 python3 scripts/pty_smoke/smoke.py 03 06      # selected ids
 PHIMINT_BIN=$PWD/target/release/phimint python3 scripts/pty_smoke/smoke.py
 ```
@@ -29,13 +29,14 @@ i.e. literally what was on screen, not the byte stream.
 | 02 | markdown rendering: heading / list / inline code+bold / long-line wrap |
 | 03 | completion pickers: slash + mention, Esc policy duality (slash 恒抹 / mention 保文), no-match Enter submits verbatim |
 | 04 | scrolling: PageUp/PageDown paging over a long reply, wheel tick, fresh output returns to the bottom |
-| 05 | mouse selection + copy menu (SGR press/drag/release, right-click menu) + Ctrl+C-with-selection is copy, not quit-hint |
+| 05 | character-precise mouse selection + copy menu (SGR press/drag/release, right-click menu, copy = exactly the dragged slice) + Ctrl+C-with-selection is copy, not quit-hint |
 | 06 | approval gate: ask-mode write tool opens the popup; `y` + Enter approves and the turn completes |
 | 07 | task panel: `spawn_agent` row while the child runs, parent completes, child conversation ran |
 | 08 | fixed protocol: Esc layering, Ctrl+C interrupt settles with cancellation notice, Ctrl+L repaint erases foreign paint, unknown OSC query survives |
 | 09 | periodic probes: UI keeps drawing during a slow stream; resize self-heal (shrink + restore) keeps chrome and composer |
 | 10 | shallow-tier injection timing invariant (T16): a synthetic turn (child-report batch, background-task wake) is honored only when no turn is active — never injected into a running one |
 | 11 | screenshot paste pipeline: Ctrl+V writes the chip row, the picture rides the wire request, an empty bracketed paste grabs the clipboard image all the same |
+| 12 | CJK character snap: a press/release on a wide glyph's half cell selects the whole glyph, the copied slice matches the clipboard (pbpaste where available) and each copy's char count proves it ran |
 
 ## The craft (each item earned its place)
 
@@ -73,6 +74,9 @@ i.e. literally what was on screen, not the byte stream.
 - **Transient notices are cleared by the next key.** "📋 copied N chars" from
   one copy lingers until another key event — to prove a *second* copy ran,
   change the selection size and assert the char count changed.
+- **Mouse columns are grid columns.** A CJK row's text columns are offset by
+  its glyph widths (one wide glyph = two grid cells): anchor every press at
+  `grid_col_of(row, needle) + offset`, or the selection lands a character off.
 - **Approval is two-step.** Bare `y`/`a`/`n` only set the selection; the
   legend's "[Enter] confirm" is literal. Send `y` then Enter.
 - **Esc policy is dual.** Slash Esc wipes the typed prefix (恒抹); mention Esc

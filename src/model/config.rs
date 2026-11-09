@@ -152,7 +152,7 @@ pub struct ModelConfig {
     /// switch has been made and the configured `main` definition is the
     /// effective main. The three fields above are DEFINITIONS — a switch
     /// writes only this pointer, never a definition. Parse is lenient
-    /// ([`lenient_pointer`]): a malformed value warns and reads as no pointer
+    /// (`lenient_pointer`): a malformed value warns and reads as no pointer
     /// instead of failing the whole file.
     #[serde(default, deserialize_with = "lenient_pointer")]
     pub model: Option<TierConfig>,

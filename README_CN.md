@@ -242,6 +242,7 @@ Commands:
 |---|---|
 | `code_cell` | 在常驻 Python 会话里跑代码单元——状态（变量、import、函数）跨调用存活；批量改、重命名、数据整理的快车道 |
 | `read_file` / `write_file` / `edit_file` / `list_files` | 文件读写与精准编辑（`edit_file` 原子写 + 4 级匹配；phi-kernel-tools） |
+| `read_image` | 让模型真正「看见」图片：Ctrl+V 粘贴截图，agent 直接看（也可指向文件；phi-kernel-tools） |
 | `execute_command` | shell（跑构建/测试/命令，逐行流式回显 + 超时/取消杀进程组；超出工具预算的输出落盘成文件，agent 可回读） |
 | `search_content` | ripgrep 内容搜索（regex） |
 | `repo_map` | tree-sitter 符号/结构索引（多语言，拉取式上下文） |

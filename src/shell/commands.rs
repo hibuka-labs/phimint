@@ -177,7 +177,7 @@ pub fn command_table(
     ]
 }
 
-/// /model [name] · /lite [name] · /advanced [name] · /models · /focus — the
+/// /model \[name\] · /lite \[name\] · /advanced \[name\] · /models · /focus — the
 /// model-tier command face (local semantics, never a model turn).
 ///
 /// Bare `/model` opens the shell's pick modal (rows = the configured models)

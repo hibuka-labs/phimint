@@ -184,7 +184,7 @@ Never mention these tools to the user. They are internal mechanisms for context 
 /// prompt before each LLM call.
 ///
 /// This entry composes the tool road ( [`CodeExecMode::Tool`] ); a configured
-/// road goes through [`compose_system_prompt_for`].
+/// road goes through `compose_system_prompt_for`.
 pub fn compose_system_prompt(resolver: &SkillResolver) -> String {
     compose_system_prompt_for(resolver, CodeExecMode::Tool, "")
 }
