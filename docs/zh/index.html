@@ -574,8 +574,11 @@
        - website id  : the UUID shown in the umami dashboard under Settings -> Websites
      Data reported here is the only way to measure strangers landing on the page;
      GitHub's traffic API does not cover Pages. Keep the script defer'd so it never
-     blocks first paint, and keep it cookieless so no consent banner is needed. -->
-<script defer src="https://cloud.umami.is/script.js" data-website-id="REPLACE_WITH_UMAMI_WEBSITE_ID"></script>
+     blocks first paint, and keep it cookieless so no consent banner is needed.
+     TODO: the script stays off until the backend and the website id are real —
+     shipping it with a placeholder id buys a third-party request per visitor
+     and collects nothing. Uncomment the line once both exist. -->
+<!-- <script defer src="https://cloud.umami.is/script.js" data-website-id="REPLACE_WITH_UMAMI_WEBSITE_ID"></script> -->
 </head>
 <body>
 
