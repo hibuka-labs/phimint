@@ -49,12 +49,14 @@ use phi_agent::code_cell::{
 mod budget;
 mod build;
 mod code_road;
+pub mod gate;
 mod prompt;
 mod spill;
 mod subagents;
 
 pub use budget::TokenBudgetOptions;
 pub use build::{BuildOutput, build, build_with_code_exec};
+pub use gate::{VerifyGateConfig, VerifyGateMiddleware};
 pub use prompt::compose_system_prompt;
 
 #[cfg(test)]

@@ -447,6 +447,17 @@ async fn run() -> Result<()> {
         session_id: session_ctx.session_id.clone(),
     };
 
+    // The verify gate's write probe (design §5.4): in `deny` every write tool is
+    // refused, so nothing can ever dirty the workspace and the gate would only
+    // ever nag a read-only run. A **probe** rather than a snapshot because the
+    // mode is a live switch — Shift+Tab flips it mid-session.
+    let gate_writes = {
+        let switch = Arc::clone(&approval_mode);
+        Arc::new(move || {
+            switch.get() != phi_agent_tui::RuntimeApprovalMode::Deny
+        }) as agent::gate::WritesProbe
+    };
+
     let (agent, skill_resolver, skill_telemetry, bg_registry, canvas_activity) =
         agent::build_with_code_exec(
             code_exec_mode,
@@ -462,6 +473,7 @@ async fn run() -> Result<()> {
             skills::default_skill_dirs(),
             Some(token_budget_opts),
             Some(model_store.clone()),
+            Some(gate_writes),
         )
         .await?;
     // Shared ownership from here on: the shell takes `Arc<PhiAgent>` (T5d —

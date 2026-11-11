@@ -65,6 +65,7 @@ pub async fn build(
         skill_dirs,
         token_budget_opts,
         model_store,
+        None,
     )
     .await
 }
@@ -92,6 +93,11 @@ pub async fn build_with_code_exec(
     skill_dirs: Vec<PathBuf>,
     token_budget_opts: Option<TokenBudgetOptions>,
     model_store: Option<Arc<tokio::sync::Mutex<crate::model::store::ModelStore>>>,
+    // Whether the run can write right now, for the verify gate. A **probe**,
+    // not a flag: the approval mode is a live switch (Shift+Tab), so this is
+    // re-read every turn. `None` means "writes are always possible" (tests
+    // have no switch to consult).
+    writes_possible: Option<crate::agent::gate::WritesProbe>,
 ) -> Result<BuildOutput> {
     // Skills catalog (skill-injection design D1): the resolver must exist
     // BEFORE the builder — the catalog joins the system prompt at build time,
@@ -257,6 +263,34 @@ pub async fn build_with_code_exec(
     // builder here.
     let guard_client = Arc::clone(&llm_client);
 
+    // The verify gate's shared evidence ledger (design §5.3): the `verify` tool
+    // records what it ran and whether it passed — it is the only component that
+    // knows the exit code — and `agent::gate` reads freshness at hand-back time.
+    // One instance for both, or the gate could never see the tool's evidence.
+    let verify_ledger = Arc::new(std::sync::Mutex::new(crate::verify_ledger::EvidenceLedger::new()));
+    {
+        // Declare once at startup whether this workspace has a compile layer at
+        // all. `false` switches the gate to its honest "nothing to verify
+        // against" path instead of nagging for a verification that cannot exist.
+        //
+        // Resolved, not table-looked-up: a project can supply its own command
+        // even when the language table has none for it (a Makefile `check`
+        // target, `.phimint.toml`). See `code_intel::lang::resolve_verify_command`.
+        let resolved = code_intel::lang::resolve_verify_command(&workspace_root);
+        let has_compile_layer = resolved.is_some();
+        verify_ledger
+            .lock()
+            .expect("verify ledger lock poisoned")
+            .set_compile_layer(has_compile_layer);
+        tracing::info!(
+            workspace = %workspace_root.display(),
+            has_compile_layer,
+            verify_command = resolved.as_ref().map(|v| v.command.as_str()).unwrap_or(""),
+            verify_command_source = resolved.as_ref().map(|v| v.source.label()).unwrap_or(""),
+            "verify gate: workspace compile layer"
+        );
+    }
+
     // Token-budget context management: when enabled, use window rotation +
     // history/notes tools instead of LLM-based summarization.
     let mut tool_output_cap = 16_000usize;
@@ -385,6 +419,14 @@ pub async fn build_with_code_exec(
         .register_tool(TaskCancelTool::new(bg_registry.clone()))
         .register_tool(RipgrepTool::new(workspace_root.clone()))
         .register_tool(RepoMapTool::new(workspace_root.clone()))
+        // verify gate, mechanism half (design §5.2): spawn the project's
+        // compile-level check directly and record the real exit code in the
+        // shared ledger. It is the only component that can mint a green light,
+        // which is what lets `agent::gate` never have to trust a claim.
+        .register_tool(crate::tools::verify::VerifyTool::new(
+            workspace_root.clone(),
+            Arc::clone(&verify_ledger),
+        ))
         // skill tool (skill-injection D2): model-initiated skill body loader.
         .register_tool(SkillTool::new(
             Arc::clone(&skill_resolver),
@@ -411,6 +453,20 @@ pub async fn build_with_code_exec(
         .middleware(crate::shell::file_face::FileToolFaceMiddleware::new(
             code_engine_live,
             crate::shell::file_face::code_owns_file_tools(),
+        ))
+        // verify gate, policy half (design §5.4): refuse to hand back code that
+        // has no *fresh* green light behind it. `max_nudges = 1` is deliberate
+        // (D1) — one interception per user message at most, then a visible
+        // marker instead of a loop, so this can never spend more than a single
+        // extra turn and never competes with `DefaultGuard` for the floor
+        // (see the control-flow note in `agent::gate`).
+        .middleware(crate::agent::gate::VerifyGateMiddleware::new(
+            crate::agent::gate::VerifyGateConfig {
+                writes_possible: writes_possible
+                    .unwrap_or_else(|| std::sync::Arc::new(|| true)),
+                ..Default::default()
+            },
+            Arc::clone(&verify_ledger),
         ))
         // TESTING: low max_turns to verify nudge feature
         .execution_max_turns(256);

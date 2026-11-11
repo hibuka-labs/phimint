@@ -16,6 +16,13 @@
 //!
 //! `ask_user` is the text half of that routing: a concept question answered
 //! in a terminal picker rather than on the canvas.
+//!
+//! `verify` is the compile-level check for the verify gate (design §8.3,
+//! revised in `notes/verify-gate-design.md`): it runs the project's build
+//! command and reports the compiler's **real exit code**. Unlike the other
+//! modules here its core does not live in `code-intel` — spawning and process
+//! groups are I/O, and `code-intel` stays synchronous and framework-free.
+//! Parsing is the only shared part and lives in `code_intel::verify`.
 
 pub mod add_tool;
 pub mod ask_user;
@@ -25,3 +32,4 @@ pub mod current_model;
 pub mod diagnostics;
 pub mod repomap;
 pub mod ripgrep;
+pub mod verify;

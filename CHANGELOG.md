@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The work has to compile before it is handed back.** A new `verify` tool
+  runs the project's own compile-level check and reports the compiler's
+  **real exit code** — spawned directly, never through a shell, so
+  `cargo check 2>&1 | tail -40` cannot launder a failed build into a
+  success. A gate then asks for the evidence at hand-back time: is there a
+  green light *newer than the last edit*? If not, the hand-back is
+  intercepted once, and after that it carries a visible marker instead of
+  failing the run — a stubborn agent never kills the session. Prose and
+  configuration never trigger it: only code that has to compile does. Which
+  command runs is read off the project itself — its own config, then a slot
+  it already fills in, then the language default — so nobody is asked to
+  configure anything and the model is never allowed to pick the command it
+  is graded by.
+
 ## [0.8.0] - 2026-11-09
 
 ### Added
