@@ -271,8 +271,7 @@ impl Middleware for VerifyGateMiddleware {
             // `follow_up_message` short-circuits at `turn_dispatch.rs:242`, the
             // guard is skipped for this turn entirely — no double nudge.
             ctx.skip_push = true;
-            ctx.follow_up_message =
-                Some(format!("{} {}", self.config.nudge_header, unv.nudge()));
+            ctx.follow_up_message = Some(format!("{} {}", self.config.nudge_header, unv.nudge()));
             return Ok(());
         }
 
@@ -382,11 +381,11 @@ mod tests {
 
     fn gate() -> (VerifyGateMiddleware, Arc<Mutex<EvidenceLedger>>) {
         let ledger = Arc::new(Mutex::new(EvidenceLedger::new()));
-        ledger
-            .lock()
-            .unwrap()
-            .set_compile_layer(true);
-        (VerifyGateMiddleware::new(VerifyGateConfig::default(), Arc::clone(&ledger)), ledger)
+        ledger.lock().unwrap().set_compile_layer(true);
+        (
+            VerifyGateMiddleware::new(VerifyGateConfig::default(), Arc::clone(&ledger)),
+            ledger,
+        )
     }
 
     #[test]
@@ -427,7 +426,10 @@ mod tests {
         // Turn 1: the edit (deferred — it lands next turn).
         let mut c = ctx("", vec![write("src/a.rs")]);
         mw.on_post_llm(&mut c).await.unwrap();
-        assert!(c.follow_up_message.is_none(), "a write turn is not a hand-back");
+        assert!(
+            c.follow_up_message.is_none(),
+            "a write turn is not a hand-back"
+        );
 
         // Turn 2: hand back. The deferred edit is now counted → intercept.
         let mut c = ctx("all done", vec![]);
@@ -471,14 +473,17 @@ mod tests {
         mw.on_post_llm(&mut c).await.unwrap();
 
         // A failed check after the edit: "tried and lost", not "lazy".
-        ledger.lock().unwrap().record_verify(crate::verify_ledger::VerifyVerdict {
-            kind: VerifyKind::Check,
-            command: "cargo check".to_string(),
-            exit_code: Some(101),
-            error_count: 1,
-            warning_count: 0,
-            summary: String::new(),
-        });
+        ledger
+            .lock()
+            .unwrap()
+            .record_verify(crate::verify_ledger::VerifyVerdict {
+                kind: VerifyKind::Check,
+                command: "cargo check".to_string(),
+                exit_code: Some(101),
+                error_count: 1,
+                warning_count: 0,
+                summary: String::new(),
+            });
 
         let mut c = ctx("all done", vec![]);
         mw.on_post_llm(&mut c).await.unwrap();
@@ -565,14 +570,17 @@ mod tests {
         mw.on_post_llm(&mut c).await.unwrap();
 
         // The verify passes — but for code that predates the edit.
-        ledger.lock().unwrap().record_verify(crate::verify_ledger::VerifyVerdict {
-            kind: VerifyKind::Check,
-            command: "cargo check".to_string(),
-            exit_code: Some(0),
-            error_count: 0,
-            warning_count: 0,
-            summary: String::new(),
-        });
+        ledger
+            .lock()
+            .unwrap()
+            .record_verify(crate::verify_ledger::VerifyVerdict {
+                kind: VerifyKind::Check,
+                command: "cargo check".to_string(),
+                exit_code: Some(0),
+                error_count: 0,
+                warning_count: 0,
+                summary: String::new(),
+            });
 
         let mut c = ctx("all done", vec![]);
         mw.on_post_llm(&mut c).await.unwrap();
@@ -597,14 +605,17 @@ mod tests {
         // Verify passes for real.
         let mut c = ctx("", vec![verify()]);
         mw.on_post_llm(&mut c).await.unwrap();
-        ledger.lock().unwrap().record_verify(crate::verify_ledger::VerifyVerdict {
-            kind: VerifyKind::Check,
-            command: "cargo check".to_string(),
-            exit_code: Some(0),
-            error_count: 0,
-            warning_count: 0,
-            summary: String::new(),
-        });
+        ledger
+            .lock()
+            .unwrap()
+            .record_verify(crate::verify_ledger::VerifyVerdict {
+                kind: VerifyKind::Check,
+                command: "cargo check".to_string(),
+                exit_code: Some(0),
+                error_count: 0,
+                warning_count: 0,
+                summary: String::new(),
+            });
 
         // Hand back now: fresh green → no interception at all.
         let mut c = ctx("all done", vec![]);
@@ -646,7 +657,11 @@ mod tests {
         mw.on_post_llm(&mut c).await.unwrap();
 
         assert!(c.follow_up_message.is_none(), "nothing to verify against");
-        assert!(!c.full_text.contains("⚠️"), "and no noise either: {}", c.full_text);
+        assert!(
+            !c.full_text.contains("⚠️"),
+            "and no noise either: {}",
+            c.full_text
+        );
     }
 
     #[tokio::test]

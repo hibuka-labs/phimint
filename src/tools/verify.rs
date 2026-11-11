@@ -214,10 +214,7 @@ impl Tool for VerifyTool {
         //    from the model: a command the model could pick is a green light it
         //    could mint.
         let Some(resolved) = lang::resolve_verify_command(&self.workspace_root) else {
-            self.ledger
-                .lock()
-                .unwrap()
-                .set_compile_layer(false);
+            self.ledger.lock().unwrap().set_compile_layer(false);
             return Ok(vec![Content::text(
                 "本工作区无编译级验证（该语言无编译层，项目也未提供验证命令），无法给出 L2 证据。\
                  若项目自带构建脚本，可在 `.phimint.toml` 写 `verify_command`，\
@@ -366,10 +363,7 @@ mod tests {
 
     #[test]
     fn split_command_takes_the_first_word_as_the_program() {
-        assert_eq!(
-            split_command("cargo check"),
-            Some(("cargo", vec!["check"]))
-        );
+        assert_eq!(split_command("cargo check"), Some(("cargo", vec!["check"])));
         assert_eq!(
             split_command("npx tsc --noEmit"),
             Some(("npx", vec!["tsc", "--noEmit"]))

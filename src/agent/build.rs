@@ -267,7 +267,9 @@ pub async fn build_with_code_exec(
     // records what it ran and whether it passed — it is the only component that
     // knows the exit code — and `agent::gate` reads freshness at hand-back time.
     // One instance for both, or the gate could never see the tool's evidence.
-    let verify_ledger = Arc::new(std::sync::Mutex::new(crate::verify_ledger::EvidenceLedger::new()));
+    let verify_ledger = Arc::new(std::sync::Mutex::new(
+        crate::verify_ledger::EvidenceLedger::new(),
+    ));
     {
         // Declare once at startup whether this workspace has a compile layer at
         // all. `false` switches the gate to its honest "nothing to verify
@@ -462,8 +464,7 @@ pub async fn build_with_code_exec(
         // (see the control-flow note in `agent::gate`).
         .middleware(crate::agent::gate::VerifyGateMiddleware::new(
             crate::agent::gate::VerifyGateConfig {
-                writes_possible: writes_possible
-                    .unwrap_or_else(|| std::sync::Arc::new(|| true)),
+                writes_possible: writes_possible.unwrap_or_else(|| std::sync::Arc::new(|| true)),
                 ..Default::default()
             },
             Arc::clone(&verify_ledger),

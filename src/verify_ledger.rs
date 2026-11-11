@@ -273,7 +273,10 @@ impl EvidenceLedger {
     /// — the ledger tracks *when things happened*, not just what passed.
     pub fn record_verify(&mut self, verdict: VerifyVerdict) -> &EvidenceRecord {
         self.seq += 1;
-        self.records.push(EvidenceRecord { seq: self.seq, verdict });
+        self.records.push(EvidenceRecord {
+            seq: self.seq,
+            verdict,
+        });
         self.records.last().expect("just pushed")
     }
 
