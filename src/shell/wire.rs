@@ -144,6 +144,12 @@ pub fn notice_probe() -> NoticeProbe {
                     .to_string(),
             );
         }
+        // An endpoint that rejected the request (401/403) gets one system
+        // line naming the config file, the masked key and the endpoint — the
+        // user fixes the config without leaving the transcript.
+        if let Some(notice) = crate::model::auth_watch::take_notice() {
+            out.push(notice);
+        }
         out
     })
 }

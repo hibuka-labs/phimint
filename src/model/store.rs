@@ -292,7 +292,9 @@ impl ModelStore {
             },
             ..Default::default()
         })?;
-        Ok(provider)
+        // Watched like the boot provider: a `/model` pick or a tier that
+        // gets rejected has to end in the same notice.
+        Ok(crate::model::auth_watch::watch(provider, model, base_url))
     }
 }
 
@@ -477,5 +479,74 @@ mod tests {
                 version: None,
             }
         }
+    }
+
+    /// A local endpoint that rejects every request with 401 - a real
+    /// socket, so the provider fails the way a wrong key really fails.
+    async fn rejecting_endpoint() -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind stub");
+        let addr = listener.local_addr().expect("stub addr");
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let _ = socket.read(&mut buf).await;
+                    let body = "{\"error\":{\"message\":\"invalid api key\"}}";
+                    let reply = format!(
+                        "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = socket.write_all(reply.as_bytes()).await;
+                    let _ = socket.flush().await;
+                });
+            }
+        });
+        format!("http://{addr}/v1")
+    }
+
+    /// protects: a provider the store builds - a `/model` pick, a tier - is
+    /// watched like the boot provider, so a rejection on any of them ends in
+    /// the same notice. fails_when: the store hands out unwrapped providers
+    /// and the rejection is silent. no_claim: the boot provider (main.rs
+    /// installs it).
+    #[tokio::test]
+    async fn a_provider_the_store_builds_reports_its_rejection_to_the_watch() {
+        let _guard = crate::model::auth_watch::watch_test_lock().lock().await;
+        crate::model::auth_watch::reset();
+        crate::model::auth_watch::set_context(crate::model::auth_watch::AuthContext {
+            config_path: std::path::PathBuf::from("/tmp/phimint-config.json"),
+            masked_key: "sk-t\u{2026}000".to_string(),
+            config_base_url: "https://api.openai.com/v1".to_string(),
+            key_source: None,
+        });
+
+        let base_url = rejecting_endpoint().await;
+        let mut store = ModelStore::new(mock_config(), Arc::new(MockProvider));
+        let provider = store
+            .apply_picked(
+                "qwen-plus".to_string(),
+                base_url,
+                "sk-x".to_string(),
+                "openai".to_string(),
+            )
+            .expect("provider creation succeeds");
+
+        let request = phi_agent::llm_trait::ChatRequest::new(Vec::new());
+        let err = match provider.chat(request).await {
+            Ok(_) => panic!("the stub rejects every request"),
+            Err(err) => err,
+        };
+        assert_eq!(err.status(), Some(401), "the rejection reaches the caller");
+
+        let notice = crate::model::auth_watch::take_notice().expect("the rejection is announced");
+        assert!(notice.contains("401"), "names the status: {notice}");
+        assert!(
+            notice.contains("sk-t\u{2026}000"),
+            "shows the masked key: {notice}"
+        );
     }
 }

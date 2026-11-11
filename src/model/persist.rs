@@ -184,8 +184,8 @@ pub fn file_pointer_is_selection(path: Option<&Path>, live: &EndpointTuple) -> O
 
 /// Re-parse the surgery output — a splice that does not parse back is
 /// refused (R1: the original file must survive a bug in here) — then replace
-/// `path` atomically.
-fn write_guarded(path: &Path, updated: &str) -> Result<(), PersistError> {
+/// `path` atomically. Shared with `phimint config set` (config_write).
+pub(crate) fn write_guarded(path: &Path, updated: &str) -> Result<(), PersistError> {
     json5::from_str::<ModelConfig>(updated).map_err(|e| PersistError::Reparse(e.to_string()))?;
     write_atomic(path, updated)
 }
@@ -221,18 +221,26 @@ fn write_atomic(path: &Path, updated: &str) -> Result<(), PersistError> {
 /// Splice the `model` pointer value into `raw`: surgery 1 (replace the value
 /// span) when the key is present, surgery 2 (insert the member) when not.
 fn splice_pointer(raw: &str, value: &str) -> Result<String, PersistError> {
-    match find_member_span(raw, "model") {
+    set_member_text(raw, "model", value)
+}
+
+/// The generic surgery behind [`splice_pointer`] and `phimint config set`
+/// (config_write): replace the `key` member's value span when the member is
+/// present, else insert the member after `main`. `value` is the JSON text to
+/// splice (already encoded — see [`jstr`]).
+pub(crate) fn set_member_text(raw: &str, key: &str, value: &str) -> Result<String, PersistError> {
+    match find_member_span(raw, key) {
         Some(span) => Ok(format!(
             "{}{}{}",
             &raw[..span.value_start],
             value,
             &raw[span.value_end..]
         )),
-        None => insert_pointer(raw, value),
+        None => insert_member(raw, key, value),
     }
 }
 
-/// Surgery 2: insert `"model": <value>` right after the top-level `main`
+/// Surgery 2: insert `"<key>": <value>` right after the top-level `main`
 /// member. The member-to-member separator copies the whitespace before the
 /// `main` key (multi-line files get newline + indent, single-line none) and
 /// the key→colon and colon→value gaps copy `main`'s own, so the new member
@@ -240,7 +248,7 @@ fn splice_pointer(raw: &str, value: &str) -> Result<String, PersistError> {
 /// new member when it has a right neighbor (or `main` already ended in one —
 /// that file's JSON5 trailing-comma style is preserved); when the new member
 /// is last, its comma goes in front of it.
-fn insert_pointer(raw: &str, value: &str) -> Result<String, PersistError> {
+fn insert_member(raw: &str, key: &str, value: &str) -> Result<String, PersistError> {
     let main = find_member_span(raw, "main").ok_or(PersistError::NoMainKey)?;
     let b = raw.as_bytes();
     let mut sep_start = main.key_start;
@@ -249,7 +257,7 @@ fn insert_pointer(raw: &str, value: &str) -> Result<String, PersistError> {
     }
     let separator = &raw[sep_start..main.key_start];
     let member = format!(
-        "\"model\"{}:{}{}",
+        "\"{key}\"{}:{}{}",
         main.key_gap(raw),
         main.value_gap(raw),
         value
@@ -363,8 +371,9 @@ fn render_pointer_value(
     out
 }
 
-/// JSON string literal for `s` (serialization of a string is infallible).
-fn jstr(s: &str) -> String {
+/// JSON string literal for `s` (serialization of a string is infallible) —
+/// the `value` half of a member surgery. Shared with config_write.
+pub(crate) fn jstr(s: &str) -> String {
     serde_json::to_string(s).expect("JSON string serialization is infallible")
 }
 
@@ -547,7 +556,7 @@ mod tests {
         // Multi-line, `main` has a right neighbor: comma trails the new member.
         let raw = "{\n  \"main\": \"mimo-v2.6-pro\",\n  \"lite\": \"mimo-v2.5\"\n}\n";
         assert_eq!(
-            insert_pointer(raw, "\"MiniMax-M3.1-Flash\"").unwrap(),
+            insert_member(raw, "model", "\"MiniMax-M3.1-Flash\"").unwrap(),
             "{\n  \"main\": \"mimo-v2.6-pro\",\n  \"model\": \"MiniMax-M3.1-Flash\",\n  \"lite\": \"mimo-v2.5\"\n}\n"
         );
 
@@ -556,40 +565,40 @@ mod tests {
         // (api_key after main: anchor is the `main` MEMBER, so the pointer
         // lands right after it, before api_key.)
         assert_eq!(
-            insert_pointer(raw, "\"beta\"").unwrap(),
+            insert_member(raw, "model", "\"beta\"").unwrap(),
             "{\n  \"main\": \"alpha\",\n  \"model\": \"beta\",\n  \"api_key\": \"sk\"\n}\n"
         );
         let raw = "{\n  \"api_key\": \"sk\",\n  \"main\": \"alpha\"\n}\n";
         assert_eq!(
-            insert_pointer(raw, "\"beta\"").unwrap(),
+            insert_member(raw, "model", "\"beta\"").unwrap(),
             "{\n  \"api_key\": \"sk\",\n  \"main\": \"alpha\",\n  \"model\": \"beta\"\n}\n"
         );
 
         // Single-line fixtures (design samples, byte-exact).
         assert_eq!(
-            insert_pointer("{\"main\":\"x\"}", "\"y\"").unwrap(),
+            insert_member("{\"main\":\"x\"}", "model", "\"y\"").unwrap(),
             "{\"main\":\"x\",\"model\":\"y\"}"
         );
         assert_eq!(
-            insert_pointer("{\"main\":\"x\",\"lite\":\"z\"}", "\"y\"").unwrap(),
+            insert_member("{\"main\":\"x\",\"lite\":\"z\"}", "model", "\"y\"").unwrap(),
             "{\"main\":\"x\",\"model\":\"y\",\"lite\":\"z\"}"
         );
 
         // JSON5 trailing-comma style is preserved (branch 1).
         assert_eq!(
-            insert_pointer("{\"main\":\"x\",}", "\"y\"").unwrap(),
+            insert_member("{\"main\":\"x\",}", "model", "\"y\"").unwrap(),
             "{\"main\":\"x\",\"model\":\"y\",}"
         );
 
         // The key→value gap copies `main`'s own: compact stays compact.
         assert_eq!(
-            insert_pointer("{\n  \"main\" : \"x\"\n}", "\"y\"").unwrap(),
+            insert_member("{\n  \"main\" : \"x\"\n}", "model", "\"y\"").unwrap(),
             "{\n  \"main\" : \"x\",\n  \"model\" : \"y\"\n}"
         );
 
         // No `main` to anchor on: loud, nothing written.
         assert!(matches!(
-            insert_pointer("{\"base_url\": \"u\"}", "\"y\""),
+            insert_member("{\"base_url\": \"u\"}", "model", "\"y\""),
             Err(PersistError::NoMainKey)
         ));
     }

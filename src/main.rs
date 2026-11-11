@@ -5,9 +5,11 @@
 
 // Modules live in the lib crate (src/lib.rs) so tests/ can exercise them.
 use phimint::{
-    agent, approval, banner, external,
-    model::{config, router, store, title},
-    session::{birthplace, history, scope},
+    agent, approval, banner,
+    cli::{Cli, Commands, ConfigAction},
+    external,
+    model::{auth_watch, bootstrap, config, config_cmd, router, store, title},
+    session::{birthplace, history},
     shell::{commands, file_face, skills, wire},
     tools,
 };
@@ -18,149 +20,6 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use clap::Parser;
 use phi_agent::{SessionContext, load_session_messages, resolve_session};
-
-#[derive(Parser)]
-#[command(
-    name = "phimint",
-    version,
-    about = "AI coding agent built on phi-agent"
-)]
-struct Cli {
-    /// Workspace directory to operate in (default: current directory)
-    #[arg(short, long, default_value = ".")]
-    workspace: PathBuf,
-
-    /// Model name (session-scoped selection: overrides the `model` pointer
-    /// and the configured main tier for this run; never persisted)
-    #[arg(long)]
-    model: Option<String>,
-
-    /// Lite model name (overrides lite tier)
-    #[arg(long)]
-    lite_model: Option<String>,
-
-    /// Advanced model name (overrides advanced tier)
-    #[arg(long)]
-    advanced_model: Option<String>,
-
-    /// API base URL (overrides default base_url)
-    #[arg(long)]
-    base_url: Option<String>,
-
-    /// API key (overrides default api_key)
-    #[arg(long)]
-    api_key: Option<String>,
-
-    /// API protocol (overrides default protocol)
-    #[arg(long)]
-    protocol: Option<String>,
-
-    /// Model config file path (overrides default locations)
-    #[arg(long)]
-    config: Option<String>,
-
-    /// Approval mode (initial): `auto` (default), `ask` (prompt on writes/risky
-    /// shell), or `deny` (reject all writes). Shift+Tab toggles auto/ask at runtime.
-    #[arg(long, default_value = "auto")]
-    approval: String,
-
-    /// Shell command timeout in milliseconds
-    #[arg(long, default_value_t = 120_000)]
-    shell_timeout_ms: u64,
-
-    /// Session ID (defaults to PHI_SESSION_ID env, else auto-generated).
-    /// Reuse the same ID across runs to append turns to the same log directory.
-    #[arg(long, conflicts_with = "resume")]
-    session: Option<String>,
-
-    /// Resume a previous session. Shows an interactive picker to choose from
-    /// recent sessions. Conflicts with --session.
-    #[arg(long)]
-    resume: bool,
-
-    /// Log level for the session.log file (debug/info/warn/error)
-    #[arg(long, default_value = "info")]
-    log_level: String,
-
-    /// Color scheme for the startup banner: `auto` (default, detects terminal
-    /// background), `dark` or `light` (override).
-    #[arg(long, default_value = "auto")]
-    color_scheme: String,
-
-    /// Show the startup banner (default: `on`; set to `off` to suppress it).
-    #[arg(long, default_value = "on")]
-    banner: String,
-
-    /// Thinking/reasoning budget in tokens (default: 8192).
-    /// Controls how many tokens the model can use for internal reasoning.
-    #[arg(long, default_value_t = 8192)]
-    thinking_budget: u64,
-
-    /// Reasoning effort level: none/low/medium/high/xhigh (default: medium).
-    /// Controls the depth of model's reasoning. Higher = more thorough but slower.
-    #[arg(long, default_value = "medium")]
-    reasoning_effort: String,
-
-    /// Work-room token budget for context windows (tokens of conversation
-    /// space ABOVE the fixed window base). Window rotation + history/notes
-    /// tools replace LLM summarization; this is now the default mode. Bare
-    /// `--token-budget` or omitting the flag uses the default (210K,
-    /// aligned with Codex's ~256K context window × 90% minus base overhead).
-    #[arg(
-        long,
-        num_args(0..=1),
-        default_missing_value = "210000",
-        default_value = "210000"
-    )]
-    token_budget: usize,
-
-    /// Days to retain session history and notes (default: 30).
-    /// Expired data is cleaned up at startup.
-    ///
-    /// Deliberately tied to `scope::RECENT_DAYS`: the resume
-    /// picker's default view reaches back a month, so the data has to
-    /// survive a month or the window has nothing to show.
-    #[arg(long, default_value_t = scope::RECENT_DAYS as i64)]
-    session_retention_days: i64,
-
-    /// Skip the automatic update check on startup.
-    #[arg(long)]
-    no_update_check: bool,
-
-    /// Subcommands (`phimint update`) that run without starting the TUI.
-    #[command(subcommand)]
-    command: Option<Commands>,
-}
-
-#[derive(clap::Subcommand)]
-enum Commands {
-    /// Check for a new phimint version and update this binary.
-    ///
-    /// Standalone installs (curl installer) self-replace; installs owned by
-    /// brew/npm/cargo print their package manager's upgrade command instead.
-    Update {
-        /// Only report whether an update is available; never download.
-        #[arg(long)]
-        check: bool,
-    },
-
-    /// Remove phimint and the data it left behind.
-    ///
-    /// The binary goes back to the channel that owns it (brew/npm/cargo run
-    /// their own uninstall; a standalone install is deleted here). Then
-    /// `~/.phimint/` is removed — that tree holds your API key and sessions,
-    /// which no package manager knows about — and the Windows user-PATH entry
-    /// the installer added is dropped.
-    Uninstall {
-        /// Keep ~/.phimint (config, sessions, history, notes).
-        #[arg(long)]
-        keep_data: bool,
-
-        /// Skip the confirmation prompt.
-        #[arg(short = 'y', long)]
-        yes: bool,
-    },
-}
 
 /// Where the sidecar transport puts its provider diagnostics.
 ///
@@ -236,6 +95,12 @@ async fn run() -> Result<()> {
         Some(Commands::Uninstall { keep_data, yes }) => {
             return run_uninstall_command(keep_data, yes);
         }
+        Some(Commands::Init { if_missing }) => {
+            return run_init_command(cli.config.as_deref(), if_missing);
+        }
+        Some(Commands::Config { action }) => {
+            return run_config_command(cli.config.as_deref(), action);
+        }
         None => {}
     }
 
@@ -248,26 +113,35 @@ async fn run() -> Result<()> {
 
     // Load model configuration: CLI > JSON file. `loaded_from` remembers the
     // file behind it — a `/model` pick is persisted there (model::persist).
+    // The first-run gate (decision 1) shapes the whole block: a parse failure
+    // or no usable key anywhere stops here with a message and a non-zero
+    // exit, before anything touches the session.
+    let env_key = std::env::var("PHIMINT_API_KEY").ok();
     let (mut model_config, loaded_from) = if let Some(config_path) = &cli.config {
         // CLI --config flag specified
         let path = PathBuf::from(config_path);
-        let config = config::ModelConfig::from_file(&path).context("Failed to load config file")?;
-        (config, Some(path))
+        match bootstrap::gate(
+            config::ModelConfig::from_file(&path).map(Some),
+            cli.api_key.as_deref(),
+            env_key.as_deref(),
+            &path,
+        ) {
+            bootstrap::Boot::Run(config) => (*config, Some(path)),
+            bootstrap::Boot::Stop(msg) => stop_with(msg),
+        }
     } else {
-        match config::ModelConfig::from_default_location() {
-            Ok(Some(config)) => {
+        let config_target = config_cmd::command_target(None);
+        match bootstrap::gate(
+            config::ModelConfig::from_default_location(),
+            cli.api_key.as_deref(),
+            env_key.as_deref(),
+            &config_target,
+        ) {
+            bootstrap::Boot::Run(config) => {
                 tracing::info!("loaded model config from JSON file");
-                (config, config::ModelConfig::resolve_path())
+                (*config, config::ModelConfig::resolve_path())
             }
-            Ok(None) => {
-                return Err(anyhow::anyhow!(
-                    "No config file found. Create ~/.phimint/config.json with your model configuration.\n\
-                     See config.json.example for format."
-                ));
-            }
-            Err(e) => {
-                return Err(anyhow::anyhow!("Failed to load config: {}", e));
-            }
+            bootstrap::Boot::Stop(msg) => stop_with(msg),
         }
     };
 
@@ -287,7 +161,16 @@ async fn run() -> Result<()> {
     if let Some(ref url) = cli.base_url {
         model_config.base_url = Some(url.clone());
     }
-    if let Some(ref key) = cli.api_key {
+    // The key in force: CLI `--api-key` > PHIMINT_API_KEY > the file's
+    // api_key (decision 6). The env value is used in memory and never written
+    // to the file — CI / batch machines keep their key off disk.
+    let key_in_force = bootstrap::effective_api_key(
+        cli.api_key.as_deref(),
+        env_key.as_deref(),
+        model_config.api_key.as_deref(),
+    )
+    .map(str::to_string);
+    if let Some(ref key) = key_in_force {
         model_config.api_key = Some(key.clone());
     }
     if let Some(ref proto) = cli.protocol {
@@ -305,17 +188,39 @@ async fn run() -> Result<()> {
         } else {
             main_proto.parse::<phi_agent::llm_trait::Protocol>().ok()
         },
-        api_key: main_key,
-        model: main_model,
-        base_url: main_url,
+        api_key: main_key.clone(),
+        model: main_model.clone(),
+        base_url: main_url.clone(),
         options: {
             let mut opts = std::collections::HashMap::new();
             opts.insert("max_tokens".to_string(), serde_json::json!("24576")); // 24K output
             opts
         },
     };
-    let llm_client: Arc<dyn phi_agent::llm_trait::LlmProvider> =
-        phi_agent::create_provider(&llm_config).context("Failed to create LLM provider")?;
+    // The runtime's auth watch (decision 2): which file holds the key, which
+    // key is in force (masked, and where it came from) and which endpoint is
+    // live — so a request the endpoint rejects ends in a line that points at
+    // the file the user has to edit.
+    let notice_path = loaded_from
+        .clone()
+        .unwrap_or_else(|| config_cmd::command_target(cli.config.as_deref()));
+    let key_source =
+        bootstrap::key_source_in_force(cli.api_key.as_deref(), env_key.as_deref(), &main_key);
+    let auth_context = auth_watch::boot_context(
+        &notice_path,
+        Some(main_key.as_str()),
+        key_source,
+        &model_config
+            .base_url
+            .clone()
+            .unwrap_or_else(|| main_url.clone()),
+    );
+    let llm_client: Arc<dyn phi_agent::llm_trait::LlmProvider> = auth_watch::install(
+        auth_context,
+        phi_agent::create_provider(&llm_config).context("Failed to create LLM provider")?,
+        &main_model,
+        &main_url,
+    );
 
     // Extract update config before model_config is moved into the store.
     let update_config = model_config.update.clone();
@@ -453,9 +358,8 @@ async fn run() -> Result<()> {
     // mode is a live switch — Shift+Tab flips it mid-session.
     let gate_writes = {
         let switch = Arc::clone(&approval_mode);
-        Arc::new(move || {
-            switch.get() != phi_agent_tui::RuntimeApprovalMode::Deny
-        }) as agent::gate::WritesProbe
+        Arc::new(move || switch.get() != phi_agent_tui::RuntimeApprovalMode::Deny)
+            as agent::gate::WritesProbe
     };
 
     let (agent, skill_resolver, skill_telemetry, bg_registry, canvas_activity) =
@@ -910,6 +814,49 @@ fn run_uninstall_command(keep_data: bool, yes: bool) -> Result<()> {
     let plan = uninstall::plan(!keep_data)?;
     print!("{}", plan.describe());
     uninstall::run(&plan, yes)
+}
+
+/// `phimint init` — write the config skeleton where the loader would read it
+/// (the installer calls this with `--if-missing`). The command semantics live
+/// in `model::config_cmd`; this is the print/exit glue.
+fn run_init_command(config_flag: Option<&str>, if_missing: bool) -> Result<()> {
+    let target = config_cmd::command_target(config_flag);
+    emit(config_cmd::init(&target, if_missing))
+}
+
+/// `phimint config show|set` — inspect or edit the config without the TUI.
+/// `show` resolves the key source exactly like a session would (the env
+/// override is named in the report) so the report never lies about what runs.
+fn run_config_command(config_flag: Option<&str>, action: Option<ConfigAction>) -> Result<()> {
+    let target = config_cmd::command_target(config_flag);
+    let env_key = std::env::var("PHIMINT_API_KEY").ok();
+    let out = match action.unwrap_or(ConfigAction::Show) {
+        ConfigAction::Show => config_cmd::show(&target, env_key.as_deref()),
+        ConfigAction::Set { key, value } => {
+            config_cmd::set(&target, &key, &value, env_key.as_deref())
+        }
+    };
+    emit(out)
+}
+
+/// Print a command message (an empty one stays silent — `init --if-missing`
+/// on a configured machine has nothing to say) or fail with the message.
+fn emit(out: std::result::Result<String, String>) -> Result<()> {
+    match out {
+        Ok(msg) if msg.is_empty() => Ok(()),
+        Ok(msg) => {
+            println!("{msg}");
+            Ok(())
+        }
+        Err(msg) => Err(anyhow::anyhow!("{msg}")),
+    }
+}
+
+/// The first-run / load-failure exit: print the message and leave non-zero,
+/// so a script (CI, the installer) can tell "not configured" from "done".
+fn stop_with(msg: String) -> ! {
+    eprintln!("{msg}");
+    std::process::exit(1);
 }
 
 #[cfg(test)]

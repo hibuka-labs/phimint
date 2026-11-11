@@ -1,7 +1,11 @@
 //! Model selection and routing: configuration, the model catalog, the
 //! router that picks one, and the title generator that runs on it.
 
+pub mod auth_watch;
+pub mod bootstrap;
 pub mod config;
+pub mod config_cmd;
+pub mod config_write;
 pub mod identity;
 pub mod persist;
 pub mod picker_rows;

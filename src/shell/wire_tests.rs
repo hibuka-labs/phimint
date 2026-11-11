@@ -527,3 +527,45 @@ async fn a_serving_model_that_differs_from_the_tier_table_answers_none() {
         .bind_serving_name(Arc::new(|| Some("mimo-v2.5-pro".to_string())));
     assert_eq!(probe(), Some(true), "in agreement again: the fact returns");
 }
+
+// ── Runtime notices ─────────────────────────────────────────────────────
+
+/// protects: a rejected request surfaces as ONE system line in the
+/// transcript — the probe hands the notice to the shell, which pushes it as
+/// a system row (never a popup over the composer). fails_when: the probe
+/// stays silent while the endpoint rejects, or it repeats the same line on
+/// every tick. no_claim: the transcript rendering (phi-tui pushes it).
+#[test]
+fn the_notice_probe_surfaces_an_auth_rejection_once() {
+    let _guard = crate::model::auth_watch::watch_test_lock().blocking_lock();
+    crate::model::auth_watch::reset();
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.json");
+    crate::model::auth_watch::set_context(crate::model::auth_watch::AuthContext {
+        config_path: path.clone(),
+        masked_key: "sk-a…9x2".to_string(),
+        config_base_url: "https://api.openai.com/v1".to_string(),
+        key_source: None,
+    });
+    crate::model::auth_watch::record_failure(
+        &phi_agent::llm_trait::LlmError::api(401, "invalid api key"),
+        "gpt-5.4-mini",
+        "https://api.openai.com/v1",
+    );
+
+    let probe = notice_probe();
+    let lines = probe();
+    assert!(
+        lines.iter().any(|l| l.contains("rejected this request")),
+        "the rejection reaches the transcript: {lines:?}"
+    );
+    assert!(
+        lines.iter().any(|l| l.contains("sk-a…9x2")),
+        "the notice carries the masked key: {lines:?}"
+    );
+    assert!(
+        probe().is_empty(),
+        "the notice is not repeated on the next tick"
+    );
+}
