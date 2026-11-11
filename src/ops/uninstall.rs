@@ -8,7 +8,10 @@
 //! 1. the `~/.phimint/` data tree — `config.json` holds the API key, and
 //!    leaving it behind is a hygiene problem, not a disk-space one;
 //! 2. the Windows user-PATH entry `install.ps1` appends to make the binary
-//!    reachable (`install.ps1:69-73`) — nothing else will ever remove it.
+//!    reachable (`install.ps1:69-73`) — nothing else will ever remove it;
+//! 3. the marked PATH block `install.sh` writes into the shell rc file when
+//!    the binary lands outside PATH — a leftover `export PATH=` line outlives
+//!    the binary it was written for.
 //!
 //! Everything destructive is listed and confirmed before anything is touched.
 
@@ -67,6 +70,103 @@ pub fn strip_path_entry(path_var: &str, dir: &str, sep: char) -> String {
     kept.join(&sep.to_string())
 }
 
+/// Opening line of the block `install.sh` writes into the user's rc file.
+pub const MARKER_START: &str = "# >>> phimint >>>";
+
+/// Closing line of that block.
+pub const MARKER_END: &str = "# <<< phimint <<<";
+
+/// Remove the installer's marker block from an rc file's content.
+///
+/// Returns the new content, or `None` when there is no block to remove — the
+/// caller then leaves the file untouched. Everything outside the block is
+/// copied byte for byte: the rc file belongs to the user.
+///
+/// A marker without its closing line is left alone. The block is the
+/// installer's, but the lines after an unterminated marker are the user's,
+/// and deleting them would be a data-loss bug in a tool whose job is to
+/// clean up after itself.
+pub fn strip_marker_block(content: &str) -> Option<String> {
+    let segments: Vec<&str> = content.split_inclusive('\n').collect();
+    let mut out = String::with_capacity(content.len());
+    let mut idx = 0;
+    let mut changed = false;
+
+    while idx < segments.len() {
+        let segment = segments[idx];
+        if !marker_line(segment, MARKER_START) {
+            out.push_str(segment);
+            idx += 1;
+            continue;
+        }
+
+        // Find the closing marker; without it the block is not a block.
+        let closing = segments[idx + 1..]
+            .iter()
+            .position(|later| marker_line(later, MARKER_END));
+        let Some(offset) = closing else {
+            out.push_str(segment);
+            idx += 1;
+            continue;
+        };
+
+        // The installer puts a blank line in front of the block; it goes
+        // with it, so the file does not keep a hole where the block was.
+        if out.ends_with("\n\n") {
+            out.pop();
+        } else if out == "\n" {
+            out.clear();
+        }
+        changed = true;
+        idx += 1 + offset + 1;
+    }
+
+    if changed { Some(out) } else { None }
+}
+
+/// Is this line the given marker (ignoring the line ending and trailing
+/// spaces)?
+fn marker_line(segment: &str, marker: &str) -> bool {
+    segment.trim_end_matches(['\n', '\r']).trim_end() == marker
+}
+
+/// Remove the marker block from an rc file on disk.
+///
+/// Returns whether the file was changed.
+pub fn strip_marker_block_file(path: &Path) -> Result<bool> {
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    let Some(stripped) = strip_marker_block(&content) else {
+        return Ok(false);
+    };
+    std::fs::write(path, stripped)
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    Ok(true)
+}
+
+/// The rc files `install.sh` may have written a marker block into — one per
+/// shell it supports, plus the fallback profile.
+pub fn rc_candidates(home: &Path) -> Vec<PathBuf> {
+    vec![
+        home.join(".zshrc"),
+        home.join(".bashrc"),
+        home.join(".profile"),
+        home.join(".config").join("fish").join("config.fish"),
+    ]
+}
+
+/// The rc files under `home` that actually carry the marker block.
+pub fn rc_files_with_blocks(home: &Path) -> Vec<PathBuf> {
+    rc_candidates(home)
+        .into_iter()
+        .filter(|path| {
+            std::fs::read_to_string(path)
+                .map(|content| content.lines().any(|line| marker_line(line, MARKER_START)))
+                .unwrap_or(false)
+        })
+        .collect()
+}
+
 /// Human-readable byte count: `61M`, `1.2K`, `0`.
 pub fn format_bytes(bytes: u64) -> String {
     const UNITS: [&str; 4] = ["B", "K", "M", "G"];
@@ -97,6 +197,8 @@ pub struct Plan {
     pub remove_data: bool,
     /// Windows only: user-PATH entry `install.ps1` added, if any.
     pub path_entry: Option<String>,
+    /// Unix only: rc files carrying the installer's marker block.
+    pub rc_blocks: Vec<PathBuf>,
 }
 
 /// Build the plan. Reads state only — nothing is removed here.
@@ -121,6 +223,16 @@ pub fn plan(remove_data: bool) -> Result<Plan> {
         None
     };
 
+    // The rc files the installer wrote a PATH block into. Only standalone
+    // installs carry one — a package manager never edits an rc file.
+    let rc_blocks = if source.is_managed() {
+        Vec::new()
+    } else {
+        dirs::home_dir()
+            .map(|home| rc_files_with_blocks(&home))
+            .unwrap_or_default()
+    };
+
     Ok(Plan {
         source,
         binary_command,
@@ -129,6 +241,7 @@ pub fn plan(remove_data: bool) -> Result<Plan> {
         data_bytes,
         remove_data,
         path_entry,
+        rc_blocks,
     })
 }
 
@@ -171,6 +284,14 @@ impl Plan {
         match &self.path_entry {
             Some(dir) => out.push_str(&format!("  3. drop this from user PATH — {dir}\n")),
             None => out.push_str("  3. (no PATH entry to clean)\n"),
+        }
+
+        for (step, rc) in self.rc_blocks.iter().enumerate() {
+            out.push_str(&format!(
+                "  {}. remove the PATH block from {}\n",
+                step + 4,
+                rc.display()
+            ));
         }
 
         out
@@ -231,6 +352,13 @@ pub fn run(plan: &Plan, assume_yes: bool) -> Result<()> {
     // 3. Windows user PATH.
     if let Some(dir) = &plan.path_entry {
         strip_user_path(dir)?;
+    }
+
+    // 4. The marker block the installer put into the rc file.
+    for rc in &plan.rc_blocks {
+        if strip_marker_block_file(rc)? {
+            println!("Removed the phimint PATH block from {}", rc.display());
+        }
     }
 
     println!("\nphimint is uninstalled.");
@@ -407,6 +535,136 @@ mod tests {
         assert_eq!(strip_path_entry("C:\\a;C:\\b", "C:\\b", ';'), "C:\\a");
     }
 
+    // ── the installer's marker block ────────────────────────────────────
+
+    /// protects: the marker block the installer writes is removed from the
+    /// rc file, and every other line in it is kept — the uninstaller must not
+    /// touch the user's own configuration.
+    /// fails_when: the block survives the uninstall, or a line around it is
+    /// dropped with it.
+    /// no_claim: the blank line the installer put in front of the block — it
+    /// is cosmetic either way.
+    #[test]
+    fn the_marker_block_is_removed_and_the_rest_of_the_file_is_kept() {
+        let content = "export EDITOR=vim\n\n# >>> phimint >>>\n\
+             # added by phimint installer - delete this block to undo\n\
+             export PATH=\"/home/u/.local/bin:$PATH\"\n\
+             # <<< phimint <<<\n\nalias ll='ls -l'\n";
+        let stripped = strip_marker_block(content).expect("the block is found");
+        assert!(
+            !stripped.contains("phimint >>>"),
+            "the opening marker is gone: {stripped}"
+        );
+        assert!(
+            !stripped.contains("<<< phimint"),
+            "the closing marker is gone: {stripped}"
+        );
+        assert!(
+            !stripped.contains(".local/bin"),
+            "the PATH line is gone: {stripped}"
+        );
+        assert!(
+            stripped.contains("export EDITOR=vim"),
+            "the line before the block is kept: {stripped}"
+        );
+        assert!(
+            stripped.contains("alias ll='ls -l'"),
+            "the line after the block is kept: {stripped}"
+        );
+    }
+
+    /// protects: an rc file without the marker block is left exactly as it
+    /// was — the uninstaller never rewrites a file it has no business in.
+    /// fails_when: the file is rewritten (or truncated) when no block is
+    /// there.
+    #[test]
+    fn a_file_without_the_marker_is_left_alone() {
+        let content = "export EDITOR=vim\nalias ll='ls -l'\n";
+        assert_eq!(strip_marker_block(content), None);
+    }
+
+    /// protects: a marker without its closing line does not eat the rest of
+    /// the file. The block is the installer's, but the lines after an
+    /// unterminated one are the user's.
+    /// fails_when: the lines after an unterminated marker are deleted.
+    #[test]
+    fn an_unterminated_marker_does_not_eat_the_rest_of_the_file() {
+        let content = "# >>> phimint >>>\nexport PATH=/x\nmy own line\n";
+        assert_eq!(
+            strip_marker_block(content),
+            None,
+            "an unterminated block is left alone"
+        );
+    }
+
+    /// protects: the block is removed from the file on disk, and the file
+    /// keeps everything else.
+    /// fails_when: the file keeps the block, or loses a line around it.
+    #[test]
+    fn the_marker_block_is_removed_from_a_real_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let rc = dir.path().join(".zshrc");
+        std::fs::write(
+            &rc,
+            "export EDITOR=vim\n# >>> phimint >>>\nexport PATH=\"/x:$PATH\"\n# <<< phimint <<<\n",
+        )
+        .unwrap();
+
+        assert!(strip_marker_block_file(&rc).expect("the file is readable"));
+        let after = std::fs::read_to_string(&rc).unwrap();
+        assert!(!after.contains("phimint"), "the block is gone: {after}");
+        assert!(
+            after.contains("export EDITOR=vim"),
+            "the rest is kept: {after}"
+        );
+    }
+
+    /// protects: only the rc files that actually carry the block are listed
+    /// for removal — the uninstaller must not touch the other rc files.
+    /// fails_when: an rc file without a block is scheduled for rewriting.
+    #[test]
+    fn only_the_rc_files_that_carry_the_block_are_listed() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".zshrc"),
+            "# >>> phimint >>>\nexport PATH=\"/x:$PATH\"\n# <<< phimint <<<\n",
+        )
+        .unwrap();
+        std::fs::write(dir.path().join(".bashrc"), "export EDITOR=vim\n").unwrap();
+
+        let found = rc_files_with_blocks(dir.path());
+        assert_eq!(found, vec![dir.path().join(".zshrc")]);
+    }
+
+    /// protects: the candidate rc files are the ones the installer writes —
+    /// zsh, bash, fish and the fallback profile.
+    /// fails_when: a shell the installer supports has no candidate, so its
+    /// block is never removed.
+    #[test]
+    fn the_candidate_rc_files_cover_every_shell_the_installer_supports() {
+        let files = rc_candidates(Path::new("/home/u"));
+        let names: Vec<String> = files
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            names.iter().any(|n| n.ends_with(".zshrc")),
+            "zsh: {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n.ends_with(".bashrc")),
+            "bash: {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n.ends_with(".profile")),
+            "profile: {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n.ends_with("config.fish")),
+            "fish: {names:?}"
+        );
+    }
+
     // ── format_bytes ────────────────────────────────────────────────────
 
     #[test]
@@ -461,6 +719,7 @@ mod tests {
             data_bytes: 61 * 1024 * 1024,
             remove_data: true,
             path_entry: None,
+            rc_blocks: Vec::new(),
         };
         let text = plan.describe();
         assert!(text.contains("Homebrew"), "channel missing: {text}");
@@ -483,6 +742,7 @@ mod tests {
             data_bytes: 0,
             remove_data: false,
             path_entry: Some("/home/u/.local/bin".to_string()),
+            rc_blocks: Vec::new(),
         };
         let text = plan.describe();
         assert!(text.contains("--keep-data"), "keep marker missing: {text}");

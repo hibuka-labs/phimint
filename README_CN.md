@@ -39,7 +39,7 @@ phimint 跑「理解需求 → 读码 → 多文件改 → 编译/测试 → 报
 ### 1. 安装
 
 每个版本都提供预编译二进制（macOS / Linux / Windows，arm64 + x64）。
-一键安装（装到 `~/.local/bin`；国内用户直接用 Gitee 那行）：
+一键安装（国内用户直接用 Gitee 那行）：
 
 ```bash
 curl -fsSL https://github.com/hibuka-labs/phimint/releases/latest/download/install.sh | bash   # GitHub
@@ -52,6 +52,14 @@ Windows（PowerShell）：
 irm https://github.com/hibuka-labs/phimint/releases/latest/download/install.ps1 | iex   # GitHub
 $env:PHIMINT_MIRROR='gitee'; irm https://gitee.com/chenkangzeng_admin/phimint/releases/download/latest/install.ps1 | iex  # Gitee（国内）
 ```
+
+安装脚本把整件事做完：二进制放进 `~/.local/bin`（或 PATH 上第一个可写目录），
+需要的话把它写进你的 shell 配置，校验下载的 sha256，并写好一份可直接编辑的
+`~/.phimint/config.json`。留给你的只剩那个文件里的 `api_key` 一行——不用
+`python3`，不用 `sudo`，也不用自己 `export PATH=`。
+
+想自己管 PATH 就设 `PHIMINT_NO_PATH_EDIT=1`，想指定安装目录就设
+`PHIMINT_INSTALL_DIR=<dir>`。
 
 或使用包管理器：
 
@@ -68,14 +76,20 @@ cargo install phimint                    # 从 crates.io
 
 卸载：`phimint uninstall`。二进制交给当初安装它的渠道去移除，然后删掉 `~/.phimint/`——
 里面是配置（含 API key）、会话、历史和笔记。`--keep-data` 保留这个目录，
-`--yes` 跳过确认。Windows 上还会摘掉安装脚本加进 PATH 的那条。
+`--yes` 跳过确认。Windows 上还会摘掉安装脚本加进 PATH 的那条；Unix 上会
+从 shell 配置里删掉那段带标记的 PATH 块。
 
 ### 2. 配置
 
 一分钟的事：需要任一受支持的模型 provider 的 API key（OpenAI / Anthropic /
 DeepSeek / Aliyun / Moonshot / Gemini / Ollama …）。
 
-创建 `~/.phimint/config.json`（JSON5，允许注释与尾逗号）：
+安装脚本已经写好了 `~/.phimint/config.json`——打开填上 `api_key` 那行就行。
+换了别的安装方式就 `phimint init` 生成同一个文件，或用
+`phimint config set api_key sk-xxx` 直接写。`phimint config show` 打印
+phimint 实际读到的配置（key 打码）。
+
+文件是 JSON5，允许注释与尾逗号：
 
 ```json
 {

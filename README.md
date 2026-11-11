@@ -38,7 +38,7 @@ add an API key, run.
 ### 1. Install
 
 Prebuilt binaries ship with every release (macOS / Linux / Windows, arm64 + x64).
-One-liner (downloads to `~/.local/bin`; mainland China: use the Gitee line):
+One-liner (mainland China: use the Gitee line):
 
 ```bash
 curl -fsSL https://github.com/hibuka-labs/phimint/releases/latest/download/install.sh | bash   # GitHub
@@ -51,6 +51,15 @@ Windows (PowerShell):
 irm https://github.com/hibuka-labs/phimint/releases/latest/download/install.ps1 | iex   # GitHub
 $env:PHIMINT_MIRROR='gitee'; irm https://gitee.com/chenkangzeng_admin/phimint/releases/download/latest/install.ps1 | iex  # Gitee (China)
 ```
+
+The installer does the whole job: it puts the binary in `~/.local/bin` (or the
+first writable directory already on your `PATH`), adds that directory to your
+shell profile if it has to, verifies the download's checksum, and writes a
+ready-to-edit `~/.phimint/config.json`. What is left for you is the `api_key`
+line in that file. No `python3`, no `sudo`, no manual `export PATH=`.
+
+Set `PHIMINT_NO_PATH_EDIT=1` if you would rather manage `PATH` yourself, and
+`PHIMINT_INSTALL_DIR=<dir>` to choose the install directory.
 
 Or use a package manager:
 
@@ -70,14 +79,19 @@ Uninstall: `phimint uninstall`. It removes the binary through whichever channel
 installed it, then deletes `~/.phimint/` — your config (including the API key),
 sessions, history and notes. `--keep-data` leaves that directory alone,
 `--yes` skips the prompt. On Windows it also drops the PATH entry the installer
-added.
+added; on Unix it removes the marked PATH block from your shell profile.
 
 ### 2. Configure
 
 A one-minute step: you need an API key for any supported model provider
 (OpenAI / Anthropic / DeepSeek / Aliyun / Moonshot / Gemini / Ollama …).
 
-Create `~/.phimint/config.json` (JSON5 — comments and trailing commas welcome):
+The installer already wrote `~/.phimint/config.json` — open it and fill in the
+`api_key` line. Installed another way? `phimint init` writes the same file, or
+`phimint config set api_key sk-xxx` does it for you. `phimint config show`
+prints what phimint resolved, with the key masked.
+
+The file is JSON5 — comments and trailing commas welcome:
 
 ```json
 {

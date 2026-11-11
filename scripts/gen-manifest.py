@@ -7,6 +7,16 @@ Scans a dist directory for phimint release archives
 - ``manifest.json``        — update manifest, URLs pointing at GitHub
 - ``manifest-gitee.json``  — update manifest, URLs pointing at Gitee
 - ``sha256sums.txt``       — checksums of every archive
+- ``install-index.txt``    — flat index for install.sh, URLs pointing at GitHub
+- ``install-index-gitee.txt`` — flat index for install.sh, URLs pointing at Gitee
+
+The flat index is the same data as the manifest, flattened:
+
+    version <v>
+    <platform-key> <url> <sha256>
+
+so the installer needs no JSON parser (and no python3). It is generated from
+the same ``sums`` map as the manifest, so the two can never disagree.
 
 The manifest shape is the family upgrade manifest v1 consumed by
 ``src/update/manifest.rs`` (unknown fields ignored by older clients).
@@ -91,6 +101,15 @@ def main() -> int:
     (args.dist_dir / "sha256sums.txt").write_text(
         "".join(f"{digest}  {filename}\n" for filename, digest in sums.values())
     )
+
+    def flat_index(base: str) -> str:
+        lines = [f"version {args.version}"]
+        for key, (filename, digest) in sums.items():
+            lines.append(f"{key} {base}/{filename} {digest}")
+        return "\n".join(lines) + "\n"
+
+    (args.dist_dir / "install-index.txt").write_text(flat_index(args.github_base))
+    (args.dist_dir / "install-index-gitee.txt").write_text(flat_index(args.gitee_base))
 
     print(f"platforms: {', '.join(sorted(sums))}")
     for key, (filename, digest) in sorted(sums.items()):

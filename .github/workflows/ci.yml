@@ -55,6 +55,29 @@ jobs:
       - name: Compile for windows
         run: cargo check --all-targets --target x86_64-pc-windows-msvc
 
+  # ── Installer contract ──
+  #
+  # install.sh / install.ps1 are what a user actually runs, and they are
+  # shell scripts: the Rust gates never see them. Without this job a broken
+  # installer only shows up when a real user runs it.
+  installer:
+    name: installer (unix)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Contract test
+        run: bash tests/install_script_test.sh
+
+  installer-windows:
+    name: installer (windows)
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Contract test
+        run: pwsh -NoProfile -File tests/install_script_test.ps1
+
   # ── Build & test ──
   test:
     name: test (stable)
