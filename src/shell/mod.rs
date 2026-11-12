@@ -8,5 +8,6 @@ pub mod click_mailbox;
 pub mod commands;
 pub mod context_rotation;
 pub mod file_face;
+pub mod model_command;
 pub mod skills;
 pub mod wire;
