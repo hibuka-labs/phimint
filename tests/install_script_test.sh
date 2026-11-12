@@ -16,7 +16,10 @@
 #   5. a checksum mismatch installs nothing;
 #   6. an existing config is never touched (decision 6);
 #   7. the App writes the config skeleton — the installer calls
-#      `phimint init --if-missing` (decision 3).
+#      `phimint init --if-missing` (decision 3);
+#   8. the installer names the config the App will actually read — its
+#      resolve_path rule (an existing LLM_CONFIG, else the first existing
+#      default), never a parallel rule of our own.
 
 set -uo pipefail
 
@@ -233,6 +236,28 @@ check "the flat index carries the checksum" \
     "$(grep -qE "^$(platform_key) https://.* [0-9a-f]{64}$" "$SANDBOX/dist/install-index.txt" && echo 0 || echo 1)"
 check "the gitee index points at the gitee base" \
     "$(grep -q "^$(platform_key) https://gitee.com/" "$SANDBOX/dist/install-index-gitee.txt" && echo 0 || echo 1)"
+
+# ── 8. The installer names the config the App will read ────────────────────
+# The App's resolve_path rule: an existing LLM_CONFIG wins; a stale LLM_CONFIG
+# falls through to the first existing default. Naming any other file sends the
+# user to a config the App never reads.
+make_sandbox
+sandbox_bin "$SANDBOX/tools"
+mkdir -p "$SANDBOX/home/.local/bin" "$SANDBOX/home/.config-alt"
+printf '{\n  "api_key": "sk-alt"\n}\n' > "$SANDBOX/home/.config-alt/config.json"
+TEST_PATH="$SANDBOX/home/.local/bin:$SANDBOX/tools"
+run_installer LLM_CONFIG="$SANDBOX/home/.config-alt/config.json"
+check "an existing LLM_CONFIG is the config the installer names" \
+    "$(grep -q "Next: open $SANDBOX/home/.config-alt/config.json" "$SANDBOX/out.txt" && echo 0 || echo 1)"
+
+make_sandbox
+sandbox_bin "$SANDBOX/tools"
+mkdir -p "$SANDBOX/home/.local/bin" "$SANDBOX/home/.phimint"
+printf '{\n  "api_key": "sk-mine"\n}\n' > "$SANDBOX/home/.phimint/config.json"
+TEST_PATH="$SANDBOX/home/.local/bin:$SANDBOX/tools"
+run_installer LLM_CONFIG="$SANDBOX/home/.missing/config.json"
+check "a stale LLM_CONFIG falls through to the first existing default" \
+    "$(grep -q "Next: open $SANDBOX/home/.phimint/config.json" "$SANDBOX/out.txt" && echo 0 || echo 1)"
 
 printf '\n%s passed, %s failed\n' "$PASSED" "$FAILED"
 [ "$FAILED" -eq 0 ]
