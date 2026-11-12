@@ -176,6 +176,7 @@ async fn the_model_steps_code_cells_and_the_session_survives_between_them() {
             session_id: session_id.clone(),
         }),
         None,
+        None,
     )
     .await
     .unwrap();

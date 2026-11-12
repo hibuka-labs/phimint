@@ -7,6 +7,7 @@ pub mod config;
 pub mod config_cmd;
 pub mod config_write;
 pub mod identity;
+pub mod lite_pin;
 pub mod persist;
 pub mod picker_rows;
 pub mod router;

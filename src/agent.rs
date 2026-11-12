@@ -51,6 +51,7 @@ mod build;
 mod code_road;
 pub mod gate;
 mod prompt;
+pub mod spawn_resolve;
 mod spill;
 mod subagents;
 

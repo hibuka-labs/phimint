@@ -391,6 +391,7 @@ async fn run() -> Result<()> {
             skills::default_skill_dirs(),
             Some(token_budget_opts),
             Some(model_store.clone()),
+            Some(router.clone()),
             Some(gate_writes),
         )
         .await?;

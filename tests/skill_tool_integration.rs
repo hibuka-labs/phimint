@@ -130,6 +130,7 @@ async fn build_with_skills(
         vec![tmp.path().join("skills")],
         None,
         None,
+        None,
     )
     .await
     .unwrap();

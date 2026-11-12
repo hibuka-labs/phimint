@@ -58,6 +58,7 @@ async fn session_scope_bake_reaches_live_prompt() {
         vec![skill_dir],
         None,
         None,
+        None,
     )
     .await
     .unwrap();

@@ -182,6 +182,7 @@ async fn every_wire_tool_name_matches_llm_pattern() {
             session_id: "wire-pattern-test".to_string(),
         }),
         Some(Arc::clone(&model_store)),
+        None,
     )
     .await
     .unwrap();

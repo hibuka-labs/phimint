@@ -136,6 +136,7 @@ pub(super) async fn system_prompts_received_in(
         skill_dirs,
         None,
         None,
+        None,
     )
     .await
     .unwrap();

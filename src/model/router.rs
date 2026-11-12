@@ -14,7 +14,11 @@ fn default_scene_tiers() -> HashMap<String, String> {
     map.insert("sub_agent".to_string(), "lite".to_string());
     map.insert("tool_summary".to_string(), "lite".to_string());
     map.insert("compression".to_string(), "lite".to_string());
-    map.insert("guard".to_string(), "main".to_string());
+    // The guard judge is pinned to `lite` by design (routing decision 3):
+    // it is cheap classification work and must not follow `/model` picks
+    // directly — an unconfigured `lite` still resolves to the effective
+    // `main`, so the judge degrades gracefully when only one model exists.
+    map.insert("guard".to_string(), "lite".to_string());
     map.insert("architecture".to_string(), "advanced".to_string());
     map.insert("review".to_string(), "lite".to_string());
     map.insert("quick_check".to_string(), "lite".to_string());
@@ -106,7 +110,7 @@ mod tests {
         assert_eq!(router.route("sub_agent"), "lite");
         assert_eq!(router.route("tool_summary"), "lite");
         assert_eq!(router.route("compression"), "lite");
-        assert_eq!(router.route("guard"), "main");
+        assert_eq!(router.route("guard"), "lite");
         assert_eq!(router.route("architecture"), "advanced");
         assert_eq!(router.route("review"), "lite");
         assert_eq!(router.route("quick_check"), "lite");

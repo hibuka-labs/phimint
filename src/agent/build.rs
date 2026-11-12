@@ -37,6 +37,8 @@ pub type BuildOutput = (
 /// `model_store` mounts the live-model identity stamp (`None` skips it —
 /// tests that never swap models don't need the section on the wire); the
 /// store is the session-state source of truth a `/model` pick updates.
+/// `router` is the scene table the spawn resolver and the judge pin resolve
+/// against (`None` skips both mounts — see `build_with_code_exec`).
 #[allow(clippy::too_many_arguments)]
 pub async fn build(
     llm_client: Arc<dyn phi_agent::llm_trait::LlmProvider>,
@@ -50,6 +52,7 @@ pub async fn build(
     skill_dirs: Vec<PathBuf>,
     token_budget_opts: Option<TokenBudgetOptions>,
     model_store: Option<Arc<tokio::sync::Mutex<crate::model::store::ModelStore>>>,
+    router: Option<Arc<crate::model::router::PhimintRouter>>,
 ) -> Result<BuildOutput> {
     build_with_code_exec(
         CodeExecMode::Tool,
@@ -65,6 +68,7 @@ pub async fn build(
         skill_dirs,
         token_budget_opts,
         model_store,
+        router,
         None,
     )
     .await
@@ -93,6 +97,11 @@ pub async fn build_with_code_exec(
     skill_dirs: Vec<PathBuf>,
     token_budget_opts: Option<TokenBudgetOptions>,
     model_store: Option<Arc<tokio::sync::Mutex<crate::model::store::ModelStore>>>,
+    // The scene table both live-model mounts resolve against: the spawn
+    // resolver's default tier and the judge's pin read it per call. `None`
+    // (tests) keeps the framework's default multi-agent factory and the
+    // unpinned judge client.
+    router: Option<Arc<crate::model::router::PhimintRouter>>,
     // Whether the run can write right now, for the verify gate. A **probe**,
     // not a flag: the approval mode is a live switch (Shift+Tab), so this is
     // re-read every turn. `None` means "writes are always possible" (tests
@@ -547,6 +556,32 @@ pub async fn build_with_code_exec(
         tool_output_cap,
     ));
 
+    // Spawn model-route seam (multi-model routing decision 1): with the live
+    // model store and the scene table in hand, replace the default
+    // multi-agent factory so the spawn tool's `model` argument is resolved at
+    // the seam — a tier token dies here and never reaches the wire. Without
+    // either handle (tests) the framework's default factory stands.
+    if let (Some(store), Some(router)) = (model_store.clone(), router.clone()) {
+        let source: Arc<dyn crate::agent::spawn_resolve::RouteSource> =
+            Arc::new(crate::agent::spawn_resolve::StoreRouteSource { store, router });
+        // Product convention: the audit lands next to the sessions
+        // (`~/.phimint/model-route/`), so HOME isolation carries it.
+        let audit_dir = std::env::var("HOME")
+            .map(|home| PathBuf::from(home).join(".phimint").join("model-route"))
+            .unwrap_or_default();
+        let audit = crate::agent::spawn_resolve::AuditWriter::new(audit_dir);
+        // Children share this process's cwd — the same base fact the
+        // default factory injects into each child's prompt.
+        let child_cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        builder = builder.with_multi_agent_tool_factory(Arc::new(move |runtime| {
+            crate::agent::spawn_resolve::wrap_multi_agent_tools(
+                phi_kernel_tools::multi_agent::create_all_tools(runtime, child_cwd.clone()),
+                Arc::clone(&source),
+                audit.clone(),
+            )
+        }));
+    }
+
     // A policy is what makes approval meaningful (see approval.rs). Only `ask`
     // and `deny` modes carry one; `auto` leaves it unset, so every call is
     // approved without consulting the handler.
@@ -557,7 +592,19 @@ pub async fn build_with_code_exec(
     let guard_config = guard_config();
     // Wire the judge's LLM client — `new()` leaves it None, making the judge
     // permanently unable to reach a verdict (the root cause above).
-    builder = builder.guard(DefaultGuard::with_llm_client(guard_config, guard_client));
+    // Multi-model routing decision 3: the judge is pinned to the scene
+    // table's `guard` tier (LitePinnedClient resolves it per call, so a
+    // `/model` pick can never retarget it), and LitePinnedGuard drops the
+    // engine's `set_provider_source` so that pin cannot be hot-swapped away.
+    let judge_client: Arc<dyn phi_agent::llm_trait::LlmProvider> =
+        Arc::new(crate::model::lite_pin::LitePinnedClient::new(
+            guard_client,
+            model_store.clone(),
+            router.clone(),
+        ));
+    builder = builder.guard(crate::model::lite_pin::LitePinnedGuard::new(Arc::new(
+        DefaultGuard::with_llm_client(guard_config, judge_client),
+    )));
 
     // Max turns nudge: firm message on the last 3 turns before the hard limit.
     builder = builder.middleware(MaxTurnsNudgeMiddleware::new(MaxTurnsNudgeConfig {

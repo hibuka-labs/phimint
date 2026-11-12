@@ -34,6 +34,11 @@ code-exec = ["phi-agent/code-exec", "dep:phi-ns", "dep:phi-ns-desktop"]
 phi-agent = { version = "0.21.0", features = ["shell", "multi-agent", "skill", "memory", "plugin-wasm"] }
 # Context rotation tools (notes, history, handoff) — the I/O layer.
 phi-kernel-tools = { version = "0.13.0", features = ["context", "shell"] }
+# The runtime kernel's guard contract types (`ReactLoopGuard`, `GuardCtx`,
+# `GuardDecision`, the engine's notice/provider handles) — named directly by
+# `src/model/lite_pin.rs` to pin the judge to its tier without a framework
+# change. Same minor as the phi family's agent-works/phi-kernel-tools.
+agent-base = "0.13.0"
 # Chat-style TUI components (lines/transcript/stream/markdown/completion/…),
 # extracted from src/ui/ — the product keeps only the shell (app/render/handlers).
 phi-tui = "0.4.0"

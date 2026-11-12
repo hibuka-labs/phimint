@@ -283,6 +283,7 @@ async fn harness(config: ModelConfig) -> Harness {
         vec![skills.path().join("skills")],
         None,
         Some(Arc::clone(&model_store)),
+        None,
     )
     .await
     .expect("agent build");

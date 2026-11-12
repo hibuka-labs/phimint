@@ -217,6 +217,7 @@ async fn boot(config_path: &std::path::Path) -> Harness {
         vec![skills.path().join("skills")],
         None,
         Some(Arc::clone(&model_store)),
+        None,
     )
     .await
     .expect("agent build");

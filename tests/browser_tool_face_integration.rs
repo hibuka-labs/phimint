@@ -250,6 +250,7 @@ async fn canvas_open_narrows_the_face_mid_session_and_close_restores_it() {
         vec![],
         None,
         None,
+        None,
     )
     .await
     .unwrap();

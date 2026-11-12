@@ -118,6 +118,7 @@ async fn build_agent(
         vec![tmp.path().join("skills")],
         None,
         None,
+        None,
     )
     .await
     .unwrap();
