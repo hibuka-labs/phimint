@@ -8,7 +8,7 @@ of `cargo test` — PTY runs are slow and environment-sensitive. Position:
 ## Usage
 
 ```bash
-python3 scripts/pty_smoke/smoke.py            # all 12 scenarios
+python3 scripts/pty_smoke/smoke.py            # all 15 scenarios
 python3 scripts/pty_smoke/smoke.py 03 06      # selected ids
 PHIMINT_BIN=$PWD/target/release/phimint python3 scripts/pty_smoke/smoke.py
 ```
@@ -37,6 +37,13 @@ i.e. literally what was on screen, not the byte stream.
 | 10 | shallow-tier injection timing invariant (T16): a synthetic turn (child-report batch, background-task wake) is honored only when no turn is active — never injected into a running one |
 | 11 | screenshot paste pipeline: Ctrl+V writes the chip row, the picture rides the wire request, an empty bracketed paste grabs the clipboard image all the same |
 | 12 | CJK character snap: a press/release on a wide glyph's half cell selects the whole glyph, the copied slice matches the clipboard (pbpaste where available) and each copy's char count proves it ran |
+| 13 | model route (spawn vs `/model`): an omitted `model` resolves to the lite tier's real name, `/lite` retargets the very next spawn, a `/model` hot-swap never retargets a spawn default |
+| 14 | model route (judge vs `/model`): the completion judge stays on the lite tier after a `/model` pick, while the main chat follows the pick |
+| 15 | model route (wire invariant): no tier token ever reaches `body["model"]`, a cross-endpoint tier writes no override (persistent notice says so), the audit logs one line per spawn with real names |
+
+Spawned turns in 13/15 script **three** LLM pops each (spawn call → parent
+continuation → the child-result injection's synthetic turn) — see
+`model_route_smoke.py`'s docstring for the anatomy.
 
 ## The craft (each item earned its place)
 
@@ -55,12 +62,20 @@ i.e. literally what was on screen, not the byte stream.
   terminal output *behind the TUI's back* (exactly a misbehaving child's
   stderr); Ctrl+L must erase it. Writing this through the master would just be
   keyboard input.
-- **MockLLM classification** — title generator and completion judge get canned
-  answers first so they never eat the script; a spawned child's conversation is
-  identified by scenario-registered `child_marks` matched against the **first
-  user message only** (the parent's prompt mentions sub-agents and its
-  continuation tool results quote the task text — whole-request matching
-  misclassifies both).
+- **MockLLM classification** — five classes from one predicate
+  (`classify_request`): title generator and completion judge get canned answers
+  first so they never eat the script; the watcher's focus-summary call (first
+  user message starts with `【sub-agent】`) is its own class so it cannot
+  masquerade as a child request; a spawned child's conversation is identified
+  by scenario-registered `child_marks` matched against the **first user message
+  only** (the parent's prompt mentions sub-agents and its continuation tool
+  results quote the task text — whole-request matching misclassifies both).
+  Message text is extracted through `_content_text`, because a multimodal
+  message's `content` is a part list, not a string (the screenshot paste path
+  sends `image_url` parts — `.startswith` on that list kills the mock). The
+  spawn↔mark wire contract is prechecked at `set_script` (an unmarked spawn
+  raises instead of silently eating the parent script) and pinned by a
+  pure-Python preflight (`00` rows in every run).
 - **Real product strings** — assertions bind to the strings the product actually
   paints ("Idle", "shift+tab", "Operation cancelled", "!! Approval required",
   "📋 copied N chars", …), never to guessed wording.

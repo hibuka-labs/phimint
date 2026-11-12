@@ -27,7 +27,11 @@ import zlib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from harness import (  # noqa: E402
-    Driver, MockLLM, World, boot_ok, expect, record, spawn, summary,
+    Driver, MockLLM, World, boot_ok, child_marks_contract_selftest, expect,
+    record, spawn, summary, summary_mark_contract_selftest,
+)
+from model_route_smoke import (  # noqa: E402
+    s13_spawn_vs_model_hotswap, s14_judge_stays_lite, s15_wire_invariant,
 )
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -645,10 +649,18 @@ SCENARIOS = {
     "10": ("injection timing invariant (T16)", s10_injection_timing),
     "11": ("screenshot paste pipeline (Ctrl+V / empty paste)", s11_paste_image),
     "12": ("character-precise selection (CJK snap + clipboard)", s12_char_select_cjk),
+    "13": ("model route: spawn vs /model hot-swap", s13_spawn_vs_model_hotswap),
+    "14": ("model route: judge stays on lite", s14_judge_stays_lite),
+    "15": ("model route: wire invariant + audit", s15_wire_invariant),
 }
 
 
 def main():
+    # Contract preflight (T7/SC-4): pin the spawn↔mark wire contract before
+    # any scenario runs — pure Python, needs no binary. The summary mark is
+    # pinned with it (cross-repo constant against agent-works).
+    child_marks_contract_selftest()
+    summary_mark_contract_selftest()
     if not os.path.isfile(BIN):
         print(f"build phimint first: {BIN}")
         return 2

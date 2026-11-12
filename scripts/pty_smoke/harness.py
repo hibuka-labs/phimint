@@ -18,6 +18,7 @@ import codecs
 import fcntl
 import json
 import os
+import re
 import select
 import shutil
 import signal
@@ -28,6 +29,7 @@ import threading
 import time
 import unicodedata
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 # ── accounting ──────────────────────────────────────────────────────────
 
@@ -241,6 +243,171 @@ class Screen:
 TITLE_MARK = "You are a title generator"
 JUDGE_MARK = "completion judge"
 
+# The watcher's focus-summary prompt for a finished child: its FIRST user
+# message is the composed report block, not the task text. Distinct from the
+# child's own run (whose first user message is the task) — without this class
+# the summary call masquerades as a second child request on the wire.
+#
+# Cross-repo constant: agent-works composes the report block as
+# `【key】\nvalue` (focus/core.rs `Context::to_prompt`) and its summarizer
+# names the first field `sub-agent` (focus/progress.rs
+# `Context::add("sub-agent", ...)`). A rename there silently reclassifies
+# announcer calls — `summary_mark_contract_selftest` pins this.
+SUMMARY_MARK = "【sub-agent】"
+
+# The spawn tool's wire name (phi-kernel-tools `spawn_agent`). A scripted
+# spawn's `task` text is the only child-identification channel MockLLM has —
+# see `check_child_marks`.
+SPAWN_TOOL_NAMES = {"spawn_agent"}
+
+
+def check_child_marks(entries, child_marks):
+    """Precheck the spawn↔mark wire contract (SC-4).
+
+    MockLLM identifies a spawned child by scenario-registered `child_marks`
+    matched against the child's FIRST user message — which carries the task
+    text the scenario passed to the spawn tool. A scripted spawn whose task
+    carries no registered mark would silently classify the child's
+    conversation as a parent continuation (the child then eats the parent
+    script — the 20261107_27dc727a failure class). Raise at set-up instead.
+    """
+    for entry in entries:
+        tc = entry.get("tool_call") or {}
+        if tc.get("name") not in SPAWN_TOOL_NAMES:
+            continue
+        raw_args = tc.get("args")
+        args = raw_args if isinstance(raw_args, dict) else {}
+        task = args.get("task") or ""
+        if not any(mark in task for mark in child_marks):
+            raise ValueError(
+                f"child_marks contract: spawn task {task!r} carries no "
+                f"registered mark in {child_marks!r} — the spawned child "
+                "would be misclassified as a parent continuation"
+            )
+
+
+def child_marks_contract_selftest():
+    """Pin the spawn↔mark contract (T7/SC-4) — pure Python, runs pre-scenario.
+
+    Guards both halves: `check_child_marks` itself (a rewording of the
+    classification rules must not silently weaken it) and the wiring into
+    `MockLLM.set_script` (the precheck must actually run at set-up).
+    """
+    good = [{"tool_call": {"name": "spawn_agent",
+                           "args": {"task": "run the MARK task"}}}]
+    cases = [
+        ("marked spawn passes", ["MARK"], good, True),
+        ("unmarked spawn is rejected", ["MARK"],
+         [{"tool_call": {"name": "spawn_agent", "args": {"task": "no mark"}}}],
+         False),
+        ("spawn without a task is rejected", ["MARK"],
+         [{"tool_call": {"name": "spawn_agent", "args": {"task_name": "t"}}}],
+         False),
+        ("non-spawn tools are exempt", [],
+         [{"tool_call": {"name": "read_file", "args": {"task": "no mark"}}}],
+         True),
+        ("spawn with no marks registered is rejected", [], good, False),
+    ]
+    ok_all = True
+    for name, marks, entries, should_pass in cases:
+        try:
+            check_child_marks(entries, marks)
+            ok = should_pass
+        except ValueError:
+            ok = not should_pass
+        ok_all &= expect("00", name, ok)
+    # The wiring pin: set_script must enforce the same contract.
+    mock = MockLLM()
+    mock.child_marks = ["MARK"]
+    try:
+        mock.set_script([{"tool_call": {"name": "spawn_agent",
+                                        "args": {"task": "no mark"}}}])
+        wired = False
+    except ValueError:
+        wired = True
+    mock.server.shutdown()
+    ok_all &= expect("00", "MockLLM.set_script enforces the contract", wired)
+    return ok_all
+
+
+def summary_mark_contract_selftest():
+    """Pin SUMMARY_MARK against the family composition contract.
+
+    The mark must be a `【key】` focus field (the shape `Context::to_prompt`
+    composes), and the key must still exist in agent-works' summarizer when
+    its source checkout is reachable (dev machines) — a rename there would
+    silently reclassify announcer calls. Without the sibling checkout (CI)
+    only the shape is checked.
+    """
+    ok = True
+    m = re.fullmatch(r"【([^【】]+)】", SUMMARY_MARK)
+    ok &= expect("00", "SUMMARY_MARK is one `【key】` focus field", m is not None)
+    key = m.group(1) if m else ""
+    progress_src = (
+        Path(__file__).resolve().parents[2].parent
+        / "agent-works" / "src" / "focus" / "progress.rs"
+    )
+    if progress_src.is_file():
+        body = progress_src.read_text(encoding="utf-8")
+        ok &= expect(
+            "00",
+            f"agent-works still names the {key!r} focus field",
+            f'add("{key}"' in body,
+        )
+    else:
+        ok &= expect(
+            "00",
+            "SUMMARY_MARK shape pinned (no agent-works sibling for the key check)",
+            True,
+        )
+    return ok
+
+
+def _content_text(content):
+    """Text of a message's `content`: a plain string on text-only turns, but
+    a part list on multimodal ones (the screenshot paste path sends
+    `{"type": "image_url", ...}` parts) — keep the text parts only."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(
+            p.get("text", "") for p in content
+            if isinstance(p, dict) and p.get("type") == "text"
+        )
+    return ""
+
+
+def classify_request(req, child_marks):
+    """Route class of one wire request: 'title' | 'judge' | 'summary' | 'child'
+    | 'agent'.
+
+    The single predicate source for both `MockLLM.handle`'s dispatch and the
+    scenarios' wire assertions — the two can never drift apart. Branch order
+    matters: the title generator's prompt blob matches first, then the judge's
+    system-message mark, then the watcher's focus-summary (its FIRST user
+    message is the composed report block), then a spawned child (its FIRST
+    user message carries the task mark — checking the whole request would
+    misclassify a parent continuation quoting the task text).
+    """
+    text_blob = json.dumps(req.get("messages", []), ensure_ascii=False)
+    if TITLE_MARK in text_blob:
+        return "title"
+    sys_msg = " ".join(
+        _content_text(m.get("content", ""))
+        for m in req.get("messages", [])
+        if m.get("role") == "system"
+    )
+    if JUDGE_MARK in sys_msg:
+        return "judge"
+    first_user = next(
+        (_content_text(m.get("content", "")) for m in req.get("messages", [])
+         if m.get("role") == "user"),
+        "",
+    )
+    if first_user.startswith(SUMMARY_MARK):
+        return "summary"
+    return "child" if any(mark in first_user for mark in child_marks) else "agent"
+
 
 class MockLLM:
     """Scripted OpenAI-compatible SSE server.
@@ -290,14 +457,16 @@ class MockLLM:
         return Handler
 
     def set_script(self, entries):
+        # Fail fast on a spawn whose task carries no registered mark (SC-4).
+        check_child_marks(entries, self.child_marks)
         with self.lock:
             self.script = list(entries)
 
     def handle(self, hs, req):
         with self.lock:
             self.requests.append(req)
-        text_blob = json.dumps(req.get("messages", []), ensure_ascii=False)
-        if TITLE_MARK in text_blob:
+        kind = classify_request(req, self.child_marks)
+        if kind == "title":
             with self.lock:
                 self.trace.append("title")
             self._json(hs, {
@@ -305,12 +474,7 @@ class MockLLM:
                              "finish_reason": "stop"}]
             })
             return
-        sys_msg = " ".join(
-            m.get("content", "") or ""
-            for m in req.get("messages", [])
-            if m.get("role") == "system"
-        )
-        if JUDGE_MARK in sys_msg:
+        if kind == "judge":
             with self.lock:
                 self.trace.append("judge")
             self._json(hs, {
@@ -321,25 +485,22 @@ class MockLLM:
 
         # A spawned child's conversation is not the parent's script: answer
         # it deterministically so `spawn_agent` scenarios always complete.
-        # A child is identified by its FIRST user message carrying a
-        # scenario-registered task mark — checking the whole request would
-        # misclassify the parent's continuation (its tool results quote the
-        # task text), and prompt sniffing is unreliable (the parent's prompt
-        # discusses sub-agents too).
-        first_user = next(
-            (m.get("content", "") or "" for m in req.get("messages", [])
-             if m.get("role") == "user"),
-            "",
-        )
-        is_child = any(mark in first_user for mark in self.child_marks)
-
+        # The watcher's focus-summary call rides the same canned answer (the
+        # mock's reply is not summary JSON, so the product falls back to its
+        # plain status word — today's shipped behavior). Classification
+        # rules live in `classify_request`.
         with self.lock:
-            if is_child:
-                self.trace.append("child")
+            if kind in ("child", "summary"):
+                self.trace.append(kind)
                 entry = {"text": self.child_reply}
             else:
                 entry = self.script.pop(0) if self.script else {"text": self.default_reply}
                 self.trace.append("agent:" + json.dumps(entry, ensure_ascii=False)[:60])
+
+        # Defense in depth: entries mutated past `set_script` bypass the
+        # set-up precheck — re-verify at use, loudly, instead of letting an
+        # unmarked spawn silently eat the parent script.
+        check_child_marks([entry], self.child_marks)
 
         delay = float(entry.get("delay", 0) or 0)
         if delay:
@@ -430,14 +591,26 @@ class MockLLM:
         with self.lock:
             return [t for t in self.trace if t.startswith(kind)]
 
+    def requests_of(self, kind):
+        """Every captured request of one route class (see `classify_request`)."""
+        with self.lock:
+            return [r for r in self.requests
+                    if classify_request(r, self.child_marks) == kind]
+
 
 # ── spawn: isolated HOME + workspace + fixture config ───────────────────
 
 ROWS, COLS = 40, 120
 
 
-def write_config(home, mock_port):
-    """One product's fixture config — the part a second consumer replaces."""
+def write_config(home, mock_port, tiers=None):
+    """One product's fixture config — the part a second consumer replaces.
+
+    `tiers` overrides any of main/lite/advanced verbatim: a plain string is a
+    same-endpoint Simple tier, a dict a Full tier (own model/base_url/api_key/
+    protocol). Routing scenarios need this to make each tier's wire model
+    attributable and to build one cross-endpoint tier.
+    """
     cfg = {
         "base_url": f"http://127.0.0.1:{mock_port}",
         "api_key": "mock-key",
@@ -447,6 +620,8 @@ def write_config(home, mock_port):
         "advanced": "mock-model",
         "ui": {"tips": {"enabled": False}},
     }
+    for tier, value in (tiers or {}).items():
+        cfg[tier] = value
     cfg_path = os.path.join(home, ".phimint", "config.json")
     os.makedirs(os.path.dirname(cfg_path), exist_ok=True)
     with open(cfg_path, "w") as fh:
@@ -489,12 +664,13 @@ class World:
         return os.path.join(self.home, ".phimint", "sessions")
 
 
-def spawn(binary, world, mock, session_id, approval=None, extra_env=None, extra_args=None):
+def spawn(binary, world, mock, session_id, approval=None, extra_env=None,
+          extra_args=None, tiers=None):
     """Fork the TUI on a fresh PTY. Returns (pid, master_fd, slave_fd) — the
     slave fd is kept so tests can *paint* the terminal behind the TUI's back
     (a write to the slave is terminal output, exactly like a misbehaving
     child's stderr — the corruption class Ctrl+L must heal)."""
-    cfg_path = write_config(world.home, mock.port)
+    cfg_path = write_config(world.home, mock.port, tiers)
     # The product reads base_url from the config; the CLI mirror points at /v1.
     argv = spawn_argv(binary, world.ws, cfg_path, session_id, approval)
     for i, a in enumerate(argv):
