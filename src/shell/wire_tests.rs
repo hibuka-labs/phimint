@@ -552,6 +552,9 @@ fn the_notice_probe_surfaces_an_auth_rejection_once() {
         &phi_agent::llm_trait::LlmError::api(401, "invalid api key"),
         "gpt-5.4-mini",
         "https://api.openai.com/v1",
+        // The key the request travelled under (masks `sk-a…9x2`, the
+        // context's own mask).
+        "sk-a0000009x2",
     );
 
     let probe = notice_probe();

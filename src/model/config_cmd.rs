@@ -2,17 +2,26 @@
 //! and what they say (notes/install-onboarding-design.md, decisions 2/3/6).
 //!
 //! The installer calls `phimint init --if-missing`; a user who prefers the
-//! command line to an editor fills the key with `phimint config set api_key
-//! <key>`. All three commands share one target rule ([`command_target`]) and
-//! one write channel (`model::config_write`, the member surgery) — a user's
-//! config is never regenerated under them, and the key is never echoed raw.
+//! command line to an editor fills the key with `phimint config set api_key -`
+//! (the secret comes from stdin — an argv value lands in shell history and
+//! process listings). All three commands share one target rule
+//! ([`command_target`]) and one write channel (`model::config_write`, the
+//! member surgery) — a user's config is never regenerated under them, and the
+//! key is never echoed raw.
 
 use std::path::{Path, PathBuf};
 
 use crate::model::bootstrap;
-use crate::model::config::{ConfigError, ModelConfig};
+use crate::model::config::{ConfigError, ModelConfig, TierConfig};
 use crate::model::config_write;
 use crate::model::persist::PersistError;
+
+/// The argv-exposure note for a secret that rode in on the command line.
+/// Shell history and process listings both see it there; the stdin form of
+/// the same command does not.
+const ARGV_SECRET_NOTE: &str = "\n  note: an api_key on the command line lands in shell history \
+                               and process listings; `phimint config set api_key -` reads it \
+                               from stdin instead";
 
 /// The top-level members `config set` may write. Everything else — `model`
 /// (the /model pointer's slot), tier overrides, UI settings — is edited in
@@ -86,9 +95,20 @@ pub fn show(target: &Path, env_key: Option<&str>) -> Result<String, String> {
 
 /// `phimint config set`: write one writable member through the member
 /// surgery. A missing config is created first (fill-in-one-command path),
-/// the confirmation masks an `api_key`, and setting the key while
-/// `PHIMINT_API_KEY` would silently override it is named outright.
-pub fn set(target: &Path, key: &str, value: &str, env_key: Option<&str>) -> Result<String, String> {
+/// the confirmation masks an `api_key`, and the two ways a fresh edit can be
+/// silently shadowed are named outright: `PHIMINT_API_KEY` overriding the
+/// file, and a Full `main` tier whose own member wins at runtime. A plain
+/// name over a Full `main` tier is refused outright — splicing it would drop
+/// the tier's own members from the file while the command prints success.
+/// `value_on_argv` marks a value that rode in on the command line — for an
+/// `api_key` that is a leak worth pointing out.
+pub fn set(
+    target: &Path,
+    key: &str,
+    value: &str,
+    env_key: Option<&str>,
+    value_on_argv: bool,
+) -> Result<String, String> {
     if !WRITABLE_MEMBERS.contains(&key) {
         return Err(format!(
             "cannot set `{key}` here: writable members are {}\n  (`model` is the /model picker's selection - edit the file for advanced layouts)",
@@ -100,6 +120,9 @@ pub fn set(target: &Path, key: &str, value: &str, env_key: Option<&str>) -> Resu
         created = bootstrap::ensure_skeleton(target)
             .map_err(|e| format!("cannot write {}: {e}", target.display()))?;
     }
+    if let Some(refusal) = full_tier_refusal(target, key) {
+        return Err(refusal);
+    }
     config_write::set_member_str(target, key, value)
         .map_err(|e| persist_error_message(target, e))?;
     let mut out = String::new();
@@ -107,10 +130,84 @@ pub fn set(target: &Path, key: &str, value: &str, env_key: Option<&str>) -> Resu
         out.push_str(&format!("created {}\n", target.display()));
     }
     out.push_str(&set_line(target, key, value));
+    if key == "api_key" && value_on_argv {
+        out.push_str(ARGV_SECRET_NOTE);
+    }
     if key == "api_key" && env_key.is_some() {
         out.push_str("\n  note: PHIMINT_API_KEY is set and overrides this file");
     }
+    if let Some(shadow) = tier_shadow_note(target, key) {
+        out.push_str(&shadow);
+    }
     Ok(out)
+}
+
+/// Name the tier-precedence case: when the `main` tier in effect is a Full
+/// declaration carrying its own `key`, that value wins over the top-level
+/// member the user just edited (the one resolution rule in
+/// [`ModelConfig::tier_config`]). Silence here would look like the edit did
+/// not take.
+fn tier_shadow_note(target: &Path, key: &str) -> Option<String> {
+    let cfg = ModelConfig::from_file(&target.to_path_buf()).ok()?;
+    let effective = cfg.model.as_ref().unwrap_or(&cfg.main);
+    let TierConfig::Full {
+        base_url,
+        api_key,
+        protocol,
+        ..
+    } = effective
+    else {
+        return None;
+    };
+    let carries_own = match key {
+        "base_url" => base_url.is_some(),
+        "api_key" => api_key.is_some(),
+        "protocol" => protocol.is_some(),
+        _ => false,
+    };
+    carries_own.then(|| {
+        format!(
+            "\n  note: the `main` tier in effect carries its own {key}, which wins over this \
+             top-level member at runtime (edit the tier itself to change it)"
+        )
+    })
+}
+
+/// `main` is the one writable member whose value may be a whole tier block.
+/// A plain name spliced over a Full tier deletes the tier's own
+/// api_key/base_url/protocol from disk while the command prints success —
+/// silent data loss. Refuse, name the members that would go, and point at
+/// the file where the tier is edited.
+fn full_tier_refusal(target: &Path, key: &str) -> Option<String> {
+    if key != "main" {
+        return None;
+    }
+    let cfg = ModelConfig::from_file(&target.to_path_buf()).ok()?;
+    let TierConfig::Full {
+        base_url,
+        api_key,
+        protocol,
+        ..
+    } = &cfg.main
+    else {
+        return None;
+    };
+    let mut own = vec!["model"];
+    if api_key.is_some() {
+        own.push("api_key");
+    }
+    if base_url.is_some() {
+        own.push("base_url");
+    }
+    if protocol.is_some() {
+        own.push("protocol");
+    }
+    Some(format!(
+        "cannot set `main` to a plain name: it holds a full tier block (own {}) and a name \
+         would drop those members from the file\n  edit the `main` block in {} instead",
+        own.join(", "),
+        target.display()
+    ))
 }
 
 fn init_created_message(path: &Path) -> String {
@@ -292,7 +389,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("config.json");
 
-        let msg = set(&target, "api_key", "sk-live-secret-001", None).unwrap();
+        let msg = set(&target, "api_key", "sk-live-secret-001", None, true).unwrap();
         let raw = std::fs::read_to_string(&target).unwrap();
         assert!(
             raw.contains("\"api_key\": \"sk-live-secret-001\""),
@@ -306,7 +403,14 @@ mod tests {
 
         // Setting the key while PHIMINT_API_KEY would override it: say so,
         // or the user's edit "takes effect" and nothing changes.
-        let msg = set(&target, "api_key", "sk-newer-key-000222", Some("sk-env")).unwrap();
+        let msg = set(
+            &target,
+            "api_key",
+            "sk-newer-key-000222",
+            Some("sk-env"),
+            true,
+        )
+        .unwrap();
         assert!(
             msg.contains("PHIMINT_API_KEY"),
             "says why the file may not win: {msg}"
@@ -314,7 +418,14 @@ mod tests {
         assert!(msg.contains("sk-n…222"), "still masked: {msg}");
 
         // A non-secret member echoes plainly, with no key-override noise.
-        let msg = set(&target, "base_url", "https://e.example", Some("sk-env")).unwrap();
+        let msg = set(
+            &target,
+            "base_url",
+            "https://e.example",
+            Some("sk-env"),
+            true,
+        )
+        .unwrap();
         assert!(
             msg.contains("https://e.example"),
             "non-secret values echo plainly: {msg}"
@@ -338,7 +449,7 @@ mod tests {
         std::fs::write(&target, original).unwrap();
 
         for key in ["model", "lite", "ui", "bogus"] {
-            let err = set(&target, key, "v", None).unwrap_err();
+            let err = set(&target, key, "v", None, true).unwrap_err();
             assert!(
                 err.contains("api_key") && err.contains("main"),
                 "the error lists the writable members: {err}"
@@ -352,7 +463,7 @@ mod tests {
 
         // The whitelist itself: every member in it lands.
         for key in WRITABLE_MEMBERS {
-            set(&target, key, "v", None).unwrap();
+            set(&target, key, "v", None, true).unwrap();
         }
         let raw = std::fs::read_to_string(&target).unwrap();
         for key in WRITABLE_MEMBERS {
@@ -373,12 +484,92 @@ mod tests {
         let target = dir.path().join("config.json");
         std::fs::write(&target, "{ not json ").unwrap();
 
-        let err = set(&target, "api_key", "sk", None).unwrap_err();
+        let err = set(&target, "api_key", "sk", None, true).unwrap_err();
         assert!(err.contains("delete"), "offers the hatch: {err}");
         assert_eq!(
             std::fs::read_to_string(&target).unwrap(),
             "{ not json ",
             "the file survives untouched"
         );
+    }
+
+    /// protects: the two ways a fresh edit can mislead are named in the
+    /// confirmation - a secret on argv points at the stdin route, and a Full
+    /// `main` tier carrying its own member is named as the value that wins at
+    /// runtime. fails_when: either note is missing and the user believes the
+    /// edit is both private and effective. no_claim: tier precedence itself
+    /// (`ModelConfig::tier_config` pins that).
+    #[test]
+    fn the_set_command_names_the_argv_leak_and_the_tier_shadow() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("config.json");
+
+        // Secret on argv: point at stdin. Not on argv: no noise.
+        let msg = set(&target, "api_key", "sk-argv-000111", None, true).unwrap();
+        assert!(msg.contains("stdin"), "names the safer route: {msg}");
+        let msg = set(&target, "api_key", "sk-stdin-000222", None, false).unwrap();
+        assert!(
+            !msg.contains("shell history"),
+            "stdin is already safe: {msg}"
+        );
+
+        // A Full main tier carrying its own key shadows the top-level member.
+        std::fs::write(
+            &target,
+            "{\n  \"main\": {\"model\": \"m\", \"api_key\": \"sk-tier\"},\n  \"api_key\": \"sk-top\"\n}\n",
+        )
+        .unwrap();
+        let msg = set(&target, "api_key", "sk-top-2", None, false).unwrap();
+        assert!(
+            msg.contains("wins over this top-level member"),
+            "names the tier shadow: {msg}"
+        );
+
+        // A Simple main tier inherits - no note.
+        std::fs::write(
+            &target,
+            "{\n  \"main\": \"m\",\n  \"api_key\": \"sk-top\"\n}\n",
+        )
+        .unwrap();
+        let msg = set(&target, "api_key", "sk-top-3", None, false).unwrap();
+        assert!(
+            !msg.contains("wins over this top-level member"),
+            "nothing shadows here: {msg}"
+        );
+    }
+
+    /// protects: a plain name is never spliced over a Full `main` tier — the
+    /// command refuses, names the tier members that would have been dropped
+    /// and leaves the file byte-identical, instead of printing success after
+    /// deleting the tier's own api_key/base_url/protocol. fails_when: `set
+    /// main gpt-5.4-mini` on a tier config silently flattens the block.
+    /// no_claim: replacing the tier wholesale (edit the file).
+    #[test]
+    fn a_plain_name_over_a_full_main_tier_is_refused_with_the_members_named() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("config.json");
+        let original = "{\n  \"main\": {\"model\": \"m\", \"api_key\": \"sk-tier\", \"base_url\": \"https://t.example\"}\n}\n";
+        std::fs::write(&target, original).unwrap();
+
+        let err = set(&target, "main", "gpt-5.4-mini", None, true).unwrap_err();
+        assert!(err.contains("full tier block"), "names the shape: {err}");
+        assert!(err.contains("api_key"), "names api_key: {err}");
+        assert!(err.contains("base_url"), "names base_url: {err}");
+        assert!(
+            err.contains("edit the `main` block"),
+            "says where to edit instead: {err}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            original,
+            "the tier survives byte for byte"
+        );
+
+        // A Simple main is not a tier block: the plain name lands (that is
+        // the ordinary `config set main <model>` path).
+        std::fs::write(&target, "{\n  \"main\": \"m\"\n}\n").unwrap();
+        set(&target, "main", "gpt-5.4-mini", None, true).unwrap();
+        let raw = std::fs::read_to_string(&target).unwrap();
+        assert!(raw.contains("\"main\": \"gpt-5.4-mini\""), "lands: {raw}");
     }
 }

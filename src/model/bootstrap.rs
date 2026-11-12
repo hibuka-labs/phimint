@@ -89,6 +89,21 @@ fn file_key_in_force(cfg: &ModelConfig) -> String {
     key
 }
 
+/// The ONE key resolution — the first-run gate's readiness and the provider
+/// build both read this value: `cli` > `env` > the effective main tier's
+/// key (a Full tier's pin beats the top-level member, blank or not — a
+/// set-but-blank value blocks, it does not fall through, exactly as a blank
+/// `PHIMINT_API_KEY` already blocks the file key). An explicit override
+/// therefore beats a pin, so `--api-key` is never silently eaten and a
+/// blank pin cannot pass the gate on an override's readiness and then reach
+/// `create_provider` as `""`.
+pub fn key_in_force(cfg: &ModelConfig, cli: Option<&str>, env: Option<&str>) -> String {
+    let file_side = file_key_in_force(cfg);
+    effective_api_key(cli, env, Some(file_side.as_str()))
+        .unwrap_or("")
+        .to_string()
+}
+
 /// The key for display: first 4 + `…` + last 3 characters. Short keys hide
 /// entirely; empty reads "(not set)". Char-based (a CJK key must not slice
 /// at a non-boundary).
@@ -252,11 +267,12 @@ pub fn gate(
     };
     match file_cfg {
         Some(cfg) => {
-            // The file's key is the effective main tier's resolved key —
-            // the value the provider is built from — not merely the
-            // top-level member (a pinned tier key is the file's key).
-            let file_key = file_key_in_force(&cfg);
-            if api_key_ready(cli_key, env_key, Some(file_key.as_str())) {
+            // The gate and the provider build read the same resolved value
+            // ([`key_in_force`]): readiness is judged on the key the
+            // provider will actually be built with, so the two can never
+            // disagree about what "configured" means.
+            let key = key_in_force(&cfg, cli_key, env_key);
+            if key_is_usable(&key) {
                 Boot::Run(Box::new(cfg))
             } else {
                 Boot::Stop(missing_key_message(target))
@@ -596,6 +612,83 @@ mod tests {
             Boot::Run(_) => {}
             Boot::Stop(msg) => panic!("a --api-key run is configured: {msg}"),
         }
+    }
+
+    /// protects: the key the provider is built with is the key the gate
+    /// judged ([`key_in_force`]) — one resolution, one value. An explicit
+    /// CLI/env override beats a pinned tier key (a pin must not silently eat
+    /// `--api-key`), and a set-but-blank pin blocks rather than passing the
+    /// gate on an override's readiness and then reaching `create_provider`
+    /// as `""`. fails_when: a `--api-key` is ignored because the tier pins
+    /// its own key, or a blank pin boots on the CLI key's readiness and dies
+    /// building the provider from `""`. no_claim: keys on `lite`/`advanced`
+    /// (the store resolves those per tier).
+    #[test]
+    fn the_provider_key_is_the_key_the_gate_judged() {
+        // A pinned tier key, no override: the pin is the key in force.
+        let cfg: ModelConfig =
+            json5::from_str(r#"{"main": {"model": "m", "api_key": "sk-pin-000111"}}"#).unwrap();
+        assert_eq!(
+            key_in_force(&cfg, None, None),
+            "sk-pin-000111",
+            "the pin runs"
+        );
+
+        // An explicit override beats the pin — both routes.
+        assert_eq!(
+            key_in_force(&cfg, Some("sk-cli-000222"), None),
+            "sk-cli-000222",
+            "a --api-key is not eaten by the pin"
+        );
+        assert_eq!(
+            key_in_force(&cfg, None, Some("sk-env-000333")),
+            "sk-env-000333",
+            "PHIMINT_API_KEY is not eaten by the pin"
+        );
+
+        // A set-but-blank pin: the override provides the one value both
+        // halves use (the gate passes on it, and the provider is built from
+        // it — never from `""`).
+        let cfg: ModelConfig = json5::from_str(
+            r#"{"api_key": "sk-top-000444", "main": {"model": "m", "api_key": ""}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            key_in_force(&cfg, Some("sk-cli-000555"), None),
+            "sk-cli-000555",
+            "the override, not the blank pin"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("config.json");
+        match gate(Ok(Some(cfg)), Some("sk-cli-000555"), None, &target) {
+            Boot::Run(_) => {}
+            Boot::Stop(msg) => panic!("the override is a usable key: {msg}"),
+        }
+
+        // A set-but-blank pin with no override blocks: the gate refuses on
+        // the very value the provider would have been built with.
+        let cfg: ModelConfig = json5::from_str(
+            r#"{"api_key": "sk-top-000444", "main": {"model": "m", "api_key": ""}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            key_in_force(&cfg, None, None),
+            "",
+            "the blank pin is the value"
+        );
+        match gate(Ok(Some(cfg)), None, None, &target) {
+            Boot::Stop(msg) => assert!(msg.contains("api_key"), "names the fix: {msg}"),
+            Boot::Run(_) => panic!("a blank pin is not a usable key"),
+        }
+
+        // No pin at all: the top-level member, with overrides beating it.
+        let cfg: ModelConfig =
+            json5::from_str(r#"{"api_key": "sk-top-000444", "main": "m"}"#).unwrap();
+        assert_eq!(key_in_force(&cfg, None, None), "sk-top-000444");
+        assert_eq!(
+            key_in_force(&cfg, None, Some("sk-env-000666")),
+            "sk-env-000666"
+        );
     }
 
     /// protects: an unparseable config stops with the delete-to-regenerate

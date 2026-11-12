@@ -264,6 +264,14 @@ impl ModelStore {
         self.default_provider.clone()
     }
 
+    /// The boot endpoint tuple — the same-endpoint anchor for the spawn
+    /// resolver: a child's client was built from this tuple (not from the
+    /// live `main` tier), so a tier only lands a model override when its
+    /// endpoint matches.
+    pub fn default_tuple(&self) -> EndpointTuple {
+        self.default_tuple.clone()
+    }
+
     /// List all configured tiers and their models.
     pub fn list_tiers(&self) -> Vec<(&str, &str)> {
         self.tiers
@@ -293,8 +301,11 @@ impl ModelStore {
             ..Default::default()
         })?;
         // Watched like the boot provider: a `/model` pick or a tier that
-        // gets rejected has to end in the same notice.
-        Ok(crate::model::auth_watch::watch(provider, model, base_url))
+        // gets rejected has to end in the same notice — naming the key this
+        // provider actually travels under, not the boot one.
+        Ok(crate::model::auth_watch::watch(
+            provider, model, base_url, api_key,
+        ))
     }
 }
 
@@ -530,7 +541,7 @@ mod tests {
             .apply_picked(
                 "qwen-plus".to_string(),
                 base_url,
-                "sk-x".to_string(),
+                "sk-pick-abcdef123456".to_string(),
                 "openai".to_string(),
             )
             .expect("provider creation succeeds");
@@ -544,9 +555,16 @@ mod tests {
 
         let notice = crate::model::auth_watch::take_notice().expect("the rejection is announced");
         assert!(notice.contains("401"), "names the status: {notice}");
+        // The notice names the key the store-built provider actually used
+        // (masked `sk-p…456`), with the boot key marked as the boot key —
+        // not the other way around.
         assert!(
-            notice.contains("sk-t\u{2026}000"),
-            "shows the masked key: {notice}"
+            notice.contains("sk-p\u{2026}456"),
+            "shows the key the request used: {notice}"
+        );
+        assert!(
+            notice.contains("boot key is sk-t\u{2026}000"),
+            "the boot key is named as the boot key: {notice}"
         );
     }
 }

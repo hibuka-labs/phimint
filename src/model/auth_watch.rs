@@ -15,6 +15,7 @@
 //! shell's notice probe all have to reach the same watch, and threading an
 //! `Arc` through `ModelStore::new` (a dozen call sites) would buy nothing.
 
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -47,17 +48,24 @@ pub struct AuthFailure {
     pub model: String,
     /// The endpoint the request went to.
     pub base_url: String,
+    /// The key the request actually used, masked. A tier or a `/model` pick
+    /// can send a request out under its own key — naming the boot key there
+    /// would point the user at the wrong line.
+    pub masked_key: String,
 }
 
 struct WatchState {
     context: Option<AuthContext>,
-    pending: Option<AuthFailure>,
+    /// One slot per distinct (model, endpoint) rejection, in arrival order.
+    /// A single slot would let a second rejection overwrite a first one that
+    /// the shell has not picked up yet.
+    pending: VecDeque<AuthFailure>,
     announced: Vec<AuthFailure>,
 }
 
 static WATCH: Mutex<WatchState> = Mutex::new(WatchState {
     context: None,
-    pending: None,
+    pending: VecDeque::new(),
     announced: Vec::new(),
 });
 
@@ -88,9 +96,10 @@ pub fn install(
     provider: Arc<dyn LlmProvider>,
     model: &str,
     base_url: &str,
+    key: &str,
 ) -> Arc<dyn LlmProvider> {
     set_context(context);
-    watch(provider, model, base_url)
+    watch(provider, model, base_url, key)
 }
 
 /// Record the boot context: which file, which masked key, which base_url.
@@ -104,7 +113,11 @@ pub fn set_context(context: AuthContext) {
 /// Record a provider failure. Only 401 and 403 are worth a notice — they
 /// mean "this key does not work here" — while a 500 or a network blip is the
 /// endpoint's problem, not the user's config.
-pub fn record_failure(err: &LlmError, model: &str, base_url: &str) {
+///
+/// `key` is the key the request actually used; it is masked here and only
+/// the mask travels on. A rejection identical to one already pending or
+/// already announced does not earn a second slot.
+pub fn record_failure(err: &LlmError, model: &str, base_url: &str, key: &str) {
     let Some(status) = err.status() else { return };
     if status != 401 && status != 403 {
         return;
@@ -113,41 +126,60 @@ pub fn record_failure(err: &LlmError, model: &str, base_url: &str) {
         status,
         model: model.to_string(),
         base_url: base_url.to_string(),
+        masked_key: crate::model::bootstrap::mask_key(key),
     };
     if let Ok(mut watch) = WATCH.lock() {
-        watch.pending = Some(failure);
+        if watch.announced.iter().any(|seen| seen == &failure) {
+            return;
+        }
+        if watch.pending.iter().any(|seen| seen == &failure) {
+            return;
+        }
+        watch.pending.push_back(failure);
     }
 }
 
-/// Take the pending notice, if there is one (the pending failure is
+/// Take the oldest pending notice, if there is one (that pending failure is
 /// consumed either way).
 ///
 /// Each distinct rejection is announced once per process: the config cannot
 /// change under a running session, so a second copy of the same line teaches
 /// the user nothing. A different endpoint (a `/model` pick) is a different
-/// failure and gets its own line.
+/// failure and gets its own line — queued beside the first, never over it.
 pub fn take_notice() -> Option<String> {
     let mut watch = WATCH.lock().ok()?;
-    let failure = watch.pending.take()?;
-    if watch.announced.iter().any(|seen| seen == &failure) {
-        return None;
+    while let Some(failure) = watch.pending.pop_front() {
+        if watch.announced.iter().any(|seen| seen == &failure) {
+            continue;
+        }
+        watch.announced.push(failure.clone());
+        let context = watch.context.clone()?;
+        return Some(notice_text(&context, &failure));
     }
-    watch.announced.push(failure.clone());
-    let context = watch.context.clone()?;
-    Some(notice_text(&context, &failure))
+    None
 }
 
-/// The notice text (decision 2's runtime copy).
+/// The notice text (decision 2's runtime copy). It names the key and model
+/// the request actually used — when that key is not the boot key, the boot
+/// key is named as the boot key so the user knows which line to compare.
 pub fn notice_text(context: &AuthContext, failure: &AuthFailure) -> String {
-    let key_line = match &context.key_source {
-        Some(source) => format!("{}  (from {})", context.masked_key, source),
-        None => context.masked_key.clone(),
-    };
+    let mut key_line = failure.masked_key.clone();
+    if failure.masked_key == context.masked_key {
+        if let Some(source) = &context.key_source {
+            key_line.push_str(&format!("  (from {source})"));
+        }
+    } else {
+        key_line.push_str(&format!(
+            "  (this request's key; the boot key is {})",
+            context.masked_key
+        ));
+    }
     let mut out = format!(
         "The model endpoint rejected this request ({}). Check config.json:\n  \
-         api_key:  {}\n  base_url: {}\n  file:     {}",
+         api_key:  {}\n  model:    {}\n  base_url: {}\n  file:     {}",
         failure.status,
         key_line,
+        failure.model,
         failure.base_url,
         context.config_path.display()
     );
@@ -165,17 +197,20 @@ pub struct WatchedProvider {
     inner: Arc<dyn LlmProvider>,
     model: String,
     base_url: String,
+    key: String,
 }
 
 impl WatchedProvider {
     /// Wrap `inner` so a 401/403 on the way out reaches the notice probe.
-    /// The model and endpoint travel with it: the notice has to name the
-    /// endpoint that actually refused the request.
-    pub fn new(inner: Arc<dyn LlmProvider>, model: &str, base_url: &str) -> Self {
+    /// The model, endpoint and key travel with it: the notice has to name
+    /// the endpoint and the key that actually refused the request — a tier
+    /// or a `/model` pick can differ from the boot ones.
+    pub fn new(inner: Arc<dyn LlmProvider>, model: &str, base_url: &str, key: &str) -> Self {
         Self {
             inner,
             model: model.to_string(),
             base_url: base_url.to_string(),
+            key: key.to_string(),
         }
     }
 }
@@ -186,7 +221,7 @@ impl LlmProvider for WatchedProvider {
         match self.inner.stream(request).await {
             Ok(stream) => Ok(stream),
             Err(err) => {
-                record_failure(&err, &self.model, &self.base_url);
+                record_failure(&err, &self.model, &self.base_url, &self.key);
                 Err(err)
             }
         }
@@ -196,7 +231,7 @@ impl LlmProvider for WatchedProvider {
         match self.inner.chat(request).await {
             Ok(response) => Ok(response),
             Err(err) => {
-                record_failure(&err, &self.model, &self.base_url);
+                record_failure(&err, &self.model, &self.base_url, &self.key);
                 Err(err)
             }
         }
@@ -213,8 +248,13 @@ impl LlmProvider for WatchedProvider {
 
 /// Wrap a provider for the watch. The returned provider is the one the rest
 /// of the app holds — the wrapper delegates everything but the failures.
-pub fn watch(inner: Arc<dyn LlmProvider>, model: &str, base_url: &str) -> Arc<dyn LlmProvider> {
-    Arc::new(WatchedProvider::new(inner, model, base_url))
+pub fn watch(
+    inner: Arc<dyn LlmProvider>,
+    model: &str,
+    base_url: &str,
+    key: &str,
+) -> Arc<dyn LlmProvider> {
+    Arc::new(WatchedProvider::new(inner, model, base_url, key))
 }
 
 /// The lock that serializes the tests touching the global watch.
@@ -230,7 +270,7 @@ pub(crate) fn watch_test_lock() -> &'static tokio::sync::Mutex<()> {
 pub(crate) fn reset() {
     if let Ok(mut watch) = WATCH.lock() {
         watch.context = None;
-        watch.pending = None;
+        watch.pending.clear();
         watch.announced.clear();
     }
 }
@@ -303,6 +343,10 @@ mod tests {
         ChatRequest::new(vec![ChatMessage::user("hi")])
     }
 
+    /// The key a watched request travels under; `mask_key` renders it
+    /// `sk-a…9x2`, the same mask the test contexts carry.
+    const KEY: &str = "sk-a0000009x2";
+
     fn context(path: &Path) -> AuthContext {
         AuthContext {
             config_path: path.to_path_buf(),
@@ -331,6 +375,7 @@ mod tests {
             Arc::new(FailingProvider { status: 401 }),
             "gpt-5.4-mini",
             "https://api.openai.com/v1",
+            KEY,
         );
         let err = match provider.stream(request()).await {
             Ok(_) => panic!("the failing provider never succeeds"),
@@ -377,6 +422,7 @@ mod tests {
             Arc::new(FailingProvider { status: 401 }),
             "gpt-5.4-mini",
             "https://api.openai.com/v1",
+            KEY,
         );
         let _ = first.stream(request()).await;
         assert!(take_notice().is_some(), "the first rejection is announced");
@@ -391,6 +437,7 @@ mod tests {
             Arc::new(FailingProvider { status: 401 }),
             "deepseek-chat",
             "https://api.deepseek.com/v1",
+            KEY,
         );
         let _ = other.stream(request()).await;
         let notice = take_notice().expect("a new endpoint is announced");
@@ -421,6 +468,7 @@ mod tests {
             Arc::new(FailingProvider { status: 403 }),
             "gpt-5.4-mini",
             "https://api.openai.com/v1",
+            KEY,
         );
         let _ = provider.chat(request()).await;
 
@@ -478,6 +526,9 @@ mod tests {
             Arc::new(FailingProvider { status: 401 }),
             "gpt-5.4-mini",
             "https://api.openai.com/v1",
+            // The boot key: the boot provider travels under it, so the
+            // notice's key line is the boot context's own mask.
+            "sk-live-abcdef123456",
         );
         let _ = provider.stream(request()).await;
 
@@ -509,6 +560,7 @@ mod tests {
             Arc::new(FailingProvider { status: 500 }),
             "gpt-5.4-mini",
             "https://api.openai.com/v1",
+            KEY,
         );
         let _ = server_error.stream(request()).await;
         assert_eq!(
@@ -521,8 +573,91 @@ mod tests {
             Arc::new(OkProvider),
             "gpt-5.4-mini",
             "https://api.openai.com/v1",
+            KEY,
         );
         let _ = ok.stream(request()).await;
         assert_eq!(take_notice(), None, "a working request says nothing");
+    }
+
+    /// protects: the notice names the key and model the request ACTUALLY
+    /// used — a tier or a `/model` pick travels under its own key, and a
+    /// notice that names the boot key sends the user to edit the wrong line.
+    /// fails_when: the notice shows the boot key while the request went out
+    /// under the tier's key, or the model is unnamed.
+    #[tokio::test]
+    async fn the_notice_names_the_key_and_model_the_request_actually_used() {
+        let _guard = watch_test_lock().lock().await;
+        reset();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        set_context(context(&path));
+
+        // A tier pick: its own key (masks `sk-t…456`), its own model.
+        let provider = watch(
+            Arc::new(FailingProvider { status: 401 }),
+            "qwen-plus",
+            "https://api.deepseek.com/v1",
+            "sk-tier-abcdef123456",
+        );
+        let _ = provider.stream(request()).await;
+
+        let notice = take_notice().expect("the rejection is announced");
+        assert!(
+            notice.contains("sk-t\u{2026}456"),
+            "names the key the request used: {notice}"
+        );
+        assert!(
+            notice.contains("this request's key"),
+            "marks it as the request's key: {notice}"
+        );
+        assert!(
+            notice.contains("boot key is sk-a\u{2026}9x2"),
+            "names the boot key as the boot key: {notice}"
+        );
+        assert!(
+            notice.contains("qwen-plus"),
+            "names the model the request used: {notice}"
+        );
+    }
+
+    /// protects: pending notices hold one slot per distinct (model,
+    /// endpoint) rejection — two rejections that arrive before the shell
+    /// picks either up both survive; the second never overwrites the first.
+    /// fails_when: only the newest rejection is announced and the earlier
+    /// one is lost.
+    #[tokio::test]
+    async fn two_distinct_rejections_keep_one_slot_each() {
+        let _guard = watch_test_lock().lock().await;
+        reset();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        set_context(context(&path));
+
+        let first = watch(
+            Arc::new(FailingProvider { status: 401 }),
+            "gpt-5.4-mini",
+            "https://api.openai.com/v1",
+            KEY,
+        );
+        let other = watch(
+            Arc::new(FailingProvider { status: 403 }),
+            "deepseek-chat",
+            "https://api.deepseek.com/v1",
+            KEY,
+        );
+        // Both fail before anything is taken — the queue, not the shell,
+        // decides what survives.
+        let _ = first.stream(request()).await;
+        let _ = other.stream(request()).await;
+
+        let one = take_notice().expect("the first rejection survives");
+        let two = take_notice().expect("the second rejection survives");
+        let (one, two) = (one.as_str(), two.as_str());
+        assert!(
+            (one.contains("gpt-5.4-mini") && two.contains("deepseek-chat"))
+                || (two.contains("gpt-5.4-mini") && one.contains("deepseek-chat")),
+            "both rejections are announced: {one} / {two}"
+        );
+        assert_eq!(take_notice(), None, "and nothing else");
     }
 }

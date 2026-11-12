@@ -27,6 +27,12 @@
 set -euo pipefail
 
 GITHUB_INDEX="https://github.com/hibuka-labs/phimint/releases/latest/download/install-index.txt"
+# Both mirrors serve the SAME asset name here. The generator
+# (scripts/gen-manifest.py) emits two variants - install-index.txt (GitHub
+# URLs) and install-index-gitee.txt (Gitee URLs) - and the release run
+# (deploy/release.sh step 7.2b) uploads the Gitee variant renamed to
+# install-index.txt on the Gitee release. The rename is the contract; do not
+# "fix" this URL to install-index-gitee.txt.
 GITEE_INDEX="https://gitee.com/chenkangzeng_admin/phimint/releases/download/latest/install-index.txt"
 
 info() { printf '  %s\n' "$*"; }
@@ -197,7 +203,19 @@ if [ ! -f "$STATE" ]; then
     info "install source recorded (upgrade: phimint update)"
 fi
 
-CONFIG_FILE="${LLM_CONFIG:-$HOME/.phimint/config.json}"
+# Name the file the App will actually read - its resolve_path rule in shell
+# (an existing LLM_CONFIG, else the first existing default, else the
+# skeleton fallback), not a parallel rule of our own. Naming anything else
+# sends the user to a file the App never reads.
+if [ -n "${LLM_CONFIG:-}" ] && [ -f "$LLM_CONFIG" ]; then
+    CONFIG_FILE="$LLM_CONFIG"
+elif [ -f "$HOME/.phimint/config.json" ]; then
+    CONFIG_FILE="$HOME/.phimint/config.json"
+elif [ -f "$HOME/.config/phimint/config.json" ]; then
+    CONFIG_FILE="$HOME/.config/phimint/config.json"
+else
+    CONFIG_FILE="${LLM_CONFIG:-$HOME/.phimint/config.json}"
+fi
 if [ -x "$INSTALL_DIR/phimint" ]; then
     if "$INSTALL_DIR/phimint" init --if-missing >/dev/null 2>&1; then
         info "config file: $CONFIG_FILE"

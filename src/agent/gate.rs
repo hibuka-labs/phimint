@@ -53,8 +53,10 @@ use crate::verify_ledger::{EvidenceLedger, Unverified, VerifyKind};
 
 /// Tools that can change source. `code_cell` is here because a CodeAct cell's
 /// filesystem side effects are opaque — the misjudgement direction must not be
-/// a false pass (design D2).
-const DIRTY_TOOLS: &[&str] = &["write_file", "edit_file", "code_cell"];
+/// a false pass (design D2). `execute_command` is here for the same reason: a
+/// shell edit (`sed -i`, `cat > file`) is invisible at the tool boundary, so it
+/// must count as a possible edit rather than ride on an older verify.
+const DIRTY_TOOLS: &[&str] = &["write_file", "edit_file", "code_cell", "execute_command"];
 
 /// Tools that produce compile-level evidence. The `verify` tool records into the
 /// ledger itself when it runs; this list is what tells the gate "a verification
@@ -94,7 +96,7 @@ impl Default for VerifyGateConfig {
     fn default() -> Self {
         Self {
             max_nudges: 1,
-            nudge_header: "[gate] 这不是用户输入，是门禁提醒。".to_string(),
+            nudge_header: "[gate] This is not user input - it is a gate reminder.".to_string(),
             writes_possible: Arc::new(|| true),
         }
     }
@@ -109,7 +111,8 @@ struct GateState {
     ///
     /// Deferred one LLM turn so that a `verify` issued in the same turn as the
     /// write is never credited with covering it (rule 3). Flushed at the top of
-    /// the next [`on_post_llm`](Middleware::on_post_llm).
+    /// the next [`on_post_llm`](Middleware::on_post_llm), and folded into the
+    /// ledger at the user boundary rather than dropped.
     deferred_edits: Vec<PathBuf>,
     /// Whether we have already declined to nudge because a fresh green light
     /// exists — so the budget reset is logged once, not per turn.
@@ -140,10 +143,20 @@ impl Middleware for VerifyGateMiddleware {
     /// a *passing* verify — falls out of `fresh_green` and is applied in
     /// `on_post_llm`.
     async fn on_user_message(&self, _ctx: &mut UserMessageCtx) -> AgentResult<()> {
-        let mut st = self.state.lock().expect("gate state lock poisoned");
-        st.nudges = 0;
-        st.deferred_edits.clear();
-        st.saw_fresh_green = false;
+        // Fold any still-deferred edits into the ledger before resetting.
+        // Discarding them here would let an earlier verify stay "fresh" over a
+        // write it never covered — the false-green window the rule-3 deferral
+        // exists to prevent. A spurious nag is acceptable; a spurious pass is not.
+        let leftover = {
+            let mut st = self.state.lock().expect("gate state lock poisoned");
+            st.nudges = 0;
+            st.saw_fresh_green = false;
+            std::mem::take(&mut st.deferred_edits)
+        };
+        if !leftover.is_empty() {
+            let mut ledger = self.ledger.lock().expect("ledger lock poisoned");
+            ledger.record_edit(&leftover);
+        }
         Ok(())
     }
 
@@ -375,6 +388,10 @@ mod tests {
         Action::from_tool_call("c2", "code_cell", r#"{"code":"print(1)"}"#)
     }
 
+    fn shell(cmd: &str) -> Action {
+        Action::from_tool_call("c4", "execute_command", format!(r#"{{"command":"{cmd}"}}"#))
+    }
+
     fn verify() -> Action {
         Action::from_tool_call("c3", "verify", r#"{}"#)
     }
@@ -488,11 +505,15 @@ mod tests {
         let mut c = ctx("all done", vec![]);
         mw.on_post_llm(&mut c).await.unwrap();
         assert!(
-            c.full_text.contains("未通过"),
+            c.full_text.contains("Verification failed"),
             "should say checked-and-failed: {}",
             c.full_text
         );
-        assert!(!c.full_text.contains("未见验证"), "{}", c.full_text);
+        assert!(
+            !c.full_text.contains("No verification since"),
+            "{}",
+            c.full_text
+        );
     }
 
     #[tokio::test]
@@ -520,10 +541,10 @@ mod tests {
         mw.on_post_llm(&mut c).await.unwrap();
         let msg = c.follow_up_message.expect("one nudge");
         assert!(msg.contains("[gate]"), "must be self-identifying: {msg}");
-        assert!(msg.contains("未通过"), "{msg}");
+        assert!(msg.contains("verified and failed"), "{msg}");
         assert!(msg.contains("exit 101"), "{msg}");
         assert!(
-            !msg.contains("请先执行"),
+            !msg.contains("no green verification"),
             "it already ran verify — don't ask again: {msg}"
         );
     }
@@ -753,6 +774,66 @@ mod tests {
         assert!(
             c.follow_up_message.is_some(),
             "an opaque code action is an edit until proven otherwise"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_command_marks_the_ledger_dirty() {
+        // A shell edit (sed -i, cat > file) is invisible at the tool boundary.
+        // It must count as a possible edit so it can never ride on an older
+        // verify — the false-pass direction rule 3 forbids.
+        let (mw, _ledger) = gate();
+
+        // Turn 1: a shell command, no verify.
+        let mut c = ctx("", vec![shell("sed -i s/a/b/ src/a.rs")]);
+        mw.on_post_llm(&mut c).await.unwrap();
+
+        // Turn 2: hand back. The shell command counted as an edit → intercept.
+        let mut c = ctx("all done", vec![]);
+        mw.on_post_llm(&mut c).await.unwrap();
+        assert!(
+            c.skip_push,
+            "a shell command may have edited code; the hand-back must not stand"
+        );
+        assert!(c.follow_up_message.is_some(), "one nudge naming the gap");
+    }
+
+    #[tokio::test]
+    async fn deferred_edits_survive_a_user_message_boundary() {
+        // A run can end between the deferral and the next on_post_llm: the user
+        // speaks first. The deferred edit must fold into the ledger at that
+        // boundary, not vanish with the reset — otherwise the earlier verify
+        // stays "fresh" over a write it never covered.
+        let (mw, ledger) = gate();
+        ledger
+            .lock()
+            .unwrap()
+            .record_verify(crate::verify_ledger::VerifyVerdict {
+                kind: VerifyKind::Check,
+                command: "cargo check".to_string(),
+                exit_code: Some(0),
+                error_count: 0,
+                warning_count: 0,
+                summary: String::new(),
+            });
+
+        // Turn 1: an edit racing a verify → deferred, not yet recorded.
+        let mut c = ctx("", vec![write("src/a.rs"), verify()]);
+        mw.on_post_llm(&mut c).await.unwrap();
+
+        // The user speaks before the next LLM turn.
+        let mut uctx = UserMessageCtx {
+            session_id: SessionId::new(1),
+            user_input: "carry on".to_string(),
+        };
+        mw.on_user_message(&mut uctx).await.unwrap();
+
+        // Turn 2: hand back. The pre-edit green light must not survive the fold.
+        let mut c = ctx("all done", vec![]);
+        mw.on_post_llm(&mut c).await.unwrap();
+        assert!(
+            c.skip_push,
+            "the old verify never covered the folded edit — no false green"
         );
     }
 }

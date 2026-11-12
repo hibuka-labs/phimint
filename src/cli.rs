@@ -187,7 +187,9 @@ pub enum ConfigAction {
         #[arg(value_parser = clap::builder::PossibleValuesParser::new(WRITABLE_MEMBERS))]
         key: String,
 
-        /// The new value (for api_key: your API key).
+        /// The new value. For `api_key`, pass `-` to read the secret from
+        /// stdin instead — an argv secret lands in shell history and process
+        /// listings.
         value: String,
     },
 }

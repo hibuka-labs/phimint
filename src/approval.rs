@@ -47,7 +47,7 @@
 //! short-circuits and never consults the handler. The policy is what makes
 //! deny real, which is why the live gate always carries one.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -302,8 +302,45 @@ fn short_title(command: &str) -> String {
 /// concrete action, not the whole tool. Commands that `classify_command` deems
 /// Safe never reach here, so only Sensitive/Destructive commands get scoped.
 fn command_action_key(command: &str) -> String {
-    let normalized = command.split_whitespace().collect::<Vec<_>>().join(" ");
-    format!("execute_command:{normalized}")
+    format!("execute_command:{}", normalize_command(command))
+}
+
+/// The command half of a scoped standing-approval key: whitespace-normalised,
+/// so `cargo  test` and `cargo test` cache the same grant.
+fn normalize_command(command: &str) -> String {
+    command.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The `verify` tool's ask-gate arm.
+///
+/// The tool never takes its command from the model —
+/// `code_intel::lang::resolve_verify_command` reads the workspace — and a pass
+/// mints the green light the hand-back is held on. A command the project
+/// supplies in its own `.phimint.toml` is repository-controlled text: it
+/// prompts like the same command pasted into `execute_command`, with the
+/// source surfaced and any standing grant scoped to that exact command. The
+/// convention slot and the language table compose phimint's OWN fixed strings
+/// (the repository selects which of phimint's checks runs, never the command
+/// text), so those run unprompted like reads.
+fn verify_approval_request(args: &Value, workspace_root: &Path) -> Option<ApprovalRequest> {
+    let resolved = code_intel::lang::resolve_verify_command(workspace_root)?;
+    if resolved.source != code_intel::lang::VerifyCommandSource::ProjectConfig {
+        return None;
+    }
+    let command = resolved.command;
+    Some(ApprovalRequest {
+        title: format!("verify: {}", short_title(&command)),
+        message: format!(
+            "{command}\n\nThe project's own config ({}) supplied this verify \
+             command; its pass marks the code verified. Approve it the way you \
+             would the same command pasted into execute_command.",
+            resolved.source.label()
+        ),
+        action_key: Some(format!("verify:{}", normalize_command(&command))),
+        risk_level: RiskLevel::Sensitive,
+        raw: Some(args.clone()),
+        source: None,
+    })
 }
 
 /// The ask-gate: auto-approve reads, prompt on writes and risky shell.
@@ -605,6 +642,11 @@ pub struct LiveApprovalGate {
     mode: Arc<ApprovalModeSwitch>,
     queued: QueuedApprovalHandler,
     ledger: LedgerStore,
+    /// The workspace root `verify` resolves its command against. The policy
+    /// decides before the tool runs, so the gate needs the tool's root to tell
+    /// a project-supplied command from phimint's own (see
+    /// [`verify_approval_request`]).
+    workspace_root: PathBuf,
 }
 
 impl LiveApprovalGate {
@@ -612,11 +654,13 @@ impl LiveApprovalGate {
         mode: Arc<ApprovalModeSwitch>,
         queue_tx: mpsc::UnboundedSender<ApprovalItem>,
         ledger_path: Option<PathBuf>,
+        workspace_root: PathBuf,
     ) -> Self {
         Self {
             mode,
             queued: QueuedApprovalHandler::new(queue_tx),
             ledger: LedgerStore::load(ledger_path),
+            workspace_root,
         }
     }
 
@@ -696,9 +740,12 @@ impl ToolPolicy for LiveApprovalGate {
             // auto: nothing needs approval — the handler is never consulted.
             RuntimeApprovalMode::Auto => None,
             // ask/deny share the gate; the handler decides allow vs deny.
-            RuntimeApprovalMode::Ask | RuntimeApprovalMode::Deny => {
-                classify_request(tool_name, args)
-            }
+            RuntimeApprovalMode::Ask | RuntimeApprovalMode::Deny => match tool_name {
+                // `verify` resolves its command from the workspace, not the
+                // model; a project-supplied one prompts (its own arm).
+                "verify" => verify_approval_request(args, &self.workspace_root),
+                _ => classify_request(tool_name, args),
+            },
         }
     }
 }
@@ -759,14 +806,22 @@ pub type LiveApprovalBuild = (
 /// flips it from there. External tools are ledger-gated in every mode.
 ///
 /// `ledger_path` is injected (`~/.phimint/approvals.json` from `main.rs`).
-/// `None` keeps the ledger in-memory — tests only.
-pub fn build_live_approval(initial: &str, ledger_path: Option<PathBuf>) -> LiveApprovalBuild {
+/// `None` keeps the ledger in-memory — tests only. `workspace_root` is the
+/// workspace `verify` resolves its command against: the gate decides before
+/// the tool runs, so it must know the tool's root (see
+/// [`verify_approval_request`]).
+pub fn build_live_approval_with_workspace(
+    initial: &str,
+    ledger_path: Option<PathBuf>,
+    workspace_root: &Path,
+) -> LiveApprovalBuild {
     let mode = Arc::new(ApprovalModeSwitch::new(RuntimeApprovalMode::parse(initial)));
     let (queue_tx, queue_rx) = mpsc::unbounded_channel();
     let gate = Arc::new(LiveApprovalGate::new(
         Arc::clone(&mode),
         queue_tx,
         ledger_path,
+        workspace_root.to_path_buf(),
     ));
     (
         Arc::clone(&gate),
@@ -774,6 +829,115 @@ pub fn build_live_approval(initial: &str, ledger_path: Option<PathBuf>) -> LiveA
         queue_rx,
         mode,
     )
+}
+
+/// The builder for callers with no verify surface to scope (the unit and
+/// integration tests): the workspace-scoped builder pointed at the process's
+/// cwd, which stays inert for every other tool. Production passes the
+/// session's workspace to [`build_live_approval_with_workspace`] so `verify`'s
+/// arm resolves the project's own command against the right root.
+pub fn build_live_approval(initial: &str, ledger_path: Option<PathBuf>) -> LiveApprovalBuild {
+    build_live_approval_with_workspace(initial, ledger_path, Path::new("."))
+}
+
+/// The `verify` ask-gate arm: only a project-supplied command prompts.
+#[cfg(test)]
+mod verify_arm_tests {
+    use super::*;
+    use serde_json::json;
+
+    /// protects: a verify command the project supplies in its own config is
+    /// approved like a shell command - the ask names the exact command and
+    /// where it came from, and a standing grant is scoped to that command.
+    /// fails_when: `.phimint.toml`'s verify_command runs unprompted in ask
+    /// mode, laundering a repository string into a green light.
+    /// no_claim: the popup's rendering (phi-tui's).
+    #[test]
+    fn a_project_supplied_verify_command_prompts_with_its_source() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".phimint.toml"),
+            "verify_command = \"cargo test --all-features\"\n",
+        )
+        .unwrap();
+        let request =
+            verify_approval_request(&json!({}), dir.path()).expect("a project command prompts");
+        assert!(
+            request.message.contains("cargo test --all-features"),
+            "the ask names the exact command: {}",
+            request.message
+        );
+        assert!(
+            request.message.contains(".phimint.toml"),
+            "the ask names where it came from: {}",
+            request.message
+        );
+        assert_eq!(
+            request.action_key.as_deref(),
+            Some("verify:cargo test --all-features"),
+            "a standing grant is scoped to this command"
+        );
+    }
+
+    /// protects: phimint's own resolution strings (the convention slot, the
+    /// language table) run unprompted - the repository selects which check
+    /// runs, never the command text. fails_when: every cargo project's verify
+    /// nags in ask mode. no_claim: which command the table picks.
+    #[test]
+    fn a_phimint_resolved_verify_command_runs_unprompted() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]\n").unwrap();
+        assert!(
+            verify_approval_request(&json!({}), dir.path()).is_none(),
+            "a convention command is phimint's own string - no ask"
+        );
+    }
+
+    /// protects: a workspace with no compile layer produces no ask (the tool
+    /// says nothing to verify; nothing runs). fails_when: verify prompts for
+    /// a command that does not exist.
+    #[test]
+    fn a_workspace_without_a_verify_command_never_asks() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(verify_approval_request(&json!({}), dir.path()).is_none());
+    }
+
+    /// protects: the dispatch routes only `verify` to the new arm - every
+    /// other tool keeps the old classification. fails_when: the arm swallows
+    /// write_file's prompt, or the gate asks on reads.
+    #[tokio::test]
+    async fn the_verify_arm_routes_only_verify() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".phimint.toml"),
+            "verify_command = \"make check\"\n",
+        )
+        .unwrap();
+        let (_gate, policy, _queue_rx, _switch) =
+            build_live_approval_with_workspace("ask", None, dir.path());
+        let policy = policy.expect("the gate is the policy");
+        assert!(
+            policy
+                .evaluate_approval("verify", &json!({}))
+                .await
+                .is_some(),
+            "a project-supplied verify command asks"
+        );
+        assert!(
+            policy
+                .evaluate_approval("write_file", &json!({"path": "a.txt"}))
+                .await
+                .is_some(),
+            "write_file still prompts"
+        );
+        assert!(
+            policy
+                .evaluate_approval("read_file", &json!({"path": "a.txt"}))
+                .await
+                .is_none(),
+            "reads still pass"
+        );
+    }
 }
 
 #[cfg(test)]

@@ -163,7 +163,10 @@ async fn run() -> Result<()> {
     }
     // The key in force: CLI `--api-key` > PHIMINT_API_KEY > the file's
     // api_key (decision 6). The env value is used in memory and never written
-    // to the file — CI / batch machines keep their key off disk.
+    // to the file — CI / batch machines keep their key off disk. The override
+    // lands on the top-level member so every tier fallback sees it; the MAIN
+    // provider's key is resolved once more below (bootstrap::key_in_force),
+    // where a pinned tier key must not eat the override.
     let key_in_force = bootstrap::effective_api_key(
         cli.api_key.as_deref(),
         env_key.as_deref(),
@@ -180,8 +183,14 @@ async fn run() -> Result<()> {
     // Validate config
     model_config.validate()?;
 
-    // Create main provider
-    let (main_model, main_url, main_key, main_proto) = model_config.tier_config("main").unwrap();
+    // Create main provider. The key is the ONE resolution the gate already
+    // judged (bootstrap::key_in_force) — CLI > env > the tier's pinned key >
+    // the top-level member — NOT merely tier_config's tuple, whose pin would
+    // silently eat a `--api-key`. Gate and provider on the same value is
+    // what keeps "configured" from meaning two different things at boot.
+    let (main_model, main_url, _pinned_key, main_proto) = model_config.tier_config("main").unwrap();
+    let main_key =
+        bootstrap::key_in_force(&model_config, cli.api_key.as_deref(), env_key.as_deref());
     let llm_config = phi_agent::llm_trait::config::LlmConfig {
         protocol: if main_proto.is_empty() {
             None
@@ -220,6 +229,7 @@ async fn run() -> Result<()> {
         phi_agent::create_provider(&llm_config).context("Failed to create LLM provider")?,
         &main_model,
         &main_url,
+        &main_key,
     );
 
     // Extract update config before model_config is moved into the store.
@@ -259,7 +269,11 @@ async fn run() -> Result<()> {
     // The ledger (standing tiers for external tools) lives next to the
     // sessions: `~/.phimint/approvals.json`.
     let (approval, policy, approval_rx, approval_mode) =
-        approval::build_live_approval(&cli.approval, Some(base_dir.join("approvals.json")));
+        approval::build_live_approval_with_workspace(
+            &cli.approval,
+            Some(base_dir.join("approvals.json")),
+            &workspace,
+        );
     // tool-socket P3: ExternalState's ledger gate is this same gate (the
     // install confirmation surface reuses the same TUI approval queue, but
     // always asks a human and ignores the tier). `agent::build` takes the
@@ -833,10 +847,32 @@ fn run_config_command(config_flag: Option<&str>, action: Option<ConfigAction>) -
     let out = match action.unwrap_or(ConfigAction::Show) {
         ConfigAction::Show => config_cmd::show(&target, env_key.as_deref()),
         ConfigAction::Set { key, value } => {
-            config_cmd::set(&target, &key, &value, env_key.as_deref())
+            // An api_key on argv lands in shell history and process listings;
+            // `-` switches the secret to stdin. The bool reports which happened
+            // so `set` can name the leak only when there is one.
+            match secret_value(&key, value) {
+                Ok((value, on_argv)) => {
+                    config_cmd::set(&target, &key, &value, env_key.as_deref(), on_argv)
+                }
+                Err(msg) => Err(msg),
+            }
         }
     };
     emit(out)
+}
+
+/// The value for `config set`, with `-` on a secret meaning "read stdin".
+/// Returns the value and whether it really rode in on the command line.
+fn secret_value(key: &str, value: String) -> std::result::Result<(String, bool), String> {
+    if key == "api_key" && value == "-" {
+        use std::io::Read as _;
+        let mut buf = String::new();
+        std::io::stdin()
+            .read_to_string(&mut buf)
+            .map_err(|e| format!("cannot read the key from stdin: {e}"))?;
+        return Ok((buf.trim().to_string(), false));
+    }
+    Ok((value, true))
 }
 
 /// Print a command message (an empty one stays silent — `init --if-missing`
@@ -886,5 +922,18 @@ mod tests {
             std::env::var(PROVIDER_LOG_ENV).unwrap(),
             path.to_str().unwrap()
         );
+    }
+
+    /// protects: only an api_key's `-` flips to the stdin route - a literal
+    /// `-` for another member is just a value, and any other api_key value
+    /// stays the argv value it is (the caller reports the leak).
+    /// fails_when: every `-` swallows stdin, or a plain key value is routed
+    /// to stdin. no_claim: the stdin read itself.
+    #[test]
+    fn only_an_api_key_dash_routes_to_stdin() {
+        assert!(secret_value("api_key", "sk-x".to_string()).unwrap().1);
+        let (value, on_argv) = secret_value("base_url", "-".to_string()).unwrap();
+        assert_eq!(value, "-", "a dash is just a value here");
+        assert!(on_argv);
     }
 }

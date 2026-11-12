@@ -87,13 +87,18 @@ async fn run_command(
     cwd: &Path,
     timeout: Duration,
 ) -> Result<RunOutcome, String> {
-    let child = tokio::process::Command::new(prog)
-        .args(args)
+    let mut cmd = tokio::process::Command::new(prog);
+    cmd.args(args)
         .current_dir(cwd)
-        .process_group(0)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    // Own process group, so a timeout can kill the build's whole tree (see
+    // `kill_process_group`). The primitive is Unix-only — on Windows the kill
+    // path already degrades to the direct child.
+    #[cfg(unix)]
+    cmd.process_group(0);
+    let child = cmd
         .spawn()
         .map_err(|e| format!("failed to start `{prog}`: {e}"))?;
 
@@ -199,11 +204,17 @@ impl Tool for VerifyTool {
         //    a compiler, and must not record a green light that says nothing
         //    about the change the model just made.
         if let Some(scope) = non_empty_arg(args, "path") {
+            if scope_escapes_workspace(&self.workspace_root, Path::new(&scope)) {
+                return Ok(vec![Content::text(format!(
+                    "[Error]: scope `{scope}` lies outside the workspace; pass a \
+                     workspace-relative path"
+                ))]);
+            }
             let scoped = self.workspace_root.join(&scope);
             if !scope_contains_code(&scoped) {
                 return Ok(vec![Content::text(format!(
-                    "非代码改动，无需验证（`{scope}` 无源码/构建清单）。\
-                     本工作区的编译级验证命令是：{}",
+                    "No code in `{scope}` (no source/build manifest): nothing to verify. \
+                     This workspace's compile-level command is: {}",
                     describe_workspace_command(&self.workspace_root)
                 ))]);
             }
@@ -216,9 +227,10 @@ impl Tool for VerifyTool {
         let Some(resolved) = lang::resolve_verify_command(&self.workspace_root) else {
             self.ledger.lock().unwrap().set_compile_layer(false);
             return Ok(vec![Content::text(
-                "本工作区无编译级验证（该语言无编译层，项目也未提供验证命令），无法给出 L2 证据。\
-                 若项目自带构建脚本，可在 `.phimint.toml` 写 `verify_command`，\
-                 或用 `execute_command` 显式执行。"
+                "This workspace has no compile-level verification (the language has no compile \
+                 layer and the project supplies no verify command), so there can be no L2 \
+                 evidence. If the project has a build script, set `verify_command` in \
+                 `.phimint.toml`, or run it explicitly with `execute_command`."
                     .to_string(),
             )]);
         };
@@ -226,7 +238,7 @@ impl Tool for VerifyTool {
 
         let Some((prog, cmd_args)) = split_command(&command) else {
             return Ok(vec![Content::text(format!(
-                "[Error]: 验证命令无法拆成程序 + 参数：`{command}`"
+                "[Error]: verify command cannot be split into program + args: `{command}`"
             ))]);
         };
 
@@ -277,6 +289,32 @@ fn non_empty_arg(args: &Value, key: &str) -> Option<String> {
         .map(String::from)
 }
 
+/// Whether a model-supplied scope names a location outside the workspace.
+///
+/// `Path::join` lets an absolute scope replace the root outright, and `..`
+/// components walk out of it lexically. Both are refused rather than silently
+/// reinterpreted: the scope is a hint about what changed, and a hint pointing
+/// outside the workspace is not ours to read.
+fn scope_escapes_workspace(root: &Path, scope: &Path) -> bool {
+    if scope.is_absolute() {
+        return !scope.starts_with(root);
+    }
+    let mut depth: i32 = 0;
+    for comp in scope.components() {
+        match comp {
+            std::path::Component::ParentDir => {
+                depth -= 1;
+                if depth < 0 {
+                    return true;
+                }
+            }
+            std::path::Component::Normal(_) => depth += 1,
+            _ => {}
+        }
+    }
+    false
+}
+
 /// Whether a scope (file or directory) contains anything the compile layer
 /// would care about. Directories are checked shallowly-plus-recursively through
 /// the language registry's own notion of code.
@@ -284,7 +322,30 @@ fn scope_contains_code(path: &Path) -> bool {
     if path.is_file() {
         return lang::is_code_path(&path.to_string_lossy());
     }
-    let Ok(entries) = std::fs::read_dir(path) else {
+    let mut visited = std::collections::HashSet::new();
+    walk_contains_code(path, &mut visited, 0)
+}
+
+/// The recursive half of [`scope_contains_code`].
+///
+/// `visited` holds canonical directory paths so a symlink cycle cannot recurse
+/// until the stack aborts the process; `depth` bounds the walk even where
+/// canonicalization fails. Both guards are cheap and both are load-bearing.
+fn walk_contains_code(
+    dir: &Path,
+    visited: &mut std::collections::HashSet<PathBuf>,
+    depth: usize,
+) -> bool {
+    /// Deepest directory level worth probing for "is there code here".
+    const MAX_DEPTH: usize = 64;
+    if depth > MAX_DEPTH {
+        return false;
+    }
+    let canonical = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    if !visited.insert(canonical) {
+        return false;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
         return false;
     };
     for entry in entries.flatten() {
@@ -295,7 +356,7 @@ fn scope_contains_code(path: &Path) -> bool {
             if name.starts_with('.') || lang::SKIP_DIRS.contains(&name.as_ref()) {
                 continue;
             }
-            if scope_contains_code(&child) {
+            if walk_contains_code(&child, visited, depth + 1) {
                 return true;
             }
         } else if lang::is_code_path(&child.to_string_lossy()) {
@@ -308,8 +369,8 @@ fn scope_contains_code(path: &Path) -> bool {
 /// Human-readable "what would run here", for the non-code refusal message.
 fn describe_workspace_command(root: &Path) -> String {
     match lang::resolve_verify_command(root) {
-        Some(v) => format!("`{}`（来源：{}）", v.command, v.source.label()),
-        None => "（无）".to_string(),
+        Some(v) => format!("`{}` (source: {})", v.command, v.source.label()),
+        None => "(none)".to_string(),
     }
 }
 
@@ -469,6 +530,48 @@ mod tests {
         // Only code lives under `target/`, which is build output — the scope is
         // code-free.
         assert!(!scope_contains_code(&root));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn scope_refuses_to_escape_the_workspace() {
+        // `Path::join` replaces the root for an absolute scope, and `..` walks
+        // out of it lexically — neither may reach the walk.
+        assert!(scope_escapes_workspace(Path::new("/w"), Path::new("/etc")));
+        assert!(scope_escapes_workspace(
+            Path::new("/w"),
+            Path::new("../etc")
+        ));
+        assert!(scope_escapes_workspace(
+            Path::new("/w"),
+            Path::new("a/../../etc")
+        ));
+        assert!(!scope_escapes_workspace(
+            Path::new("/w"),
+            Path::new("src/a.rs")
+        ));
+        assert!(!scope_escapes_workspace(
+            Path::new("/w"),
+            Path::new("a/../b")
+        ));
+        assert!(!scope_escapes_workspace(
+            Path::new("/w"),
+            Path::new("/w/src")
+        ));
+    }
+
+    #[test]
+    fn scope_walk_survives_a_symlink_cycle() {
+        // A cycle used to recurse until the stack aborted the process.
+        let root = std::env::temp_dir().join("phimint_verify_scope_loop");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("a")).unwrap();
+        std::fs::write(root.join("a/x.md"), "x").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(root.join("a"), root.join("a/loop")).unwrap();
+
+        assert!(!scope_contains_code(&root), "terminates, code-free");
 
         let _ = std::fs::remove_dir_all(&root);
     }

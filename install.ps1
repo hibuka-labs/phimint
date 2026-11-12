@@ -16,6 +16,9 @@
 $ErrorActionPreference = "Stop"
 
 $GithubIndex = "https://github.com/hibuka-labs/phimint/releases/latest/download/install-index.txt"
+# Same asset name on both mirrors: the release run (deploy/release.sh step
+# 7.2b) uploads the Gitee-URL variant (install-index-gitee.txt from
+# scripts/gen-manifest.py) renamed to install-index.txt on the Gitee release.
 $GiteeIndex = "https://gitee.com/chenkangzeng_admin/phimint/releases/download/latest/install-index.txt"
 
 function Fail([string]$Msg) { Write-Error "❌ $Msg"; exit 1 }
@@ -154,7 +157,20 @@ if (-not (Test-Path $StatePath)) {
 Write-Host "  install source recorded (upgrade: phimint update)"
 
 # The App writes the config skeleton - one source of truth for its shape.
-$ConfigPath = Join-Path $PhimintDir "config.json"
+# Name the file the App will actually read - its resolve_path rule (an
+# existing LLM_CONFIG, else the first existing default, else the skeleton
+# fallback), not a parallel rule of our own.
+if ($env:LLM_CONFIG -and (Test-Path $env:LLM_CONFIG)) {
+    $ConfigPath = $env:LLM_CONFIG
+} elseif (Test-Path (Join-Path $PhimintDir "config.json")) {
+    $ConfigPath = Join-Path $PhimintDir "config.json"
+} elseif (Test-Path (Join-Path $HOME ".config/phimint/config.json")) {
+    $ConfigPath = Join-Path $HOME ".config/phimint/config.json"
+} elseif ($env:LLM_CONFIG) {
+    $ConfigPath = $env:LLM_CONFIG
+} else {
+    $ConfigPath = Join-Path $PhimintDir "config.json"
+}
 $Written = $false
 try {
     & $ExePath init --if-missing | Out-Null

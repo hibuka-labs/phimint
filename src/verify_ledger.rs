@@ -118,20 +118,21 @@ impl Unverified {
     pub fn nudge(&self) -> String {
         match self {
             Unverified::NoCompileLayer => {
-                "本工作区无编译级验证（该语言无编译层，项目也未提供验证命令），无需验证即可汇报。"
+                "This workspace has no compile-level verification (no compile layer, no \
+                 project verify command); report without verification."
                     .to_string()
             }
             Unverified::NeverChecked { edited } => {
                 format!(
-                    "代码改动后未见绿灯验证 {} —— 请先执行 `verify`（或项目的编译命令）\
-                     确认通过，再重新汇报。",
+                    "Code changed with no green verification {}; run `verify` (or the \
+                     project's build command) to a pass first, then report again.",
                     edited_files(edited)
                 )
             }
             Unverified::TimedOut { edited, command } => {
                 format!(
-                    "`{command}` 上次超时被杀，没有留下证据 {} —— 请重新执行 `verify` \
-                     拿到退出码，再汇报。",
+                    "`{command}` timed out and was killed last run, leaving no evidence {}; \
+                     run `verify` again to get an exit code, then report.",
                     edited_files(edited)
                 )
             }
@@ -142,9 +143,10 @@ impl Unverified {
                 error_count,
             } => {
                 format!(
-                    "`{command}` 已经跑过，但未通过（{}，{} 个错误） {} —— 这不是「没验」，\
-                     是「验了没过」。请修复后重新验证通过再汇报；若判断本次可以带错交付，\
-                     请在汇报里说明理由。",
+                    "`{command}` already ran and did not pass ({}, {} errors) {}; this is \
+                     not \"never verified\", it is \"verified and failed\". Fix and re-verify \
+                     before reporting; if you judge this deliverable with errors, say why in \
+                     the report.",
                     exit_code_note(*exit_code),
                     error_count,
                     edited_files(edited)
@@ -152,8 +154,8 @@ impl Unverified {
             }
             Unverified::Stale { edited, command } => {
                 format!(
-                    "手上的绿灯是最后一次改动之前的（`{command}` 已失效） {} —— \
-                     请重新执行 `verify`，再汇报。",
+                    "The green light on hand predates the last change (`{command}` is stale) \
+                     {}; run `verify` again, then report.",
                     edited_files(edited)
                 )
             }
@@ -166,14 +168,19 @@ impl Unverified {
     pub fn warning(&self) -> String {
         match self {
             Unverified::NoCompileLayer => {
-                "⚠️ 本工作区无编译级验证（该语言没有编译层），本次无 L2 证据。".to_string()
+                "⚠️ No compile-level verification in this workspace (no compile layer); \
+                 no L2 evidence this time."
+                    .to_string()
             }
             Unverified::NeverChecked { edited } => {
-                format!("⚠️ 本次改动后未见验证 {}", edited_files(edited))
+                format!(
+                    "⚠️ No verification since the last change {}",
+                    edited_files(edited)
+                )
             }
             Unverified::TimedOut { edited, command } => {
                 format!(
-                    "⚠️ 验证超时/被杀，无有效证据 `{command}` {}",
+                    "⚠️ Verification timed out/killed, no usable evidence `{command}` {}",
                     edited_files(edited)
                 )
             }
@@ -184,7 +191,7 @@ impl Unverified {
                 error_count,
             } => {
                 format!(
-                    "⚠️ 验证未通过 `{command}` {} errors={} {}",
+                    "⚠️ Verification failed `{command}` {} errors={} {}",
                     exit_code_note(*exit_code),
                     error_count,
                     edited_files(edited)
@@ -192,7 +199,7 @@ impl Unverified {
             }
             Unverified::Stale { edited, command } => {
                 format!(
-                    "⚠️ 验证结果早于最后一次改动（`{command}` 已失效） {}",
+                    "⚠️ Verification predates the last change (`{command}` stale) {}",
                     edited_files(edited)
                 )
             }
@@ -210,7 +217,7 @@ fn edited_files(files: &[PathBuf]) -> String {
     if names.is_empty() {
         String::new()
     } else {
-        format!("（改动：{}）", names.join(", "))
+        format!(" (changed: {})", names.join(", "))
     }
 }
 
@@ -221,7 +228,7 @@ fn edited_files(files: &[PathBuf]) -> String {
 fn exit_code_note(exit_code: Option<i32>) -> String {
     match exit_code {
         Some(code) => format!("exit {code}"),
-        None => "exit 未知".to_string(),
+        None => "exit unknown".to_string(),
     }
 }
 
@@ -511,15 +518,15 @@ mod tests {
         a.set_compile_layer(true);
         edit(&mut a);
         let never = a.unverified(VerifyKind::Check).unwrap().warning();
-        assert!(never.contains("未见验证"), "{never}");
+        assert!(never.contains("No verification since"), "{never}");
 
         let mut b = EvidenceLedger::new();
         b.set_compile_layer(true);
         edit(&mut b);
         b.record_verify(verdict(VerifyKind::Check, Some(101)));
         let failed = b.unverified(VerifyKind::Check).unwrap().warning();
-        assert!(failed.contains("未通过"), "{failed}");
-        assert!(!failed.contains("未见验证"), "{failed}");
+        assert!(failed.contains("Verification failed"), "{failed}");
+        assert!(!failed.contains("No verification since"), "{failed}");
     }
 
     #[test]
@@ -544,15 +551,15 @@ mod tests {
         a.set_compile_layer(true);
         edit(&mut a);
         let lazy = a.unverified(VerifyKind::Check).unwrap().nudge();
-        assert!(lazy.contains("未见绿灯验证"), "{lazy}");
+        assert!(lazy.contains("no green verification"), "{lazy}");
 
         let mut b = EvidenceLedger::new();
         b.set_compile_layer(true);
         edit(&mut b);
         b.record_verify(verdict(VerifyKind::Check, Some(101)));
         let lost = b.unverified(VerifyKind::Check).unwrap().nudge();
-        assert!(lost.contains("未通过"), "{lost}");
-        assert!(!lost.contains("未见绿灯验证"), "{lost}");
+        assert!(lost.contains("verified and failed"), "{lost}");
+        assert!(!lost.contains("no green verification"), "{lost}");
 
         let mut c = EvidenceLedger::new();
         c.set_compile_layer(true);
@@ -560,7 +567,45 @@ mod tests {
         c.record_verify(verdict(VerifyKind::Check, Some(0)));
         edit(&mut c);
         let stale = c.unverified(VerifyKind::Check).unwrap().nudge();
-        assert!(stale.contains("之前"), "{stale}");
+        assert!(stale.contains("predates the last change"), "{stale}");
+    }
+
+    #[test]
+    fn the_warning_body_is_ascii_so_no_byte_boundary_can_mangle_it() {
+        // The gate dedups on this text and the family has a history of
+        // byte-slicing CJK strings into garbage. The template stays ASCII
+        // apart from its one visible glyph; only user-supplied file names may
+        // carry other scripts (they are not part of the template).
+        let cases = [
+            Unverified::NoCompileLayer.warning(),
+            Unverified::NeverChecked {
+                edited: vec![PathBuf::from("src/a.rs")],
+            }
+            .warning(),
+            Unverified::TimedOut {
+                edited: vec![PathBuf::from("src/a.rs")],
+                command: "cargo check".to_string(),
+            }
+            .warning(),
+            Unverified::CheckFailed {
+                edited: vec![PathBuf::from("src/a.rs")],
+                command: "cargo check".to_string(),
+                exit_code: Some(101),
+                error_count: 1,
+            }
+            .warning(),
+            Unverified::Stale {
+                edited: vec![PathBuf::from("src/a.rs")],
+                command: "cargo check".to_string(),
+            }
+            .warning(),
+        ];
+        for warned in cases {
+            let body = warned
+                .strip_prefix("⚠️ ")
+                .unwrap_or_else(|| panic!("every warning leads with the marker: {warned}"));
+            assert!(body.is_ascii(), "marker body must stay ASCII: {warned}");
+        }
     }
 
     #[test]
