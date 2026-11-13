@@ -16,9 +16,8 @@
 #   4. the install source is recorded, so `phimint update` knows the channel;
 #   5. a Start Menu shortcut is created and points at the installed binary.
 #
-# Note: the shortcut case writes into the real Start Menu of whoever runs
-# this and removes it again. On CI that is a throwaway runner; on a desktop
-# it is one .lnk that comes and goes.
+# Note: the shortcut case writes into the sandbox, never into the real
+# Start Menu of whoever runs this (2026-11-13).
 
 $ErrorActionPreference = "Stop"
 
@@ -78,91 +77,42 @@ public class PhimintStub2 {
     Remove-Item -Force $Source
 }
 
-# A loopback HTTP server that serves the index and the zip.
-#
-# It runs IN THIS PROCESS, not in a Start-Job. A job blocked in
-# AcceptTcpClient() cannot be stopped until it reaches a checkpoint, and
-# Stop-Job waits for that — two minutes per case on the runner, which
-# turned a twelve-case suite into a half-hour job (2026-11-13). The
-# listener here is closed explicitly instead.
 function Start-IndexServer([string]$Sha, [string]$ZipPath) {
-    $Listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, 0)
-    $Listener.Start()
-    $Port = $Listener.LocalEndpoint.Port
-    $Listener.Stop()
+    # A separate process, so Stop-IndexServer can end it at once. See
+    # tests/install_index_server.ps1 for why it is not a job.
+    $PortFile = Join-Path ([System.IO.Path]::GetTempPath()) ("phimint-port-" + [Guid]::NewGuid() + ".txt")
+    $Shell = (Get-Command pwsh -ErrorAction SilentlyContinue).Source
+    if (-not $Shell) { $Shell = (Get-Command powershell).Source }
+    $ServerScript = Join-Path $Root "tests/install_index_server.ps1"
+    $Process = Start-Process -FilePath $Shell `
+        -ArgumentList @("-NoProfile", "-File", $ServerScript, $PortFile, $Sha, $ZipPath) `
+        -PassThru -WindowStyle Hidden
 
-    $IndexText = "version 9.9.9`nwindows-x86_64 http://127.0.0.1:$Port/phimint.zip $Sha`n"
-    $Zip = [System.IO.File]::ReadAllBytes($ZipPath)
-
-    # A shared stop flag the server loop checks between connections, so
-    # Stop-IndexServer can end it at once.
-    $Stop = New-Object System.Threading.ManualResetEventSlim($false)
-
-    # Serve on a background thread of THIS process — no job to stop.
-    # The script block is a ThreadStart: PowerShell converts a script block
-    # to that delegate, but NOT to System.Threading.Thread directly
-    # ("Cannot convert ... to type System.Threading.Thread", 2026-11-13).
-    $ServerLoop = {
-        param($Port, $IndexText, $Zip, $Stop)
-        $Listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, $Port)
-        $Listener.Start()
-        while (-not $Stop.IsSet) {
-            # A bounded wait, so the loop notices the stop flag even when
-            # no client ever arrives.
-            if (-not $Listener.Pending()) {
-                if ($Stop.Wait(100)) { break }
-                continue
-            }
-            try {
-                $Client = $Listener.AcceptTcpClient()
-            } catch {
-                break
-            }
-            try {
-                $Stream = $Client.GetStream()
-                $Reader = New-Object System.IO.StreamReader($Stream)
-                $RequestLine = $Reader.ReadLine()
-                while ($true) {
-                    $Header = $Reader.ReadLine()
-                    if ($null -eq $Header -or $Header -eq "") { break }
-                }
-                $Body = $null
-                $Type = "application/octet-stream"
-                if ($RequestLine -like "*index.txt*") {
-                    $Body = [System.Text.Encoding]::UTF8.GetBytes($IndexText)
-                    $Type = "text/plain"
-                } elseif ($RequestLine -like "*.zip*") {
-                    $Body = $Zip
-                }
-                if ($null -eq $Body) {
-                    $Head = "HTTP/1.1 404 Not Found`r`nContent-Length: 0`r`nConnection: close`r`n`r`n"
-                    $Bytes = [System.Text.Encoding]::ASCII.GetBytes($Head)
-                } else {
-                    $Head = "HTTP/1.1 200 OK`r`nContent-Type: $Type`r`nContent-Length: $($Body.Length)`r`nConnection: close`r`n`r`n"
-                    $Bytes = ([System.Text.Encoding]::ASCII.GetBytes($Head)) + $Body
-                }
-                $Stream.Write($Bytes, 0, $Bytes.Length)
-                $Stream.Flush()
-            } catch {
-            } finally {
-                $Client.Close()
-            }
+    # Wait for the server to publish its port.
+    $Port = 0
+    for ($Try = 0; $Try -lt 100; $Try++) {
+        if (Test-Path $PortFile) {
+            $Text = (Get-Content $PortFile -Raw).Trim()
+            if ($Text) { $Port = [int]$Text; break }
         }
+        Start-Sleep -Milliseconds 100
     }
-    $Thread = [System.Threading.Thread]::new([System.Threading.ThreadStart]$ServerLoop)
-    $Thread.IsBackground = $true
-    $Thread.Start($Port, $IndexText, $Zip, $Stop)
-
-    return @{ Port = $Port; Stop = $Stop }
+    if ($Port -eq 0) {
+        try { Stop-Process -Id $Process.Id -Force -ErrorAction SilentlyContinue } catch {}
+        throw "the index server never published a port"
+    }
+    return @{ Port = $Port; Process = $Process; PortFile = $PortFile }
 }
 
 function Stop-IndexServer($Server) {
-    if ($Server -and $Server.Stop) {
-        try { $Server.Stop.Set() } catch {}
+    if ($Server -and $Server.Process) {
+        try { Stop-Process -Id $Server.Process.Id -Force -ErrorAction SilentlyContinue } catch {}
+    }
+    if ($Server -and $Server.PortFile) {
+        Remove-Item -Force $Server.PortFile -ErrorAction SilentlyContinue
     }
 }
 
-# Run the real installer in a child process with a controlled environment.
 function Invoke-Installer([hashtable]$Environment) {
     $Shell = Get-Command pwsh -ErrorAction SilentlyContinue
     if ($Shell) { $Exe = $Shell.Source } else { $Exe = (Get-Command powershell).Source }
@@ -261,10 +211,6 @@ Check "the existing config survives the install" ((Get-Content (Join-Path $Phimi
 Stop-IndexServer $Server
 
 # ── 4. The Start Menu shortcut ─────────────────────────────────────────────
-$Programs = [Environment]::GetFolderPath("Programs")
-$ShortcutPath = Join-Path $Programs "phimint.lnk"
-if (Test-Path $ShortcutPath) { Remove-Item -Force $ShortcutPath }
-
 $Sandbox = New-Sandbox
 $Server = Start-IndexServer $Sandbox.Sha $Sandbox.Zip
 # No PHIMINT_NO_SHORTCUT here: this case is about the shortcut. The
