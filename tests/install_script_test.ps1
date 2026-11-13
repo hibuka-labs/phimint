@@ -151,8 +151,11 @@ function Invoke-Installer([hashtable]$Environment) {
 # A sandbox: a fake home, the stub binary, the zip and the log.
 function New-Sandbox {
     $Sandbox = Join-Path ([System.IO.Path]::GetTempPath()) ("phimint-win-" + [Guid]::NewGuid())
-    $Home = Join-Path $Sandbox "home"
-    New-Item -ItemType Directory -Force -Path $Home | Out-Null
+    # $Home is a read-only automatic variable in PowerShell — assigning to it
+    # throws "Cannot overwrite variable HOME because it is read-only or
+    # constant" (2026-11-13 CI). Use our own name.
+    $SandboxHome = Join-Path $Sandbox "home"
+    New-Item -ItemType Directory -Force -Path $SandboxHome | Out-Null
     $Work = Join-Path $Sandbox "work"
     New-Item -ItemType Directory -Force -Path $Work | Out-Null
 
@@ -168,8 +171,8 @@ function New-Sandbox {
 
     return @{
         Root = $Sandbox
-        Home = $Home
-        InstallDir = (Join-Path $Home ".local\bin")
+        Home = $SandboxHome
+        InstallDir = (Join-Path $SandboxHome ".local\bin")
         Zip = $Zip
         Sha = $Sha
         Log = $Log

@@ -97,7 +97,15 @@ STUB
     chmod +x "$SANDBOX/stub/phimint"
     tar -czf "$SANDBOX/phimint.tar.gz" -C "$SANDBOX/stub" phimint
     local sha
-    sha="$(shasum -a 256 "$SANDBOX/phimint.tar.gz" | awk '{print $1}')"
+    # The checksum helper must match what the installer uses, and both
+    # spellings exist in the wild: sha256sum on Linux, shasum on macOS.
+    # Hardcoding shasum broke the whole suite on the Ubuntu runner
+    # (2026-11-13: 16 failures, every one downstream of an empty digest).
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha="$(sha256sum "$SANDBOX/phimint.tar.gz" | awk '{print $1}')"
+    else
+        sha="$(shasum -a 256 "$SANDBOX/phimint.tar.gz" | awk '{print $1}')"
+    fi
     printf 'version 9.9.9\n%s file://%s %s\n' \
         "$(platform_key)" "$SANDBOX/phimint.tar.gz" "$sha" \
         > "$SANDBOX/index.txt"
