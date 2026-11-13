@@ -23,13 +23,20 @@ $GiteeIndex = "https://gitee.com/chenkangzeng_admin/phimint/releases/download/la
 
 function Fail([string]$Msg) { Write-Error "❌ $Msg"; exit 1 }
 
-# The user's home. NOT $HOME: in PowerShell $HOME is an automatic variable
-# derived from the UserProfile folder API, and it ignores $env:HOME — so a
-# caller that redirects HOME (the contract test does exactly that) gets the
-# real profile instead of the sandbox. The API follows $env:USERPROFILE,
-# which is what a redirected environment actually sets (2026-11-13).
-$UserHome = [Environment]::GetFolderPath("UserProfile")
-if (-not $UserHome) { $UserHome = $env:USERPROFILE }
+# The user's home.
+#
+# NOT $HOME: in PowerShell $HOME is an automatic variable derived from the
+# real user's profile, and it ignores $env:HOME. A caller that redirects
+# the home directory (the contract test does exactly that) would get the
+# real profile instead of the sandbox.
+#
+# The environment variable comes first, because an environment variable is
+# what a caller can actually redirect. GetFolderPath reads the real
+# profile and ignores the environment, so it is only the fallback
+# (2026-11-13: the state.json check still failed with the API first).
+$UserHome = $env:USERPROFILE
+if (-not $UserHome) { $UserHome = $env:HOME }
+if (-not $UserHome) { $UserHome = [Environment]::GetFolderPath("UserProfile") }
 if (-not $UserHome) { $UserHome = $HOME }
 
 # ── 1. Platform detection (keys match the update manifest) ──────────────────
