@@ -1,6 +1,6 @@
 [package]
 name = "phimint"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2024"
 description = "phimint — a terminal AI coding agent built on phi-agent. Not just good at chat: it reads the code, changes it, compiles and tests until the job is done."
 license = "MIT"
