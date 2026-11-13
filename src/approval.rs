@@ -70,89 +70,12 @@ pub use phi_agent::ApprovalItem;
 
 // ── Command risk classification ─────────────────────────────────────────────
 
-/// Read-only / build commands that are safe to auto-approve.
-///
-/// `cargo check/build/test/run/…` is the agent's build loop — it must stay
-/// frictionless or the coding loop stalls on every compile. Destructive
-/// patterns are matched *first*, so `cargo install` (see below) still prompts.
-const SAFE_PREFIXES: &[&str] = &[
-    "cargo check",
-    "cargo build",
-    "cargo test",
-    "cargo run",
-    "cargo clippy",
-    "cargo fmt",
-    "cargo doc",
-    "cargo bench",
-    "cargo metadata",
-    "cargo tree",
-    "git status",
-    "git diff",
-    "git log",
-    "git show",
-    "ls ",
-    "ls",
-    "cat ",
-    "cd ",
-    "rg ",
-    "grep ",
-    "find ",
-    "pwd",
-    "echo ",
-    "head ",
-    "tail ",
-    "wc ",
-    "which ",
-    "tree ",
-    "sed -n ",
-];
-
-/// Destructive / out-of-workspace mutations — always prompt with a red badge.
-const DESTRUCTIVE_PATTERNS: &[&str] = &[
-    "rm ",
-    "rm -",
-    "sudo",
-    "mkfs",
-    "fdisk",
-    "dd ",
-    "shutdown",
-    "reboot",
-    "poweroff",
-    "halt",
-    "chmod",
-    "chown",
-    "kill -9",
-    "pkill -9",
-    "git reset",
-    "git clean",
-    "git push --force",
-    "cargo publish",
-    "cargo install",
-    "pip install",
-    "pip3 install",
-    "npm install",
-    "> /dev/sd",
-];
-
-/// Classify a shell command into a risk level.
-///
-/// Order matters: destructive patterns are matched *before* safe prefixes, so
-/// e.g. `cd / && rm -rf *` is Destructive, not Safe-by-`cd`.
-pub fn classify_command(command: &str) -> RiskLevel {
-    let cmd = command.trim();
-    if cmd.is_empty() {
-        return RiskLevel::Safe;
-    }
-    let lower = cmd.to_ascii_lowercase();
-
-    if DESTRUCTIVE_PATTERNS.iter().any(|p| lower.contains(p)) {
-        return RiskLevel::Destructive;
-    }
-    if SAFE_PREFIXES.iter().any(|p| lower.starts_with(p)) {
-        return RiskLevel::Safe;
-    }
-    RiskLevel::Sensitive
-}
+// The classifier lives in `crate::command` — one splitter and one risk face
+// shared with the verify gate's `shell_may_mutate`, so the two faces cannot
+// disagree about where one command ends and the next begins (review finding
+// v11/red-team#3). Re-exported here because approval stays the product's
+// approval façade (ui/ consumes it).
+pub use crate::command::classify_command;
 
 /// A one-line description of a file mutation for the approval prompt.
 fn describe_write(tool_name: &str, args: &Value) -> String {

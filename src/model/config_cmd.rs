@@ -142,35 +142,40 @@ pub fn set(
     Ok(out)
 }
 
-/// Name the tier-precedence case: when the `main` tier in effect is a Full
+/// Name the tier-precedence case: when a configured tier is a Full
 /// declaration carrying its own `key`, that value wins over the top-level
 /// member the user just edited (the one resolution rule in
 /// [`ModelConfig::tier_config`]). Silence here would look like the edit did
-/// not take.
+/// not take. Every declared tier is checked, not just `main` — `lite` and
+/// `advanced` shadow the top-level member for their own tier the same way
+/// (review finding v11/adversarial-native#8).
 fn tier_shadow_note(target: &Path, key: &str) -> Option<String> {
     let cfg = ModelConfig::from_file(&target.to_path_buf()).ok()?;
-    let effective = cfg.model.as_ref().unwrap_or(&cfg.main);
-    let TierConfig::Full {
-        base_url,
-        api_key,
-        protocol,
-        ..
-    } = effective
-    else {
-        return None;
-    };
-    let carries_own = match key {
-        "base_url" => base_url.is_some(),
-        "api_key" => api_key.is_some(),
-        "protocol" => protocol.is_some(),
-        _ => false,
-    };
-    carries_own.then(|| {
-        format!(
-            "\n  note: the `main` tier in effect carries its own {key}, which wins over this \
-             top-level member at runtime (edit the tier itself to change it)"
-        )
-    })
+    let mut notes = String::new();
+    for tier in ["main", "lite", "advanced"] {
+        let Some(TierConfig::Full {
+            base_url,
+            api_key,
+            protocol,
+            ..
+        }) = cfg.tier_def(tier)
+        else {
+            continue;
+        };
+        let carries_own = match key {
+            "base_url" => base_url.is_some(),
+            "api_key" => api_key.is_some(),
+            "protocol" => protocol.is_some(),
+            _ => false,
+        };
+        if carries_own {
+            notes.push_str(&format!(
+                "\n  note: the `{tier}` tier carries its own {key}, which wins over this \
+                 top-level member at runtime (edit the tier itself to change it)"
+            ));
+        }
+    }
+    (!notes.is_empty()).then_some(notes)
 }
 
 /// `main` is the one writable member whose value may be a whole tier block.
@@ -535,6 +540,18 @@ mod tests {
         assert!(
             !msg.contains("wins over this top-level member"),
             "nothing shadows here: {msg}"
+        );
+
+        // A Full `lite` tier shadows for its tier just like `main` does.
+        std::fs::write(
+            &target,
+            "{\n  \"main\": \"m\",\n  \"lite\": {\"model\": \"l\", \"api_key\": \"sk-lite\"},\n  \"api_key\": \"sk-top\"\n}\n",
+        )
+        .unwrap();
+        let msg = set(&target, "api_key", "sk-top-4", None, false).unwrap();
+        assert!(
+            msg.contains("`lite` tier carries its own api_key"),
+            "names the lite tier shadow too: {msg}"
         );
     }
 

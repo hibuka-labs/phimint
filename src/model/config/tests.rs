@@ -288,6 +288,46 @@ fn a_simple_pointer_over_a_set_top_level_still_rides_the_top_level() {
     assert_eq!(key, "sk-top");
 }
 
+/// protects: the anchor's pinned fields belong to the anchor's ENDPOINT — a
+/// tier pointing at another vendor's URL never inherits the configured
+/// `main`'s api_key or protocol (review finding v11/adversarial-native#4).
+/// fails_when: main's `sk-ant-secret` is sent to the deepseek host (the judge
+/// rides exactly this tier), or main's anthropic wire format is spoken to it.
+/// no_claim: what the provider answers with a blank key (a 401, loud).
+#[test]
+fn a_foreign_endpoint_never_inherits_the_main_tiers_pinned_fields() {
+    let json = r#"{
+            "main": { "model": "m", "base_url": "https://api.anthropic.com", "api_key": "sk-ant-secret", "protocol": "anthropic" },
+            "lite": { "model": "l", "base_url": "https://api.deepseek.com/v1" }
+        }"#;
+    let config: ModelConfig = serde_json::from_str(json).unwrap();
+    let (_, url, key, proto) = config.tier_config("lite").unwrap();
+    assert_eq!(url, "https://api.deepseek.com/v1");
+    assert_ne!(
+        key, "sk-ant-secret",
+        "the main tier's pinned key must not travel to a foreign endpoint"
+    );
+    assert_ne!(
+        proto, "anthropic",
+        "the main tier's wire protocol must not apply to a foreign endpoint"
+    );
+}
+
+/// protects: the anchor rule is about endpoints, not tiers — a tier on the
+/// anchor's own endpoint is the "same provider, different model" shape and
+/// still inherits the pinned key.
+#[test]
+fn a_tier_on_the_anchor_endpoint_still_inherits_the_pinned_key() {
+    let json = r#"{
+            "main": { "model": "m", "base_url": "https://api.anthropic.com", "api_key": "sk-ant-secret" },
+            "lite": { "model": "l", "base_url": "https://api.anthropic.com" }
+        }"#;
+    let config: ModelConfig = serde_json::from_str(json).unwrap();
+    let (_, url, key, _) = config.tier_config("lite").unwrap();
+    assert_eq!(url, "https://api.anthropic.com");
+    assert_eq!(key, "sk-ant-secret");
+}
+
 #[test]
 fn validate_empty_model_fails() {
     let config = ModelConfig {

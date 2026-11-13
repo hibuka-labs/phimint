@@ -504,6 +504,14 @@ impl ModelConfig {
     /// Resolve one tier definition against the endpoint chain: the
     /// definition's own field when it has one → the top-level default → the
     /// configured `main`'s field. See [`Self::tier_config`].
+    ///
+    /// The anchor's pinned `api_key`/`protocol` belong to the anchor's
+    /// *endpoint*: a tier that resolves onto a different `base_url` must never
+    /// inherit them, or the main tier's credential travels to a third-party
+    /// host and the wrong wire format speaks to it (review finding
+    /// v11/adversarial-native#4). Key and protocol therefore ride the chain
+    /// only when the resolved URL is the anchor's; otherwise they come from
+    /// the tier or the top level alone.
     fn resolve_with_anchor(&self, tc: &TierConfig) -> EndpointTuple {
         // The anchor: the configured `main` resolved own → top-level.
         // `Self::resolve`'s two-layer form is exactly that.
@@ -521,16 +529,18 @@ impl ModelConfig {
                 .or_else(|| top.map(|s| s.to_string()))
                 .unwrap_or_else(|| anchored.to_string())
         };
+        let no_anchor = |own: &Option<String>, top: Option<&str>| -> String {
+            own.clone()
+                .or_else(|| top.map(|s| s.to_string()))
+                .unwrap_or_default()
+        };
         let top_url = self.base_url.as_deref();
         let top_key = self.api_key.as_deref();
         let top_proto = self.protocol.as_deref();
-        match tc {
-            TierConfig::Simple(model) => (
-                model.clone(),
-                chain(&None, top_url, &anchor.1),
-                chain(&None, top_key, &anchor.2),
-                chain(&None, top_proto, &anchor.3),
-            ),
+        let (model, url, own_key, own_proto) = match tc {
+            TierConfig::Simple(model) => {
+                (model.clone(), chain(&None, top_url, &anchor.1), None, None)
+            }
             TierConfig::Full {
                 model,
                 base_url,
@@ -539,10 +549,22 @@ impl ModelConfig {
             } => (
                 model.clone(),
                 chain(base_url, top_url, &anchor.1),
-                chain(api_key, top_key, &anchor.2),
-                chain(protocol, top_proto, &anchor.3),
+                api_key.clone(),
+                protocol.clone(),
             ),
-        }
+        };
+        let on_anchor = url == anchor.1;
+        let key = if on_anchor {
+            chain(&own_key, top_key, &anchor.2)
+        } else {
+            no_anchor(&own_key, top_key)
+        };
+        let proto = if on_anchor {
+            chain(&own_proto, top_proto, &anchor.3)
+        } else {
+            no_anchor(&own_proto, top_proto)
+        };
+        (model, url, key, proto)
     }
 
     /// The tier's declaration as configured, no fallback: what the file SAYS

@@ -8,6 +8,7 @@ pub mod agent;
 pub mod approval;
 pub mod banner;
 pub mod cli;
+pub mod command;
 pub mod external;
 pub mod model;
 pub mod ops;

@@ -148,12 +148,18 @@ pub fn record_failure(err: &LlmError, model: &str, base_url: &str, key: &str) {
 /// failure and gets its own line — queued beside the first, never over it.
 pub fn take_notice() -> Option<String> {
     let mut watch = WATCH.lock().ok()?;
+    // The context is read BEFORE any mutation: a failure consumed while the
+    // boot context is still unset would land on `announced` and could never be
+    // re-raised (`record_failure` skips announced failures), swallowing the
+    // 401/403 notice for the whole process (review finding
+    // v11/adversarial-native#10). No context, no consumption — the pending
+    // failure waits for the next call.
+    let context = watch.context.clone()?;
     while let Some(failure) = watch.pending.pop_front() {
         if watch.announced.iter().any(|seen| seen == &failure) {
             continue;
         }
         watch.announced.push(failure.clone());
-        let context = watch.context.clone()?;
         return Some(notice_text(&context, &failure));
     }
     None
@@ -401,6 +407,40 @@ mod tests {
             notice.contains(path.to_str().unwrap()),
             "names the file: {notice}"
         );
+        assert_eq!(take_notice(), None, "the notice is consumed");
+    }
+
+    /// protects: a rejection that lands before the boot context exists is
+    /// NOT swallowed — `take_notice` consumes nothing while it cannot render
+    /// the notice, and the same failure is announced once the context arrives
+    /// (review finding v11/adversarial-native#10).
+    /// fails_when: the failure is pushed onto `announced` before the context
+    /// check and `record_failure` then refuses to re-queue it — the 401/403
+    /// notice is lost for the whole process.
+    #[tokio::test]
+    async fn a_rejection_before_the_boot_context_waits_instead_of_vanishing() {
+        let _guard = watch_test_lock().lock().await;
+        reset();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+
+        // No context yet: nothing is renderable, but nothing is consumed.
+        record_failure(
+            &LlmError::api(401, "invalid api key"),
+            "gpt-5.4-mini",
+            "https://api.openai.com/v1",
+            KEY,
+        );
+        assert_eq!(
+            take_notice(),
+            None,
+            "no context, no notice — and no consumption"
+        );
+
+        // The context arrives late; the pending failure is still queued.
+        set_context(context(&path));
+        let notice = take_notice().expect("the late context must still announce the failure");
+        assert!(notice.contains("401"), "names the status: {notice}");
         assert_eq!(take_notice(), None, "the notice is consumed");
     }
 

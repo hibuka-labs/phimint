@@ -300,10 +300,13 @@ fn non_empty_arg(args: &Value, key: &str) -> Option<String> {
 /// `Path::join` lets an absolute scope replace the root outright, and `..`
 /// components walk out of it lexically. Both are refused rather than silently
 /// reinterpreted: the scope is a hint about what changed, and a hint pointing
-/// outside the workspace is not ours to read.
+/// outside the workspace is not ours to read. The absolute branch compares
+/// lexically normalised paths — `Path::starts_with` is component-wise but does
+/// not collapse `..`, so `/w/../../etc` would otherwise pass as "under /w"
+/// (review finding v11/adversarial-native#6).
 fn scope_escapes_workspace(root: &Path, scope: &Path) -> bool {
     if scope.is_absolute() {
-        return !scope.starts_with(root);
+        return !lexical_normalize(scope).starts_with(lexical_normalize(root));
     }
     let mut depth: i32 = 0;
     for comp in scope.components() {
@@ -319,6 +322,22 @@ fn scope_escapes_workspace(root: &Path, scope: &Path) -> bool {
         }
     }
     false
+}
+
+/// Collapse `.` and `..` components without touching the filesystem (the path
+/// need not exist). `..` at the root stays at the root.
+fn lexical_normalize(path: &Path) -> std::path::PathBuf {
+    let mut out = std::path::PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 /// Whether a scope (file or directory) contains anything the compile layer
@@ -446,6 +465,21 @@ mod tests {
             split_command("cargo check 2>&1 | tail -5"),
             Some(("cargo", vec!["check", "2>&1", "|", "tail", "-5"]))
         );
+    }
+
+    #[test]
+    fn an_absolute_scope_cannot_walk_out_with_dotdot() {
+        // `Path::starts_with` compares components but does not collapse `..`,
+        // so the absolute branch must normalise first (review finding
+        // v11/adversarial-native#6).
+        let root = Path::new("/w");
+        assert!(
+            scope_escapes_workspace(root, Path::new("/w/../../etc")),
+            "a ..-walked absolute scope escapes"
+        );
+        assert!(scope_escapes_workspace(root, Path::new("/etc")));
+        assert!(!scope_escapes_workspace(root, Path::new("/w/sub")));
+        assert!(!scope_escapes_workspace(root, Path::new("/w/../w/sub")));
     }
 
     #[tokio::test]

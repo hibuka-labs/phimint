@@ -1,7 +1,10 @@
 //! Lite-pinned judge plumbing (multi-model routing decision 3).
 //!
 //! The guard judge is cheap classification work: it stays on the `lite` tier
-//! and must not follow `/model` picks. Two pieces, both zero-framework:
+//! and must not follow `/model` picks — except by the one designed route: an
+//! unconfigured `lite` resolves to the effective `main` (the design's "lite
+//! 未配置时跟 main", so the judge still serves where the session serves).
+//! Two pieces, both zero-framework:
 //!
 //! - [`LitePinnedClient`] — a delegating provider that resolves the tier the
 //!   scene table names **per call**, so a tier change takes effect on the
