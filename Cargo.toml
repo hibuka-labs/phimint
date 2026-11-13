@@ -51,7 +51,7 @@ phi-agent-tui = { version = "0.2.0" }
 # Language intelligence (lsp/lang/repomap/ripgrep/diagnostics cores), extracted
 # from src/lsp.rs + src/lang.rs + src/tools cores — the product keeps the Tool
 # shells. Features declared explicitly per the distillation plan.
-code-intel = { version = "0.1.1", default-features = false, features = ["lsp", "repomap"] }
+code-intel = { version = "0.1.2", default-features = false, features = ["lsp", "repomap"] }
 # Design canvas (visual design companion): process-local HTTP server, canvas
 # tools, click events. The product keeps the click mailbox / message synthesis
 # (M2) and the consent gate; this crate owns server + token + screens.
