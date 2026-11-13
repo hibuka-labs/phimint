@@ -5,7 +5,7 @@ All notable changes to phimint.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.9.0] - 2026-11-13
 
 ### Added
 
@@ -13,15 +13,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   runs the project's own compile-level check and reports the compiler's
   **real exit code** — spawned directly, never through a shell, so
   `cargo check 2>&1 | tail -40` cannot launder a failed build into a
-  success. A gate then asks for the evidence at hand-back time: is there a
-  green light *newer than the last edit*? If not, the hand-back is
+  success. A gate then asks one question at hand-back time, whether there is
+  a green light *newer than the last edit*. If not, the hand-back is
   intercepted once, and after that it carries a visible marker instead of
   failing the run — a stubborn agent never kills the session. Prose and
-  configuration never trigger it: only code that has to compile does. Which
+  configuration never trigger it. Only code that has to compile does. Which
   command runs is read off the project itself — its own config, then a slot
   it already fills in, then the language default — so nobody is asked to
   configure anything and the model is never allowed to pick the command it
   is graded by.
+
+- **A model picker that knows what each model is for.** `main`, `lite` and
+  `advanced` are tiers, not just names: `/model` switches the tier the session
+  serves, the cheap guard judge stays pinned to `lite` (an unconfigured `lite`
+  follows `main`, so a single-model setup keeps working), and spawned
+  sub-agents anchor at the boot tuple instead of chasing the parent's picks
+  mid-flight. One resolution rule feeds the boot provider, the session and the
+  picker, so a pick can never leave them disagreeing — and a tier pointing at
+  another vendor's endpoint never inherits the main tier's key or wire format.
+
+- **First run asks before it talks to anyone.** A first-run gate explains what
+  is needed and where to put it; `phimint config` reads and writes the config
+  (a secret can arrive on stdin so it never lands in shell history); and a
+  refused key turns into exactly one runtime notice naming the endpoint, the
+  masked key and the file to edit — instead of a silent 401.
+
+- **One command installs it.** The install script puts the binary in its one
+  slot and writes a starter config; `phimint uninstall` — or the same script
+  with `--uninstall` — removes exactly what was installed, on macOS, Linux and
+  Windows alike.
 
 ## [0.8.0] - 2026-11-09
 
