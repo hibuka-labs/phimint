@@ -1,5 +1,5 @@
-//! The model-tier command face (T5d): `/model` [name] · `/lite` [name] ·
-//! `/advanced` [name] · `/models` · `/focus` — the family's local semantics,
+//! The model-tier command face (T5d): `/model` \[name\] · `/lite` \[name\] ·
+//! `/advanced` \[name\] · `/models` · `/focus` — the family's local semantics,
 //! never a model turn.
 //!
 //! Split out of [`crate::shell::commands`], which owns the `CommandSpec`

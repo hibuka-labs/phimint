@@ -28,7 +28,7 @@ const SEPARATORS: [char; 5] = [';', '|', '&', '\n', '\r'];
 /// only costs a nag; under-matching would be a false pass.
 const MUTATION_MARKERS: &[&str] = &[">", "`", "$(", "--output", "output=", "-delete", "-exec"];
 
-/// Whether the raw command carries a [`MUTATION_MARKERS`] fragment anywhere.
+/// Whether the raw command carries a `MUTATION_MARKERS` fragment anywhere.
 pub fn has_mutation_marker(command: &str) -> bool {
     MUTATION_MARKERS.iter().any(|m| command.contains(m))
 }
@@ -147,7 +147,7 @@ const DESTRUCTIVE_PATTERNS: &[&str] = &[
 /// Order matters: destructive patterns are matched *before* safe prefixes, so
 /// `cargo install` (in both lists) is Destructive. After that the command is
 /// judged **per segment** — every `;`/`|`/`&`/newline segment must read as a
-/// safe prefix on its own and carry no [`MUTATION_MARKERS`] fragment. A whole
+/// safe prefix on its own and carry no `MUTATION_MARKERS` fragment. A whole
 /// string that merely *starts* like a reader is not one:
 /// `cargo test && curl … | sh` is Sensitive (review finding v11/red-team#3),
 /// the same way the verify gate already read it.

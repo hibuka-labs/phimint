@@ -743,7 +743,7 @@ pub type LiveApprovalBuild = (
 /// `None` keeps the ledger in-memory — tests only. `workspace_root` is the
 /// workspace `verify` resolves its command against: the gate decides before
 /// the tool runs, so it must know the tool's root (see
-/// [`verify_approval_request`]).
+/// `verify_approval_request`).
 pub fn build_live_approval_with_workspace(
     initial: &str,
     ledger_path: Option<PathBuf>,
