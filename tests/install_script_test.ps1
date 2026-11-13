@@ -94,12 +94,25 @@ function Start-IndexServer([string]$Sha, [string]$ZipPath) {
     $IndexText = "version 9.9.9`nwindows-x86_64 http://127.0.0.1:$Port/phimint.zip $Sha`n"
     $Zip = [System.IO.File]::ReadAllBytes($ZipPath)
 
-    # Serve in a background thread of THIS process — no job to stop.
-    $Thread = [System.Threading.Thread]{
-        param($Port, $IndexText, $Zip)
+    # A shared stop flag the server loop checks between connections, so
+    # Stop-IndexServer can end it at once.
+    $Stop = New-Object System.Threading.ManualResetEventSlim($false)
+
+    # Serve on a background thread of THIS process — no job to stop.
+    # The script block is a ThreadStart: PowerShell converts a script block
+    # to that delegate, but NOT to System.Threading.Thread directly
+    # ("Cannot convert ... to type System.Threading.Thread", 2026-11-13).
+    $ServerLoop = {
+        param($Port, $IndexText, $Zip, $Stop)
         $Listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, $Port)
         $Listener.Start()
-        while ($true) {
+        while (-not $Stop.IsSet) {
+            # A bounded wait, so the loop notices the stop flag even when
+            # no client ever arrives.
+            if (-not $Listener.Pending()) {
+                if ($Stop.Wait(100)) { break }
+                continue
+            }
             try {
                 $Client = $Listener.AcceptTcpClient()
             } catch {
@@ -136,16 +149,17 @@ function Start-IndexServer([string]$Sha, [string]$ZipPath) {
             }
         }
     }
+    $Thread = [System.Threading.Thread]::new([System.Threading.ThreadStart]$ServerLoop)
     $Thread.IsBackground = $true
-    $Thread.Start($Port, $IndexText, $Zip)
+    $Thread.Start($Port, $IndexText, $Zip, $Stop)
 
-    return @{ Port = $Port }
+    return @{ Port = $Port; Stop = $Stop }
 }
 
 function Stop-IndexServer($Server) {
-    # Nothing to stop: the server runs on a background thread of this
-    # process and dies with it. The function stays for symmetry with the
-    # other case blocks.
+    if ($Server -and $Server.Stop) {
+        try { $Server.Stop.Set() } catch {}
+    }
 }
 
 # Run the real installer in a child process with a controlled environment.
