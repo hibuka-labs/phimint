@@ -327,8 +327,8 @@ fn delete_pointer(raw: &str) -> String {
 /// The replacement `model` pointer value for `picked`: a bare model string
 /// when nothing but the name differs, else a `Full` object carrying only the
 /// endpoint fields the pick genuinely carries (delta semantics — resolution
-/// is top-level defaults + these overrides, the same inheritance every
-/// `TierConfig::Full` uses).
+/// is the endpoint chain of [`ModelConfig::tier_config`], own → top-level →
+/// configured `main`, plus these overrides).
 ///
 /// `runtime` is the endpoint the session is actually running (the
 /// CLI-merged top-level defaults). A field lands in the pointer only when

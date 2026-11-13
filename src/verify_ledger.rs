@@ -211,7 +211,19 @@ impl Unverified {
 fn edited_files(files: &[PathBuf]) -> String {
     let names: Vec<String> = files
         .iter()
-        .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .map(|p| {
+            // The gate records an edit it cannot name (a shell command, a
+            // CodeAct cell) as `.`; `Path::file_name` is `None` there and the
+            // note would degrade to a dangling separator (review finding
+            // p2/adversarial-native#1).
+            if p.as_os_str() == "." {
+                "an untracked change".to_string()
+            } else {
+                p.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| p.to_string_lossy().into_owned())
+            }
+        })
         .take(3)
         .collect();
     if names.is_empty() {
@@ -540,6 +552,21 @@ mod tests {
         for msg in [unv.warning(), unv.nudge()] {
             assert!(msg.contains("exit 101"), "{msg}");
             assert!(!msg.contains("Some("), "{msg}");
+        }
+    }
+
+    #[test]
+    fn an_untracked_change_is_named_not_dropped() {
+        // The `.` sentinel (shell/CodeAct edits) used to vanish from the note,
+        // leaving a dangling "verification ;" (review finding
+        // p2/adversarial-native#1).
+        let mut l = EvidenceLedger::new();
+        l.set_compile_layer(true);
+        l.record_edit(&[PathBuf::from(".")]);
+        let unv = l.unverified(VerifyKind::Check).unwrap();
+        for msg in [unv.warning(), unv.nudge()] {
+            assert!(msg.contains("an untracked change"), "{msg}");
+            assert!(!msg.contains("verification ;"), "{msg}");
         }
     }
 

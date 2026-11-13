@@ -95,9 +95,13 @@ async fn run_command(
         .stderr(Stdio::piped());
     // Own process group, so a timeout can kill the build's whole tree (see
     // `kill_process_group`). The primitive is Unix-only — on Windows the kill
-    // path already degrades to the direct child.
+    // path degrades to the direct child, which is what `kill_on_drop` covers:
+    // the timeout drops `wait_with_output`, and the dropped `Child` is killed
+    // on every platform (review finding p2/adversarial-native#2 — without this the
+    // run kept building after the tool reported "was killed").
     #[cfg(unix)]
     cmd.process_group(0);
+    cmd.kill_on_drop(true);
     let child = cmd
         .spawn()
         .map_err(|e| format!("failed to start `{prog}`: {e}"))?;
@@ -116,7 +120,9 @@ async fn run_command(
         }),
         Ok(Err(e)) => Err(format!("`{prog}` failed to run: {e}")),
         Err(_) => {
-            // Timeout: kill the whole process group, then report absence of
+            // Timeout: `wait_with_output` was dropped above, so `kill_on_drop`
+            // has already killed the direct child; the group kill below takes
+            // the rest of the build's tree on unix. Then report absence of
             // evidence (not a failure — see `VerifyVerdict::exit_code`).
             kill_process_group(pid);
             Ok(RunOutcome {
@@ -487,6 +493,37 @@ mod tests {
             .unwrap();
         assert!(out.timed_out);
         assert_eq!(out.exit_code, None, "a killed run must not report success");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_timeout_actually_kills_the_run() {
+        // "was killed" must be true, not aspirational (review finding
+        // p2/adversarial-native#2): a timed-out run may not leave its marker file
+        // behind after the tool has returned.
+        let marker = std::env::temp_dir().join("phimint_verify_timeout_kill.marker");
+        let _ = std::fs::remove_file(&marker);
+        let script = format!("sleep 1; touch {}", marker.display());
+        let out = run_command(
+            "sh",
+            &["-c", &script],
+            Path::new("/"),
+            Duration::from_millis(200),
+        )
+        .await
+        .unwrap();
+        assert!(out.timed_out);
+        assert!(
+            out.combined_output.contains("was killed"),
+            "{}",
+            out.combined_output
+        );
+        tokio::time::sleep(Duration::from_millis(1300)).await;
+        assert!(
+            !marker.exists(),
+            "the timed-out run must actually be dead, not still working"
+        );
+        let _ = std::fs::remove_file(&marker);
     }
 
     #[test]

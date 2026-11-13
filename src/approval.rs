@@ -315,29 +315,40 @@ fn normalize_command(command: &str) -> String {
 ///
 /// The tool never takes its command from the model —
 /// `code_intel::lang::resolve_verify_command` reads the workspace — and a pass
-/// mints the green light the hand-back is held on. A command the project
-/// supplies in its own `.phimint.toml` is repository-controlled text: it
-/// prompts like the same command pasted into `execute_command`, with the
-/// source surfaced and any standing grant scoped to that exact command. The
-/// convention slot and the language table compose phimint's OWN fixed strings
-/// (the repository selects which of phimint's checks runs, never the command
-/// text), so those run unprompted like reads.
+/// mints the green light the hand-back is held on. Prompts follow one rule,
+/// in parity with the shell gate: `verify` prompts exactly when the same
+/// command pasted into `execute_command` would prompt. A project's own
+/// `.phimint.toml` string is repository-controlled text and always prompts.
+/// The convention slot and the language table are exempt only while their
+/// command stays in `classify_command`'s Safe class — a build convention
+/// pointing at `npm run build` or `make check` is the same repository-selected
+/// text `execute_command` would stop on, and the green light it mints is no
+/// less repository-supplied (review finding p2/targeted#1).
 fn verify_approval_request(args: &Value, workspace_root: &Path) -> Option<ApprovalRequest> {
     let resolved = code_intel::lang::resolve_verify_command(workspace_root)?;
-    if resolved.source != code_intel::lang::VerifyCommandSource::ProjectConfig {
+    let command = resolved.command;
+    let level = classify_command(&command);
+    if resolved.source != code_intel::lang::VerifyCommandSource::ProjectConfig
+        && matches!(level, RiskLevel::Safe)
+    {
         return None;
     }
-    let command = resolved.command;
     Some(ApprovalRequest {
         title: format!("verify: {}", short_title(&command)),
         message: format!(
-            "{command}\n\nThe project's own config ({}) supplied this verify \
-             command; its pass marks the code verified. Approve it the way you \
-             would the same command pasted into execute_command.",
+            "{command}\n\nThis verify command comes from {}; its pass marks the \
+             code verified. Approve it the way you would the same command pasted \
+             into execute_command.",
             resolved.source.label()
         ),
         action_key: Some(format!("verify:{}", normalize_command(&command))),
-        risk_level: RiskLevel::Sensitive,
+        // Prompts are at least Sensitive; a Destructive-classified command
+        // carries its own badge.
+        risk_level: if matches!(level, RiskLevel::Safe) {
+            RiskLevel::Sensitive
+        } else {
+            level
+        },
         raw: Some(args.clone()),
         source: None,
     })
@@ -840,7 +851,7 @@ pub fn build_live_approval(initial: &str, ledger_path: Option<PathBuf>) -> LiveA
     build_live_approval_with_workspace(initial, ledger_path, Path::new("."))
 }
 
-/// The `verify` ask-gate arm: only a project-supplied command prompts.
+/// The `verify` ask-gate arm: prompts in parity with the shell gate.
 #[cfg(test)]
 mod verify_arm_tests {
     use super::*;
@@ -879,17 +890,41 @@ mod verify_arm_tests {
         );
     }
 
-    /// protects: phimint's own resolution strings (the convention slot, the
-    /// language table) run unprompted - the repository selects which check
-    /// runs, never the command text. fails_when: every cargo project's verify
-    /// nags in ask mode. no_claim: which command the table picks.
+    /// protects: a Safe-class convention/table command runs unprompted -
+    /// `cargo check` is the same frictionless build loop `execute_command`
+    /// auto-runs, so parity asks nothing here. fails_when: every cargo
+    /// project's verify nags in ask mode. no_claim: which command the table
+    /// picks.
     #[test]
-    fn a_phimint_resolved_verify_command_runs_unprompted() {
+    fn a_safe_class_resolved_verify_command_runs_unprompted() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("Cargo.toml"), "[package]\n").unwrap();
         assert!(
             verify_approval_request(&json!({}), dir.path()).is_none(),
-            "a convention command is phimint's own string - no ask"
+            "cargo check is Safe-class shell - no ask"
+        );
+    }
+
+    /// protects: parity with the shell gate across the whole rule - a verify
+    /// command prompts exactly when the same string pasted into
+    /// `execute_command` would. fails_when: a project convention routes
+    /// verification to `npm run build` (Sensitive shell) and it reaches
+    /// execution unprompted (review finding p2/targeted#1). no_claim: which
+    /// script name the convention slot picks.
+    #[test]
+    fn a_convention_command_the_shell_gate_would_prompt_for_also_prompts() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"scripts":{"build":"node build.js"}}"#,
+        )
+        .unwrap();
+        let request = verify_approval_request(&json!({}), dir.path())
+            .expect("npm run build is Sensitive shell - the verify arm must ask");
+        assert!(
+            request.message.contains("npm run build"),
+            "the ask names the exact command: {}",
+            request.message
         );
     }
 

@@ -111,14 +111,10 @@ impl ModelStore {
     /// The full endpoint tuple of a tier: `(model, base_url, api_key,
     /// protocol)`. Unknown tiers fall back to the default tuple.
     pub fn tier_tuple(&self, tier: &str) -> EndpointTuple {
-        self.tiers.get(tier).cloned().unwrap_or_else(|| {
-            (
-                self.default_model.clone(),
-                self.config.base_url.as_deref().unwrap_or("").to_string(),
-                self.config.api_key.as_deref().unwrap_or("").to_string(),
-                self.config.protocol.as_deref().unwrap_or("").to_string(),
-            )
-        })
+        self.tiers
+            .get(tier)
+            .cloned()
+            .unwrap_or_else(|| self.default_tuple.clone())
     }
 
     /// The tuple「clear selection」rolls the main tier back to: the configured
@@ -166,17 +162,15 @@ impl ModelStore {
         if let Some(entry) = self.tiers.get_mut(tier) {
             entry.0 = model;
         } else {
-            // Create new entry with default url/key/protocol
-            let default_url = self.config.base_url.as_deref().unwrap_or("");
-            let default_key = self.config.api_key.as_deref().unwrap_or("");
-            let default_protocol = self.config.protocol.as_deref().unwrap_or("");
+            // New tier: ride the default tuple's endpoint (the documented
+            // unknown-tier fallback), carrying only the new name.
             self.tiers.insert(
                 tier.to_string(),
                 (
                     model,
-                    default_url.to_string(),
-                    default_key.to_string(),
-                    default_protocol.to_string(),
+                    self.default_tuple.1.clone(),
+                    self.default_tuple.2.clone(),
+                    self.default_tuple.3.clone(),
                 ),
             );
         }
@@ -188,15 +182,7 @@ impl ModelStore {
     /// default provider is returned; otherwise a provider is created (cached
     /// by endpoint tuple for future use).
     pub fn get_or_create_provider(&mut self, tier: &str) -> Result<Arc<dyn LlmProvider>, LlmError> {
-        let (model, base_url, api_key, protocol) =
-            self.tiers.get(tier).cloned().unwrap_or_else(|| {
-                (
-                    self.default_model.clone(),
-                    self.config.base_url.as_deref().unwrap_or("").to_string(),
-                    self.config.api_key.as_deref().unwrap_or("").to_string(),
-                    self.config.protocol.as_deref().unwrap_or("").to_string(),
-                )
-            });
+        let (model, base_url, api_key, protocol) = self.tier_tuple(tier);
 
         self.provider_for(&model, &base_url, &api_key, &protocol)
     }

@@ -53,10 +53,49 @@ use crate::verify_ledger::{EvidenceLedger, Unverified, VerifyKind};
 
 /// Tools that can change source. `code_cell` is here because a CodeAct cell's
 /// filesystem side effects are opaque — the misjudgement direction must not be
-/// a false pass (design D2). `execute_command` is here for the same reason: a
-/// shell edit (`sed -i`, `cat > file`) is invisible at the tool boundary, so it
-/// must count as a possible edit rather than ride on an older verify.
+/// a false pass (design D2). `execute_command` is here for the same reason, but
+/// only when the command may actually write: a shell edit (`sed -i`,
+/// `cat > file`) is invisible at the tool boundary, so it must count as a
+/// possible edit rather than ride on an older verify, while a read-only `ls`
+/// or `git status` must not dirty the gate at all (review finding
+/// p2/adversarial-native#1). The filter is [`shell_may_mutate`].
 const DIRTY_TOOLS: &[&str] = &["write_file", "edit_file", "code_cell", "execute_command"];
+
+/// Shell programs whose every invocation is a read — no flag writes a file
+/// without a redirection (which [`SHELL_MUTATION_MARKERS`] catches anyway).
+///
+/// Deliberately closed and small. Interpreters (`sh`, `python`, `node`, `awk`,
+/// `sed`, `sort -o`, `env`, `xargs`, `find -delete`) are absent: each can write
+/// or run something with no marker in the string, so they stay dirty. A reader
+/// missing from this list just costs a nag; a writer wrongly on it would be a
+/// false pass (rule 3).
+const SHELL_READ_ONLY: &[&str] = &[
+    "ls", "cat", "head", "tail", "wc", "grep", "egrep", "fgrep", "rg", "pwd", "which", "stat",
+    "du", "df", "date", "diff", "cmp", "file", "basename", "dirname", "realpath", "readlink",
+    "echo", "printf", "true", "false", "whoami", "uname", "hostname", "id", "ps", "lsof", "jq",
+    "cut", "tr", "uniq",
+];
+
+/// `git` subcommands that only read. Everything else (`config`, `stash`,
+/// `branch`, `remote`, `push`, …) mutates and must dirty.
+const GIT_READ_SUBS: &[&str] = &[
+    "status",
+    "diff",
+    "log",
+    "show",
+    "blame",
+    "describe",
+    "rev-parse",
+    "ls-files",
+    "grep",
+    "shortlog",
+];
+
+/// Fragments that mean "this command writes or runs something" wherever they
+/// appear: redirection (`>`, `>>`, `2>&1`), command substitution (`` ` ``,
+/// `$(`), and output-file flags (`--output`, `output=`). Over-matching only
+/// costs a nag; under-matching would be a false pass.
+const SHELL_MUTATION_MARKERS: &[&str] = &[">", "`", "$(", "--output", "output="];
 
 /// Tools that produce compile-level evidence. The `verify` tool records into the
 /// ledger itself when it runs; this list is what tells the gate "a verification
@@ -114,9 +153,6 @@ struct GateState {
     /// the next [`on_post_llm`](Middleware::on_post_llm), and folded into the
     /// ledger at the user boundary rather than dropped.
     deferred_edits: Vec<PathBuf>,
-    /// Whether we have already declined to nudge because a fresh green light
-    /// exists — so the budget reset is logged once, not per turn.
-    saw_fresh_green: bool,
 }
 
 /// The verify gate (see the module docs).
@@ -138,10 +174,10 @@ impl VerifyGateMiddleware {
 
 #[async_trait]
 impl Middleware for VerifyGateMiddleware {
-    /// Each user message is one "edit → verify" cycle. This is the R1 half of
-    /// the reset rule (`notes/verify-gate-design.md` D1′); the R3 half — reset on
-    /// a *passing* verify — falls out of `fresh_green` and is applied in
-    /// `on_post_llm`.
+    /// Each user message is one "edit → verify" cycle and carries exactly one
+    /// interception budget (R1 of `notes/verify-gate-design.md` D1′). The R3
+    /// per-green reset is gone: re-arming on every passing verify made the nag
+    /// unbounded inside one user message (review finding p2/outside-voice#3).
     async fn on_user_message(&self, _ctx: &mut UserMessageCtx) -> AgentResult<()> {
         // Fold any still-deferred edits into the ledger before resetting.
         // Discarding them here would let an earlier verify stay "fresh" over a
@@ -150,7 +186,6 @@ impl Middleware for VerifyGateMiddleware {
         let leftover = {
             let mut st = self.state.lock().expect("gate state lock poisoned");
             st.nudges = 0;
-            st.saw_fresh_green = false;
             std::mem::take(&mut st.deferred_edits)
         };
         if !leftover.is_empty() {
@@ -179,6 +214,17 @@ impl Middleware for VerifyGateMiddleware {
                 let name = action.name.as_str();
                 if VERIFY_TOOLS.contains(&name) {
                     saw_verify = true;
+                } else if name == "execute_command" {
+                    // Shell dirties only when the command may write
+                    // ([`shell_may_mutate`]); unreadable argv is the
+                    // conservative direction (rule 3).
+                    let may_write = match command_arg(action.raw_args().as_ref()) {
+                        Some(c) => shell_may_mutate(&c),
+                        None => true,
+                    };
+                    if may_write {
+                        edits.push(PathBuf::from("."));
+                    }
                 } else if DIRTY_TOOLS.contains(&name) {
                     if let Some(p) = edit_path(action.raw_args().as_ref()) {
                         if lang::is_code_path(&p) {
@@ -202,28 +248,18 @@ impl Middleware for VerifyGateMiddleware {
             }
         };
 
-        let fresh_green = {
+        {
             let mut ledger = self.ledger.lock().expect("ledger lock poisoned");
             if !pending_edits.is_empty() {
                 ledger.record_edit(&pending_edits);
             }
-            ledger.fresh_green(VerifyKind::Check)
-        };
-
-        // R3 half of the reset: a *passing* verify settles the batch and returns
-        // the nudge budget. A failed verify deliberately does not — the change is
-        // still unproven, and spending the budget again would nag about the same
-        // unsolved problem. (`fresh_green` is the whole predicate; no separate
-        // bookkeeping is needed to know the green light is current.)
-        {
-            let mut st = self.state.lock().expect("gate state lock poisoned");
-            if fresh_green && !st.saw_fresh_green {
-                st.nudges = 0;
-                st.saw_fresh_green = true;
-            } else if !fresh_green {
-                st.saw_fresh_green = false;
-            }
         }
+
+        // The nudge budget resets only at the user boundary (R1). A passing
+        // verify settles the batch by making `unverified()` return `None`
+        // below — it does NOT re-arm the budget: `max_nudges` is per user
+        // message, and the old per-green reset made the nag unbounded inside
+        // one message (review finding p2/outside-voice#3).
 
         // A verification in flight: the model is already doing the right thing.
         // Never intercept a turn that ends in a verify call.
@@ -347,6 +383,56 @@ fn edit_path(raw_args: &str) -> Option<String> {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(String::from)
+}
+
+/// The `command` argument of an `execute_command` call, if it names one.
+fn command_arg(raw_args: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(raw_args).ok()?;
+    v.get("command")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+}
+
+/// Whether a shell command may change source — the `execute_command` filter
+/// behind [`DIRTY_TOOLS`] (review finding p2/adversarial-native#1).
+///
+/// Closed rule, erroring towards "may mutate": every `;`/`&&`/`||`/pipe
+/// segment must have a head in [`SHELL_READ_ONLY`] (or a `git` head with a
+/// [`GIT_READ_SUBS`] subcommand), and the raw string must carry no
+/// [`SHELL_MUTATION_MARKERS`]. Unknown heads — interpreters, `xargs`, `find`,
+/// `tee`, `make` — are writers until proven otherwise, so a writer misread as
+/// a reader is impossible and a reader misread as a writer just costs a nag.
+fn shell_may_mutate(command: &str) -> bool {
+    if SHELL_MUTATION_MARKERS.iter().any(|m| command.contains(m)) {
+        return true;
+    }
+    command
+        .split([';', '|'])
+        .flat_map(|part| part.split("&&").chain(part.split("||")))
+        .map(str::trim)
+        .filter(|seg| !seg.is_empty())
+        .any(segment_may_mutate)
+}
+
+/// One command segment: whether its head (or `git` subcommand) sits outside
+/// the read-only sets. See [`shell_may_mutate`].
+fn segment_may_mutate(segment: &str) -> bool {
+    let mut words = segment.split_whitespace();
+    let Some(head) = words.next() else {
+        return false;
+    };
+    let prog = head.rsplit('/').next().unwrap_or(head);
+    if prog == "git" {
+        // Bare `git` and non-reading subcommands (`config`, `stash`, `push`)
+        // mutate; the read-only family is spelled out.
+        let Some(sub) = words.next() else {
+            return true;
+        };
+        return !GIT_READ_SUBS.contains(&sub);
+    }
+    !SHELL_READ_ONLY.contains(&prog)
 }
 
 #[cfg(test)]
@@ -612,9 +698,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_passing_verify_returns_the_nudge_budget() {
-        // D1′: reset on a *passing* verify (R3), so a later edit gets its own
-        // interception rather than inheriting a spent budget.
+    async fn a_passing_verify_does_not_rearm_the_nudge_budget() {
+        // `max_nudges` is per user message (review finding p2/outside-voice#3):
+        // a passing verify settles the batch, but it must not hand the gate a
+        // second interception inside the same message.
         let (mw, ledger) = gate();
 
         let mut c = ctx("", vec![write("src/a.rs")]);
@@ -643,14 +730,20 @@ mod tests {
         mw.on_post_llm(&mut c).await.unwrap();
         assert!(c.follow_up_message.is_none(), "a green light settles it");
 
-        // A NEW edit after the green light gets its own budget back.
+        // A NEW edit after the green light: the budget stays spent, so this
+        // hand-back degrades to the marker instead of nagging again.
         let mut c = ctx("", vec![write("src/b.rs")]);
         mw.on_post_llm(&mut c).await.unwrap();
         let mut c = ctx("all done", vec![]);
         mw.on_post_llm(&mut c).await.unwrap();
         assert!(
-            c.follow_up_message.is_some(),
-            "a new batch deserves a new interception"
+            c.follow_up_message.is_none(),
+            "one interception per user message, even across a passing verify"
+        );
+        assert!(
+            c.full_text.contains("⚠️"),
+            "degraded to the visible marker: {}",
+            c.full_text
         );
     }
 
@@ -796,6 +889,58 @@ mod tests {
             "a shell command may have edited code; the hand-back must not stand"
         );
         assert!(c.follow_up_message.is_some(), "one nudge naming the gap");
+    }
+
+    #[tokio::test]
+    async fn a_read_only_shell_command_does_not_dirty_the_gate() {
+        // `ls` and `git status` leave the workspace untouched: a hand-back
+        // after them must not be nagged (review finding p2/adversarial-native#1).
+        let (mw, _ledger) = gate();
+        let mut c = ctx("", vec![shell("ls -la src/")]);
+        mw.on_post_llm(&mut c).await.unwrap();
+        let mut c = ctx("", vec![shell("git status --short")]);
+        mw.on_post_llm(&mut c).await.unwrap();
+
+        let mut c = ctx("all done", vec![]);
+        mw.on_post_llm(&mut c).await.unwrap();
+        assert!(
+            c.follow_up_message.is_none(),
+            "read-only shell is not an edit"
+        );
+        assert!(!c.full_text.contains("⚠️"), "{}", c.full_text);
+    }
+
+    #[test]
+    fn shell_may_mutate_separates_readers_from_writers() {
+        for cmd in [
+            "ls -la",
+            "cat src/a.rs",
+            "grep -rn foo src/",
+            "rg --files",
+            "git status",
+            "git diff HEAD~1",
+            "cat a.rs | grep fn | wc -l",
+            "head -5 a.rs && tail -5 a.rs",
+        ] {
+            assert!(!shell_may_mutate(cmd), "{cmd} must not dirty the gate");
+        }
+        // Writers, unknown heads, and anything that runs something else —
+        // the conservative direction must catch every one of them.
+        for cmd in [
+            "sed -i s/a/b/ src/a.rs",
+            "cat > src/a.rs",
+            "echo hi >> notes.txt",
+            "ls | xargs rm",
+            "python tools/gen.py",
+            "make check",
+            "git push",
+            "git config user.name x",
+            "find . -delete",
+            "ls $(rm -rf /)",
+            "touch src/a.rs",
+        ] {
+            assert!(shell_may_mutate(cmd), "{cmd} must dirty the gate");
+        }
     }
 
     #[tokio::test]
