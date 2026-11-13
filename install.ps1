@@ -23,6 +23,15 @@ $GiteeIndex = "https://gitee.com/chenkangzeng_admin/phimint/releases/download/la
 
 function Fail([string]$Msg) { Write-Error "❌ $Msg"; exit 1 }
 
+# The user's home. NOT $HOME: in PowerShell $HOME is an automatic variable
+# derived from the UserProfile folder API, and it ignores $env:HOME — so a
+# caller that redirects HOME (the contract test does exactly that) gets the
+# real profile instead of the sandbox. The API follows $env:USERPROFILE,
+# which is what a redirected environment actually sets (2026-11-13).
+$UserHome = [Environment]::GetFolderPath("UserProfile")
+if (-not $UserHome) { $UserHome = $env:USERPROFILE }
+if (-not $UserHome) { $UserHome = $HOME }
+
 # ── 1. Platform detection (keys match the update manifest) ──────────────────
 # Windows on ARM runs the x64 binary via emulation.
 $Arch = "x86_64"
@@ -89,7 +98,7 @@ if ($Sha) {
 # ── 5. Install binary: temp file first, then rename into place ─────────────
 # Writing phimint.exe.tmp and renaming it means a half-written binary is
 # never visible as phimint.exe.
-$InstallDir = if ($env:PHIMINT_INSTALL_DIR) { $env:PHIMINT_INSTALL_DIR } else { Join-Path $HOME ".local\bin" }
+$InstallDir = if ($env:PHIMINT_INSTALL_DIR) { $env:PHIMINT_INSTALL_DIR } else { Join-Path $UserHome ".local\bin" }
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 Expand-Archive -Path $Archive -DestinationPath $Tmp -Force
 $ExePath = Join-Path $InstallDir "phimint.exe"
@@ -121,8 +130,12 @@ if ($env:PHIMINT_NO_PATH_EDIT -ne "1") {
 # COM object is unavailable the install still succeeds.
 if ($env:PHIMINT_NO_SHORTCUT -ne "1") {
     try {
-        $Programs = [Environment]::GetFolderPath("Programs")
-        if ($Programs) {
+        # The shortcut's folder: the user's Start Menu by default, or wherever
+        # the caller says. A folder that does not exist is not an error — the
+        # shortcut is a convenience, and the install still succeeds without it
+        # (2026-11-13: a CI runner has no Start Menu at all).
+        $Programs = if ($env:PHIMINT_SHORTCUT_DIR) { $env:PHIMINT_SHORTCUT_DIR } else { [Environment]::GetFolderPath("Programs") }
+        if ($Programs -and (Test-Path $Programs)) {
             $ShortcutPath = Join-Path $Programs "phimint.lnk"
             $WshShell = New-Object -ComObject WScript.Shell
             $Shortcut = $WshShell.CreateShortcut($ShortcutPath)
@@ -132,6 +145,8 @@ if ($env:PHIMINT_NO_SHORTCUT -ne "1") {
             $Shortcut.Description = "phimint - a terminal AI coding agent"
             $Shortcut.Save()
             Write-Host "  Start Menu shortcut: $ShortcutPath"
+        } else {
+            Write-Host "  no Start Menu folder here (skipping the shortcut)"
         }
     } catch {
         Write-Host "  could not create the Start Menu shortcut (skipping)"
@@ -141,7 +156,7 @@ if ($env:PHIMINT_NO_SHORTCUT -ne "1") {
 Remove-Item -Recurse -Force $Tmp
 
 # ── 8. Record the install source + let the App write the config ────────────
-$PhimintDir = Join-Path $HOME ".phimint"
+$PhimintDir = Join-Path $UserHome ".phimint"
 New-Item -ItemType Directory -Force -Path $PhimintDir | Out-Null
 $StatePath = Join-Path $PhimintDir "state.json"
 if (-not (Test-Path $StatePath)) {
@@ -164,8 +179,8 @@ if ($env:LLM_CONFIG -and (Test-Path $env:LLM_CONFIG)) {
     $ConfigPath = $env:LLM_CONFIG
 } elseif (Test-Path (Join-Path $PhimintDir "config.json")) {
     $ConfigPath = Join-Path $PhimintDir "config.json"
-} elseif (Test-Path (Join-Path $HOME ".config/phimint/config.json")) {
-    $ConfigPath = Join-Path $HOME ".config/phimint/config.json"
+} elseif (Test-Path (Join-Path $UserHome ".config/phimint/config.json")) {
+    $ConfigPath = Join-Path $UserHome ".config/phimint/config.json"
 } elseif ($env:LLM_CONFIG) {
     $ConfigPath = $env:LLM_CONFIG
 } else {

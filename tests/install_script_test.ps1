@@ -78,58 +78,74 @@ public class PhimintStub2 {
     Remove-Item -Force $Source
 }
 
-# A loopback HTTP server that serves the index and the zip. Raw sockets, so
-# no URL reservation is needed on Windows.
+# A loopback HTTP server that serves the index and the zip.
 #
-# The index text is built inside the job: it names the port, and the port is
-# only known once the listener is bound.
+# It runs IN THIS PROCESS, not in a Start-Job. A job blocked in
+# AcceptTcpClient() cannot be stopped until it reaches a checkpoint, and
+# Stop-Job waits for that — two minutes per case on the runner, which
+# turned a twelve-case suite into a half-hour job (2026-11-13). The
+# listener here is closed explicitly instead.
 function Start-IndexServer([string]$Sha, [string]$ZipPath) {
     $Listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, 0)
     $Listener.Start()
     $Port = $Listener.LocalEndpoint.Port
     $Listener.Stop()
 
-    $Job = Start-Job -ArgumentList $Port, $Sha, $ZipPath -ScriptBlock {
-        param($Port, $Sha, $ZipPath)
-        $IndexText = "version 9.9.9`nwindows-x86_64 http://127.0.0.1:$Port/phimint.zip $Sha`n"
+    $IndexText = "version 9.9.9`nwindows-x86_64 http://127.0.0.1:$Port/phimint.zip $Sha`n"
+    $Zip = [System.IO.File]::ReadAllBytes($ZipPath)
+
+    # Serve in a background thread of THIS process — no job to stop.
+    $Thread = [System.Threading.Thread]{
+        param($Port, $IndexText, $Zip)
         $Listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, $Port)
         $Listener.Start()
-        $Zip = [System.IO.File]::ReadAllBytes($ZipPath)
         while ($true) {
-            $Client = $Listener.AcceptTcpClient()
-            $Stream = $Client.GetStream()
-            $Reader = New-Object System.IO.StreamReader($Stream)
-            $RequestLine = $Reader.ReadLine()
-            while ($true) {
-                $Header = $Reader.ReadLine()
-                if ($null -eq $Header -or $Header -eq "") { break }
+            try {
+                $Client = $Listener.AcceptTcpClient()
+            } catch {
+                break
             }
-            $Body = $null
-            $Type = "application/octet-stream"
-            if ($RequestLine -like "*index.txt*") {
-                $Body = [System.Text.Encoding]::UTF8.GetBytes($IndexText)
-                $Type = "text/plain"
-            } elseif ($RequestLine -like "*.zip*") {
-                $Body = $Zip
+            try {
+                $Stream = $Client.GetStream()
+                $Reader = New-Object System.IO.StreamReader($Stream)
+                $RequestLine = $Reader.ReadLine()
+                while ($true) {
+                    $Header = $Reader.ReadLine()
+                    if ($null -eq $Header -or $Header -eq "") { break }
+                }
+                $Body = $null
+                $Type = "application/octet-stream"
+                if ($RequestLine -like "*index.txt*") {
+                    $Body = [System.Text.Encoding]::UTF8.GetBytes($IndexText)
+                    $Type = "text/plain"
+                } elseif ($RequestLine -like "*.zip*") {
+                    $Body = $Zip
+                }
+                if ($null -eq $Body) {
+                    $Head = "HTTP/1.1 404 Not Found`r`nContent-Length: 0`r`nConnection: close`r`n`r`n"
+                    $Bytes = [System.Text.Encoding]::ASCII.GetBytes($Head)
+                } else {
+                    $Head = "HTTP/1.1 200 OK`r`nContent-Type: $Type`r`nContent-Length: $($Body.Length)`r`nConnection: close`r`n`r`n"
+                    $Bytes = ([System.Text.Encoding]::ASCII.GetBytes($Head)) + $Body
+                }
+                $Stream.Write($Bytes, 0, $Bytes.Length)
+                $Stream.Flush()
+            } catch {
+            } finally {
+                $Client.Close()
             }
-            if ($null -eq $Body) {
-                $Head = "HTTP/1.1 404 Not Found`r`nContent-Length: 0`r`nConnection: close`r`n`r`n"
-                $Bytes = [System.Text.Encoding]::ASCII.GetBytes($Head)
-            } else {
-                $Head = "HTTP/1.1 200 OK`r`nContent-Type: $Type`r`nContent-Length: $($Body.Length)`r`nConnection: close`r`n`r`n"
-                $Bytes = ([System.Text.Encoding]::ASCII.GetBytes($Head)) + $Body
-            }
-            $Stream.Write($Bytes, 0, $Bytes.Length)
-            $Stream.Flush()
-            $Client.Close()
         }
     }
-    return @{ Port = $Port; Job = $Job }
+    $Thread.IsBackground = $true
+    $Thread.Start($Port, $IndexText, $Zip)
+
+    return @{ Port = $Port }
 }
 
 function Stop-IndexServer($Server) {
-    Stop-Job $Server.Job -ErrorAction SilentlyContinue
-    Remove-Job $Server.Job -Force -ErrorAction SilentlyContinue
+    # Nothing to stop: the server runs on a background thread of this
+    # process and dies with it. The function stays for symmetry with the
+    # other case blocks.
 }
 
 # Run the real installer in a child process with a controlled environment.
@@ -237,9 +253,16 @@ if (Test-Path $ShortcutPath) { Remove-Item -Force $ShortcutPath }
 
 $Sandbox = New-Sandbox
 $Server = Start-IndexServer $Sandbox.Sha $Sandbox.Zip
-# No PHIMINT_NO_SHORTCUT here: this case is about the shortcut.
+# No PHIMINT_NO_SHORTCUT here: this case is about the shortcut. The
+# shortcut's folder is the sandbox's, not the runner's real Start Menu:
+# a CI runner has none, and writing into a real user's menu to test a
+# shortcut is not a thing a test should do (2026-11-13).
+$ShortcutDir = Join-Path $Sandbox.Root "programs"
+New-Item -ItemType Directory -Force -Path $ShortcutDir | Out-Null
+$ShortcutPath = Join-Path $ShortcutDir "phimint.lnk"
 $Environment = Sandbox-Environment $Sandbox $Server.Port $null
 $Environment.Remove("PHIMINT_NO_SHORTCUT")
+$Environment["PHIMINT_SHORTCUT_DIR"] = $ShortcutDir
 $Run = Invoke-Installer $Environment
 Check "install succeeds with the shortcut" ($Run.Status -eq 0)
 Check "the Start Menu shortcut is created" (Test-Path $ShortcutPath)
