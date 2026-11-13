@@ -32,9 +32,26 @@ FAILED=0
 ok()  { printf '  ok   %s\n' "$1"; PASSED=$((PASSED + 1)); }
 bad() { printf '  FAIL %s\n' "$1"; FAILED=$((FAILED + 1)); }
 
+# When the installer itself fails, its own output is the only thing that
+# says why. Without this dump a failing CI run shows sixteen symptoms
+# and no cause (2026-11-13: the digest was computed with a macOS-only
+# tool, and every case downstream of the install reported a failure).
+dump_installer_output() {
+    printf '  ── installer output ──\n'
+    sed 's/^/  │ /' "$SANDBOX/out.txt" 2>/dev/null | head -40
+    printf '  ── end ──\n'
+}
+
 check() {
     # check <description> <condition-exit-code>
     if [ "$2" -eq 0 ]; then ok "$1"; else bad "$1"; fi
+}
+
+# check_install <description>: a case that needs the installer to have run.
+# On failure it prints what the installer said, so the log carries the
+# cause and not just the symptom.
+check_install() {
+    if [ "$2" -eq 0 ]; then ok "$1"; else bad "$1"; dump_installer_output; fi
 }
 
 # The platform key the installer computes — the same names the manifest and
@@ -135,7 +152,7 @@ mkdir -p "$SANDBOX/home/.local/bin"
 TEST_PATH="$SANDBOX/home/.local/bin:$SANDBOX/tools"
 run_installer
 status=$?
-check "install succeeds" "$([ "$status" -eq 0 ] && echo 0 || echo 1)"
+check_install "install succeeds" "$([ "$status" -eq 0 ] && echo 0 || echo 1)"
 check "the binary lands in the PATH directory" \
     "$([ -x "$SANDBOX/home/.local/bin/phimint" ] && echo 0 || echo 1)"
 check "the rc file is left alone" \
@@ -151,7 +168,7 @@ sandbox_bin "$SANDBOX/tools"
 TEST_PATH="$SANDBOX/tools"
 run_installer
 status=$?
-check "install succeeds without a PATH directory" \
+check_install "install succeeds without a PATH directory" \
     "$([ "$status" -eq 0 ] && echo 0 || echo 1)"
 check "the binary lands in ~/.local/bin" \
     "$([ -x "$SANDBOX/home/.local/bin/phimint" ] && echo 0 || echo 1)"
@@ -175,7 +192,7 @@ sandbox_bin "$SANDBOX/tools"
 TEST_PATH="$SANDBOX/tools"
 run_installer PHIMINT_NO_PATH_EDIT=1
 status=$?
-check "install succeeds with the opt-out" \
+check_install "install succeeds with the opt-out" \
     "$([ "$status" -eq 0 ] && echo 0 || echo 1)"
 check "no rc file is created" \
     "$([ ! -f "$SANDBOX/home/.zshrc" ] && echo 0 || echo 1)"
