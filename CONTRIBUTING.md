@@ -47,6 +47,14 @@ cargo test           # Tests
 
 All three must pass. CI runs them automatically on every PR, so save yourself a round-trip.
 
+### Test tiers
+
+| Gate | How to run it | What it covers |
+|---|---|---|
+| Rust gates | the three commands above | the crate, its unit tests and the `tests/` end-to-end suites |
+| Installer contract | `bash tests/install_script_test.sh` (Windows: `pwsh -NoProfile -File tests/install_script_test.ps1`) | `install.sh` / `install.ps1` — shell scripts the Rust gates never see. CI runs both, on Unix and on Windows, for every PR |
+| PTY smoke | `python3 scripts/pty_smoke/smoke.py` | what actually lands on the screen. Slow and environment-sensitive, so it is a release gate rather than a PR gate — see [scripts/pty_smoke/README.md](scripts/pty_smoke/README.md) |
+
 ## Pull Request Checklist
 
 1. Create a feature branch from `main`

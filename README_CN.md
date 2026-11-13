@@ -28,7 +28,7 @@ phimint 跑「理解需求 → 读码 → 多文件改 → 编译/测试 → 报
 - **设计画布 & `ask_user`**：agent 可以把选项*展示*给你而不是描述给你——2–4 个候选以屏幕形式落在你的浏览器里（布局样机、选项组、对比图），点一下就变成真实的用户回合；概念选择也可以直接在终端选择器里问（`ask_user`）。浏览器只在一次性同意后才打开，忙碌时的点击排队到回合边界再送达，屏幕等你点选期间 run 会停驻——agent 绝不替你拍板设计选择。
 - **桌面操作 + 同意门**：agent 可以看你的屏幕、挪你的指针。*看*和*挪*从不问；*改*机器则每次都问，走的还是工具路径那扇同意门。
 - **审批三态**：`auto`（全自动）/ `ask`（写操作逐条弹窗）/ `deny`（只读）；子 agent 权限跟随主 agent 模式——`ask` 下每次子 agent 写入都会弹窗确认，弹窗标明是哪个子 agent。
-- **防护栏**：reasoning-only 纠偏（连续空转 → 自动关思考）、max-turns 预警（最后 3 轮逼收尾）、provider 截断守卫（谎报 `finish_reason` 的容错，agent-base 提供）、工具输出 16k 上限。
+- **防护栏**：reasoning-only 纠偏（连续空转 → 自动关思考）、max-turns 预警（最后 3 轮逼收尾）、provider 截断守卫（谎报 `finish_reason` 的容错，agent-base 提供）、工具输出 16k 上限，以及一道 verify 闸门：没有比最后一次改动更新的绿灯，收尾会被拦一次，之后改成留一个可见标记。
 - **多语言**：`code-intel` 注册表（扩展名 → LSP server → 构建命令兜底），Rust / TypeScript / JavaScript / C / C++ 开箱即用。
 - **模块化底座**：UI 组件与语言智能已沉淀为独立 crate —— [`phi-tui`](https://github.com/hibuka-labs/phi-tui)（聊天 TUI 组件）与 [`code-intel`](https://github.com/hibuka-labs/code-intel)（LSP/repomap/ripgrep 核心），phimint 只保留产品壳。
 
@@ -89,6 +89,11 @@ DeepSeek / Aliyun / Moonshot / Gemini / Ollama …）。
 `phimint config set api_key sk-xxx` 直接写。`phimint config show` 打印
 phimint 实际读到的配置（key 打码）。
 
+没有可用 key 时（文件里没有、`--api-key` 没给、`PHIMINT_API_KEY` 也没设），
+phimint 在第一轮之前就停下，并点名要改哪个文件——它不会开一场付不起钱的
+对话。endpoint 之后拒绝这个 key（401/403）时，转录里只留一条提示，点名那个
+文件、打码的 key 和 endpoint：死掉的 key 改一行就好，不用去猜哪里错了。
+
 文件是 JSON5，允许注释与尾逗号：
 
 ```json
@@ -110,6 +115,20 @@ phimint 实际读到的配置（key 打码）。
   "advanced": { "model": "claude-opus-4", "base_url": "https://api.anthropic.com", "api_key": "sk-ant" }
 }
 ```
+
+三个档位，三种活。`main` 是你对话的主会话；`lite` 是便宜的那条道——子 agent
+派发默认落在它上面，回合末裁决器也一直钉在它上面（哪怕你刚用 `/model` 换了
+模型：那活是分类，不是聊天）。`lite` 没配就跟着 `main`，所以只有一个模型的
+配置也照样跑。`advanced` 是留给重活的猛档。
+
+| 档位 | 服务于 |
+|---|---|
+| `main` | 主对话会话——下面那个 `model` 指针会覆盖它 |
+| `lite` | 子 agent 派发的默认档，以及回合末裁决器 |
+| `advanced` | 猛档——派发时可以点名要它 |
+
+`/lite <名字>` 和 `/advanced <名字>` 改档位，下一次派发就会用上新名字。
+`/models` 列出当前配了哪些模型；`/focus` 让主会话整个会话都停在 `lite` 档。
 
 `/model` 切换会写成顶层的 `model` **选择指针**——一个独立字段，存在时覆盖
 `main`。切换永远不会改写上面三个档位定义，动的只有这个指针：
@@ -170,9 +189,19 @@ Commands:
 
   uninstall          卸载 phimint 并清掉它留下的数据。二进制交给当初
                      安装它的渠道移除，然后删掉 ~/.phimint/（API key、
-                     会话、历史、笔记），并摘掉 Windows 上安装脚本加进
-                     PATH 的那条。--keep-data 保留 ~/.phimint/。
+                     会话、历史、笔记），并摘掉安装脚本加进 PATH 的那条——
+                     Windows 上是用户 PATH 条目，Unix 上是 shell 配置里
+                     那段带标记的块。--keep-data 保留 ~/.phimint/。
                      --yes 跳过确认。
+
+  init               写出配置骨架而不启动 TUI。安装脚本跑的是
+                     `phimint init --if-missing`；已存在的配置绝不覆盖。
+
+  config             不启动 TUI 地查看或修改配置文件。`config show` 打印
+                     phimint 实际读到的配置（API key 打码）；
+                     `config set <键> <值>` 写一个成员
+                     （api_key、base_url、protocol、main）。api_key 可以传
+                     `-`，让密钥从 stdin 进来，不落在命令行历史里。
 
   -w, --workspace <PATH>    工作区目录（默认：当前目录）
       --model <NAME>        仅本次运行的主模型名（覆盖 `model` 指针与 `main`，不写回文件）
@@ -192,7 +221,7 @@ Commands:
       --thinking-budget <N> 思考 token 预算（默认 8192）
       --reasoning-effort <E> 推理深度：none/low/medium/high/xhigh（默认 medium）
       --token-budget <N>    上下文窗口 token 预算（默认 210000）
-      --session-retention-days <N> 会话保留天数（默认 7）
+      --session-retention-days <N> 会话保留天数（默认 30）
       --no-update-check     跳过启动时的更新检查
 ```
 
@@ -261,6 +290,7 @@ Commands:
 | `search_content` | ripgrep 内容搜索（regex） |
 | `repo_map` | tree-sitter 符号/结构索引（多语言，拉取式上下文） |
 | `diagnostics` | LSP 诊断（改完不重编译的快速内环；server 缺失降级到 shell） |
+| `verify` | 跑项目自己的编译级检查（`cargo check`、`tsc --noEmit`）并报告编译器的真实退出码——命令由项目自己给（先它的配置，再它本来就用的那套约定，最后语言默认值），不由模型挑；它背后那道闸门会扣住收尾，直到有一盏比最后一次改动更新的绿灯 |
 | `update_plan` | 复杂任务先展示结构化清单（display-only，Codex 风格；agent-base） |
 | `current_model` | 当前会话正在服务的模型（agent 回答「你是什么模型」前会先调它） |
 | `spawn_agent` / `send_message` / `wait_agent` / `list_agents` / `close_agent` | 子 agent 原语（agent-works；推荐用法见上：spawn 后结束回合等推送） |
@@ -274,8 +304,8 @@ Commands:
 phimint 是 [`phi-agent`](https://docs.phiagent.dev/zh/) 框架的 consumer：agent 循环 / ReAct / 审批 / 会话事件流 / 守卫全部来自框架（经 facade 一个依赖引入），phimint 只做产品壳——系统提示、工具注册、审批接线、TUI。
 
 - **推送式 fan-in**（agent-works）：子 agent 的报告在完成时被持有，主 agent 回合结束的瞬间批量注入为新回合；进度信息 display-only（不唤醒、不插话）；单任务超 10 分钟硬停并推 Error 结果——挂死的子 agent 一定能唤醒父级。子 agent 默认只读：`write_file` / `edit_file` / `execute_command` 不进工具面，除非该次 spawn 申请了写能力（`tools: "write"`，或 `coder`/`tester` preset）；带写能力的子 agent 按互斥文件集干活，撞上被占用的文件会得到 `file locked by <agent>`，`ask` 下每次子 agent 写入都弹窗确认。
-- **TUI 架构**：`ui/run.rs` 主循环里，后台任务跑 agent 回合并把 `RuntimeEvent` 推过 mpsc 通道，主循环把事件灌进 `App` 状态机、轮询键盘、重绘——输入与事件只经通道相遇，无共享可变状态，agent 循环零侵入。
-- **任务面板**：`task_panel.rs` 记账子 agent 生命周期（spawn 出现 / done 翻转 / 完成 3s 后回收，根 agent 忙碌或用户正在看面板时不回收），每个子 agent 独立流式缓冲，交叉输出互不切断；`child_results.rs` 把框架的 fan-in 路由事件映射成面板文案与聚焦子 agent 的实时尾随。
+- **TUI 架构**：`phi-agent-tui` 里的 shell 主循环，后台任务跑 agent 回合并把 `RuntimeEvent` 推过 mpsc 通道，主循环把事件灌进 `App` 状态机、轮询键盘、重绘——`src/shell/wire.rs` 把 shell 留的每个槽位都填上，文案与策略留在这边。输入与事件只经通道相遇，无共享可变状态，agent 循环零侵入。
+- **任务面板**：`phi-agent-tui` 的 `task_panel.rs` 记账子 agent 生命周期（spawn 出现 / done 翻转 / 完成 3s 后回收，根 agent 忙碌或用户正在看面板时不回收），每个子 agent 独立流式缓冲，交叉输出互不切断；`child_results.rs` 把框架的 fan-in 路由事件映射成面板文案与聚焦子 agent 的实时尾随。
 - **LSP**：`code-intel` 按语言懒启动进程级单例 server，`didOpen`/`didChange`/`didSave` 同步 + `publishDiagnostics` 缓存，`diagnostics` 工具拉取；注册表决定 server 选择，code-intel 不感知「phimint」。
 - **守卫**（框架提供、产品调参）：reasoning-only 连续 2 次空转 → 注入「立即行动」nudge 并关闭思考；回合末裁决器 fail-open（裁决不可用不阻塞正常收尾）；`MaxTurnsNudgeMiddleware` 在 256 轮预算的最后 3 轮逼出最终答复。
 
@@ -302,22 +332,25 @@ phimint 是 [`phi-agent`](https://docs.phiagent.dev/zh/) 框架的 consumer：ag
 phimint/
 ├── src/
 │   ├── main.rs        # CLI 入口（clap）、装配、选配色
+│   ├── lib.rs         # 模块根——二进制只是它上面的一层薄壳
+│   ├── cli.rs         # CLI 面：所有 flag 与子命令
+│   ├── command.rs     # shell 命令解析 + 风险分级
 │   ├── agent.rs       # 系统提示 + 工具注册 + 多 agent/守卫/审批接线
+│   ├── agent/         # agent 装配：build.rs、gate.rs（verify 闸门）、prompt.rs、spawn_resolve.rs
 │   ├── approval.rs    # 审批两层：ApprovalPolicy 闸门 + 决策 handler（含 TUI 队列）
 │   ├── banner.rs      # 启动 banner（明暗两套配色）
-│   ├── skills.rs      # Skill 薄壳：re-export agent-works 的 skill 子系统 + phimint 默认目录策略
-│   ├── tools/         # 应用工具壳（核心在 code-intel）
+│   ├── model/         # 配置、档位、路由、持久化、首次运行闸门
+│   ├── shell/         # TUI 产品壳：wire.rs 负责填 phi-agent-tui 留的槽位
+│   ├── tools/         # 应用工具壳（核心在 code-intel / phi-kernel-tools）
 │   │   ├── diagnostics.rs   # LSP 诊断工具
 │   │   ├── repomap.rs       # repo_map 工具
-│   │   └── ripgrep.rs       # search_content 工具
-│   └── ui/            # TUI 产品壳（通用组件已沉淀到 phi-tui）
-│       ├── run.rs             # 主循环：终端装配、事件/命令通道、回合 runner
-│       ├── app.rs (+tests)    # App 状态机（事件驱动）
-│       ├── render.rs (+tests) # 帧渲染
-│       ├── task_panel.rs (+tests)   # 子 agent 任务面板（生命周期 + 每子流式缓冲）
-│       ├── child_results.rs (+tests)# fan-in 结果呈现（聚焦尾随、文案路由）
-│       ├── frame_log.rs       # frames.txt + perf.log
-│       └── handlers/          # keyboard.rs / mouse.rs / runtime.rs
+│   │   ├── ripgrep.rs       # search_content 工具
+│   │   └── verify.rs        # verify 闸门背后的编译级检查
+│   ├── external/      # 外部工具插座：MCP 服务、脚本工具、wasm 插件
+│   ├── session/       # 会话存储、恢复、保留期
+│   ├── ops/           # 卸载、终端自愈、安装来源记账
+│   ├── update/        # 更新检查器 + release manifest
+│   └── verify_ledger.rs # 闸门的证据账本：这盏绿灯比那次改动新吗？
 └── Cargo.toml
 ```
 

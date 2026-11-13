@@ -26,7 +26,7 @@ Project page: [hibuka-labs.github.io/phimint](https://hibuka-labs.github.io/phim
 - **Design canvas & `ask_user`** — the agent can *show* you options instead of describing them: 2–4 candidates land as a screen in your browser (layout mockups, option sets, comparisons) and your click comes back as a real user turn; `ask_user` asks concept picks right in the terminal picker. The browser opens only after a one-time consent, busy clicks queue at the turn boundary, and while a screen awaits your pick the run parks — the agent never decides your design choices for you.
 - **Desktop with consent** — the agent can look at your screen and move the pointer. *Looking* and *moving* never ask; changing the machine asks every time, through the same approval gate the tool path already uses.
 - **Three approval modes** — `auto` (full auto), `ask` (prompt on writes/risky shell), `deny` (read-only). Sub-agents inherit the main agent's mode: in `ask`, every sub-agent write prompts in a popup that names the requesting sub-agent.
-- **Guardrails** — reasoning-only spin correction, max-turns nudge, provider truncation guard (lying `finish_reason` tolerance, from agent-base), 16k tool-output cap.
+- **Guardrails** — reasoning-only spin correction, max-turns nudge, provider truncation guard (lying `finish_reason` tolerance, from agent-base), 16k tool-output cap, and a verify gate: a hand-back with no green compile newer than the last edit is intercepted once, then carries a visible marker.
 - **Multi-language** — `code-intel` registry (extension → LSP server → build-command fallback): Rust, TypeScript, JavaScript, C, C++ out of the box.
 - **Modular base** — chat UI components and language intelligence are distilled into their own crates: [`phi-tui`](https://github.com/hibuka-labs/phi-tui) (chat TUI components) and [`code-intel`](https://github.com/hibuka-labs/code-intel) (LSP/repomap/ripgrep cores). phimint keeps only the product shell.
 
@@ -91,6 +91,13 @@ The installer already wrote `~/.phimint/config.json` — open it and fill in the
 `phimint config set api_key sk-xxx` does it for you. `phimint config show`
 prints what phimint resolved, with the key masked.
 
+With no usable key — not in the file, not in `--api-key`, not in
+`PHIMINT_API_KEY` — phimint stops before the first turn and names the file to
+edit; it never starts a conversation it cannot pay for. If the endpoint turns
+the key down later (401/403), one notice in the transcript names the file, the
+masked key and the endpoint, so a dead key is a one-line fix instead of a
+silent failure.
+
 The file is JSON5 — comments and trailing commas welcome:
 
 ```json
@@ -112,6 +119,22 @@ Different provider per tier:
   "advanced": { "model": "claude-opus-4", "base_url": "https://api.anthropic.com", "api_key": "sk-ant" }
 }
 ```
+
+Three tiers, three jobs. `main` is the chat session you talk to. `lite` is the
+cheap lane: a sub-agent spawn resolves it by default, and the completion judge
+stays on it even after a `/model` pick — that job is classification, not
+conversation. An unconfigured `lite` follows `main`, so a one-model setup
+keeps working. `advanced` is the strong lane for the work that deserves it.
+
+| Tier | Serves |
+|---|---|
+| `main` | the chat session — the `model` pointer below overrides it |
+| `lite` | sub-agent spawns by default, and the completion judge |
+| `advanced` | the strong lane — a spawn can ask for it by name |
+
+`/lite <name>` and `/advanced <name>` retarget a tier, and the next spawn picks
+the new name up. `/models` lists what is configured; `/focus` parks the chat on
+the `lite` tier for the length of a session.
 
 `/model` switching is stored as a top-level `model` **selection pointer** — a
 separate key that overrides `main` while it is present. A switch never
@@ -179,8 +202,20 @@ Commands:
   uninstall          remove phimint and the data it left behind. The binary goes
                      back to whichever channel installed it; then ~/.phimint/
                      (API key, sessions, history, notes) is deleted and the
-                     Windows PATH entry the installer added is dropped.
-                     --keep-data leaves ~/.phimint/ alone. --yes skips the prompt.
+                     PATH entry the installer added is dropped — the user-PATH
+                     entry on Windows, the marked block in your shell profile on
+                     Unix. --keep-data leaves ~/.phimint/ alone. --yes skips
+                     the prompt.
+
+  init               write the config skeleton without starting the TUI. The
+                     installer runs `phimint init --if-missing`; an existing
+                     config is never touched.
+
+  config             inspect or edit the config file without starting the TUI.
+                     `config show` prints what phimint resolved with the API key
+                     masked; `config set <key> <value>` writes one member
+                     (api_key, base_url, protocol, main). For api_key, pass `-`
+                     to read the secret from stdin instead of the command line.
 
   -w, --workspace <PATH>       workspace directory (default: current directory)
       --model <NAME>           main model for this run only (overrides the
@@ -202,7 +237,7 @@ Commands:
       --thinking-budget <N>    reasoning token budget (default 8192)
       --reasoning-effort <E>   none/low/medium/high/xhigh (default medium)
       --token-budget <N>       context-window token budget (default 210000)
-      --session-retention-days <N>  days to keep session history (default 7)
+      --session-retention-days <N>  days to keep session history (default 30)
       --no-update-check        skip the startup update check
 ```
 
@@ -272,6 +307,7 @@ you: "investigate questions X / Y / Z"
 | `search_content` | ripgrep content search (regex) |
 | `repo_map` | tree-sitter symbol/structure index (multi-language, pull-based context) |
 | `diagnostics` | LSP diagnostics (fast loop without recompiling; degrades to shell) |
+| `verify` | run the project's own compile-level check (`cargo check`, `tsc --noEmit`) and report the compiler's real exit code — the command comes from the project (its config, then a convention it already uses, then the language default), never from the model; behind it, a gate holds a hand-back until there is a green light newer than the last edit |
 | `update_plan` | structured checklist for complex tasks (display-only, Codex-style; agent-base) |
 | `current_model` | the model serving this session (the agent calls it before answering "which model are you") |
 | `spawn_agent` / `send_message` / `wait_agent` / `list_agents` / `close_agent` | sub-agent primitives (agent-works; preferred pattern: spawn, end turn, await push) |
@@ -285,8 +321,8 @@ you: "investigate questions X / Y / Z"
 phimint is a consumer of the [`phi-agent`](https://docs.phiagent.dev/) framework: the agent loop, ReAct, approvals, session event stream and guards all come from the framework (one facade dependency). phimint brings the product shell — system prompt, tool registration, approval wiring, TUI.
 
 - **Push-based fan-in** (agent-works) — sub-agent reports are held on completion and injected as a new turn the instant the main agent's turn ends; progress is display-only (never wakes or interrupts). A task over 10 minutes is hard-stopped with an Error result, so a hung child can always wake the parent. Sub-agents are read-only by default — `write_file` / `edit_file` / `execute_command` stay off their tool surface until write capability is requested for that spawn (`tools: "write"`, or a `coder`/`tester` preset). Write-capable children work disjoint file sets under a file lock (`file locked by <agent>` on collision), and in `ask` every child write is confirmed in a popup.
-- **TUI architecture** — `ui/run.rs` runs a background task per agent turn pushing `RuntimeEvent`s over an mpsc channel; the main loop feeds events into the `App` state machine, polls keys and repaints. Input and events only meet through channels — no shared mutable state, zero intrusion into the agent loop.
-- **Task panel** — `task_panel.rs` books sub-agent lifecycle (appears on spawn, flips on done, recycled 3s after completion, deferred while the root is busy or you're looking at the panel). Each sub-agent streams into its own buffer so interleaved output never cuts lines.
+- **TUI architecture** — the shell in `phi-agent-tui` runs a background task per agent turn pushing `RuntimeEvent`s over an mpsc channel; the main loop feeds events into the `App` state machine, polls keys and repaints. `src/shell/wire.rs` fills every slot the shell offers, so the wording and the policy stay on this side. Input and events only meet through channels — no shared mutable state, zero intrusion into the agent loop.
+- **Task panel** — the shell's `task_panel.rs` books sub-agent lifecycle (appears on spawn, flips on done, recycled 3s after completion, deferred while the root is busy or you're looking at the panel). Each sub-agent streams into its own buffer so interleaved output never cuts lines.
 - **LSP** — `code-intel` lazily starts one server per language, syncs `didOpen`/`didChange`/`didSave` with cached `publishDiagnostics`, pulled by the `diagnostics` tool. The registry picks the server; code-intel knows nothing about phimint.
 - **Guards** (framework-provided, product-tuned) — reasoning-only spin: two empty turns in a row injects an "act now" nudge and disables thinking; the end-of-turn judge fails open; `MaxTurnsNudgeMiddleware` forces a final answer in the last 3 turns of a 256-turn budget.
 
@@ -314,22 +350,25 @@ per workspace).
 phimint/
 ├── src/
 │   ├── main.rs        # CLI entry (clap), assembly, banner color detection
+│   ├── lib.rs         # module root — the binary is a thin shell over it
+│   ├── cli.rs         # the CLI surface: every flag and subcommand
+│   ├── command.rs     # shell command parsing + risk classification
 │   ├── agent.rs       # system prompt + tool registration + multi-agent/guard/approval wiring
+│   ├── agent/         # agent assembly: build.rs, gate.rs (the verify gate), prompt.rs, spawn_resolve.rs
 │   ├── approval.rs    # two layers: ApprovalPolicy gate + decision handler (TUI queue)
 │   ├── banner.rs      # startup banner (light + dark palettes)
-│   ├── skills.rs      # thin Skill shell: agent-works skill subsystem + default dir policy
-│   ├── tools/         # application tool shells (cores live in code-intel)
+│   ├── model/         # config, tiers, routing, persistence, the first-run gate
+│   ├── shell/         # the TUI shell: wire.rs fills phi-agent-tui's slots
+│   ├── tools/         # application tool shells (cores live in code-intel / phi-kernel-tools)
 │   │   ├── diagnostics.rs   # LSP diagnostics tool
 │   │   ├── repomap.rs       # repo_map tool
-│   │   └── ripgrep.rs       # search_content tool
-│   └── ui/            # TUI product shell (generic widgets live in phi-tui)
-│       ├── run.rs             # main loop: terminal setup, event/command channels, turn runner
-│       ├── app.rs (+tests)    # App state machine (event-driven)
-│       ├── render.rs (+tests) # frame rendering
-│       ├── task_panel.rs (+tests)   # sub-agent task panel
-│       ├── child_results.rs (+tests)# fan-in result presentation
-│       ├── frame_log.rs       # frames.txt + perf.log
-│       └── handlers/          # keyboard.rs / mouse.rs / runtime.rs
+│   │   ├── ripgrep.rs       # search_content tool
+│   │   └── verify.rs        # the compile-level check behind the verify gate
+│   ├── external/      # the external tool socket: MCP servers, script tools, wasm plugins
+│   ├── session/       # session store, resume, retention
+│   ├── ops/           # uninstall, terminal restore, install-source bookkeeping
+│   ├── update/        # update checker + release manifest
+│   └── verify_ledger.rs # the gate's evidence ledger: is the green light newer than the edit?
 └── Cargo.toml
 ```
 
