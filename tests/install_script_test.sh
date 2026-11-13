@@ -77,7 +77,7 @@ sandbox_bin() {
     local dir="$1"
     local tool
     mkdir -p "$dir"
-    for tool in bash sh tar awk grep sed mkdir mv chmod rm cp ln cat \
+    for tool in bash sh tar gzip gunzip awk grep sed mkdir mv chmod rm cp ln cat \
                 dirname basename uname id shasum sha256sum mktemp tr head \
                 cut sort wc env stty python3 python; do
         local found
