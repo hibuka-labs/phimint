@@ -502,23 +502,36 @@ impl ModelConfig {
     }
 
     /// Whether two endpoint URLs name the same endpoint for inheritance
-    /// purposes: a trailing slash or host case is a spelling difference, not
-    /// a foreign host (review finding fix-check#2 — the exact-string compare
-    /// dropped the pinned key for `…/` spellings and 401-ed where the tier
-    /// authenticated before). The path stays case-sensitive.
+    /// purposes: a trailing slash, host case or the scheme's default port is
+    /// a spelling difference, not a foreign host (review findings
+    /// fix-check#2, fix-check2#2 — the exact-string compare dropped the
+    /// pinned key for `…/` spellings and 401-ed where the tier authenticated
+    /// before). The path stays case-sensitive.
     fn same_endpoint(a: &str, b: &str) -> bool {
         fn norm(s: &str) -> String {
             let t = s.trim().trim_end_matches('/');
-            match t.find("://") {
+            // Split the authority (scheme://host[:port]) from the path; the
+            // path keeps its case in every shape.
+            let (head, path) = match t.find("://") {
                 Some(i) => match t[i + 3..].find('/') {
-                    Some(j) => {
-                        let split = i + 3 + j;
-                        format!("{}{}", t[..split].to_ascii_lowercase(), &t[split..])
-                    }
-                    None => t.to_ascii_lowercase(),
+                    Some(j) => (&t[..i + 3 + j], &t[i + 3 + j..]),
+                    None => (t, ""),
                 },
-                None => t.to_ascii_lowercase(),
+                None => match t.find('/') {
+                    Some(j) => (&t[..j], &t[j..]),
+                    None => (t, ""),
+                },
+            };
+            let mut h = head.to_ascii_lowercase();
+            let default_port = match h.split_once("://") {
+                Some(("https", _)) => ":443",
+                Some(("http", _)) => ":80",
+                _ => "",
+            };
+            if !default_port.is_empty() && h.ends_with(default_port) {
+                h.truncate(h.len() - default_port.len());
             }
+            format!("{h}{path}")
         }
         norm(a) == norm(b)
     }

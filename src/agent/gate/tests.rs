@@ -525,6 +525,10 @@ fn shell_may_mutate_splits_on_newlines_and_ampersands() {
         !shell_may_mutate("ls\nls -la"),
         "newline-separated readers stay readers"
     );
+    assert!(
+        shell_may_mutate("echo a \\\\\ntouch f"),
+        "an escaped backslash pair makes the newline a separator again"
+    );
 }
 
 fn spawn() -> Action {

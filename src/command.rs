@@ -35,18 +35,47 @@ pub fn has_mutation_marker(command: &str) -> bool {
 
 /// Split a command the way `sh` would run it: one entry per segment, trimmed,
 /// empty segments dropped. `ls & rm -rf src/` and `ls\nrm -rf src/` both yield
-/// the reader and the writer as separate segments. A backslash-newline is a
-/// line *continuation* inside one command, not a separator — the pieces join
-/// before splitting (review finding fix-check#3: `grep -rn TODO \<nl> src/`
-/// must stay one reader segment, not a reader plus an unknown head).
+/// the reader and the writer as separate segments. A backslash-newline with
+/// an ODD backslash run is a line *continuation* inside one command (POSIX
+/// removes both characters); with an EVEN run the backslashes are escaped
+/// pairs and the newline is a real separator — `echo a \\<nl>touch f` is two
+/// commands (review finding fix-check2#1).
 pub fn split_segments(command: &str) -> Vec<String> {
-    let joined = command.replace("\\\r\n", "").replace("\\\n", "");
-    joined
+    strip_continuations(command)
         .split(SEPARATORS)
         .map(str::trim)
         .filter(|seg| !seg.is_empty())
         .map(String::from)
         .collect()
+}
+
+/// Remove `\<newline>` continuations the way the shell does: only when the
+/// backslash is not itself escaped (the backslash run before the newline is
+/// odd), and by deleting the escaping backslash and the newline entirely.
+fn strip_continuations(command: &str) -> String {
+    let mut out = String::with_capacity(command.len());
+    let mut backrun = 0usize;
+    for c in command.chars() {
+        match c {
+            '\\' => {
+                backrun += 1;
+                out.push(c);
+            }
+            '\n' => {
+                if backrun % 2 == 1 {
+                    out.pop(); // the escaping backslash
+                } else {
+                    out.push(c); // escaped pairs: the newline separates
+                }
+                backrun = 0;
+            }
+            _ => {
+                backrun = 0;
+                out.push(c);
+            }
+        }
+    }
+    out
 }
 
 /// Read-only / build commands that are safe to auto-approve.
@@ -161,6 +190,18 @@ mod tests {
             classify_command("cargo test \\\n--all-features"),
             RiskLevel::Safe
         );
+        // An EVEN backslash run is escaped pairs — the newline is a real
+        // separator and the writer must not hide in the reader's segment
+        // (review finding fix-check2#1, `sh -c` verified).
+        assert_eq!(
+            split_segments("echo a \\\\\ntouch f"),
+            ["echo a \\\\", "touch f"]
+        );
+        assert_eq!(
+            classify_command("echo a \\\\\ntouch f"),
+            RiskLevel::Sensitive
+        );
+        assert_eq!(split_segments("echo a \\\\\\\ntouch f").len(), 1);
     }
 
     #[test]

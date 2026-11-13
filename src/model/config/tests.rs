@@ -346,6 +346,18 @@ fn a_spelling_variant_of_the_anchor_endpoint_still_inherits_the_pinned_key() {
         key, "sk-ant-secret",
         "a spelling variant is not a foreign endpoint"
     );
+    // The scheme's default port is a spelling difference too
+    // (review finding fix-check2#2).
+    let json = r#"{
+            "main": { "model": "m", "base_url": "https://api.anthropic.com:443", "api_key": "sk-ant-secret" },
+            "lite": { "model": "l", "base_url": "https://api.anthropic.com" }
+        }"#;
+    let config: ModelConfig = serde_json::from_str(json).unwrap();
+    let (_, _, key, _) = config.tier_config("lite").unwrap();
+    assert_eq!(
+        key, "sk-ant-secret",
+        "the default port is not a foreign endpoint"
+    );
 }
 
 #[test]

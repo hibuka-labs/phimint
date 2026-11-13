@@ -158,23 +158,35 @@ fn tier_shadow_note(target: &Path, key: &str) -> Option<String> {
         "protocol" => cfg.protocol.clone(),
         _ => return None,
     }?;
+    let field = |t: (String, String, String, String)| match key {
+        "base_url" => t.1,
+        "api_key" => t.2,
+        _ => t.3,
+    };
     let mut notes = String::new();
-    for tier in ["main", "lite", "advanced"] {
-        let Some((_, url, api_key, proto)) = cfg.tier_config(tier) else {
-            continue;
-        };
-        let resolved = match key {
-            "base_url" => url,
-            "api_key" => api_key,
-            _ => proto,
-        };
-        if resolved != top {
+    let mut seen: Vec<String> = Vec::new();
+    let mut note = |label: &str, resolved: String| {
+        if resolved != top && !seen.contains(&resolved) {
+            seen.push(resolved);
             notes.push_str(&format!(
-                "\n  note: at runtime the `{tier}` tier's {key} wins over this \
-                 top-level member (edit the tier itself to change it)"
+                "\n  note: at runtime {label}'s {key} wins over this top-level member \
+                 (edit the tier itself to change it)"
             ));
         }
+    };
+    for tier in ["main", "lite", "advanced"] {
+        if let Some(t) = cfg.tier_config(tier) {
+            let label = format!("the `{tier}` tier");
+            note(&label, field(t));
+        }
     }
+    // The configured `main`'s own member is what "Clear selection" restores:
+    // it wins over the top-level member the moment the model pointer is
+    // cleared (review finding fix-check2#3).
+    note(
+        "the `main` tier (once the selection is cleared)",
+        field(cfg.configured_main()),
+    );
     (!notes.is_empty()).then_some(notes)
 }
 
@@ -554,8 +566,9 @@ mod tests {
             "names the lite tier shadow too: {msg}"
         );
 
-        // A name-only pointer resolves through the chain — when the edit
-        // DOES take, no note may claim otherwise (fix-check#1).
+        // A name-only pointer resolves through the chain — but the configured
+        // `main`'s own key returns on "Clear selection" and must be named
+        // (review findings fix-check#1, fix-check2#3).
         std::fs::write(
             &target,
             "{\n  \"main\": {\"model\": \"m\", \"api_key\": \"sk-tier\"},\n  \"model\": \"p\",\n  \"api_key\": \"sk-top\"\n}\n",
@@ -563,8 +576,8 @@ mod tests {
         .unwrap();
         let msg = set(&target, "api_key", "sk-top-5", None, false).unwrap();
         assert!(
-            !msg.contains("wins over this top-level member"),
-            "the pointer inherits the new top-level key — no shadow: {msg}"
+            msg.contains("once the selection is cleared"),
+            "the configured main's key returns on clear — name it: {msg}"
         );
     }
 
