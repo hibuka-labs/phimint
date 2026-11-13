@@ -527,6 +527,36 @@ fn shell_may_mutate_splits_on_newlines_and_ampersands() {
     );
 }
 
+fn spawn() -> Action {
+    Action::from_tool_call("c5", "spawn_agent", r#"{"model":"m","tools":"write"}"#)
+}
+
+/// protects: delegated edits cannot ride a stale green light — a
+/// write-capable child edits from its own engine and those writes never
+/// reach the ledger (review finding v11/targeted#1). fails_when: a parent
+/// whose changes are all delegated hands back over a pre-spawn green with
+/// no nudge and no marker. no_claim: a child that keeps writing after the
+/// parent's last delegation verb (the deep fix is forwarding child write
+/// intents into the ledger — PR notes/TODOS).
+#[tokio::test]
+async fn a_delegating_turn_dirties_the_ledger() {
+    let (mw, _ledger) = gate();
+    let mut c = ctx("spawning", vec![spawn()]);
+    mw.on_post_llm(&mut c).await.unwrap();
+    // A fresh user-message boundary: the next turn is one budget.
+    let mut u = UserMessageCtx {
+        session_id: SessionId::new(1),
+        user_input: "go".to_string(),
+    };
+    mw.on_user_message(&mut u).await.unwrap();
+    let mut c = ctx("all done", vec![]);
+    mw.on_post_llm(&mut c).await.unwrap();
+    assert!(
+        c.follow_up_message.is_some() || c.full_text.contains('⚠'),
+        "a delegated edit must not ride a pre-spawn green"
+    );
+}
+
 #[tokio::test]
 async fn deferred_edits_survive_a_user_message_boundary() {
     // A run can end between the deferral and the next on_post_llm: the user

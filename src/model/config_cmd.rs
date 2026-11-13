@@ -142,36 +142,36 @@ pub fn set(
     Ok(out)
 }
 
-/// Name the tier-precedence case: when a configured tier is a Full
-/// declaration carrying its own `key`, that value wins over the top-level
-/// member the user just edited (the one resolution rule in
+/// Name the tier-precedence case: when a tier resolves `key` to something
+/// other than the top-level member the user just edited, that edit is
+/// shadowed at runtime (the one resolution rule in
 /// [`ModelConfig::tier_config`]). Silence here would look like the edit did
-/// not take. Every declared tier is checked, not just `main` — `lite` and
-/// `advanced` shadow the top-level member for their own tier the same way
-/// (review finding v11/adversarial-native#8).
+/// not take; a note where the edit DID take would be a lie. The comparison is
+/// against what actually resolves — declaration shapes (a name-only pointer,
+/// the anchor chain) decide who wins (review findings
+/// v11/adversarial-native#8, fix-check#1).
 fn tier_shadow_note(target: &Path, key: &str) -> Option<String> {
     let cfg = ModelConfig::from_file(&target.to_path_buf()).ok()?;
+    let top = match key {
+        "base_url" => cfg.base_url.clone(),
+        "api_key" => cfg.api_key.clone(),
+        "protocol" => cfg.protocol.clone(),
+        _ => return None,
+    }?;
     let mut notes = String::new();
     for tier in ["main", "lite", "advanced"] {
-        let Some(TierConfig::Full {
-            base_url,
-            api_key,
-            protocol,
-            ..
-        }) = cfg.tier_def(tier)
-        else {
+        let Some((_, url, api_key, proto)) = cfg.tier_config(tier) else {
             continue;
         };
-        let carries_own = match key {
-            "base_url" => base_url.is_some(),
-            "api_key" => api_key.is_some(),
-            "protocol" => protocol.is_some(),
-            _ => false,
+        let resolved = match key {
+            "base_url" => url,
+            "api_key" => api_key,
+            _ => proto,
         };
-        if carries_own {
+        if resolved != top {
             notes.push_str(&format!(
-                "\n  note: the `{tier}` tier carries its own {key}, which wins over this \
-                 top-level member at runtime (edit the tier itself to change it)"
+                "\n  note: at runtime the `{tier}` tier's {key} wins over this \
+                 top-level member (edit the tier itself to change it)"
             ));
         }
     }
@@ -550,8 +550,21 @@ mod tests {
         .unwrap();
         let msg = set(&target, "api_key", "sk-top-4", None, false).unwrap();
         assert!(
-            msg.contains("`lite` tier carries its own api_key"),
+            msg.contains("`lite` tier's api_key wins over"),
             "names the lite tier shadow too: {msg}"
+        );
+
+        // A name-only pointer resolves through the chain — when the edit
+        // DOES take, no note may claim otherwise (fix-check#1).
+        std::fs::write(
+            &target,
+            "{\n  \"main\": {\"model\": \"m\", \"api_key\": \"sk-tier\"},\n  \"model\": \"p\",\n  \"api_key\": \"sk-top\"\n}\n",
+        )
+        .unwrap();
+        let msg = set(&target, "api_key", "sk-top-5", None, false).unwrap();
+        assert!(
+            !msg.contains("wins over this top-level member"),
+            "the pointer inherits the new top-level key — no shadow: {msg}"
         );
     }
 

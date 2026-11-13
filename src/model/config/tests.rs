@@ -328,6 +328,26 @@ fn a_tier_on_the_anchor_endpoint_still_inherits_the_pinned_key() {
     assert_eq!(key, "sk-ant-secret");
 }
 
+/// protects: the same-endpoint check tolerates spelling differences (host
+/// case, a trailing slash) — a tier on the anchor's endpoint keeps the
+/// pinned key instead of 401-ing where it authenticated before (review
+/// finding fix-check#2). fails_when: the exact-string compare drops the key
+/// for `…/` spellings. no_claim: path case (paths stay case-sensitive).
+#[test]
+fn a_spelling_variant_of_the_anchor_endpoint_still_inherits_the_pinned_key() {
+    let json = r#"{
+            "main": { "model": "m", "base_url": "https://API.Anthropic.com", "api_key": "sk-ant-secret" },
+            "lite": { "model": "l", "base_url": "https://api.anthropic.com/" }
+        }"#;
+    let config: ModelConfig = serde_json::from_str(json).unwrap();
+    let (_, url, key, _) = config.tier_config("lite").unwrap();
+    assert_eq!(url, "https://api.anthropic.com/");
+    assert_eq!(
+        key, "sk-ant-secret",
+        "a spelling variant is not a foreign endpoint"
+    );
+}
+
 #[test]
 fn validate_empty_model_fails() {
     let config = ModelConfig {

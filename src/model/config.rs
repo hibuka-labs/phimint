@@ -501,6 +501,28 @@ impl ModelConfig {
         Some(self.resolve_with_anchor(definition))
     }
 
+    /// Whether two endpoint URLs name the same endpoint for inheritance
+    /// purposes: a trailing slash or host case is a spelling difference, not
+    /// a foreign host (review finding fix-check#2 — the exact-string compare
+    /// dropped the pinned key for `…/` spellings and 401-ed where the tier
+    /// authenticated before). The path stays case-sensitive.
+    fn same_endpoint(a: &str, b: &str) -> bool {
+        fn norm(s: &str) -> String {
+            let t = s.trim().trim_end_matches('/');
+            match t.find("://") {
+                Some(i) => match t[i + 3..].find('/') {
+                    Some(j) => {
+                        let split = i + 3 + j;
+                        format!("{}{}", t[..split].to_ascii_lowercase(), &t[split..])
+                    }
+                    None => t.to_ascii_lowercase(),
+                },
+                None => t.to_ascii_lowercase(),
+            }
+        }
+        norm(a) == norm(b)
+    }
+
     /// Resolve one tier definition against the endpoint chain: the
     /// definition's own field when it has one → the top-level default → the
     /// configured `main`'s field. See [`Self::tier_config`].
@@ -553,7 +575,7 @@ impl ModelConfig {
                 protocol.clone(),
             ),
         };
-        let on_anchor = url == anchor.1;
+        let on_anchor = Self::same_endpoint(&url, &anchor.1);
         let key = if on_anchor {
             chain(&own_key, top_key, &anchor.2)
         } else {

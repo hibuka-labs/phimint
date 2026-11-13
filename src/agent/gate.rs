@@ -61,6 +61,15 @@ use crate::verify_ledger::{EvidenceLedger, Unverified, VerifyKind};
 /// p2/adversarial-native#1). The filter is [`shell_may_mutate`].
 const DIRTY_TOOLS: &[&str] = &["write_file", "edit_file", "code_cell", "execute_command"];
 
+/// The multi-agent verbs. A write-capable child edits from its own engine: no
+/// parent action carries those writes and the ledger has no child feed
+/// (review finding v11/targeted#1), so every delegation verb counts as a
+/// possible edit — rule 3's conservative direction, the same treatment
+/// unreadable argv gets. Residual (PR notes): a child that keeps writing
+/// after the parent's last delegation verb is covered only until the next
+/// verify; forwarding child write intents into the ledger is the deep fix.
+const MULTI_AGENT_TOOLS: &[&str] = &["spawn_agent", "send_message", "wait_agent", "close_agent"];
+
 /// Shell programs whose every invocation is a read — no flag writes a file
 /// without a redirection (which `command::has_mutation_marker` catches
 /// anyway).
@@ -224,6 +233,11 @@ impl Middleware for VerifyGateMiddleware {
                     if may_write {
                         edits.push(PathBuf::from("."));
                     }
+                } else if MULTI_AGENT_TOOLS.contains(&name) {
+                    // Delegated work lands outside this action stream — see
+                    // [`MULTI_AGENT_TOOLS`]. The conservative direction: a
+                    // delegation verb dirties like an unreadable command.
+                    edits.push(PathBuf::from("."));
                 } else if DIRTY_TOOLS.contains(&name) {
                     if let Some(p) = edit_path(action.raw_args().as_ref()) {
                         if lang::is_code_path(&p) {
@@ -412,7 +426,9 @@ fn shell_may_mutate(command: &str) -> bool {
     if crate::command::has_mutation_marker(command) {
         return true;
     }
-    crate::command::split_segments(command).any(segment_may_mutate)
+    crate::command::split_segments(command)
+        .into_iter()
+        .any(|seg| segment_may_mutate(&seg))
 }
 
 /// One command segment: whether its head (or `git` subcommand) sits outside

@@ -35,12 +35,18 @@ pub fn has_mutation_marker(command: &str) -> bool {
 
 /// Split a command the way `sh` would run it: one entry per segment, trimmed,
 /// empty segments dropped. `ls & rm -rf src/` and `ls\nrm -rf src/` both yield
-/// the reader and the writer as separate segments.
-pub fn split_segments(command: &str) -> impl Iterator<Item = &str> {
-    command
+/// the reader and the writer as separate segments. A backslash-newline is a
+/// line *continuation* inside one command, not a separator — the pieces join
+/// before splitting (review finding fix-check#3: `grep -rn TODO \<nl> src/`
+/// must stay one reader segment, not a reader plus an unknown head).
+pub fn split_segments(command: &str) -> Vec<String> {
+    let joined = command.replace("\\\r\n", "").replace("\\\n", "");
+    joined
         .split(SEPARATORS)
         .map(str::trim)
         .filter(|seg| !seg.is_empty())
+        .map(String::from)
+        .collect()
 }
 
 /// Read-only / build commands that are safe to auto-approve.
@@ -143,8 +149,18 @@ mod tests {
 
     #[test]
     fn split_segments_follows_sh() {
-        let segs: Vec<&str> = split_segments("ls -la && rm -rf src/ ; echo done &\nwait").collect();
+        let segs = split_segments("ls -la && rm -rf src/ ; echo done &\nwait");
         assert_eq!(segs, ["ls -la", "rm -rf src/", "echo done", "wait"]);
+        // A backslash-newline continues ONE command; it must not invent a
+        // second segment (review finding fix-check#3).
+        assert_eq!(
+            split_segments("grep -rn TODO \\\n src/"),
+            ["grep -rn TODO  src/"]
+        );
+        assert_eq!(
+            classify_command("cargo test \\\n--all-features"),
+            RiskLevel::Safe
+        );
     }
 
     #[test]
@@ -152,9 +168,13 @@ mod tests {
         // The first word is a reader in every one of these; `sh` still runs
         // the writer (review findings v11/red-team#1, v11/adversarial-native#2).
         for cmd in ["ls\nrm -rf src/", "ls & rm -rf src/", "ls; rm -rf src/"] {
-            assert!(has_mutation_marker(cmd) || cmd.split(SEPARATORS).count() > 1);
+            assert!(has_mutation_marker(cmd) || split_segments(cmd).len() > 1);
         }
-        assert!(!split_segments("ls -la\nls -lb").any(|s| s.contains("rm")));
+        assert!(
+            !split_segments("ls -la\nls -lb")
+                .iter()
+                .any(|s| s.contains("rm"))
+        );
     }
 
     #[test]
