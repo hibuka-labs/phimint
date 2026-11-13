@@ -535,6 +535,45 @@ fn spawn() -> Action {
     Action::from_tool_call("c5", "spawn_agent", r#"{"model":"m","tools":"write"}"#)
 }
 
+#[tokio::test]
+async fn a_compile_layer_that_appears_mid_session_wakes_the_gate() {
+    // Dogfood 20261113_02a8f11b: a session that started in an empty directory
+    // and built a crate from scratch never woke the gate — the compile layer
+    // was a startup snapshot. It must be asked live.
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let ledger = Arc::new(Mutex::new(EvidenceLedger::new()));
+    let flag = Arc::new(AtomicBool::new(false));
+    let probe_flag = Arc::clone(&flag);
+    ledger
+        .lock()
+        .unwrap()
+        .set_compile_layer_probe(crate::verify_ledger::CompileLayerProbe::new(move || {
+            probe_flag.load(Ordering::SeqCst)
+        }));
+    let mw = VerifyGateMiddleware::new(VerifyGateConfig::default(), Arc::clone(&ledger));
+
+    // Before the project exists: no compile layer, the gate stays quiet.
+    let mut c = ctx("all done", vec![]);
+    mw.on_post_llm(&mut c).await.unwrap();
+    assert!(
+        c.follow_up_message.is_none(),
+        "nothing to verify against yet"
+    );
+
+    // The project appears (Cargo.toml lands) and code changed.
+    flag.store(true, Ordering::SeqCst);
+    ledger
+        .lock()
+        .unwrap()
+        .record_edit(&[std::path::PathBuf::from("src/lib.rs")]);
+    let mut c = ctx("all done", vec![]);
+    mw.on_post_llm(&mut c).await.unwrap();
+    assert!(
+        c.follow_up_message.is_some(),
+        "the gate must wake when the compile layer appears"
+    );
+}
+
 /// protects: delegated edits cannot ride a stale green light — a
 /// write-capable child edits from its own engine and those writes never
 /// reach the ledger (review finding v11/targeted#1). fails_when: a parent

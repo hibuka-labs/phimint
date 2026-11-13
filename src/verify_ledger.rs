@@ -18,6 +18,7 @@
 //! Nothing here runs commands or talks to the LLM. It is state plus predicates.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// What a verification run was checking for. The gate treats the two
 /// independently — a green `Check` does not stand in for a green `Test` and
@@ -258,10 +259,38 @@ pub struct EvidenceLedger {
     /// after the fact; it is bounded by the turn count, not by anything
     /// unbounded.
     records: Vec<EvidenceRecord>,
-    /// Whether the workspace can be verified at all. Set once at startup from
-    /// `code_intel::lang::resolve_verify_command` (project config → project
-    /// convention → language table); `None` means "not decided yet".
-    compile_layer: Option<bool>,
+    /// Whether the workspace can be verified at all — asked LIVE, not
+    /// snapshotted at startup (see [`CompileLayerProbe`]). `None` means "not
+    /// decided yet".
+    compile_layer: Option<CompileLayerProbe>,
+}
+
+/// How the ledger answers "can this workspace be verified at all?".
+///
+/// A probe, not a bool: the answer changes while a session runs — a session
+/// that starts in an empty directory creates the project it later compiles.
+/// A startup snapshot kept the gate asleep for the whole session (dogfood
+/// 20261113_02a8f11b: the gate never woke in a session that built a crate
+/// from scratch, so a hand-back passed with no green light behind it).
+#[derive(Clone)]
+pub struct CompileLayerProbe(Arc<dyn Fn() -> bool + Send + Sync>);
+
+impl CompileLayerProbe {
+    /// Build a probe from a closure.
+    pub fn new(probe: impl Fn() -> bool + Send + Sync + 'static) -> Self {
+        Self(Arc::new(probe))
+    }
+
+    /// Ask the workspace NOW.
+    pub fn answer(&self) -> bool {
+        (self.0)()
+    }
+}
+
+impl std::fmt::Debug for CompileLayerProbe {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("CompileLayerProbe")
+    }
 }
 
 impl EvidenceLedger {
@@ -269,11 +298,20 @@ impl EvidenceLedger {
         Self::default()
     }
 
-    /// Declare whether this workspace has a compile layer. Set at startup;
-    /// `false` switches the gate to its honest "nothing to verify against" path
-    /// instead of nagging for a verification that cannot exist.
+    /// Pin the compile-layer answer (callers that already know it; tests).
     pub fn set_compile_layer(&mut self, has_compile_layer: bool) {
-        self.compile_layer = Some(has_compile_layer);
+        self.compile_layer = Some(CompileLayerProbe::new(move || has_compile_layer));
+    }
+
+    /// Ask the workspace when it matters — the answer may differ from what it
+    /// was at startup.
+    pub fn set_compile_layer_probe(&mut self, probe: CompileLayerProbe) {
+        self.compile_layer = Some(probe);
+    }
+
+    /// The workspace's compile-layer answer, asked NOW.
+    fn has_compile_layer(&self) -> Option<bool> {
+        self.compile_layer.as_ref().map(|probe| probe.answer())
     }
 
     /// Record that code changed. Bumps the sequence, which is what makes every
@@ -320,7 +358,7 @@ impl EvidenceLedger {
     ///
     /// `kind` is the leg the caller cares about (the gate asks for `Check`).
     pub fn unverified(&self, kind: VerifyKind) -> Option<Unverified> {
-        if self.compile_layer == Some(false) {
+        if self.has_compile_layer() == Some(false) {
             return Some(Unverified::NoCompileLayer);
         }
         if self.fresh_green(kind) {
@@ -490,6 +528,35 @@ mod tests {
         assert_eq!(
             l.unverified(VerifyKind::Check),
             Some(Unverified::NoCompileLayer)
+        );
+    }
+
+    #[test]
+    fn a_compile_layer_that_appears_late_is_asked_for_not_cached() {
+        // A session that starts in an empty directory creates the project it
+        // later compiles: the answer changes mid-session (dogfood
+        // 20261113_02a8f11b — a startup snapshot kept the gate asleep, so the
+        // hand-back passed with no green light behind it).
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let mut l = EvidenceLedger::new();
+        let flag = Arc::new(AtomicBool::new(false));
+        let probe_flag = Arc::clone(&flag);
+        l.set_compile_layer_probe(CompileLayerProbe::new(move || {
+            probe_flag.load(Ordering::SeqCst)
+        }));
+        edit(&mut l);
+        assert_eq!(
+            l.unverified(VerifyKind::Check),
+            Some(Unverified::NoCompileLayer),
+            "no project yet: nothing to verify against"
+        );
+        flag.store(true, Ordering::SeqCst);
+        assert!(
+            matches!(
+                l.unverified(VerifyKind::Check),
+                Some(Unverified::NeverChecked { .. })
+            ),
+            "the project appeared: the gate must now ask for evidence"
         );
     }
 

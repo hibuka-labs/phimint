@@ -280,25 +280,35 @@ pub async fn build_with_code_exec(
         crate::verify_ledger::EvidenceLedger::new(),
     ));
     {
-        // Declare once at startup whether this workspace has a compile layer at
-        // all. `false` switches the gate to its honest "nothing to verify
-        // against" path instead of nagging for a verification that cannot exist.
+        // Whether this workspace has a compile layer is asked LIVE, not
+        // snapshotted at startup: a session that starts in an empty directory
+        // creates the project it later compiles, and a startup answer kept the
+        // gate asleep for the whole session (dogfood 20261113_02a8f11b — the
+        // gate never woke, so a hand-back passed with no green light behind
+        // it). `false` switches the gate to its honest "nothing to verify
+        // against" path instead of nagging for a verification that cannot
+        // exist.
         //
         // Resolved, not table-looked-up: a project can supply its own command
         // even when the language table has none for it (a Makefile `check`
         // target, `.phimint.toml`). See `code_intel::lang::resolve_verify_command`.
-        let resolved = code_intel::lang::resolve_verify_command(&workspace_root);
-        let has_compile_layer = resolved.is_some();
+        let probe_root = workspace_root.clone();
+        let probe = crate::verify_ledger::CompileLayerProbe::new(move || {
+            code_intel::lang::resolve_verify_command(&probe_root).is_some()
+        });
         verify_ledger
             .lock()
             .expect("verify ledger lock poisoned")
-            .set_compile_layer(has_compile_layer);
+            .set_compile_layer_probe(probe);
+        // The startup answer stays in the log for the trail — the probe
+        // re-asks later, so the two may differ.
+        let resolved = code_intel::lang::resolve_verify_command(&workspace_root);
         tracing::info!(
             workspace = %workspace_root.display(),
-            has_compile_layer,
+            has_compile_layer = resolved.is_some(),
             verify_command = resolved.as_ref().map(|v| v.command.as_str()).unwrap_or(""),
             verify_command_source = resolved.as_ref().map(|v| v.source.label()).unwrap_or(""),
-            "verify gate: workspace compile layer"
+            "verify gate: workspace compile layer at startup"
         );
     }
 
