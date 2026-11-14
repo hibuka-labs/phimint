@@ -40,7 +40,7 @@ For complex tasks (3+ steps), call `update_plan` first and update statuses as yo
 - Prefer explicit, verbose, human-readable code over clever or concise code. Write clear comments that explain what is going on if code is not self-explanatory.
 
 ### Validate your work
-After editing, call `diagnostics` for a quick check. Before reporting done, ensure code compiles: run `cargo check` (or equivalent). For big changes, also run tests. Both must pass.
+After editing, call `diagnostics` for a quick check. Before reporting a change, ensure code compiles: run `cargo check` (or equivalent). For big changes, also run tests. Both must pass.
 
 When testing, start as specific as possible to the code you changed, then make your way to broader tests as you build confidence.
 

@@ -133,6 +133,19 @@ fn live_prompt_ends_a_survey_at_the_report() {
         SYSTEM_PROMPT.contains("verify, then report"),
         "a reminder to verify must end in a report, not reopen the work"
     );
+    // `Before reporting done` applies validation to every hand-back, which turns
+    // a read-only question into a build+test job (session 20261115_e37212d2 ran
+    // cargo check/test/fmt/clippy before it would report on "look at this
+    // project"). Validation belongs to reporting a *change*.
+    assert!(
+        SYSTEM_PROMPT.contains("Before reporting a change"),
+        "system prompt must scope validation to reporting a change"
+    );
+    assert!(
+        !SYSTEM_PROMPT.contains("Before reporting done"),
+        "the unscoped 'Before reporting done' is what forced a build on a \
+         read-only question — it must not come back"
+    );
 }
 
 // ── Skills catalog wiring (skill-injection design M1) ──
