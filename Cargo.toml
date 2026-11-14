@@ -1,6 +1,6 @@
 [package]
 name = "phimint"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2024"
 description = "phimint — a terminal AI coding agent built on phi-agent. Not just good at chat: it reads the code, changes it, compiles and tests until the job is done."
 license = "MIT"
@@ -31,23 +31,23 @@ code-exec = ["phi-agent/code-exec", "dep:phi-ns", "dep:phi-ns-desktop"]
 # everything else the product needs (llm_trait, create_provider, guard,
 # max_turns_nudge, registry snapshots, fan-in router) — no direct deps on
 # agent-base / agent-works / phi-kernel-tools / llm-unified.
-phi-agent = { version = "0.21.0", features = ["shell", "multi-agent", "skill", "memory", "plugin-wasm"] }
+phi-agent = { version = "0.22.0", features = ["shell", "multi-agent", "skill", "memory", "plugin-wasm"] }
 # Context rotation tools (notes, history, handoff) — the I/O layer.
-phi-kernel-tools = { version = "0.13.0", features = ["context", "shell"] }
+phi-kernel-tools = { version = "0.14.0", features = ["context", "shell"] }
 # The runtime kernel's guard contract types (`ReactLoopGuard`, `GuardCtx`,
 # `GuardDecision`, the engine's notice/provider handles) — named directly by
 # `src/model/lite_pin.rs` to pin the judge to its tier without a framework
 # change. Same minor as the phi family's agent-works/phi-kernel-tools.
-agent-base = "0.13.0"
+agent-base = "0.14.0"
 # Chat-style TUI components (lines/transcript/stream/markdown/completion/…),
 # extracted from src/ui/ — the product keeps only the shell (app/render/handlers).
-phi-tui = "0.4.0"
+phi-tui = "0.5.0"
 # The product shell (app/render/handlers/run + the ShellSpec/ShellHandles
 # wire-up vocabulary). `version` is mandatory for publishing (a bare path dep
 # is rejected by `cargo publish`); `path` keeps local development resolving to
 # the sibling checkout. The release script strips `path` and resolves the
 # crate from crates.io.
-phi-agent-tui = { version = "0.2.0" }
+phi-agent-tui = { version = "0.3.0" }
 # Language intelligence (lsp/lang/repomap/ripgrep/diagnostics cores), extracted
 # from src/lsp.rs + src/lang.rs + src/tools cores — the product keeps the Tool
 # shells. Features declared explicitly per the distillation plan.
@@ -55,11 +55,11 @@ code-intel = { version = "0.1.2", default-features = false, features = ["lsp", "
 # Design canvas (visual design companion): process-local HTTP server, canvas
 # tools, click events. The product keeps the click mailbox / message synthesis
 # (M2) and the consent gate; this crate owns server + token + screens.
-phi-canvas = "0.1.1"
+phi-canvas = "0.1.2"
 # Browser automation (22 CDP tools, `browser` feature): the agent drives its own
 # Chrome so it can look at what it just showed the user — design-canvas
 # self-check and reference patches. Behind the feature because of headless_chrome.
-phi-tools = { version = "0.8.1", features = ["browser"] }
+phi-tools = { version = "0.9.0", features = ["browser"] }
 # Desktop capability pack (`desk.*`) on the code-exec engine. Assembly is the
 # host's job (sdk-assembly §9.3) — phi-agent never sees a capability pack;
 # phimint names them at its own engine assembly points (`src/desk.rs`).
@@ -103,8 +103,8 @@ arboard = "3"
 # session.log file (via log-core's LogCoreLayer) and per-turn event JSONL
 # (via phi_agent::save_turn_log).
 # phi-telemetry: per-turn token usage → session_metrics.json
-phi-telemetry = "0.7.5"
-log-core = "0.1.4"
+phi-telemetry = "0.8.0"
+log-core = "0.1.5"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 json5 = "1.3.1"
@@ -122,6 +122,4 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 # The capability vocabulary, for tests that declare a pack (the desk consent
 # posture and the browser face).
 phi-cap = { version = "0.1.0" }
-
-
 
