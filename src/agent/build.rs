@@ -6,6 +6,7 @@ use super::spill::HubSpillSink;
 use super::subagents::child_multi_agent_config;
 use super::*;
 use phi_agent::AgentBuilder;
+use phi_kernel_tools::task_input::TaskInputTool;
 use std::path::Path;
 
 /// Build a phimint agent bound to `workspace_root`.
@@ -438,6 +439,20 @@ pub async fn build_with_code_exec(
         )
         .register_tool(TaskOutputTool::new(bg_registry.clone()).with_spill(spill_sink.clone()))
         .register_tool(TaskCancelTool::new(bg_registry.clone()))
+        // task_input (interaction P1): feed a running PTY task's terminal.
+        // The answer policy is the spec table (PromptPolicy's product fields);
+        // cache-tier sends ask through the session's interaction slot — the
+        // live approval popup. Without a slot (tests) the cache tier fails
+        // closed and only deterministic auto-tier answers flow.
+        .register_tool({
+            let base = TaskInputTool::new(bg_registry.clone());
+            match &interact {
+                Some(slot) => {
+                    base.with_interact(Arc::clone(slot) as Arc<dyn phi_agent::InteractionChannel>)
+                }
+                None => base,
+            }
+        })
         .register_tool(RipgrepTool::new(workspace_root.clone()))
         .register_tool(RepoMapTool::new(workspace_root.clone()))
         // verify gate, mechanism half (design §5.2): spawn the project's

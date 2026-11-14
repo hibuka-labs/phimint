@@ -450,6 +450,45 @@ async fn ask_mode_queues_prompt_and_roundtrips() {
     assert_eq!(decision, ApprovalDecision::Deny);
 }
 
+/// An answer-policy consent (`task_input`) asks in every mode but deny.
+///
+/// The mode switch governs *tool* approvals; answering an interactive prompt
+/// speaks for the user, so "auto" (do not stop me) does not cover it.
+#[tokio::test]
+async fn a_policy_consent_asks_even_in_auto_mode() {
+    let (handler, _policy, mut queue_rx, switch) = build_live_approval("auto", None);
+    assert_eq!(switch.get(), RuntimeApprovalMode::Auto);
+
+    let consent = || ApprovalRequest {
+        title: "Task bg_x is waiting for input".to_string(),
+        message: "The task is blocked on a confirm prompt.".to_string(),
+        action_key: Some("task_input:bg_x:confirm:text:\"y\\n\"".to_string()),
+        risk_level: RiskLevel::Sensitive,
+        raw: None,
+        source: None,
+    };
+
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let handle = tokio::spawn({
+        let handler = handler.clone();
+        let cancel = cancel.clone();
+        async move { handler.approve(consent(), cancel).await }
+    });
+
+    let item = queue_rx.recv().await.expect("the consent must be queued");
+    item.decision_tx
+        .send(ApprovalDecision::AllowOnce)
+        .expect("UI should be able to answer");
+    let decision = handle.await.expect("handler task").expect("approve");
+    assert_eq!(decision, ApprovalDecision::AllowOnce);
+
+    // Deny mode still stops everything, consent included.
+    switch.set(RuntimeApprovalMode::Deny);
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let decision = handler.approve(consent(), cancel).await.expect("approve");
+    assert_eq!(decision, ApprovalDecision::Deny);
+}
+
 #[tokio::test]
 async fn deny_mode_denies_without_queueing() {
     let (handler, _policy, mut queue_rx, _switch) = build_live_approval("deny", None);

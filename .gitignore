@@ -36,3 +36,6 @@ CLAUDE.local.md
 
 # readme_reel.py intermediate PNGs (frames are the source of truth)
 docs/assets/_reel_png/
+
+# local diagram scratch (unreferenced drafts — never shipped)
+diagrams/

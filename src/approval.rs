@@ -442,6 +442,24 @@ pub use phi_agent_tui::{ApprovalModeSwitch, RuntimeApprovalMode};
 
 // ── The live gate: policy + handler behind one switch ───────────────────────
 
+/// The answer-policy consents (`task_input`) are not tool approvals.
+///
+/// The mode switch governs *tool* approvals: may the agent run this command,
+/// write this file? An answer-policy consent asks a different question — may
+/// the agent answer an interactive prompt on my behalf? "Auto" says the
+/// agent may act without stopping me; it does not say the agent may speak
+/// for me at a decision point. So these asks happen in every mode except
+/// deny (deny stops everything).
+///
+/// The marker is the action key the mechanism builds (`task_input:{task}:
+/// {class}:{answer}`) — the same key the tool caches an "always" under.
+fn is_policy_consent(request: &ApprovalRequest) -> bool {
+    request
+        .action_key
+        .as_deref()
+        .is_some_and(|key| key.starts_with("task_input:"))
+}
+
 /// The approval ledger behind the gate: standing tiers for external tools.
 ///
 /// Memory owner for `always allow` (contract hard rule #2) — the engine's
@@ -709,7 +727,15 @@ impl ApprovalHandler for LiveApprovalGate {
             // Defensive: the policy auto-passes in auto mode. If a request
             // still arrives (mode flipped between evaluate and approve), allow
             // it — auto means "don't block the run".
-            RuntimeApprovalMode::Auto => Ok(ApprovalDecision::AllowOnce),
+            RuntimeApprovalMode::Auto => {
+                if is_policy_consent(&request) {
+                    // ...except an answer-policy consent: answering an
+                    // interactive prompt speaks for the user, so it asks.
+                    self.queued.approve(request, cancel_token).await
+                } else {
+                    Ok(ApprovalDecision::AllowOnce)
+                }
+            }
             RuntimeApprovalMode::Deny => Ok(ApprovalDecision::Deny),
             RuntimeApprovalMode::Ask => self.queued.approve(request, cancel_token).await,
         }

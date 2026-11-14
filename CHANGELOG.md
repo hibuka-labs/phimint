@@ -5,6 +5,28 @@ All notable changes to phimint.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.10.0] - 2026-11-14
+
+### Added
+
+- **The agent can answer a terminal that is waiting for input.** A new
+  `task_input` tool feeds a running PTY task: the model reads the screen,
+  decides what the prompt is asking, and sends the answer. Three policy
+  tiers govern what may be sent — a deterministic safe answer goes straight
+  through, a free-form answer asks once and then remembers, and the hard
+  boundary (password, 2FA, ssh host key, unknown prompt) sends **nothing** and
+  hands the turn back to you. The prompt's shape is detected, not guessed:
+  the detector is a pure matcher over output tails that reports what the
+  prompt is, and never decides what to answer.
+
+- **Answering a prompt is not the same as approving a tool, and the approval
+  gate now says so.** The mode switch governs tool approvals — may the agent
+  run this command, write this file. Answering an interactive prompt speaks
+  *for you*, so "auto" (do not stop me) does not cover it: a consent asks in
+  every mode except deny. Deny still stops everything.
+
 ## [0.9.0] - 2026-11-13
 
 ### Added
