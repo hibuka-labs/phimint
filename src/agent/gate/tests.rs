@@ -39,6 +39,48 @@ fn shell(cmd: &str) -> Action {
     Action::from_tool_call("c4", "execute_command", format!(r#"{{"command":"{cmd}"}}"#))
 }
 
+/// The survey idiom: reads, pipes, `2>/dev/null`, quoting. Not one of these
+/// writes a byte, and a gate that calls them "code changed" sends the model off
+/// looking for an edit it never made (dogfood 20261115_e37212d2).
+#[test]
+fn a_read_only_survey_does_not_dirty_the_gate() {
+    for cmd in [
+        r#"ls -la && echo "---" && cat Cargo.toml 2>/dev/null | head -80"#,
+        "pwd; find src -type f -name '*.rs' | sort",
+        "sed -n '40,60p' src/agent.rs",
+        "cargo check --all-targets 2>&1 | tail -25",
+        r#"RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items 2>&1 | tail -12"#,
+        "git log --oneline -15 && git status --short | head -40 && git branch --show-current",
+        r#"grep -rn 'lock().unwrap()' src/ --include='*.rs' | wc -l"#,
+        "git show v0.9.0:src/agent/spill.rs | sed -n '10,20p'",
+        "find ../phi-agent-tui/src -name '*.rs' | xargs wc -l | sort -rn | head -8",
+        // `-exec` is a `find` primary, not a suffix: `code-exec` is a word and
+        // reading it as a writer is exactly the false alarm worth killing.
+        "grep -n code-exec src/agent.rs | head",
+    ] {
+        assert!(!shell_may_mutate(cmd), "false dirty: {cmd}");
+    }
+}
+
+/// The other side of the same rule. A reader that quietly stops recognising a
+/// writer is a false *pass*, which the gate may never produce.
+#[test]
+fn a_shell_command_that_writes_still_dirty_the_gate() {
+    for cmd in [
+        "sed -i 's/a/b/' src/agent.rs",
+        "sort f -o g",
+        "cargo fmt src/agent.rs",
+        "find . -delete",
+        "find . | xargs rm",
+        "echo hi > src/agent.rs",
+        "cp src/agent/spill.rs /tmp/spill.rs.bak",
+        "git checkout -b feat/x",
+        "RUSTDOCFLAGS='-D warnings' cargo fix --allow-dirty",
+    ] {
+        assert!(shell_may_mutate(cmd), "false clean: {cmd}");
+    }
+}
+
 fn verify() -> Action {
     Action::from_tool_call("c3", "verify", r#"{}"#)
 }

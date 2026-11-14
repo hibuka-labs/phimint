@@ -84,7 +84,14 @@ pub enum Unverified {
     /// wrong; there is simply nothing to verify against.
     NoCompileLayer,
     /// Nothing was run after the last edit.
-    NeverChecked { edited: Vec<PathBuf> },
+    NeverChecked {
+        edited: Vec<PathBuf>,
+        /// Every pending change is one the gate could not attribute to a file —
+        /// a shell call or a CodeAct cell. "Code changed" is not a sentence the
+        /// ledger can support over those, and saying it sends the model off
+        /// hunting for an edit it never made (dogfood 20261115_e37212d2).
+        unnamed_only: bool,
+    },
     /// A check ran and was killed or timed out — no evidence either way.
     TimedOut {
         edited: Vec<PathBuf>,
@@ -123,12 +130,24 @@ impl Unverified {
                  project verify command); report without verification."
                     .to_string()
             }
-            Unverified::NeverChecked { edited } => {
-                format!(
-                    "Code changed with no green verification {}; run `verify` (or the \
-                     project's build command) to a pass first, then report again.",
-                    edited_files(edited)
-                )
+            Unverified::NeverChecked {
+                edited,
+                unnamed_only,
+            } => {
+                if *unnamed_only {
+                    format!(
+                        "A shell command may have changed files I cannot name {}; if \
+                         nothing actually changed, say so in your report and finish — \
+                         otherwise run `verify` first.",
+                        edited_files(edited)
+                    )
+                } else {
+                    format!(
+                        "Code changed with no green verification {}; run `verify` (or the \
+                         project's build command) to a pass first, then report again.",
+                        edited_files(edited)
+                    )
+                }
             }
             Unverified::TimedOut { edited, command } => {
                 format!(
@@ -173,11 +192,21 @@ impl Unverified {
                  no L2 evidence this time."
                     .to_string()
             }
-            Unverified::NeverChecked { edited } => {
-                format!(
-                    "⚠️ No verification since the last change {}",
-                    edited_files(edited)
-                )
+            Unverified::NeverChecked {
+                edited,
+                unnamed_only,
+            } => {
+                if *unnamed_only {
+                    format!(
+                        "⚠️ No verification behind unattributed shell work {}",
+                        edited_files(edited)
+                    )
+                } else {
+                    format!(
+                        "⚠️ No verification since the last change {}",
+                        edited_files(edited)
+                    )
+                }
             }
             Unverified::TimedOut { edited, command } => {
                 format!(
@@ -206,6 +235,13 @@ impl Unverified {
             }
         }
     }
+}
+
+/// Whether every pending change is one the gate could not attribute to a file —
+/// the `.` sentinel a shell call or a CodeAct cell is recorded as. See
+/// [`Unverified::NeverChecked::unnamed_only`].
+fn all_unattributed(edited: &[PathBuf]) -> bool {
+    !edited.is_empty() && edited.iter().all(|p| p.as_os_str() == ".")
 }
 
 /// The changed-file note both messages end with.
@@ -365,8 +401,12 @@ impl EvidenceLedger {
             return None;
         }
         let edited = self.pending_edits.clone();
+        let unnamed_only = all_unattributed(&edited);
         match self.latest(kind) {
-            None => Some(Unverified::NeverChecked { edited }),
+            None => Some(Unverified::NeverChecked {
+                edited,
+                unnamed_only,
+            }),
             Some(rec) if rec.seq <= self.last_edit_seq => {
                 if rec.verdict.exit_code.is_none() {
                     Some(Unverified::TimedOut {
@@ -609,6 +649,36 @@ mod tests {
     }
 
     #[test]
+    fn an_unattributed_change_is_not_reported_as_a_named_code_change() {
+        // The gate records a shell call it cannot attribute as `.`, and "code
+        // changed" over that is a sentence the ledger does not support. Telling
+        // the model it edited code sends it off hunting for an edit it never
+        // made (dogfood 20261115_e37212d2).
+        let mut l = EvidenceLedger::new();
+        l.set_compile_layer(true);
+        l.record_edit(&[PathBuf::from(".")]);
+
+        let unv = l.unverified(VerifyKind::Check).expect("unverified");
+        let nudge = unv.nudge();
+        assert!(!nudge.contains("Code changed"), "{nudge}");
+        assert!(nudge.contains("may have changed"), "{nudge}");
+        // The way out is the point: the model may be right that nothing did.
+        assert!(nudge.contains("say so"), "{nudge}");
+        let warning = unv.warning();
+        assert!(!warning.contains("the last change"), "{warning}");
+
+        // A change the gate *can* name is a fact, and it is still stated as one.
+        let mut named = EvidenceLedger::new();
+        named.set_compile_layer(true);
+        edit(&mut named);
+        let nudge = named
+            .unverified(VerifyKind::Check)
+            .expect("unverified")
+            .nudge();
+        assert!(nudge.contains("Code changed"), "{nudge}");
+    }
+
+    #[test]
     fn the_messages_render_the_exit_code_not_the_option() {
         // The first smoke run leaked `exit=Some(101)` into the user's terminal.
         let mut l = EvidenceLedger::new();
@@ -674,6 +744,7 @@ mod tests {
             Unverified::NoCompileLayer.warning(),
             Unverified::NeverChecked {
                 edited: vec![PathBuf::from("src/a.rs")],
+                unnamed_only: false,
             }
             .warning(),
             Unverified::TimedOut {

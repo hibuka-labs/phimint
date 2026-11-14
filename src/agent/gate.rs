@@ -75,19 +75,89 @@ const MULTI_AGENT_TOOLS: &[&str] = &["spawn_agent", "send_message", "wait_agent"
 /// anyway).
 ///
 /// Deliberately closed and small. Interpreters (`sh`, `python`, `node`, `awk`,
-/// `sed`, `sort -o`, `env`, `xargs`, `find -delete`) are absent: each can write
-/// or run something with no marker in the string, so they stay dirty. A reader
-/// missing from this list just costs a nag; a writer wrongly on it would be a
-/// false pass (rule 3).
+/// `sed`, `sort -o`, `env`, `xargs`, `find -delete`) are absent from the plain
+/// list below: each can write or run something with no marker in the string, so
+/// they are decided by their *form* in [`segment_may_mutate`] instead. A reader
+/// missing from here just costs a nag; a writer wrongly on it would be a false
+/// pass (rule 3).
 const SHELL_READ_ONLY: &[&str] = &[
-    "ls", "cat", "head", "tail", "wc", "grep", "egrep", "fgrep", "rg", "pwd", "which", "stat",
-    "du", "df", "date", "diff", "cmp", "file", "basename", "dirname", "realpath", "readlink",
-    "echo", "printf", "true", "false", "whoami", "uname", "hostname", "id", "ps", "lsof", "jq",
-    "cut", "tr", "uniq",
+    "ls",
+    "cat",
+    "head",
+    "tail",
+    "wc",
+    "grep",
+    "egrep",
+    "fgrep",
+    "rg",
+    "pwd",
+    "which",
+    "stat",
+    "du",
+    "df",
+    "date",
+    "diff",
+    "cmp",
+    "file",
+    "basename",
+    "dirname",
+    "realpath",
+    "readlink",
+    "echo",
+    "printf",
+    "true",
+    "false",
+    "whoami",
+    "uname",
+    "hostname",
+    "id",
+    "ps",
+    "lsof",
+    "jq",
+    "cut",
+    "tr",
+    "uniq",
+    "cd",
+    "test",
+    "[",
+    "read",
+    "export",
+    "unset",
+    "printenv",
+    "sleep",
+    "seq",
+    "comm",
+    "column",
+    "strings",
+    "xxd",
+    "od",
+    "hexdump",
+    "md5",
+    "shasum",
+    "sha256sum",
+    "nl",
+    "tac",
+    "rev",
+    "paste",
+    "join",
+    "expand",
+    "unexpand",
+    "tree",
+    "expr",
+    "dirname",
+];
+
+/// Words that introduce no command of their own: the loop/conditional
+/// scaffolding `sh` needs before the real command word turns up, plus the
+/// `!` of a negated pipeline. Neither writes, and reading one of them as the
+/// command head turned `for f in …; do cat "$f"; done` into a supposed writer.
+const SHELL_SCAFFOLDING: &[&str] = &[
+    "do", "done", "then", "else", "elif", "fi", "esac", "{", "}", "(", ")", "!", "if", "for",
+    "while", "until", "case", "time",
 ];
 
 /// `git` subcommands that only read. Everything else (`config`, `stash`,
-/// `branch`, `remote`, `push`, …) mutates and must dirty.
+/// `checkout`, `reset`, `push`, …) mutates and must dirty.
 const GIT_READ_SUBS: &[&str] = &[
     "status",
     "diff",
@@ -99,9 +169,110 @@ const GIT_READ_SUBS: &[&str] = &[
     "ls-files",
     "grep",
     "shortlog",
+    "rev-list",
+    "merge-base",
+    "ls-remote",
+    "cat-file",
+    "ls-tree",
+    "show-ref",
+    "count-objects",
+    "reflog",
+    "whatchanged",
+    "cherry",
+    "name-rev",
+    "range-diff",
+    "check-ignore",
+    "check-attr",
+    "summary",
+    "help",
+    "version",
+    "var",
 ];
 
-// The mutation fragments live in `crate::command` (`MUTATION_MARKERS`, shared
+/// `git` subcommands that list in one form and write in another — `git branch`
+/// reads, `git branch -d` deletes. Read only when the invocation carries a
+/// listing flag and none of the writing ones.
+const GIT_MIXED_SUBS: &[GitMixed] = &[
+    GitMixed {
+        sub: "branch",
+        reads: &[
+            "-l",
+            "--list",
+            "-a",
+            "--all",
+            "-v",
+            "-vv",
+            "--verbose",
+            "-n",
+            "--show-current",
+            "--contains",
+            "--merged",
+            "--no-merged",
+            "--points-at",
+        ],
+        writes: &[
+            "-d",
+            "-D",
+            "-m",
+            "-M",
+            "-c",
+            "-C",
+            "--delete",
+            "--move",
+            "--copy",
+            "--edit-description",
+            "--set-upstream-to",
+            "--unset-upstream",
+            "--track",
+        ],
+    },
+    GitMixed {
+        sub: "tag",
+        reads: &["-l", "--list", "--contains", "--merged", "--points-at"],
+        writes: &[
+            "-d",
+            "-D",
+            "--delete",
+            "-a",
+            "--annotate",
+            "-s",
+            "--sign",
+            "-f",
+            "--force",
+            "-m",
+            "--message",
+            "-u",
+            "--local-user",
+            "--file",
+        ],
+    },
+    GitMixed {
+        sub: "remote",
+        reads: &["-v", "-vv", "--verbose", "-n", "show", "get-url"],
+        writes: &[
+            "add",
+            "remove",
+            "rename",
+            "set-url",
+            "prune",
+            "update",
+            "set-head",
+            "--add",
+            "--delete",
+            "--push",
+            "--set-url",
+        ],
+    },
+];
+
+/// A `git` subcommand whose read and write forms are told apart by their flags.
+struct GitMixed {
+    sub: &'static str,
+    reads: &'static [&'static str],
+    writes: &'static [&'static str],
+}
+
+// The mutation fragments live in `crate::command` (`FLAG_MARKERS`, shared
 // with the approval classifier); [`shell_may_mutate`] reads them through
 // `command::has_mutation_marker`.
 
@@ -303,7 +474,7 @@ impl Middleware for VerifyGateMiddleware {
         let unv = match unv {
             None => return Ok(()), // fresh green light — nothing to do
             Some(Unverified::NoCompileLayer) => return Ok(()),
-            Some(Unverified::NeverChecked { edited }) if edited.is_empty() => {
+            Some(Unverified::NeverChecked { edited, .. }) if edited.is_empty() => {
                 return Ok(());
             }
             Some(unv) => unv,
@@ -412,16 +583,21 @@ fn command_arg(raw_args: &str) -> Option<String> {
 /// behind [`DIRTY_TOOLS`] (review finding p2/adversarial-native#1).
 ///
 /// Closed rule, erroring towards "may mutate": every `;`/`|`/`&`/newline
-/// segment must have a head in [`SHELL_READ_ONLY`] (or a `git` head with a
-/// [`GIT_READ_SUBS`] subcommand), and the raw string must carry no
-/// `command::MUTATION_MARKERS` fragment. The splitter is the shared
-/// `command::split_segments` — `sh -c` treats a newline and a lone `&` as
-/// separators exactly like `;`, so a private splitter that misses one lets
-/// `ls\nrm -rf src/` read as the reader `ls` and leave the ledger green over
-/// a shell edit (review findings v11/red-team#1, v11/adversarial-native#2).
-/// Unknown heads — interpreters, `xargs`, `find`, `tee`, `make` — are writers
-/// until proven otherwise, so a writer misread as a reader is impossible and
-/// a reader misread as a writer just costs a nag.
+/// segment must have a head that reads (see [`segment_may_mutate`]), and the
+/// raw string must carry no `command::FLAG_MARKERS` fragment and no redirect
+/// into a file. The splitter is the shared `command::split_segments` — `sh -c`
+/// treats a newline and a lone `&` as separators exactly like `;`, so a private
+/// splitter that misses one lets `ls\nrm -rf src/` read as the reader `ls` and
+/// leave the ledger green over a shell edit (review findings v11/red-team#1,
+/// v11/adversarial-native#2).
+///
+/// Unknown heads — interpreters (`sh`, `python`, `node`), `tee`, `make` — are
+/// writers until proven otherwise, so a writer misread as a reader is
+/// impossible and a reader misread as a writer just costs a nag. That nag is
+/// not free, though: a survey that gets called "code changed" sends the model
+/// off hunting for an edit it never made (dogfood 20261115_e37212d2), which is
+/// why the readers that only write under a flag — `sed -i`, `sort -o`,
+/// `cargo fmt`, `find -delete` — are judged by their form rather than excluded.
 fn shell_may_mutate(command: &str) -> bool {
     if crate::command::has_mutation_marker(command) {
         return true;
@@ -431,23 +607,109 @@ fn shell_may_mutate(command: &str) -> bool {
         .any(|seg| segment_may_mutate(&seg))
 }
 
-/// One command segment: whether its head (or `git` subcommand) sits outside
-/// the read-only sets. See [`shell_may_mutate`].
+/// One command segment: whether it may change source.
+///
+/// The head word is the thing that acts, and it is found after the shell's
+/// scaffolding and any `VAR=value` prefix — neither of which is a command. What
+/// is left is either a plain reader or one of the utilities that reads until
+/// you hand it the flag that writes; those are judged by their form here rather
+/// than excluded outright, because excluding them is what made a read-only
+/// survey dirty.
 fn segment_may_mutate(segment: &str) -> bool {
-    let mut words = segment.split_whitespace();
-    let Some(head) = words.next() else {
+    let words = crate::command::words(segment);
+    let mut it = words
+        .iter()
+        .enumerate()
+        .skip_while(|(_, w)| SHELL_SCAFFOLDING.contains(&w.as_str()) || is_assignment(w));
+    let Some((idx, head)) = it.next() else {
+        return false; // nothing but scaffolding: `done`, `}`, `X=1`
+    };
+    let after = &words[idx + 1..];
+
+    if head.as_str() == "git" {
+        return git_may_mutate(after);
+    }
+    // `xargs` runs the program named after it; everything before that is flags
+    // (`xargs -0 wc -l` reads, `xargs rm` does not).
+    let (prog, rest): (&str, &[String]) = if head.as_str() == "xargs" {
+        match after.iter().position(|w| !w.starts_with('-')) {
+            Some(p) => (
+                after[p].rsplit('/').next().unwrap_or(&after[p]),
+                &after[p + 1..],
+            ),
+            None => return false,
+        }
+    } else {
+        (head.rsplit('/').next().unwrap_or(head.as_str()), after)
+    };
+
+    match prog {
+        // Each of these reads until it is handed the flag that writes, and
+        // `has_mutation_marker` has already ruled out redirections and the
+        // writing `find` primaries on the way in.
+        "sed" => words.iter().any(|w| w.starts_with("-i")),
+        "sort" => words.iter().any(|w| w == "-o" || w.starts_with("--output")),
+        "awk" | "gawk" | "mawk" | "nawk" => segment.contains("system("),
+        "curl" | "wget" => words
+            .iter()
+            .any(|w| *w == "-o" || *w == "-O" || w.starts_with("-o") || w.starts_with("--output")),
+        "find" => false,
+        "cargo" => cargo_may_mutate(rest),
+        _ => !SHELL_READ_ONLY.contains(&prog),
+    }
+}
+
+/// A `VAR=value` prefix: it sets up the environment for the command that
+/// follows and never writes on its own. Only ever the *head* is checked here,
+/// so a `foo=bar` appearing as an argument is left alone.
+fn is_assignment(word: &str) -> bool {
+    let Some(eq) = word.find('=') else {
         return false;
     };
-    let prog = head.rsplit('/').next().unwrap_or(head);
-    if prog == "git" {
-        // Bare `git` and non-reading subcommands (`config`, `stash`, `push`)
-        // mutate; the read-only family is spelled out.
-        let Some(sub) = words.next() else {
-            return true;
-        };
-        return !GIT_READ_SUBS.contains(&sub);
+    let name = &word[..eq];
+    name.chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Whether a `git` invocation may change the working tree.
+fn git_may_mutate(rest: &[String]) -> bool {
+    let Some(sub) = rest.first() else {
+        return true; // bare `git`
+    };
+    let sub = sub.as_str();
+    if GIT_READ_SUBS.contains(&sub) {
+        return false;
     }
-    !SHELL_READ_ONLY.contains(&prog)
+    let Some(mixed) = GIT_MIXED_SUBS.iter().find(|m| m.sub == sub) else {
+        return true;
+    };
+    let has = |flags: &&[&str]| rest.iter().any(|a| flags.contains(&a.as_str()));
+    has(&mixed.writes) || !has(&mixed.reads)
+}
+
+/// `cargo` writes source through a handful of subcommands (`fmt` without
+/// `--check`, `fix`, `add`, `new`); the build loop is the reader. The
+/// subcommand is the first word that is neither a flag nor a `+toolchain`.
+fn cargo_may_mutate(rest: &[String]) -> bool {
+    let Some(sub) = rest
+        .iter()
+        .find(|w| !w.starts_with('-') && !w.starts_with('+'))
+    else {
+        return true; // bare `cargo`: no saying what it will do
+    };
+    if matches!(
+        sub.as_str(),
+        "check" | "build" | "test" | "clippy" | "doc" | "bench" | "metadata" | "tree"
+    ) {
+        return false;
+    }
+    // `cargo fmt` rewrites the files in place unless told to only look.
+    if sub == "fmt" {
+        return !rest.iter().any(|w| w == "--check");
+    }
+    true
 }
 
 #[cfg(test)]
