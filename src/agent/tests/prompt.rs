@@ -113,6 +113,28 @@ fn live_prompt_bans_killing_time_with_delegated_work() {
     );
 }
 
+#[test]
+fn live_prompt_ends_a_survey_at_the_report() {
+    // Session 20261115_e37212d2: "you help me look at this project" ran 8m34s
+    // and never reported. The report was written at 2m02s and thrown away;
+    // every new thing the walk turned up became a fresh investigation. "Keep
+    // going until completely resolved" read alone licenses exactly that, so
+    // `resolved` has to be scoped to the shape of the request.
+    assert!(
+        SYSTEM_PROMPT.contains("follows the shape of the request"),
+        "system prompt must scope 'resolved' to the shape of the request"
+    );
+    assert!(
+        SYSTEM_PROMPT.contains("log it in the report and stop"),
+        "system prompt must say a new problem found on the way gets reported, \
+         not chased — that was the e37212d2 runaway"
+    );
+    assert!(
+        SYSTEM_PROMPT.contains("verify, then report"),
+        "a reminder to verify must end in a report, not reopen the work"
+    );
+}
+
 // ── Skills catalog wiring (skill-injection design M1) ──
 //
 // Same lesson as above, one level up: the catalog must reach the prompt
