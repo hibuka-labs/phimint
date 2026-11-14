@@ -533,3 +533,25 @@ fn without_the_engine_no_road_teaches_code_cell() {
         assert!(!prompt.contains("## Code protocol"), "{mode:?}");
     }
 }
+
+/// The memory index snapshot must not ride the always-on system prompt.
+///
+/// The index is one line per memory — a list of every topic on file. Sent to
+/// the model every turn, it reads as a list of places to go look, which is
+/// exactly what an open-ended request turns into. It is one `memory_list`
+/// away; the prompt carries the tool guidance and where the index lives, not
+/// the index itself. Rationale and the measurement behind it live in
+/// `notes/prompt-redesign-design.md`.
+#[test]
+fn the_memory_index_does_not_ride_the_system_prompt() {
+    let template = crate::agent::prompt::MEMORY_PROMPT_TEMPLATE;
+    assert!(
+        !template.contains("{index_content}"),
+        "the memory index snapshot must not be substituted into the always-on \
+         prompt — it reads as a list of places to go look"
+    );
+    assert!(
+        template.contains("memory_list"),
+        "the template must still tell the model where the index is"
+    );
+}

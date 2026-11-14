@@ -191,6 +191,47 @@ pub fn compose_system_prompt(resolver: &SkillResolver) -> String {
     compose_system_prompt_for(resolver, CodeExecMode::Tool, "")
 }
 
+/// The memory prompt template, with the index snapshot **out** of it.
+///
+/// `agent-works`' `CLAUDE_COMPATIBLE_TEMPLATE` substitutes the whole
+/// `MEMORY.md` index into the always-on prompt. Ours points at `memory_list`
+/// instead: the index is a list of every memory on file, and a long list of
+/// topics rides the prompt as an invitation to go look at each of them.
+/// Everything else is kept verbatim so the index is the only variable —
+/// `{memory_root}` and `{tools_description}` still substitute.
+pub const MEMORY_PROMPT_TEMPLATE: &str = r#"## Memory
+
+You have a persistent memory directory at `{memory_root}`. Memories survive across sessions and are shared with Claude Code (same directory, same format — what you write here, Claude Code reads, and vice versa).
+
+### Current memory index
+
+Not injected into this prompt. Call `memory_list` to read it when the task could plausibly use it. Treat what it returns as a list of **places that exist**, not a to-do list: a topic appearing there is not a reason to go look at it, and nothing in it is more interesting than the request in front of you.
+
+### Tools
+
+{tools_description}
+
+### How to remember
+
+- `memory_write` stores one memory as `<name>.md` and syncs the index automatically. `name` must match `^[a-z0-9][a-z0-9-]*$`; writing to an existing `name` overwrites it in place (update instead of duplicating; prefer overwriting rolling `project` memories like status notes over creating new ones).
+- The `description` is the recall key — one line (no newlines) that lets you tell at a glance whether the memory matters for the current task.
+- Types: `user` (who the user is: role, preferences, working style), `feedback` (rules and corrections the user gave you), `project` (ongoing work, decisions, status), `reference` (pointers to external resources).
+- Link related memories with `[[memory-name]]` in the body.
+
+### When to use memory
+
+- The user explicitly asks to remember something ("remember this", "save that").
+- You learn a durable preference, correction, or project fact worth carrying into future sessions.
+
+### When NOT to use memory
+
+- Transient details that only matter within this session.
+- Facts already recorded in the codebase (code structure, git history, config files).
+
+### How to recall
+
+Call `memory_list` first, scan what it returns by `description`, and call `memory_read(name)` only for the relevant entries. Recall is selective by design — do not read everything."#;
+
 /// [`compose_system_prompt`] for a configured code road (M3 T10d prompt
 /// switching): tool keeps the base prompt under the child-kit rewrite, act
 /// swaps the `code_cell` line for the code protocol section, off just drops

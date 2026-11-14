@@ -418,13 +418,19 @@ pub async fn build_with_code_exec(
         // Persistent auto-memory (Phase 9c): Claude Code compatible storage at
         // `~/.claude/projects/<slug>/memory/` (slug = this workspace path), so
         // phimint and Claude Code share one memory directory. At build time the
-        // framework registers the four `memory_*` tools and appends the
-        // MEMORY.md index snapshot + tool guidance after the CLAUDE.md section.
-        // A missing directory is fine: the index renders as an empty-index
-        // placeholder and the first `memory_write` creates it. Memory tools are
-        // registered on the parent only — they never join `business_tools`, so
-        // the read-only sub-agent gate needs no extra exclusion entries.
-        .memory_config(MemoryConfig::claude_compatible(&workspace_root))
+        // framework registers the four `memory_*` tools and appends the memory
+        // guidance after the CLAUDE.md section.
+        //
+        // The template is ours, not `CLAUDE_COMPATIBLE_TEMPLATE`: upstream
+        // substitutes the whole MEMORY.md index into the always-on prompt, and
+        // a one-line-per-memory list reads as an itinerary. Ours points at
+        // `memory_list` instead. Storage, tools and the rest of the guidance
+        // are unchanged.
+        .memory_config({
+            let mut memory = MemoryConfig::claude_compatible(&workspace_root);
+            memory.prompt_template = crate::agent::prompt::MEMORY_PROMPT_TEMPLATE.to_string();
+            memory
+        })
         // base_agent_builder caps tool output at 4000 chars and REJECTS (rather
         // than truncates) anything larger. That is too small to read a normal
         // source file — read_file's own default limit is 2000 *lines*, so a

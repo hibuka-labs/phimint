@@ -319,12 +319,20 @@ async fn built_agent_receives_memory_prompt_for_its_workspace() {
          this workspace's memory root {expected_root}; got {} request(s)",
         prompts.len()
     );
-    // Empty-index placeholder proves the no-memory-directory regression:
-    // startup renders the friendly placeholder, never a failure.
+    // No memory directory must stay graceful: the section still renders —
+    // it names the root and how to reach the index — it just has no index to
+    // show. The index snapshot is deliberately not injected at all (see
+    // `prompt::MEMORY_PROMPT_TEMPLATE`: 123 lines of "places to look" riding
+    // the always-on prompt), so its empty-state placeholder is gone too.
     assert!(
-        prompts.iter().any(|p| p.contains("no memories yet")),
-        "with no memory directory the prompt must contain the empty-index \
-         placeholder (graceful first-use startup)"
+        prompts.iter().any(|p| p.contains("memory_list")),
+        "with no memory directory the prompt must still point at `memory_list` \
+         (graceful first-use startup, never a failure)"
+    );
+    assert!(
+        prompts.iter().all(|p| !p.contains("no memories yet")),
+        "the index snapshot is no longer injected, so its empty-state \
+         placeholder must not appear either"
     );
 }
 
