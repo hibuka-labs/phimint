@@ -68,7 +68,12 @@ const DIRTY_TOOLS: &[&str] = &["write_file", "edit_file", "code_cell", "execute_
 /// unreadable argv gets. Residual (PR notes): a child that keeps writing
 /// after the parent's last delegation verb is covered only until the next
 /// verify; forwarding child write intents into the ledger is the deep fix.
-const MULTI_AGENT_TOOLS: &[&str] = &["spawn_agent", "send_message", "wait_agent", "close_agent"];
+///
+/// Mirrors `phi-kernel-tools`'s `create_all_tools` — `wait_agent` and
+/// `followup_task` were dropped from that factory (§8.3, push-based result
+/// delivery) and are tested as absent there. `list_agents` is a read, not a
+/// delegation verb. Pinned by `the_delegation_verbs_are_the_ones_the_factory_actually_produces`.
+const MULTI_AGENT_TOOLS: &[&str] = &["spawn_agent", "send_message", "close_agent"];
 
 /// Shell programs whose every invocation is a read — no flag writes a file
 /// without a redirection (which `command::has_mutation_marker` catches

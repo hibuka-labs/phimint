@@ -680,3 +680,20 @@ async fn deferred_edits_survive_a_user_message_boundary() {
         "the old verify never covered the folded edit — no false green"
     );
 }
+
+/// The gate's delegation list must name only verbs the engine can actually
+/// emit. `phi-kernel-tools`'s `create_all_tools` produces four tools and its
+/// own test (`test_create_all_tools_returns_four`) asserts `wait_agent` and
+/// `followup_task` are **not** among them — results are pushed, not pulled,
+/// and `followup_task` is a deprecated shim (§8.3). A stale entry here is
+/// inert (it never matches an action) but it reads as if the gate covers a
+/// verb the engine cannot emit. `list_agents` is a read, not a delegation
+/// verb, so it stays out.
+#[test]
+fn the_delegation_verbs_are_the_ones_the_factory_actually_produces() {
+    assert_eq!(
+        MULTI_AGENT_TOOLS,
+        &["spawn_agent", "send_message", "close_agent"],
+        "MULTI_AGENT_TOOLS must mirror phi-kernel-tools' active factory"
+    );
+}
