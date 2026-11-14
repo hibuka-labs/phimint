@@ -284,7 +284,12 @@ struct GitMixed {
 /// Tools that produce compile-level evidence. The `verify` tool records into the
 /// ledger itself when it runs; this list is what tells the gate "a verification
 /// is in flight", which is what defers same-turn edit recording (rule 3).
-const VERIFY_TOOLS: &[&str] = &["verify", "merge"];
+///
+/// `merge` used to sit here — it was the tool name at `218def4` (2026-08-31,
+/// "remove standalone verify tool, inline into merge") — but the tool is
+/// `verify` again and nothing else produces compile-level evidence.
+/// Pinned by `the_verification_verbs_are_the_ones_the_registry_actually_produces`.
+const VERIFY_TOOLS: &[&str] = &["verify"];
 
 /// Gate configuration.
 pub struct VerifyGateConfig {

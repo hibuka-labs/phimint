@@ -697,3 +697,19 @@ fn the_delegation_verbs_are_the_ones_the_factory_actually_produces() {
         "MULTI_AGENT_TOOLS must mirror phi-kernel-tools' active factory"
     );
 }
+
+/// The gate's verification list must name only tools that exist. `merge` was
+/// the tool name at `218def4` (2026-08-31, "remove standalone verify tool,
+/// inline into merge"); the tool is `verify` again and `merge` is gone
+/// everywhere except this list. The entry was inert — it never matched an
+/// action — but it reads as if the gate waits on a verification the engine
+/// cannot run. Same class as `wait_agent` in `MULTI_AGENT_TOOLS`.
+#[test]
+fn the_verification_verbs_are_the_ones_the_registry_actually_produces() {
+    assert_eq!(
+        VERIFY_TOOLS,
+        &["verify"],
+        "VERIFY_TOOLS must mirror the registry: `verify` is the tool, `merge` \
+         has not existed since the naming moved back"
+    );
+}
