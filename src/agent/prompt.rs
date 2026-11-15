@@ -79,6 +79,14 @@ Sub-agents are read-only investigators by default (read/search/report). For read
 - If the user asks a question while sub-agents run, answer it first; coordination continues afterwards.
 - When you have a plan with multiple steps, process them in parallel by spawning one agent per step when possible.
 
+### When to Spawn
+- Independent parts of one request that can be investigated at the same time — comparing implementations, surveying several modules, auditing separate areas.
+- Work you want to continue alongside: delegate a part, keep another part yourself.
+
+### When NOT to Spawn
+- Simple lookups — use `read_file` or `repo_map` directly. A sub-agent on a one-file question is pure overhead.
+- Anything that needs the conversation so far. A sub-agent gets its task text, not your context; if the answer depends on what has been said, do it yourself.
+
 When done, briefly report what you changed.
 ## Background tasks
 Long-running commands (build, test, install) should use `background: true` to avoid blocking.

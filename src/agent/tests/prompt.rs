@@ -157,6 +157,23 @@ fn live_prompt_ends_a_survey_at_the_report() {
         SYSTEM_PROMPT.contains("do not ask which to fix"),
         "offering follow-up work must go in the reply text, never in a picker"
     );
+    // When to delegate is a business call, so it lives here and not in the
+    // framework. `agent-works` used to carry this section; taking the policy
+    // half back left the product with the rules and nothing saying when.
+    assert!(
+        SYSTEM_PROMPT.contains("When to Spawn"),
+        "the product must say when delegation is worth it"
+    );
+    assert!(
+        SYSTEM_PROMPT.contains("When NOT to Spawn"),
+        "and when it is not — a sub-agent on a simple lookup is pure overhead"
+    );
+    // The framework no longer claims tools need not be chosen; nothing here may
+    // contradict the product's own `tools: "write"` guidance by saying so.
+    assert!(
+        !SYSTEM_PROMPT.contains("specify which tools to use"),
+        "the product teaches tool selection; it must not also deny it"
+    );
 }
 
 // ── Skills catalog wiring (skill-injection design M1) ──
