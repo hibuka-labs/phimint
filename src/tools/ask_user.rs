@@ -58,16 +58,22 @@ impl Tool for AskUserTool {
     }
 
     fn description(&self) -> &'static str {
-        "Ask the user to pick one of a few options, in the terminal. Use for a conceptual \
-            decision — should we do this, which first, which tech — where the answer is one of \
-            2-4 candidates you can name. This is the text half of the design routing: anything \
-            the user has to *see* (layout, styling, comparison) belongs on the design canvas \
-            (`canvas_push`), and an open-ended question (a goal, a path, a number) belongs in \
-            your reply text. Returns `picked: <label> (id: <id>)`, or `skipped` when the user \
-            presses Esc — a skip is an answer too; carry on with what you have, never re-ask. \
-            They can also type a question instead of picking: the result then reads `not picked: \
-            the user wants to clarify before answering:` followed by their words on the next \
-            line — address it in your reply text and carry on. One live question at a time."
+        "Ask the user to pick one of a few options, in the terminal. Use it only when you \
+            are **blocked on a decision that is genuinely the user's** — one you cannot \
+            settle from the request, the code, or a sensible default. It is **not for \
+            offering follow-up work**: \"want me to fix this?\", \"should I proceed?\", \
+            \"which should I do next?\" belong in your reply text, not in a picker. If a \
+            default exists, take it, say so in your reply, and continue. When you do ask, \
+            the answer must change what you do next, and the choice should be one of 2-4 \
+            candidates you can name. This is the text half of the design routing: \
+            anything the user has to *see* (layout, styling, comparison) belongs on the \
+            design canvas (`canvas_push`), and an open-ended question (a goal, a path, a \
+            number) belongs in your reply text. Returns `picked: <label> (id: <id>)`, or \
+            `skipped` when the user presses Esc — a skip is an answer too; carry on with \
+            what you have, never re-ask. They can also type a question instead of \
+            picking: the result then reads `not picked: the user wants to clarify before \
+            answering:` followed by their words on the next line — address it in your \
+            reply text and carry on. One live question at a time."
     }
 
     fn schema(&self) -> Value {
@@ -327,6 +333,26 @@ mod tests {
         assert!(
             description.contains("not picked: the user wants to clarify before answering:"),
             "{description}"
+        );
+    }
+
+    /// Value: protects=the picker is reserved for decisions that block the
+    /// work; fails_when=the description drops that bar and the tool becomes a
+    /// place to ask anything, including whether to start more work.
+    /// why_new=the_tool_face_tells_the_model_about_the_clarify_exit covers the
+    /// clarify arm only; seam=none.
+    /// no_claim=the model actually obeys it (prompt-side wording only).
+    #[test]
+    fn the_tool_face_only_offers_itself_for_a_blocking_decision() {
+        let (tool, _rx) = tool();
+        let description = tool.description();
+        assert!(
+            description.contains("blocked"),
+            "the face must name the bar: ask only when blocked on a decision              that is genuinely the user's. {description}"
+        );
+        assert!(
+            description.contains("not for offering follow-up work"),
+            "offering follow-up work must be named as a non-reason: {description}"
         );
     }
 

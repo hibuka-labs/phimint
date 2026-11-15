@@ -146,6 +146,17 @@ fn live_prompt_ends_a_survey_at_the_report() {
         "the unscoped 'Before reporting done' is what forced a build on a \
          read-only question — it must not come back"
     );
+    // A look/review/report request ends with a report. Session 20261115_72172a66
+    // delivered the review and then popped a picker asking which fix to start —
+    // the shape of a work order, not of an answer.
+    assert!(
+        SYSTEM_PROMPT.contains("the deliverable is the report"),
+        "system prompt must say what a report-shaped request delivers"
+    );
+    assert!(
+        SYSTEM_PROMPT.contains("do not ask which to fix"),
+        "offering follow-up work must go in the reply text, never in a picker"
+    );
 }
 
 // ── Skills catalog wiring (skill-injection design M1) ──
