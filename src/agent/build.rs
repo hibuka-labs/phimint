@@ -517,7 +517,10 @@ pub async fn build_with_code_exec(
         .middleware(crate::agent::wrap_up::WrapUpNudgeMiddleware::new(
             crate::agent::wrap_up::WrapUpNudgeConfig::default(),
         ))
-        // TESTING: low max_turns to verify nudge feature
+        // A generous ceiling, not a pacing knob: `execution_max_turns` only
+        // drives `MaxTurnsNudgeMiddleware` near the cap, which is a fire alarm,
+        // not the "say something" nudge. That one is `WrapUpNudgeMiddleware`
+        // (20 silent turns), so this stays a backstop against a runaway loop.
         .execution_max_turns(256);
 
     builder = register_diagnostics(builder, &workspace_root);
