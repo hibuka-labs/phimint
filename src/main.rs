@@ -630,10 +630,39 @@ async fn run() -> Result<()> {
     phi_agent_tui::run(spec, agent, handles).await
 }
 
+/// The user's home directory.
+///
+/// `HOME` is the unix convention and also what a Git Bash session exports on
+/// Windows, so reading it first keeps existing state where it already is. A
+/// plain Windows shell (PowerShell, cmd) exports only `USERPROFILE`: without
+/// that fallback the base dir collapsed to `./.phimint` beside the current
+/// directory, so the config, history and sessions lived wherever the user
+/// happened to stand — and a protected cwd such as `C:\WINDOWS\system32`
+/// failed outright.
+fn home_dir() -> Option<PathBuf> {
+    let read = |key: &str| {
+        std::env::var(key)
+            .ok()
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+    };
+    read("HOME").or_else(|| {
+        #[cfg(windows)]
+        {
+            read("USERPROFILE")
+        }
+        #[cfg(not(windows))]
+        {
+            None
+        }
+    })
+}
+
 /// Base directory for all phimint session data (~/.phimint).
 fn sessions_base_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let dir = PathBuf::from(home).join(".phimint");
+    let dir = home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".phimint");
     // Absolutize at the exit point (survey P6): downstream joins assume an
     // absolute base, and the `"."` fallback (HOME unset) used to leave a
     // relative base whose double-join produced `.phimint/sessions/sessions/`.
