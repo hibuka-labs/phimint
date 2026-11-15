@@ -444,6 +444,7 @@ mod tests {
             reasoning_only_strikes: 0,
             empty_response_strikes: 0,
             run_has_actions: false,
+            run_actions: vec![],
             last_tool_calls_invalid: false,
             all_user_inputs: vec!["test".to_string()],
             is_reasoning_only: false,
