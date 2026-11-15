@@ -182,6 +182,17 @@ fn live_prompt_ends_a_survey_at_the_report() {
         SYSTEM_PROMPT.contains("do exactly what the request asks"),
         "an existing codebase gets surgical precision, not opportunism"
     );
+    // Voice rules Claude Code carries as standing instructions and phimint
+    // left out. Small, but they are the difference between a report a human
+    // can scan and one they have to decode.
+    assert!(
+        SYSTEM_PROMPT.contains("tests failed, say so"),
+        "report outcomes faithfully — no hedging over a red run"
+    );
+    assert!(
+        SYSTEM_PROMPT.contains("emoji"),
+        "no emoji in user-visible text"
+    );
     assert!(
         SYSTEM_PROMPT.contains("a question, not a work order"),
         "asking about code must not read as permission to change it"
