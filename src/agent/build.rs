@@ -509,6 +509,14 @@ pub async fn build_with_code_exec(
             },
             Arc::clone(&verify_ledger),
         ))
+        // Wrap-up nudge: the mirror of `reasoning_only_nudge`. That one fires
+        // when the model thinks without acting; this one fires when it acts
+        // without saying anything — a run of turns whose reply text is empty.
+        // Session 20261115_39c267a3 ran 45 of those and never reported. Nudge
+        // once per user message, advisory not a stop order.
+        .middleware(crate::agent::wrap_up::WrapUpNudgeMiddleware::new(
+            crate::agent::wrap_up::WrapUpNudgeConfig::default(),
+        ))
         // TESTING: low max_turns to verify nudge feature
         .execution_max_turns(256);
 

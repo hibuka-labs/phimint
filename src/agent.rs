@@ -54,6 +54,7 @@ mod prompt;
 pub mod spawn_resolve;
 mod spill;
 mod subagents;
+pub mod wrap_up;
 
 pub use budget::TokenBudgetOptions;
 pub use build::{BuildOutput, build, build_with_code_exec};
