@@ -61,7 +61,14 @@ impl Tool for CurrentModel {
     }
 
     fn description(&self) -> &'static str {
-        "The model serving this session. Call before answering any question about which model you are."
+        "The model actually serving this session, resolved live from the tier table.\n\n\
+         Call it before answering any question about which model you are. Do NOT answer from \
+         the model named at startup, from a request you sent earlier, or from what the config \
+         says: a `/model` swap lands on the wire and the conversation never says so, and an \
+         answer from memory is confidently wrong after one. This tool is the only thing that \
+         reflects the swap.\n\n\
+         It answers one question. Do not use it to change the model — that is the picker — and \
+         do not ask it what a model can do."
     }
 
     fn schema(&self) -> Value {
@@ -136,17 +143,17 @@ mod tests {
 
     /// protects: the tool's wire name is exactly the name the stamp points
     /// at, it takes no input, and it asks to be called before any identity
-    /// answer. fails_when: the name diverges from the stamp copy or the
-    /// schema grows required fields. no_claim: the stamp's wording.
+    /// answer. fails_when: the name diverges from the stamp copy, the schema
+    /// grows required fields, or the description stops asking to be called
+    /// first. no_claim: any particular wording — the ask is what matters.
     #[test]
     fn the_tool_declares_what_the_stamp_points_at() {
         let tool = CurrentModel::new(Arc::new(Mutex::new(store("alpha-model"))));
         assert_eq!(tool.name(), "current_model");
+        let d = tool.description();
         assert!(
-            tool.description()
-                .contains("Call before answering any question about which model you are"),
-            "{}",
-            tool.description()
+            d.contains("Call") && d.contains("before answering") && d.contains("which model"),
+            "it must ask to be called before an identity answer: {d}"
         );
         assert_eq!(
             tool.schema(),

@@ -27,7 +27,23 @@ impl Tool for RipgrepTool {
     }
 
     fn description(&self) -> &'static str {
-        "Search file contents in the workspace with ripgrep (regex). Returns matching lines as `file:line: text`. Use this to locate symbols, function definitions, or strings before reading the relevant file."
+        "Search file contents across the workspace with a regex. Returns matches as `file:line: text`.\n\n\
+        Use this when you know what the text should say but not where it lives — \
+        a symbol, a string, an error message, a call site. It is the cheapest \
+        way to turn \"somewhere in here\" into a file and a line.\n\n\
+        Do NOT use it to find a file by name — `list_files` does that. Do NOT \
+        use it to understand a codebase's shape: `repo_map` gives you the \
+        structure in one call, and grepping your way across a repository to \
+        build one is how a cheap question becomes fifty.\n\n\
+        Do NOT use it to read what you found. Matches are single lines, not \
+        context: a hit tells you where to look, not what the code does. Go to \
+        `read_file` with the file and the line.\n\n\
+        And a match is not a verdict. A search that finds nothing is not proof \
+        the thing is absent — ignored files, binaries and an over-narrow regex \
+        all return empty. If absence matters, say what you searched and how.\n\n\
+        Quote or escape regex metacharacters when you mean a literal. Prefer a \
+        specific pattern to a broad one: the output is capped, and a pattern \
+        that matches everywhere returns the beginning of everywhere."
     }
 
     fn schema(&self) -> Value {

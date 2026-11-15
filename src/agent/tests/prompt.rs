@@ -5,6 +5,53 @@ use crate::model::config::CodeExecMode;
 use phi_agent::llm_trait::LlmProvider;
 use std::sync::{Arc, Mutex};
 
+/// Value: protects=the premise rule — a fact the request hands over is an
+/// input, not a claim to audit. Session 20261115_d0fb509d spent 36 turns
+/// re-deriving two numbers the user had already given, then made the edit the
+/// moment it was told to stop. fails_when=the prompt narrows this back to
+/// "facts already established in the conversation", which does not cover what
+/// the user simply states. why_new=the wording had that gap.
+/// seam=system prompt; no_claim=that the model will obey it — the same words
+/// hold on Claude and not on every model.
+#[test]
+fn live_prompt_treats_user_facts_as_premises() {
+    assert!(
+        SYSTEM_PROMPT.contains("premises, not hypotheses"),
+        "a fact the user hands over must be an input to act on, not a claim to audit"
+    );
+    assert!(
+        SYSTEM_PROMPT.contains("inputs to act on, not claims to audit"),
+        "and the wording must cover what the user *states*, not only what the conversation established"
+    );
+}
+
+/// Value: protects=the methodology clauses pulled over from the reference
+/// prompt (see notes/claude-code-methodology-audit.md) — they are the ones a
+/// trim is most likely to drop, because each looks like a small detail on its
+/// own. fails_when=any of them is cut. why_new=they were added as a batch.
+/// seam=system prompt; no_claim=that the wording is the only good one.
+#[test]
+fn live_prompt_carries_the_borrowed_methodology() {
+    for (needle, why) in [
+        ("they/them", "never infer pronouns from a name"),
+        (
+            "path/to/file.rs:42",
+            "point at code with a line, not just a path",
+        ),
+        ("one turn, not one per turn", "batch independent tool calls"),
+        ("granted for that thing only", "an approval does not travel"),
+        (
+            "look at what is there now",
+            "before deleting or overwriting",
+        ),
+    ] {
+        assert!(
+            SYSTEM_PROMPT.contains(needle),
+            "missing a methodology clause ({why}): {needle}"
+        );
+    }
+}
+
 #[test]
 fn live_prompt_carries_fan_in_wait_semantics() {
     assert!(

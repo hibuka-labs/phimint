@@ -24,7 +24,23 @@ impl Tool for RepoMapTool {
     }
 
     fn description(&self) -> &'static str {
-        "Produce a structural map of the codebase. With no `path`, returns a directory skeleton (module → package tree with file counts) to orient in a large workspace. Pass a workspace-relative `path` to get per-file symbols (classes, methods, fields, …) with line ranges and each file's line count. Call this FIRST."
+        "A structural map of the codebase. No `path` gives a directory skeleton \
+        (module → package tree with file counts); a workspace-relative `path` \
+        gives per-file symbols (classes, methods, fields, …) with line ranges \
+        and each file's line count.\n\n\
+        Use this before you go file by file. When the task needs you to find \
+        your way around a repository — where the entry point is, which modules \
+        touch a thing, what a directory holds — one call here replaces a dozen \
+        reads, and it tells you which files are worth opening at all.\n\n\
+        Do NOT use it to find specific text — `search_content` answers \"where \
+        does this string appear\" in one call. Do NOT use it to read: a symbol \
+        list tells you a function exists and where it starts, never what it \
+        does. Once you know which file matters, `read_file` that file.\n\n\
+        A map is not the territory. Symbols are names and line ranges, not \
+        behaviour; a shape you inferred from the map is a hypothesis to check in \
+        the file, not something to report as fact.\n\n\
+        Start with the whole-workspace skeleton when you do not yet know where \
+        to look; narrow to a `path` when you know the area and want its symbols."
     }
 
     fn schema(&self) -> Value {

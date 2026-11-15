@@ -518,7 +518,7 @@ pub async fn build_with_code_exec(
             crate::agent::wrap_up::WrapUpNudgeConfig::default(),
         ))
         // A generous ceiling, not a pacing knob: `execution_max_turns` only
-        // drives `MaxTurnsNudgeMiddleware` near the cap, which is a fire alarm,
+        // drives `MaxTurnsNudgeMiddleware` near the cap, which is a last resort,
         // not the "say something" nudge. That one is `WrapUpNudgeMiddleware`
         // (20 silent turns), so this stays a backstop against a runaway loop.
         .execution_max_turns(256);

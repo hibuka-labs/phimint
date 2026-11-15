@@ -177,7 +177,13 @@ impl Tool for VerifyTool {
          already fills in, then the language default; you do not pass one. Result is the \
          compiler's real exit code, not a summary of its output. For a project with no \
          compile layer (plain JS, Python, no build script) this reports that there is nothing \
-         to verify rather than pretending to have checked.\n\
+         to verify rather than pretending to have checked.\n\n\
+         Do NOT reach for `execute_command` to run the same thing by hand. This tool is the \
+         one that can mint a green light: the exit code it reports is what a later gate trusts, \
+         and a check you ran yourself proves nothing to anyone but you.\n\n\
+         Do NOT treat a green here as the whole answer. It is the compile layer — it says the \
+         code still builds, never that it does the right thing. A change that carries behaviour \
+         needs the test that would catch it wrong.\n\n\
          Weigh how much verification to run against how the session is running. In auto \
          mode nobody is waiting on you: run what the change needs. In ask mode someone is \
          watching, and a full build per turn is the slowest thing you can do to them — say \

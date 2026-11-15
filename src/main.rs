@@ -646,16 +646,17 @@ fn home_dir() -> Option<PathBuf> {
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
     };
-    read("HOME").or_else(|| {
-        #[cfg(windows)]
-        {
-            read("USERPROFILE")
-        }
-        #[cfg(not(windows))]
-        {
-            None
-        }
-    })
+    if let Some(home) = read("HOME") {
+        return Some(home);
+    }
+    // Windows names the home directory `USERPROFILE`, and a POSIX-ish shell on
+    // Windows may leave `HOME` set to something that is not the real home — so
+    // `HOME` wins when it resolves, and `USERPROFILE` is the fallback.
+    #[cfg(windows)]
+    if let Some(profile) = read("USERPROFILE") {
+        return Some(profile);
+    }
+    None
 }
 
 /// Base directory for all phimint session data (~/.phimint).

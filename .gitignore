@@ -39,3 +39,6 @@ docs/assets/_reel_png/
 
 # local diagram scratch (unreferenced drafts — never shipped)
 diagrams/
+
+# local PTY probe (a one-off debugging harness, not a shipped tool)
+tools/probe_run.py

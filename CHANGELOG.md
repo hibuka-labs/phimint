@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-16
+
+### Added
+- **The hand-back can wait for the work to land.** The wrap-up now has a
+  window: `window_turns` replaces `max_silent_turns` (an internal field, no
+  outward API change) so a session that is mid-work is nudged when the
+  model has produced nothing to hand back, instead of handing back an
+  empty report.
+
+- **Validation is weighed against how the session is running.** The
+  verification gate asks whether a change is worth validating *here* — a
+  read-only survey is not a code change, a merge is not a verification
+  step, and a wait on a sub-agent is not a change either.
+
+- **The prompt says when delegation is worth it.** The delegation list
+  carries the case for *and* against handing the work to a sub-agent, so
+  the model can decide instead of always delegating or never delegating.
+
+### Fixed
+- **The Python probe stats instead of spawning.** On Windows, probing for
+  the interpreter used to spawn a process and scan `PATH` × `PATHEXT`,
+  including the WindowsApps store aliases — slow, and it could start a
+  store install. It now asks the filesystem.
+
+- **The session base directory resolves from the user's home first.**
+  `HOME` wins over the fallback, with `USERPROFILE` as the Windows
+  fallback.
+
+- **A report-shaped request delivers a report, not a picker.** The prompt
+  no longer offers choices when the user asked for an answer.
+
+- **The memory index stays out of the always-on prompt.** It is loaded
+  when needed rather than carried in every turn.
+
+### Changed
+- **The voice rules landed, and the title names what was asked.** Prompt
+  wording fixes across the agent's own voice, the validation scoping and
+  the delegation list.
+
 ## [0.10.0] - 2026-11-14
 
 ### Added
