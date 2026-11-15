@@ -174,6 +174,18 @@ fn live_prompt_ends_a_survey_at_the_report() {
         !SYSTEM_PROMPT.contains("specify which tools to use"),
         "the product teaches tool selection; it must not also deny it"
     );
+    // Codex carries these two brakes alongside "keep going"; phimint took the
+    // keep-going half and left the brakes. Session 20261115_72172a66 delivered
+    // a review and then asked which fix to start — a question about the code
+    // read as a work order, and nothing said not to overstep the request.
+    assert!(
+        SYSTEM_PROMPT.contains("do exactly what the request asks"),
+        "an existing codebase gets surgical precision, not opportunism"
+    );
+    assert!(
+        SYSTEM_PROMPT.contains("a question, not a work order"),
+        "asking about code must not read as permission to change it"
+    );
 }
 
 // ── Skills catalog wiring (skill-injection design M1) ──
