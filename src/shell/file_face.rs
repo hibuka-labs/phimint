@@ -198,9 +198,52 @@ const DEGRADE_NOTICE: &str = "code cells need Python 3 - none found (checked COD
     python3, python). code_cell stays unloaded; read_file/list_files/write_file cover file work \
     as always. Install Python 3 and restart to get code cells";
 
+/// PATH lookup that never spawns (Windows preflight). A bare name is checked
+/// here first because two failures are expensive: a name that misses makes
+/// `CreateProcess` sweep PATH×PATHEXT (~170 ms on this machine), and the
+/// `WindowsApps` app-execution aliases are zero-byte stubs that launch the
+/// Store page (~200 ms) and can never answer `--version`.
+#[cfg(all(windows, feature = "code-exec"))]
+fn resolve_on_path(cmd: &str) -> Option<std::path::PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    const EXTS: [&str; 4] = [".exe", ".cmd", ".bat", ""];
+    std::env::split_paths(&path).find_map(|dir| {
+        EXTS.iter()
+            .map(|ext| dir.join(format!("{cmd}{ext}")))
+            .find(|cand| cand.is_file())
+    })
+}
+
+/// A `WindowsApps` hit is an app-execution alias: a zero-byte stub that opens
+/// the Store instead of running an interpreter.
+#[cfg(all(windows, feature = "code-exec"))]
+fn is_app_execution_alias(p: &std::path::Path) -> bool {
+    p.to_string_lossy()
+        .to_ascii_lowercase()
+        .contains("\\windowsapps\\")
+}
+
 /// One interpreter candidate answers `--version` with a Python 3.
 #[cfg(feature = "code-exec")]
 fn runs_python3(cmd: &str) -> bool {
+    #[cfg(windows)]
+    let cmd = {
+        // Path-qualified candidates (`CODEXEC_PYTHON`) are trusted as given;
+        // bare names are resolved first so a miss or an alias costs one stat
+        // instead of a ~200 ms spawn that cannot succeed.
+        let resolved = if cmd.contains(['\\', '/']) {
+            std::path::PathBuf::from(cmd)
+        } else {
+            match resolve_on_path(cmd) {
+                Some(p) => p,
+                None => return false,
+            }
+        };
+        if is_app_execution_alias(&resolved) {
+            return false;
+        }
+        resolved
+    };
     std::process::Command::new(cmd)
         .arg("--version")
         .output()
@@ -253,6 +296,12 @@ pub(crate) fn degrade(mode: CodeExecMode, python_found: bool) -> (CodeExecMode, 
 /// the `resolved()` twins in [`crate::model::config`] (without the feature).
 #[cfg(feature = "code-exec")]
 pub fn resolve_road(mode: CodeExecMode) -> CodeExecMode {
+    // A configured `off` is the user's own decision: `degrade` answers
+    // `(Off, None)` for it anyway, so probing first only buys a wasted
+    // interpreter hunt on the startup seam.
+    if mode == CodeExecMode::Off {
+        return CodeExecMode::Off;
+    }
     let (mode, notice) = degrade(mode, probe_python());
     if let Some(msg) = notice {
         set_startup_notice(msg);
