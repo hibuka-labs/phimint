@@ -19,9 +19,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agent-base"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4e707e8b8e2b3bf2c19338b13dcdb540259017c7ce8c90a06b114b2009dff644"
+version = "0.15.0"
 dependencies = [
  "agent-types",
  "anyhow",
@@ -48,9 +46,7 @@ dependencies = [
 
 [[package]]
 name = "agent-types"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "79a6fef86915b20bef2215d82de49412f064306d6fa0c3f8536ecceddaeb08a9"
+version = "0.8.0"
 dependencies = [
  "llm-trait",
  "serde",
@@ -59,9 +55,7 @@ dependencies = [
 
 [[package]]
 name = "agent-works"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e845e16c43efa8544c2cb29d403827a4ff2a2335cd6548722dc64fe61734481"
+version = "0.15.0"
 dependencies = [
  "agent-base",
  "async-trait",
@@ -418,9 +412,9 @@ dependencies = [
 
 [[package]]
 name = "bumpalo"
-version = "3.20.3"
+version = "3.20.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
+checksum = "87a0cf66fd1eb2fb7b822cb78370d82303750809bc6ba855f3f58e517d3238db"
 dependencies = [
  "allocator-api2",
 ]
@@ -478,9 +472,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.11.1"
+version = "1.11.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ff2a8126fff0f8c839080d619675a585e61720bb12d2baceae45769fd66f155"
+checksum = "33ef9e3e8154a45c7a95cff4c1299702106ad94062d7bb85fdc5d3a5afd91d45"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -610,8 +604,6 @@ dependencies = [
 [[package]]
 name = "code-intel"
 version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "29b12b588e398cbad250f6eee297c73973473a71f0eeff4d9f4de515d56cdd00"
 dependencies = [
  "lsp-types",
  "serde_json",
@@ -628,9 +620,7 @@ dependencies = [
 
 [[package]]
 name = "codexec"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d85aa2c3ef52291675747c8108473e5a66aa5205ee830fd2952ef250951f4eb8"
+version = "0.2.1"
 dependencies = [
  "async-trait",
  "phi-cap",
@@ -1760,7 +1750,7 @@ dependencies = [
  "base64 0.22.1",
  "derive_builder",
  "log",
- "rand 0.10.3",
+ "rand 0.10.4",
  "regex",
  "serde",
  "serde_json",
@@ -2383,9 +2373,7 @@ checksum = "4744e383959f0db86ede514b809b1c53251889093803c05267acc7d4e7030d70"
 
 [[package]]
 name = "llm-trait"
-version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4fd856d87952643e91c1652d814ecc2af9dc2f96d9a42ae486f4d82c1ff3b9f"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2400,9 +2388,7 @@ dependencies = [
 
 [[package]]
 name = "llm-unified"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5cd059bae957f18930968825618df63767fc6c989ab608add443392e1aec3ac9"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "clap",
@@ -2410,7 +2396,7 @@ dependencies = [
  "futures-core",
  "futures-util",
  "llm-trait",
- "rand 0.10.3",
+ "rand 0.10.4",
  "reqwest",
  "serde",
  "serde_json",
@@ -2436,8 +2422,6 @@ checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 [[package]]
 name = "log-core"
 version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "539c485719a9d4046194d42454d30553478ab1bfc85843703ea3394072e3d926"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2590,12 +2574,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
 
 [[package]]
-name = "minisign-verify"
-version = "0.2.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22f9645cb765ea72b8111f36c522475d2daa0d22c957a9826437e97534bc4e9e"
-
-[[package]]
 name = "miniz_oxide"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2617,9 +2595,9 @@ dependencies = [
 
 [[package]]
 name = "mio"
-version = "1.2.4"
+version = "1.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1788edb87fdc09c7e26304471e2f5be8cdefb1b6930d6e3985fc02ff53bf86ee"
+checksum = "20521a903f02b0a573cd6840e9d0a5a0cc043d361fe924092cd70f8556cc9c4a"
 dependencies = [
  "libc",
  "log",
@@ -3094,9 +3072,7 @@ dependencies = [
 
 [[package]]
 name = "phi-agent"
-version = "0.22.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a2a1fbab87142eda71b7c17f3af4a1d270878a393c587915af00849ea60ddf0"
+version = "0.23.0"
 dependencies = [
  "agent-base",
  "agent-works",
@@ -3126,9 +3102,7 @@ dependencies = [
 
 [[package]]
 name = "phi-agent-tui"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "18af4a629588040493f282ec15034c96b94e240ad014158f3144f28668eaab42"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "arboard",
@@ -3153,8 +3127,6 @@ dependencies = [
 [[package]]
 name = "phi-canvas"
 version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "aa555267c9d67224e68e9435e927272d4cad1bfe947e013a8d4dbb9a250a002c"
 dependencies = [
  "axum",
  "getrandom 0.3.4",
@@ -3168,17 +3140,13 @@ dependencies = [
 [[package]]
 name = "phi-cap"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "73b1e3a0c95e7b7425d474a6fd79b763bc6c421f37f2fc21ff0fe81284560444"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "phi-kernel-tools"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8a1fb0b8129c3efd560cf733bc7f8d2d5d02580a827074f8e34b61e4e38d3fe8"
+version = "0.15.0"
 dependencies = [
  "agent-base",
  "agent-works",
@@ -3201,8 +3169,6 @@ dependencies = [
 [[package]]
 name = "phi-ns"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e9e2571c46ba4dfbb0439dcae7d79df9eced38b869db7a5b201e9cc6301a4a24"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -3217,8 +3183,6 @@ dependencies = [
 [[package]]
 name = "phi-ns-desktop"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "93fa646565cbb0b675f5f7396fd80891d83fcd9a78a68e697c4c5836ef53a01c"
 dependencies = [
  "async-trait",
  "phi-cap",
@@ -3228,9 +3192,7 @@ dependencies = [
 
 [[package]]
 name = "phi-telemetry"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c1082a48620546c48f460ea3c3b63f46e31774eb974c894e6e24524957fd0ee9"
+version = "0.9.0"
 dependencies = [
  "agent-base",
  "anyhow",
@@ -3243,9 +3205,7 @@ dependencies = [
 
 [[package]]
 name = "phi-tools"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "13a8698efe6afe2c85f851f9477c2e7870e5044688cdacc46368e825dfdd200e"
+version = "0.10.0"
 dependencies = [
  "agent-base",
  "anyhow",
@@ -3263,8 +3223,6 @@ dependencies = [
 [[package]]
 name = "phi-tui"
 version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "25c80153598c2f90f046d80f686dbfa80f555e7f2b6335d54ec62b68fd39d70c"
 dependencies = [
  "crossterm 0.28.1",
  "pulldown-cmark",
@@ -3276,8 +3234,6 @@ dependencies = [
 [[package]]
 name = "phi-wire-adapter"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d5087b0a43847e9f71c566455124c1d53a263247d39b545c04b6bbd51760ba75"
 dependencies = [
  "base64 0.22.1",
  "libc",
@@ -3290,8 +3246,6 @@ dependencies = [
 [[package]]
 name = "phi-wire-client"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a38d363b5af2d20795f305bfef504ee60e1357bcef5380ef4f313813a74a2c63"
 dependencies = [
  "phi-wire-adapter",
  "phi-wire-protocol",
@@ -3303,8 +3257,6 @@ dependencies = [
 [[package]]
 name = "phi-wire-protocol"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9c7aa2c3abefccef9aa7f6d860882a26da1fe03c39fd056f7f8ba2b339b4a957"
 dependencies = [
  "serde",
  "serde_json",
@@ -3312,7 +3264,7 @@ dependencies = [
 
 [[package]]
 name = "phimint"
-version = "0.10.0"
+version = "0.11.0"
 dependencies = [
  "agent-base",
  "anyhow",
@@ -3329,7 +3281,6 @@ dependencies = [
  "json5",
  "libc",
  "log-core",
- "minisign-verify",
  "phi-agent",
  "phi-agent-tui",
  "phi-canvas",
@@ -3554,7 +3505,7 @@ dependencies = [
  "bytes",
  "getrandom 0.4.3",
  "lru-slab",
- "rand 0.10.3",
+ "rand 0.10.4",
  "rand_pcg",
  "ring",
  "rustc-hash",
@@ -3633,9 +3584,9 @@ dependencies = [
 
 [[package]]
 name = "rand"
-version = "0.10.3"
+version = "0.10.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "65c9fb96cbc91e3478eaae79a69fcd3f1ae4ad052e471fe6732fff548984b4af"
+checksum = "8f6fa277c67e6ea590466f04c3fe82cb509f0864fe470643e5570de9514a9b11"
 dependencies = [
  "chacha20",
  "getrandom 0.4.3",
@@ -4638,9 +4589,9 @@ dependencies = [
 
 [[package]]
 name = "target-lexicon"
-version = "0.13.5"
+version = "0.13.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "adb6935a6f5c20170eeceb1a3835a49e12e19d792f6dd344ccc76a985ca5a6ca"
+checksum = "8c447be3a2abfa84b2d91680c56600bd6b2873866de27b36ec911be705e291da"
 
 [[package]]
 name = "tempfile"
@@ -5786,7 +5737,7 @@ dependencies = [
  "bytes",
  "cap-primitives",
  "futures",
- "rand 0.10.3",
+ "rand 0.10.4",
  "rustix 1.1.6",
  "rustix-linux-procfs",
  "thiserror 2.0.21",
