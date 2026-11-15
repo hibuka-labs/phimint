@@ -177,7 +177,11 @@ impl Tool for VerifyTool {
          already fills in, then the language default; you do not pass one. Result is the \
          compiler's real exit code, not a summary of its output. For a project with no \
          compile layer (plain JS, Python, no build script) this reports that there is nothing \
-         to verify rather than pretending to have checked."
+         to verify rather than pretending to have checked.\n\
+         Weigh how much verification to run against how the session is running. In auto \
+         mode nobody is waiting on you: run what the change needs. In ask mode someone is \
+         watching, and a full build per turn is the slowest thing you can do to them — say \
+         what you intend to run and let them call it, and report what you did run."
     }
 
     fn schema(&self) -> Value {
@@ -446,6 +450,29 @@ fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Value: protects=iteration speed in interactive modes — a full build
+    /// per turn is the slowest thing the agent can do to a user who is
+    /// watching it think. fails_when=the face tells it to verify before every
+    /// report regardless of how the session is running.
+    /// why_new=the face said when to verify and never how much of it to run.
+    /// seam=none; no_claim=that the model respects the mode.
+    #[test]
+    fn description_weighs_validation_against_the_mode() {
+        let tool = VerifyTool::new(
+            std::path::PathBuf::from("/tmp/none"),
+            std::sync::Arc::new(std::sync::Mutex::new(EvidenceLedger::new())),
+        );
+        let d = Tool::description(&tool);
+        assert!(
+            d.contains("auto mode"),
+            "the face must say what to do when nobody is waiting: {d}"
+        );
+        assert!(
+            d.contains("ask mode"),
+            "and what to do when someone is: {d}"
+        );
+    }
 
     #[test]
     fn split_command_takes_the_first_word_as_the_program() {
