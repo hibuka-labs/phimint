@@ -20,6 +20,8 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 [[package]]
 name = "agent-base"
 version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "98b33717791e319c697d1dcb39a242c4d9998f8e7c149b1b9ebc7dcc44681e67"
 dependencies = [
  "agent-types",
  "anyhow",
@@ -47,6 +49,8 @@ dependencies = [
 [[package]]
 name = "agent-types"
 version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f5a3bf9de58fb9a6b1c98197cf012a03b21ff86b64699a983ae1bf4128e61eee"
 dependencies = [
  "llm-trait",
  "serde",
@@ -56,6 +60,8 @@ dependencies = [
 [[package]]
 name = "agent-works"
 version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ae6eedb8bebd01c1139698b7a2a2568179f595e033d8fca0aa62d3034cf3ec99"
 dependencies = [
  "agent-base",
  "async-trait",
@@ -604,6 +610,8 @@ dependencies = [
 [[package]]
 name = "code-intel"
 version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "29b12b588e398cbad250f6eee297c73973473a71f0eeff4d9f4de515d56cdd00"
 dependencies = [
  "lsp-types",
  "serde_json",
@@ -621,6 +629,8 @@ dependencies = [
 [[package]]
 name = "codexec"
 version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "450375adef6bce32b8414351d6dff7a4e68c6cb60e8b540eca4b6d1bea2422ed"
 dependencies = [
  "async-trait",
  "phi-cap",
@@ -2374,6 +2384,8 @@ checksum = "4744e383959f0db86ede514b809b1c53251889093803c05267acc7d4e7030d70"
 [[package]]
 name = "llm-trait"
 version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "03304495b38a691cde15d75f5b9fc7974df4ffe3ea4460892cfbc227fd7873ef"
 dependencies = [
  "async-trait",
  "bytes",
@@ -2389,6 +2401,8 @@ dependencies = [
 [[package]]
 name = "llm-unified"
 version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4dd2a5b8e0f27612a6f834e1440f6429d18ae06b7926c3771bf11e4b33fe569d"
 dependencies = [
  "async-trait",
  "clap",
@@ -2422,6 +2436,8 @@ checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 [[package]]
 name = "log-core"
 version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "539c485719a9d4046194d42454d30553478ab1bfc85843703ea3394072e3d926"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3073,6 +3089,8 @@ dependencies = [
 [[package]]
 name = "phi-agent"
 version = "0.23.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe20d88c26a88d8e1bfd23ae8ae239e261db2178f8661664c2342b9e353d2d0f"
 dependencies = [
  "agent-base",
  "agent-works",
@@ -3103,6 +3121,8 @@ dependencies = [
 [[package]]
 name = "phi-agent-tui"
 version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "de0fb7acd5a45f3c81f8f9c51f2747589ddecfd26744807f7b351a4d6aa24fe1"
 dependencies = [
  "anyhow",
  "arboard",
@@ -3127,6 +3147,8 @@ dependencies = [
 [[package]]
 name = "phi-canvas"
 version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aa555267c9d67224e68e9435e927272d4cad1bfe947e013a8d4dbb9a250a002c"
 dependencies = [
  "axum",
  "getrandom 0.3.4",
@@ -3140,6 +3162,8 @@ dependencies = [
 [[package]]
 name = "phi-cap"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73b1e3a0c95e7b7425d474a6fd79b763bc6c421f37f2fc21ff0fe81284560444"
 dependencies = [
  "serde",
 ]
@@ -3147,6 +3171,8 @@ dependencies = [
 [[package]]
 name = "phi-kernel-tools"
 version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d1d06808f023f3f201d19f3628b781a1067bb8471aa51d15152d35958f4b7e0d"
 dependencies = [
  "agent-base",
  "agent-works",
@@ -3169,6 +3195,8 @@ dependencies = [
 [[package]]
 name = "phi-ns"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e9e2571c46ba4dfbb0439dcae7d79df9eced38b869db7a5b201e9cc6301a4a24"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -3183,6 +3211,8 @@ dependencies = [
 [[package]]
 name = "phi-ns-desktop"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "93fa646565cbb0b675f5f7396fd80891d83fcd9a78a68e697c4c5836ef53a01c"
 dependencies = [
  "async-trait",
  "phi-cap",
@@ -3193,6 +3223,8 @@ dependencies = [
 [[package]]
 name = "phi-telemetry"
 version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c62434ef71fdb06df0f6ce987d118ea0590a5fc3b0bad2c91361290bcb440c2"
 dependencies = [
  "agent-base",
  "anyhow",
@@ -3206,6 +3238,8 @@ dependencies = [
 [[package]]
 name = "phi-tools"
 version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7884c26bbc0db22168b169bd0bc613e2b30ec57c8504b7e9a25f1da7438f5f43"
 dependencies = [
  "agent-base",
  "anyhow",
@@ -3223,6 +3257,8 @@ dependencies = [
 [[package]]
 name = "phi-tui"
 version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "25c80153598c2f90f046d80f686dbfa80f555e7f2b6335d54ec62b68fd39d70c"
 dependencies = [
  "crossterm 0.28.1",
  "pulldown-cmark",
@@ -3234,6 +3270,8 @@ dependencies = [
 [[package]]
 name = "phi-wire-adapter"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d5087b0a43847e9f71c566455124c1d53a263247d39b545c04b6bbd51760ba75"
 dependencies = [
  "base64 0.22.1",
  "libc",
@@ -3246,6 +3284,8 @@ dependencies = [
 [[package]]
 name = "phi-wire-client"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a38d363b5af2d20795f305bfef504ee60e1357bcef5380ef4f313813a74a2c63"
 dependencies = [
  "phi-wire-adapter",
  "phi-wire-protocol",
@@ -3257,6 +3297,8 @@ dependencies = [
 [[package]]
 name = "phi-wire-protocol"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9c7aa2c3abefccef9aa7f6d860882a26da1fe03c39fd056f7f8ba2b339b4a957"
 dependencies = [
  "serde",
  "serde_json",
