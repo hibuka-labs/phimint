@@ -12,4 +12,5 @@ pub mod install_source;
 pub mod manifest;
 pub mod mirror;
 pub mod platform;
+pub mod select;
 pub mod state;

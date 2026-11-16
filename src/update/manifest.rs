@@ -66,6 +66,20 @@ fn default_channel() -> String {
     "stable".to_string()
 }
 
+impl Manifest {
+    /// An empty manifest — the placeholder for "no mirror answered".
+    pub fn empty() -> Self {
+        Self {
+            version: "0.0.0".to_string(),
+            notes: None,
+            pub_date: None,
+            channel: "stable".to_string(),
+            mandatory: false,
+            platforms: HashMap::new(),
+        }
+    }
+}
+
 /// Parse a manifest from JSON bytes.
 pub fn parse(data: &[u8]) -> Result<Manifest, UpdateError> {
     let manifest: Manifest =
