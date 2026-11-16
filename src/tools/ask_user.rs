@@ -58,22 +58,15 @@ impl Tool for AskUserTool {
     }
 
     fn description(&self) -> &'static str {
-        "Ask the user to pick one of a few options, in the terminal. Use it only when you \
-            are **blocked on a decision that is genuinely the user's** — one you cannot \
-            settle from the request, the code, or a sensible default. It is **not for \
-            offering follow-up work**: \"want me to fix this?\", \"should I proceed?\", \
-            \"which should I do next?\" belong in your reply text, not in a picker. If a \
-            default exists, take it, say so in your reply, and continue. When you do ask, \
-            the answer must change what you do next, and the choice should be one of 2-4 \
-            candidates you can name. This is the text half of the design routing: \
-            anything the user has to *see* (layout, styling, comparison) belongs on the \
-            design canvas (`canvas_push`), and an open-ended question (a goal, a path, a \
-            number) belongs in your reply text. Returns `picked: <label> (id: <id>)`, or \
-            `skipped` when the user presses Esc — a skip is an answer too; carry on with \
-            what you have, never re-ask. They can also type a question instead of \
-            picking: the result then reads `not picked: the user wants to clarify before \
-            answering:` followed by their words on the next line — address it in your \
-            reply text and carry on. One live question at a time."
+        "Use this tool only when you are blocked on a decision that is genuinely the user's to make: one you cannot resolve from the request, the code, or sensible defaults.\n\n\
+         Usage notes:\n\
+         - Users will always be able to select \"Other\" to provide custom text input.\n\
+         - If you recommend a specific option, make that the first option in the list.\n\
+         - The \"clarify\" exit is not picked: the user wants to clarify before answering: the question itself is wrong and the options are all guesses.\n\
+         - A question the user skipped comes back as `skipped`. Treat that as \"do not ask this\" — never re-ask it in the same form.\n\n\
+         Reserve this for decisions where the user's answer changes what you do next — not for choices with a conventional default or facts you can verify in the codebase yourself. In those cases pick the obvious option, mention it in your response, and proceed. A picker is for a decision that blocks you, **not for offering follow-up work** — do not ask \"want me to fix this too?\".\n\n\
+         The canvas is a surface for options and mockups the user clicks (`canvas_push`), not a place to put a question: a question on the canvas is a question the user has to hunt for.\n\n\
+         The user may see only the question dialog: tool results and text you wrote earlier in this turn may not be on their screen while it is open. Make each question stand on its own: if it depends on something you found, say so briefly, and name the items you are asking about in the question itself."
     }
 
     fn schema(&self) -> Value {

@@ -107,7 +107,7 @@ pub async fn build_with_code_exec(
     // not a flag: the approval mode is a live switch (Shift+Tab), so this is
     // re-read every turn. `None` means "writes are always possible" (tests
     // have no switch to consult).
-    writes_possible: Option<crate::agent::gate::WritesProbe>,
+    _writes_possible: Option<crate::agent::gate::WritesProbe>,
 ) -> Result<BuildOutput> {
     // Skills catalog (skill-injection design D1): the resolver must exist
     // BEFORE the builder — the catalog joins the system prompt at build time,
@@ -268,6 +268,10 @@ pub async fn build_with_code_exec(
     let code_engine_live = false;
 
     let mut system_prompt = compose_system_prompt_for(&skill_resolver, code_road, &ns_face);
+    // The roster: which capabilities are named but not mounted. Same split as
+    // Claude Code — the prompt says what exists, `activate_tool` says how to
+    // open it. Rendered from the table `defer_tool` walks below.
+    system_prompt.push_str(&super::deferred::roster());
 
     // Keep a handle for the guard below — `llm_client` itself is moved into the
     // builder here.
@@ -502,13 +506,13 @@ pub async fn build_with_code_exec(
         // marker instead of a loop, so this can never spend more than a single
         // extra turn and never competes with `DefaultGuard` for the floor
         // (see the control-flow note in `agent::gate`).
-        .middleware(crate::agent::gate::VerifyGateMiddleware::new(
-            crate::agent::gate::VerifyGateConfig {
-                writes_possible: writes_possible.unwrap_or_else(|| std::sync::Arc::new(|| true)),
-                ..Default::default()
-            },
-            Arc::clone(&verify_ledger),
-        ))
+        // Verify gate OFF for the harness experiment (2026-11-16). Claude
+        // Code has no verify tool and no gate — it trusts "report outcomes
+        // faithfully". Session 20261116_31d16970 had the gate pull a traffic
+        // check to 261 turns over one real `cargo check` error, so it is the
+        // biggest remaining harness-specific driver. Restore alongside
+        // `verify` once the comparison is done.
+        // .middleware(crate::agent::gate::VerifyGateMiddleware::new(...))
         // Wrap-up nudge: the mirror of `reasoning_only_nudge`. That one fires
         // when the model thinks without acting; this one fires when it acts
         // without saying anything — a run of turns whose reply text is empty.
@@ -676,6 +680,28 @@ pub async fn build_with_code_exec(
         ));
         builder = builder.middleware(crate::model::identity::ModelIdentityStamp::new(store));
     }
+
+    // Tool face (notes/tool-face-design.md): mount what this shape of work
+    // reaches for, name the rest. Same shape as Claude Code's 13 + 14 + a
+    // schema loader. The candidates are rendered here because this is the only
+    // place that holds the tool instances.
+    let activation = phi_agent::ToolActivation::new();
+    let mut candidates = Vec::new();
+    for (name, _) in super::deferred::DEFERRED_TOOLS {
+        match builder.defer_tool(name) {
+            Some(definition) => candidates.push((
+                (*name).to_string(),
+                phi_agent::ToolExposure::Deferred,
+                definition,
+            )),
+            // A roster entry with no tool behind it is a lie the model pays a
+            // turn to discover.
+            None => tracing::warn!(tool = name, "roster names a tool that is not registered"),
+        }
+    }
+    builder = builder
+        .with_tool_activation(activation.clone())
+        .register_tool_arc(phi_agent::ActivateTool::new(activation, candidates));
 
     let effort = reasoning_effort_from(reasoning_effort);
 
