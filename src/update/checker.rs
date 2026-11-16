@@ -6,7 +6,7 @@
 use semver::Version;
 
 use super::error::UpdateError;
-use super::manifest::{self, Manifest};
+use super::manifest::Manifest;
 use super::platform;
 use super::state::UpdateState;
 
@@ -22,10 +22,21 @@ pub enum CheckResult {
         notes: Option<String>,
         /// Expected SHA-256 of the archive, when the manifest carries one.
         sha256: Option<String>,
+        /// The mirror whose manifest won the race.
+        mirror: String,
+        /// The other mirror's manifest, when it also answered. The asset
+        /// fallback reads the same version's URL from it, so a failed
+        /// download costs no extra network round-trip.
+        runner_up: Option<(String, Manifest)>,
     },
 }
 
-/// Check for updates by trying endpoints in order.
+/// Check for updates by racing every endpoint at once.
+///
+/// The endpoints are fetched concurrently, so an unreachable mirror costs one
+/// timeout in parallel rather than one timeout per endpoint in series. The
+/// first mirror whose manifest parses wins; the runner-up's manifest rides
+/// along so the asset fallback needs no extra round-trip.
 ///
 /// Returns `Ok(Some(CheckResult))` if a manifest was successfully fetched and evaluated.
 /// Returns `Ok(None)` if all endpoints failed (network/parse errors are silently logged).
@@ -39,39 +50,21 @@ pub async fn check(
     let current =
         Version::parse(current_version).map_err(|e| UpdateError::Semver(e.to_string()))?;
 
-    for endpoint in endpoints {
-        match try_endpoint(client, endpoint, platform_key, &current, state).await {
-            Ok(Some(result)) => return Ok(Some(result)),
-            Ok(None) => continue,
-            Err(e) => {
-                tracing::debug!(endpoint = %endpoint, error = %e, "endpoint failed, trying next");
-                continue;
-            }
-        }
+    let picked = super::select::race(client, endpoints).await;
+    if picked.winner.0.is_empty() {
+        tracing::debug!("all endpoints exhausted");
+        return Ok(None);
     }
 
-    tracing::debug!("all endpoints exhausted");
-    Ok(None)
-}
-
-/// Try a single endpoint.
-async fn try_endpoint(
-    client: &reqwest::Client,
-    endpoint: &str,
-    platform_key: &str,
-    current: &Version,
-    state: &UpdateState,
-) -> Result<Option<CheckResult>, UpdateError> {
-    let resp = client
-        .get(endpoint)
-        .timeout(std::time::Duration::from_secs(3))
-        .send()
-        .await?;
-
-    let bytes = resp.bytes().await?;
-    let m = manifest::parse(&bytes)?;
-
-    compare(current, &m, platform_key, state)
+    let (mirror, manifest) = picked.winner;
+    compare(
+        &current,
+        &manifest,
+        platform_key,
+        state,
+        &mirror,
+        picked.runner_up,
+    )
 }
 
 /// Compare current version against a manifest.
@@ -80,6 +73,8 @@ fn compare(
     manifest: &Manifest,
     platform_key: &str,
     state: &UpdateState,
+    mirror: &str,
+    runner_up: Option<(String, Manifest)>,
 ) -> Result<Option<CheckResult>, UpdateError> {
     // Check if the platform is supported
     let entry = match manifest.platforms.get(platform_key) {
@@ -109,6 +104,8 @@ fn compare(
             download_url: entry.url.clone(),
             notes: manifest.notes.clone(),
             sha256: entry.sha256.clone(),
+            mirror: mirror.to_string(),
+            runner_up: runner_up.clone(),
         }));
     }
 
@@ -119,6 +116,8 @@ fn compare(
             download_url: entry.url.clone(),
             notes: manifest.notes.clone(),
             sha256: entry.sha256.clone(),
+            mirror: mirror.to_string(),
+            runner_up: runner_up.clone(),
         }));
     }
 
@@ -156,7 +155,7 @@ mod tests {
         let current = Version::parse("0.1.0").unwrap();
         let manifest = make_manifest("0.2.0", "https://example.com/0.2.0");
         let state = UpdateState::default();
-        let result = compare(&current, &manifest, "linux-x86_64", &state).unwrap();
+        let result = compare(&current, &manifest, "linux-x86_64", &state, "github", None).unwrap();
         match result {
             Some(CheckResult::UpgradeAvailable { version, .. }) => assert_eq!(version, "0.2.0"),
             _ => panic!("expected UpgradeAvailable"),
@@ -168,7 +167,7 @@ mod tests {
         let current = Version::parse("0.2.0").unwrap();
         let manifest = make_manifest("0.2.0", "https://example.com/0.2.0");
         let state = UpdateState::default();
-        let result = compare(&current, &manifest, "linux-x86_64", &state).unwrap();
+        let result = compare(&current, &manifest, "linux-x86_64", &state, "github", None).unwrap();
         assert!(result.is_none());
     }
 
@@ -177,7 +176,7 @@ mod tests {
         let current = Version::parse("0.3.0").unwrap();
         let manifest = make_manifest("0.2.0", "https://example.com/0.2.0");
         let state = UpdateState::default();
-        let result = compare(&current, &manifest, "linux-x86_64", &state).unwrap();
+        let result = compare(&current, &manifest, "linux-x86_64", &state, "github", None).unwrap();
         assert!(result.is_none());
     }
 
@@ -189,7 +188,7 @@ mod tests {
             skipped_version: Some("0.2.0".to_string()),
             ..Default::default()
         };
-        let result = compare(&current, &manifest, "linux-x86_64", &state).unwrap();
+        let result = compare(&current, &manifest, "linux-x86_64", &state, "github", None).unwrap();
         assert!(result.is_none());
     }
 
@@ -198,7 +197,7 @@ mod tests {
         let current = Version::parse("0.3.0-beta.1").unwrap();
         let manifest = make_manifest("0.2.0", "https://example.com/0.2.0");
         let state = UpdateState::default();
-        let result = compare(&current, &manifest, "linux-x86_64", &state).unwrap();
+        let result = compare(&current, &manifest, "linux-x86_64", &state, "github", None).unwrap();
         // beta→stable: current prerelease > latest stable, but we allow downgrade
         match result {
             Some(CheckResult::UpgradeAvailable { version, .. }) => assert_eq!(version, "0.2.0"),
@@ -211,7 +210,38 @@ mod tests {
         let current = Version::parse("0.1.0").unwrap();
         let manifest = make_manifest("0.2.0", "https://example.com/0.2.0");
         let state = UpdateState::default();
-        let result = compare(&current, &manifest, "darwin-aarch64", &state).unwrap();
+        let result = compare(&current, &manifest, "darwin-aarch64", &state, "github", None).unwrap();
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn the_upgrade_result_carries_the_mirror_and_the_runner_up() {
+        let current = Version::parse("0.1.0").unwrap();
+        let manifest = make_manifest("0.2.0", "https://gitee.com/0.2.0");
+        let state = UpdateState::default();
+
+        let runner_up_manifest = make_manifest("0.2.0", "https://github.com/0.2.0");
+        let runner_up = Some(("github".to_string(), runner_up_manifest));
+
+        let result =
+            compare(&current, &manifest, "linux-x86_64", &state, "gitee", runner_up).unwrap();
+
+        match result {
+            Some(CheckResult::UpgradeAvailable {
+                mirror,
+                runner_up,
+                download_url,
+                ..
+            }) => {
+                assert_eq!(mirror, "gitee");
+                assert_eq!(download_url, "https://gitee.com/0.2.0");
+                // The runner-up rides along so the asset fallback can find the
+                // same version on the other mirror without another round-trip.
+                let (name, other) = runner_up.expect("runner-up kept");
+                assert_eq!(name, "github");
+                assert_eq!(other.platforms["linux-x86_64"].url, "https://github.com/0.2.0");
+            }
+            _ => panic!("expected UpgradeAvailable"),
+        }
     }
 }
