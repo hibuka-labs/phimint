@@ -55,9 +55,12 @@ pub fn update_slot(
         let endpoints = endpoints.clone();
         let ver = ver.clone();
         Box::pin(async move {
-            // Single attempt, 3s timeout per endpoint, silent on failure.
+            // Single attempt; the endpoints race each other, so an
+            // unreachable mirror costs one timeout in parallel rather than
+            // one per endpoint in series.
             let client = reqwest::Client::builder()
                 .timeout(Duration::from_secs(3))
+                .connect_timeout(Duration::from_secs(2))
                 .build()
                 .unwrap_or_default();
             let state = crate::update::state::load();

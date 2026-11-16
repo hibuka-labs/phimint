@@ -109,19 +109,40 @@ fn merge(
     }
 }
 
-/// Try endpoints in order (3s timeout each), return the first valid manifest.
+/// Try endpoints concurrently, return the first valid manifest.
+///
+/// The endpoints are fetched at the same time so an unreachable mirror costs
+/// one timeout in parallel rather than one timeout per endpoint in series.
 async fn fetch_manifest(client: &reqwest::Client, endpoints: &[String]) -> Option<TipsManifest> {
+    let mut tasks = Vec::with_capacity(endpoints.len());
     for endpoint in endpoints {
-        match try_endpoint(client, endpoint).await {
-            Ok(m) => return Some(m),
-            Err(e) => {
-                tracing::debug!(endpoint = %endpoint, error = %e, "tips fetch failed, trying next");
-                continue;
-            }
+        let client = client.clone();
+        let endpoint = endpoint.clone();
+        tasks.push(tokio::spawn(async move {
+            let result = try_endpoint(&client, &endpoint)
+                .await
+                .map_err(|e| e.to_string());
+            (endpoint, result)
+        }));
+    }
+
+    let mut entries: Vec<(String, Result<TipsManifest, String>)> = Vec::new();
+    for task in tasks {
+        match task.await {
+            Ok(entry) => entries.push(entry),
+            Err(e) => tracing::debug!(error = %e, "tips fetch task panicked"),
         }
     }
-    tracing::debug!("all tips endpoints exhausted");
-    None
+
+    entries
+        .into_iter()
+        .find_map(|(_, result)| match result {
+            Ok(m) => Some(m),
+            Err(e) => {
+                tracing::debug!(error = %e, "tips endpoint failed");
+                None
+            }
+        })
 }
 
 /// Fetch and parse one tips endpoint.

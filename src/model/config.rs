@@ -346,10 +346,12 @@ impl Default for TipsConfig {
 
 fn default_tips_endpoints() -> Vec<String> {
     vec![
-        // Primary: GitHub (global). Fallback: Gitee (mainland China).
-        // The checker tries endpoints in order, 3s timeout each.
+        // GitHub only, for now. The Gitee mirror serves no tips.json: the
+        // file is not a release asset and deploy/release.sh never publishes
+        // one, so the Gitee URL answered 404 on 2026-11-16. Re-add
+        // https://gitee.com/chenkangzeng_admin/phimint/raw/release-metadata/tips.json
+        // once the file is published to the Gitee mirror.
         "https://github.com/hibuka-labs/phimint/releases/latest/download/tips.json".to_string(),
-        "https://gitee.com/chenkangzeng_admin/phimint/raw/release-metadata/tips.json".to_string(),
     ]
 }
 
@@ -385,13 +387,9 @@ impl Default for UpdateConfig {
 }
 
 fn default_endpoints() -> Vec<String> {
-    vec![
-        // Primary: GitHub (global). Fallback: Gitee (mainland China).
-        // The checker tries endpoints in order, 3s timeout each.
-        "https://github.com/hibuka-labs/phimint/releases/latest/download/manifest.json".to_string(),
-        "https://gitee.com/chenkangzeng_admin/phimint/raw/release-metadata/manifest.json"
-            .to_string(),
-    ]
+    // The mirror catalogue owns the built-in pair: GitHub and Gitee, both
+    // carrying their own asset URLs. The updater races them.
+    crate::update::mirror::built_in_endpoints()
 }
 
 fn default_channel() -> String {

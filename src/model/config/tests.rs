@@ -410,7 +410,28 @@ fn ui_tips_defaults() {
     let cfg: ModelConfig = json5::from_str(r#"{"main": "gpt-4"}"#).unwrap();
     assert!(cfg.ui.tips.enabled);
     assert_eq!(cfg.ui.tips.refresh_interval_secs, 86_400);
-    assert_eq!(cfg.ui.tips.endpoints.len(), 2);
+}
+
+#[test]
+fn ui_tips_default_endpoints_drop_the_gitee_url_that_404s() {
+    // Gitee serves no tips.json: the file is not a release asset and
+    // deploy/release.sh never publishes one to the metadata branch. The
+    // endpoint returned 404 on 2026-11-16. Re-add it only after the file
+    // is published to the Gitee mirror.
+    let cfg: ModelConfig = json5::from_str(r#"{"main": "gpt-4"}"#).unwrap();
+    assert_eq!(cfg.ui.tips.endpoints.len(), 1);
+    assert!(cfg.ui.tips.endpoints[0].contains("github.com"));
+    assert!(!cfg.ui.tips.endpoints.iter().any(|e| e.contains("gitee.com")));
+}
+
+#[test]
+fn update_default_endpoints_are_the_mirror_pair() {
+    let cfg: ModelConfig = json5::from_str(r#"{"main": "gpt-4"}"#).unwrap();
+    assert_eq!(cfg.update.endpoints.len(), 2);
+    assert!(cfg.update.endpoints[0].contains("github.com"));
+    assert!(cfg.update.endpoints[1].contains("gitee.com"));
+    // The Gitee manifest is a release asset, not the raw/ branch file.
+    assert!(cfg.update.endpoints[1].contains("/releases/download/latest/"));
 }
 
 #[test]
