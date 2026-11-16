@@ -119,6 +119,29 @@ pub fn fallback_entry(
     manifest.platforms.get(platform_key).cloned()
 }
 
+/// The digest the downloaded archive is verified against.
+///
+/// The winner's digest governs: both mirrors publish the same archive, so the
+/// same checksum applies. When the two mirrors disagree, there is no single
+/// correct digest and `None` is returned — the caller must refuse to install.
+///
+/// `None` also means "no digest available at all", which the caller treats as
+/// an unverifiable download rather than a mismatch.
+pub fn expected_digest(
+    winner: Option<&str>,
+    fallback: Option<(&str, &str)>,
+) -> Option<String> {
+    let other = fallback
+        .map(|(_, sha)| sha)
+        .filter(|sha| !sha.is_empty());
+    match (winner, other) {
+        (Some(w), Some(o)) if w != o => None,
+        (Some(w), _) => Some(w.to_string()),
+        (None, Some(o)) => Some(o.to_string()),
+        (None, None) => None,
+    }
+}
+
 /// Download the release archive at `url`, verify its SHA-256 (when the
 /// manifest entry carries one), extract the `phimint` binary and atomically
 /// replace the running executable. Returns the replaced path.
@@ -128,16 +151,33 @@ pub fn fallback_entry(
 /// against `sha256` — the *winner's* expected digest — because both mirrors
 /// publish the same archive: a mirror serving something else is caught by
 /// the checksum rather than silently installed.
+///
+/// When the two mirrors disagree about the digest, the update is refused
+/// outright: the archives are not the same artifact, and installing either
+/// would be a guess.
 pub async fn download_and_replace(
     client: &reqwest::Client,
     url: &str,
     sha256: Option<&str>,
     fallback: Option<(&str, &str)>,
 ) -> Result<PathBuf, UpdateError> {
+    let expected = expected_digest(sha256, fallback);
+
+    // A disagreement between the mirrors is refused before anything is
+    // downloaded: the archives are not the same artifact.
+    if let (Some(winner), Some((_, other))) = (sha256, fallback) {
+        if !other.is_empty() && winner != other {
+            return Err(UpdateError::ChecksumMismatch {
+                expected: winner.to_string(),
+                actual: other.to_string(),
+            });
+        }
+    }
+
     let bytes = match download_bytes(client, url).await {
         Ok(bytes) => bytes,
         Err(primary_err) => {
-            let Some((fallback_url, fallback_sha)) = fallback else {
+            let Some((fallback_url, _)) = fallback else {
                 return Err(primary_err);
             };
             tracing::warn!(
@@ -149,11 +189,8 @@ pub async fn download_and_replace(
         }
     };
 
-    // Verify against the winner's digest in both cases: the fallback archive
-    // is the same artifact, so the same digest applies.
-    let expected = sha256.or(fallback.map(|(_, sha)| sha));
     if let Some(expected) = expected {
-        verify_sha256(&bytes, expected)?;
+        verify_sha256(&bytes, &expected)?;
     } else {
         tracing::warn!(%url, "manifest entry has no sha256; installing without checksum verification");
     }
@@ -344,5 +381,35 @@ mod tests {
         // Zero elapsed time must not divide by zero: 64 KiB in under a
         // second is fast, not stalled.
         assert!(!rate_is_below_floor(64 * 1024, 0));
+    }
+
+    #[test]
+    fn the_expected_digest_is_the_winners() {
+        // The winner's digest governs: both mirrors publish the same archive.
+        assert_eq!(
+            expected_digest(Some("winner"), Some(("url", "winner"))),
+            Some("winner".to_string())
+        );
+    }
+
+    #[test]
+    fn the_expected_digest_falls_back_to_the_other_mirror() {
+        // The winner carries no digest: the other mirror's is used.
+        assert_eq!(
+            expected_digest(None, Some(("url", "other"))),
+            Some("other".to_string())
+        );
+    }
+
+    #[test]
+    fn the_expected_digest_is_none_when_nothing_carries_one() {
+        assert_eq!(expected_digest(None, None), None);
+        assert_eq!(expected_digest(None, Some(("url", ""))), None);
+    }
+
+    #[test]
+    fn mirrors_that_disagree_about_the_digest_are_refused() {
+        // The archives are not the same artifact: installing either is a guess.
+        assert!(expected_digest(Some("winner"), Some(("url", "other"))).is_none());
     }
 }
