@@ -53,7 +53,16 @@ $Index = $null
 foreach ($Endpoint in $Endpoints) {
     Write-Host "  fetching index: $Endpoint"
     try {
-        $Index = (Invoke-WebRequest -Uri $Endpoint -UseBasicParsing -TimeoutSec 20).Content
+        # Decode the content before parsing it. GitHub serves release assets
+        # as application/octet-stream, and Windows PowerShell 5.1 hands
+        # those back as a byte array — splitting it as text then finds no
+        # platform line at all (2026-11-16: `irm install.ps1 | iex` failed
+        # with "no prebuilt binary for platform windows-x86_64").
+        $Content = (Invoke-WebRequest -Uri $Endpoint -UseBasicParsing -TimeoutSec 20).Content
+        if ($Content -is [byte[]]) {
+            $Content = [System.Text.Encoding]::UTF8.GetString($Content)
+        }
+        $Index = $Content
     } catch {
         $Index = $null
     }
