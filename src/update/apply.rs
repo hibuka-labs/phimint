@@ -80,40 +80,118 @@ pub fn replace_executable(target: &Path, new_bytes: &[u8]) -> Result<(), UpdateE
     Ok(())
 }
 
+/// How long a single archive download may take.
+///
+/// 120s (the old value) is not enough for a link running at 41 KB/s — the
+/// measured GitHub rate from a China-hosted machine — which transfers only
+/// 5 MB of the 25 MB archive in that time. 300s covers a slow-but-working
+/// link, and the rate floor catches a stalled one much sooner.
+pub const DOWNLOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// The rate below which a download is considered stalled, in bytes/sec.
+///
+/// 32 KiB/s sits below the measured 41 KB/s of a merely-degraded link, so a
+/// slow-but-working mirror is not abandoned. Only a link that has genuinely
+/// stopped moving trips this.
+pub const RATE_FLOOR: u64 = 32 * 1024;
+
+/// How many bytes must arrive before the rate is judged.
+///
+/// Without this a slow start would be mistaken for a slow link.
+pub const RATE_EVIDENCE: u64 = 64 * 1024;
+
+/// Whether a measured transfer rate is too slow to keep going.
+///
+/// `bytes` is what arrived, `elapsed_secs` the time it took.
+pub fn rate_is_below_floor(bytes: u64, elapsed_secs: u64) -> bool {
+    if bytes < RATE_EVIDENCE {
+        return false;
+    }
+    let elapsed = elapsed_secs.max(1);
+    bytes / elapsed < RATE_FLOOR
+}
+
+/// The platform entry to fall back to, from the other mirror's manifest.
+pub fn fallback_entry(
+    manifest: &crate::update::manifest::Manifest,
+    platform_key: &str,
+) -> Option<crate::update::manifest::PlatformEntry> {
+    manifest.platforms.get(platform_key).cloned()
+}
+
 /// Download the release archive at `url`, verify its SHA-256 (when the
 /// manifest entry carries one), extract the `phimint` binary and atomically
 /// replace the running executable. Returns the replaced path.
 ///
-/// Call only for standalone installs: package-manager installs are owned by
-/// their manager (brew checksums break if we overwrite their binary).
+/// `fallback` is the other mirror's entry for the same version and platform,
+/// used when the primary download fails. The fallback bytes are verified
+/// against `sha256` — the *winner's* expected digest — because both mirrors
+/// publish the same archive: a mirror serving something else is caught by
+/// the checksum rather than silently installed.
 pub async fn download_and_replace(
     client: &reqwest::Client,
     url: &str,
     sha256: Option<&str>,
+    fallback: Option<(&str, &str)>,
 ) -> Result<PathBuf, UpdateError> {
-    // Large download: binary archives are multi-MB. Not the checker's 3s probe.
-    let resp = client
-        .get(url)
-        .timeout(std::time::Duration::from_secs(120))
-        .send()
-        .await?
-        .error_for_status()?;
-    let bytes = resp.bytes().await?;
-
-    match sha256 {
-        Some(expected) => verify_sha256(&bytes, expected)?,
-        None => {
+    let bytes = match download_bytes(client, url).await {
+        Ok(bytes) => bytes,
+        Err(primary_err) => {
+            let Some((fallback_url, fallback_sha)) = fallback else {
+                return Err(primary_err);
+            };
             tracing::warn!(
-                %url,
-                "manifest entry has no sha256; installing without checksum verification"
+                error = %primary_err,
+                fallback = %fallback_url,
+                "primary download failed, retrying on the other mirror"
             );
+            download_bytes(client, fallback_url).await?
         }
+    };
+
+    // Verify against the winner's digest in both cases: the fallback archive
+    // is the same artifact, so the same digest applies.
+    let expected = sha256.or(fallback.map(|(_, sha)| sha));
+    if let Some(expected) = expected {
+        verify_sha256(&bytes, expected)?;
+    } else {
+        tracing::warn!(%url, "manifest entry has no sha256; installing without checksum verification");
     }
 
     let new_binary = extract_binary(&bytes, "phimint")?;
     let exe = std::env::current_exe().map_err(|e| UpdateError::Archive(e.to_string()))?;
     replace_executable(&exe, &new_binary)?;
     Ok(exe)
+}
+
+/// Download an archive, reading it in chunks.
+///
+/// The rate floor abandons a stalled download early instead of waiting out
+/// the full timeout.
+async fn download_bytes(
+    client: &reqwest::Client,
+    url: &str,
+) -> Result<Vec<u8>, UpdateError> {
+    let resp = client
+        .get(url)
+        .timeout(DOWNLOAD_TIMEOUT)
+        .send()
+        .await?
+        .error_for_status()?;
+
+    let mut body = Vec::new();
+    let mut resp = resp;
+    let start = std::time::Instant::now();
+    while let Some(chunk) = resp.chunk().await? {
+        body.extend_from_slice(&chunk);
+        if rate_is_below_floor(body.len() as u64, start.elapsed().as_secs()) {
+            return Err(UpdateError::Archive(format!(
+                "download stalled at {} bytes from {url}",
+                body.len()
+            )));
+        }
+    }
+    Ok(body)
 }
 
 #[cfg(test)]
@@ -203,5 +281,68 @@ mod tests {
             let mode = std::fs::metadata(&target).unwrap().permissions().mode();
             assert_ne!(mode & 0o111, 0, "replaced binary must stay executable");
         }
+    }
+
+    #[test]
+    fn fallback_entry_comes_from_the_runner_up_manifest() {
+        use crate::update::manifest::{Manifest, PlatformEntry};
+        use std::collections::HashMap;
+
+        let mut platforms = HashMap::new();
+        platforms.insert(
+            "linux-x86_64".to_string(),
+            PlatformEntry {
+                signature: String::new(),
+                url: "https://gitee.com/.../phimint.tar.gz".to_string(),
+                sha256: None,
+            },
+        );
+        let runner_up = Manifest {
+            version: "0.11.0".to_string(),
+            notes: None,
+            pub_date: None,
+            channel: "stable".to_string(),
+            mandatory: false,
+            platforms,
+        };
+
+        let entry = fallback_entry(&runner_up, "linux-x86_64");
+        assert_eq!(
+            entry.map(|e| e.url),
+            Some("https://gitee.com/.../phimint.tar.gz".to_string())
+        );
+    }
+
+    #[test]
+    fn fallback_entry_is_none_for_an_unknown_platform() {
+        let runner_up = crate::update::manifest::Manifest::empty();
+        assert!(fallback_entry(&runner_up, "linux-x86_64").is_none());
+    }
+
+    #[test]
+    fn the_rate_floor_lets_a_slow_link_through() {
+        // 41 KB/s is slow but above the 32 KiB/s floor: keep going.
+        assert!(!rate_is_below_floor(41 * 1024, 1));
+    }
+
+    #[test]
+    fn the_rate_floor_stops_a_stalled_link() {
+        // 4 KiB/s sustained: after the 64 KiB of evidence has arrived (16 s
+        // at that rate), the measured rate is still below the floor.
+        assert!(rate_is_below_floor(64 * 1024, 16));
+    }
+
+    #[test]
+    fn the_rate_floor_waits_for_enough_bytes() {
+        // Below 64 KiB of evidence the rate is not yet meaningful, so a slow
+        // start is not mistaken for a slow link.
+        assert!(!rate_is_below_floor(4 * 1024, 16));
+    }
+
+    #[test]
+    fn the_rate_floor_divides_by_at_least_one_second() {
+        // Zero elapsed time must not divide by zero: 64 KiB in under a
+        // second is fast, not stalled.
+        assert!(!rate_is_below_floor(64 * 1024, 0));
     }
 }
