@@ -2,7 +2,7 @@
 
 **Pronounced** `/ˈfaɪmɪnt/` ("fie-mint", phi + mint) — a terminal AI coding agent built on [phi-agent](https://docs.phiagent.dev/), the agent runtime beneath it. *Not just good at chat — it gets the job done right.*
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
 [![Rust](https://img.shields.io/badge/Rust-edition%202024-orange.svg)](https://www.rust-lang.org)
 [![中文](https://img.shields.io/badge/README-中文-blue.svg)](README_CN.md)
 
@@ -263,7 +263,7 @@ Commands:
   | `Ctrl+End` | jump to the newest lines |
 
 - **Mouse** — wheel scrolls; left-drag selects lines; right-click opens a copy menu.
-- **Terminal notes** — In macOS Terminal.app, enable **View → Allow Mouse Reporting** for wheel/trackpad scrolling. If it is disabled, use `fn+Up` / `fn+Down` to page through the transcript. Terminal.app does not report the Kitty keyboard protocol, so `Cmd+C` cannot be detected as a copy shortcut; use `Ctrl+C` while a selection is active or the right-click copy menu instead.
+- **Terminal.app** — turn on **View → Allow Mouse Reporting** or the wheel will not scroll the transcript; without it, page with `fn+Up` / `fn+Down`. This terminal also skips the Kitty keyboard protocol, so it never sees `Cmd+C` as copy — select first, then press `Ctrl+C`, or use the right-click menu.
 - **Approvals**
 
   | Mode | Behavior |
@@ -388,7 +388,7 @@ The README demo GIF is rebuilt from a recorded session: `cargo test frame_reel -
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT OR Apache-2.0 — see [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE).
 
 ## Contact
 

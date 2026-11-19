@@ -39,9 +39,9 @@
   //   "compression": "lite"
   // },
 
-  // System update check (optional) — defaults to the official manifest endpoints
+  // Update checker (optional) — falls back to the built-in manifest endpoints
   // "update": {
-  //   // Manifest URLs tried in order
+  //   // Tried top-to-bottom until one responds
   //   "endpoints": [
   //     "https://github.com/hibuka-labs/phimint/releases/latest/download/manifest.json",
   //     "https://gitee.com/chenkangzeng_admin/phimint/raw/release-metadata/manifest.json"
@@ -50,7 +50,7 @@
   //   "auto_check": true
   // },
 
-  // Popup band layout (optional) — the `@`/`/` popup
+  // `@` / `/` popup geometry (optional)
   // "ui": {
   //   "popup": {
   //     "frame": true,

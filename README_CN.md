@@ -4,7 +4,7 @@
 
 基于 [phi-agent](https://docs.phiagent.dev/zh/) 构建的终端 AI 编码 agent——底层是那个「不只是会聊天，更能把事做好」的 Agent 运行时底座。
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
 [![Rust](https://img.shields.io/badge/Rust-edition%202024-orange.svg)](https://www.rust-lang.org)
 [![English](https://img.shields.io/badge/README-English-blue.svg)](README.md)
 
@@ -247,7 +247,7 @@ Commands:
   | `Ctrl+End` | 跳到最新内容 |
 
 - **鼠标**：滚轮滚动、左键拖选出行范围、右键弹出拷贝菜单。
-- **终端说明**：在 macOS Terminal.app 中，请启用 **View → Allow Mouse Reporting**，滚轮和触控板滚动才能正常工作。若未启用，可使用 `fn+Up` / `fn+Down` 翻页浏览输出。Terminal.app 不会报告 Kitty 键盘协议，因此无法识别 `Cmd+C` 作为拷贝快捷键；请先选中文本后使用 `Ctrl+C`，或使用右键拷贝菜单。
+- **Terminal.app**：需开启 **View → Allow Mouse Reporting** 滚轮才能滚动输出区，未开启时用 `fn+Up` / `fn+Down` 翻页。该终端不上报 Kitty 键盘协议，`Cmd+C` 不会被识别为拷贝——先选中文本再按 `Ctrl+C`，或用右键菜单。
 - **审批三态**：
 
   | 模式 | 行为 |
@@ -372,7 +372,7 @@ README 演示 GIF 由录帧重建：`cargo test frame_reel -- --ignored` 把 ANS
 
 ## 许可证
 
-MIT（见 [LICENSE](LICENSE)）。
+MIT OR Apache-2.0（见 [LICENSE-MIT](LICENSE-MIT) 与 [LICENSE-APACHE](LICENSE-APACHE)）。
 
 ## 联系
 
