@@ -7,7 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-20
+
 ### Added
+- **The tool face is pinned.** Twenty-three tools are mounted and fifteen
+  are named only, and the count is a test — mounting one more is always an
+  explicit change, not a side effect of a regex edit.
+
+- **The tips channel actually ships.** `tips.json` is a release asset served
+  by both mirrors (the channel had been 404'ing silently since day one),
+  and the client races the endpoints — first answer wins — and warns on
+  total failure instead of quietly keeping the built-in tips.
+
 - **Secrets stay off disk in `config.json` too.** An `api_key` may be a
   whole-value `${ENV:VAR}` reference (the same rule the external tools
   already enforce): it resolves from the environment at use, the file keeps
@@ -15,6 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A missing variable is named at boot instead of failing at auth time.
 
 ### Changed
+- **The mirrors race instead of queue.** The checker, `phimint update` and
+  `install.sh` probe every endpoint at once (first to answer wins) and fall
+  back to the other mirror's asset on a stalled download — an unreachable
+  mirror costs one connect timeout, not the whole attempt.
+
 - **Verification is advice, not a gate.** The verify gate that held a
   hand-back until there was a green compile newer than the last edit is
   off: a hand-back trusts "report outcomes faithfully". The miss it guarded
@@ -23,6 +39,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as models improve while the friction does not. The `verify` tool, the
   evidence ledger and the gate stay in the tree, dormant —
   `notes/verify-gate-design.md` records the criteria a restore would take.
+
+### Fixed
+- **Self-update works on Windows,** and the installer index is read as
+  bytes.
+
+### License
+- **Dual-licensed as MIT OR Apache-2.0.**
+
+### Dependencies
+- **Breaking (dependency):** `agent-base` 0.15.0 → 0.16.0, `phi-agent`
+  0.23.0 → 0.24.0, `phi-agent-tui` 0.4.1 → 0.5.0, `phi-kernel-tools`
+  0.15.0 → 0.16.0, `phi-tools` 0.10.0 → 0.11.0.
 
 ## [0.11.0] - 2026-11-16
 
