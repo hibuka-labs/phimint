@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Secrets stay off disk in `config.json` too.** An `api_key` may be a
+  whole-value `${ENV:VAR}` reference (the same rule the external tools
+  already enforce): it resolves from the environment at use, the file keeps
+  only the reference — so the config is safe to commit to a dotfiles repo.
+  A missing variable is named at boot instead of failing at auth time.
+
+### Changed
+- **Verification is advice, not a gate.** The verify gate that held a
+  hand-back until there was a green compile newer than the last edit is
+  off: a hand-back trusts "report outcomes faithfully". The miss it guarded
+  (done said over code never rebuilt after the last edit) costs one user
+  round-trip; a gate misfire can cost a whole session, and the miss shrinks
+  as models improve while the friction does not. The `verify` tool, the
+  evidence ledger and the gate stay in the tree, dormant —
+  `notes/verify-gate-design.md` records the criteria a restore would take.
+
 ## [0.11.0] - 2026-11-16
 
 ### Added

@@ -26,7 +26,7 @@ Project page: [hibuka-labs.github.io/phimint](https://hibuka-labs.github.io/phim
 - **Design canvas & `ask_user`** — the agent can *show* you options instead of describing them: 2–4 candidates land as a screen in your browser (layout mockups, option sets, comparisons) and your click comes back as a real user turn; `ask_user` asks concept picks right in the terminal picker. The browser opens only after a one-time consent, busy clicks queue at the turn boundary, and while a screen awaits your pick the run parks — the agent never decides your design choices for you.
 - **Desktop with consent** — the agent can look at your screen and move the pointer. *Looking* and *moving* never ask; changing the machine asks every time, through the same approval gate the tool path already uses.
 - **Three approval modes** — `auto` (full auto), `ask` (prompt on writes/risky shell), `deny` (read-only). Sub-agents inherit the main agent's mode: in `ask`, every sub-agent write prompts in a popup that names the requesting sub-agent.
-- **Guardrails** — reasoning-only spin correction, max-turns nudge, provider truncation guard (lying `finish_reason` tolerance, from agent-base), 16k tool-output cap, and a verify gate: a hand-back with no green compile newer than the last edit is intercepted once, then carries a visible marker.
+- **Guardrails** — reasoning-only spin correction, max-turns nudge, provider truncation guard (lying `finish_reason` tolerance, from agent-base), 16k tool-output cap.
 - **Multi-language** — `code-intel` registry (extension → LSP server → build-command fallback): Rust, TypeScript, JavaScript, C, C++ out of the box.
 - **Modular base** — chat UI components and language intelligence are distilled into their own crates: [`phi-tui`](https://github.com/hibuka-labs/phi-tui) (chat TUI components) and [`code-intel`](https://github.com/hibuka-labs/code-intel) (LSP/repomap/ripgrep cores). phimint keeps only the product shell.
 
@@ -307,7 +307,7 @@ you: "investigate questions X / Y / Z"
 | `search_content` | ripgrep content search (regex) |
 | `repo_map` | tree-sitter symbol/structure index (multi-language, pull-based context) |
 | `diagnostics` | LSP diagnostics (fast loop without recompiling; degrades to shell) |
-| `verify` | run the project's own compile-level check (`cargo check`, `tsc --noEmit`) and report the compiler's real exit code — the command comes from the project (its config, then a convention it already uses, then the language default), never from the model; behind it, a gate holds a hand-back until there is a green light newer than the last edit |
+| `verify` | run the project's own compile-level check (`cargo check`, `tsc --noEmit`) and report the compiler's real exit code — the command comes from the project (its config, then a convention it already uses, then the language default), never from the model. Verification is advisory: nothing forces it, and a hand-back trusts an honest report |
 | `update_plan` | structured checklist for complex tasks (display-only, Codex-style; agent-base) |
 | `current_model` | the model serving this session (the agent calls it before answering "which model are you") |
 | `spawn_agent` / `send_message` / `wait_agent` / `list_agents` / `close_agent` | sub-agent primitives (agent-works; preferred pattern: spawn, end turn, await push) |
