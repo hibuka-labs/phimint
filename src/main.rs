@@ -31,6 +31,11 @@ use phi_agent::{SessionContext, load_session_messages, resolve_session};
 const PROVIDER_LOG_ENV: &str = "MAI_UI_PROVIDER_LOG";
 
 fn main() -> Result<()> {
+    // A self-update on Windows renames the binary it replaces to `<exe>.old`
+    // (the kernel refuses to overwrite a running image, but allows renaming
+    // it). Delete that leftover now that it is no longer the running binary.
+    phimint::update::apply::cleanup_old_binary();
+
     // The TUI owns the terminal while it is up: nothing may write to
     // stderr. Point the sidecar transport's diagnostics at a log file
     // before the runtime starts any thread — `set_var` is not thread-safe,
@@ -840,15 +845,6 @@ async fn run_update_command(check_only: bool, config_path: Option<&str>) -> Resu
     if check_only || !source.supports_self_update() {
         // Managed installs (brew/npm/cargo) are upgraded by their manager.
         println!("Upgrade with: {}", source.upgrade_command());
-        return Ok(());
-    }
-    if cfg!(windows) {
-        // Replacing a running Windows executable needs the installer dance;
-        // point at the installer instead of half-working.
-        println!("Self-update on Windows is not supported yet. Run:");
-        println!(
-            "  irm https://github.com/hibuka-labs/phimint/releases/latest/download/install.ps1 | iex"
-        );
         return Ok(());
     }
 

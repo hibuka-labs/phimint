@@ -51,8 +51,11 @@ while ($true) {
         $Body = $null
         $Type = "application/octet-stream"
         if ($RequestLine -like "*index.txt*") {
+            # application/octet-stream, like the GitHub release asset it
+            # stands in for: Windows PowerShell 5.1 hands that back to
+            # Invoke-WebRequest as a byte array, not text (2026-11-16).
             $Body = [System.Text.Encoding]::UTF8.GetBytes($IndexText)
-            $Type = "text/plain"
+            $Type = "application/octet-stream"
         } elseif ($RequestLine -like "*.zip*") {
             $Body = $Zip
         }

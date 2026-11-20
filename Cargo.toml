@@ -89,6 +89,9 @@ semver = "1"
 sha2 = "0.10"
 tar = "0.4"
 flate2 = "1"
+# The Windows release archive is a zip (`Compress-Archive`, i.e. deflate),
+# so the updater reads both layouts. Only the deflate reader is compiled in.
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 # UI: ratatui for the TUI, crossterm as its backend + raw-mode key/paste input.
 ratatui = "0.30"
