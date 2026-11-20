@@ -413,15 +413,20 @@ fn ui_tips_defaults() {
 }
 
 #[test]
-fn ui_tips_default_endpoints_drop_the_gitee_url_that_404s() {
-    // Gitee serves no tips.json: the file is not a release asset and
-    // deploy/release.sh never publishes one to the metadata branch. The
-    // endpoint returned 404 on 2026-11-16. Re-add it only after the file
-    // is published to the Gitee mirror.
+fn ui_tips_default_endpoints_are_the_mirror_pair() {
+    // Both mirrors serve tips.json now: the release pipeline publishes it as
+    // a GitHub release asset and copies it into the Gitee release-metadata
+    // branch. The endpoints are tried concurrently, so an unreachable
+    // mirror costs nothing.
+    //
+    // 2026-11-19: this used to assert the Gitee endpoint was absent,
+    // because neither mirror served the file at all. The asset now ships,
+    // so the domestic endpoint is back.
     let cfg: ModelConfig = json5::from_str(r#"{"main": "gpt-4"}"#).unwrap();
-    assert_eq!(cfg.ui.tips.endpoints.len(), 1);
+    assert_eq!(cfg.ui.tips.endpoints.len(), 2);
     assert!(cfg.ui.tips.endpoints[0].contains("github.com"));
-    assert!(!cfg.ui.tips.endpoints.iter().any(|e| e.contains("gitee.com")));
+    assert!(cfg.ui.tips.endpoints[1].contains("gitee.com"));
+    assert!(cfg.ui.tips.endpoints[1].contains("/raw/release-metadata/"));
 }
 
 #[test]
@@ -502,4 +507,54 @@ fn code_exec_mode_rejects_an_unknown_road() {
         serde_json::from_str::<ModelConfig>(json).is_err(),
         "an unknown mode must fail loud at parse, not fall through"
     );
+}
+
+/// Value: protects=the dotfiles promise — a config that references
+/// `${ENV:VAR}` must never hold the secret itself. fails_when=resolution
+/// happens at parse (the save path would write the secret back to disk).
+#[test]
+fn api_key_env_reference_resolves_at_use_and_stays_raw_in_the_struct() {
+    unsafe { std::env::set_var("PHIMINT_TEST_CFG_KEY", "sk-from-env") };
+    let cfg: ModelConfig =
+        json5::from_str(r#"{"api_key": "${ENV:PHIMINT_TEST_CFG_KEY}", "main": "m"}"#).unwrap();
+    assert_eq!(
+        cfg.api_key.as_deref(),
+        Some("${ENV:PHIMINT_TEST_CFG_KEY}"),
+        "the struct keeps the reference form — /model saves must not write the secret"
+    );
+    let (_, _, key, _) = cfg.tier_config("main").unwrap();
+    assert_eq!(key, "sk-from-env", "resolution happens at use");
+    unsafe { std::env::remove_var("PHIMINT_TEST_CFG_KEY") };
+}
+
+/// Value: protects=boot honesty — an unset variable must name itself at
+/// validate, not fail as a mysterious auth error later. fails_when=the
+/// reference passes validate with its variable missing.
+#[test]
+fn api_key_env_reference_with_unset_variable_fails_validate_by_name() {
+    let cfg: ModelConfig = json5::from_str(
+        r#"{"base_url": "https://x", "api_key": "${ENV:PHIMINT_TEST_CFG_ABSENT}", "main": "m"}"#,
+    )
+    .unwrap();
+    let err = cfg.validate().unwrap_err().to_string();
+    assert!(
+        err.contains("PHIMINT_TEST_CFG_ABSENT"),
+        "the error names the missing variable: {err}"
+    );
+}
+
+#[test]
+fn api_key_literals_and_partial_references_pass_through() {
+    // A literal key is still a key (existing configs keep working), and a
+    // partial form ("sk-${ENV:X}") is a literal — whole-value rule only.
+    let cfg: ModelConfig = json5::from_str(
+        r#"{"base_url": "https://x", "api_key": "sk-${ENV:X}", "main": {"model": "m", "api_key": "sk-plain"}}"#,
+    )
+    .unwrap();
+    let (_, _, key, _) = cfg.tier_config("main").unwrap();
+    assert_eq!(key, "sk-plain", "the tier's own literal wins");
+    let inherited: ModelConfig =
+        json5::from_str(r#"{"api_key": "sk-${ENV:X}", "main": "m"}"#).unwrap();
+    let (_, _, key2, _) = inherited.tier_config("main").unwrap();
+    assert_eq!(key2, "sk-${ENV:X}", "a partial reference is a literal");
 }

@@ -101,7 +101,7 @@ impl TierConfig {
             TierConfig::Simple(model) => (
                 model.clone(),
                 default_url.to_string(),
-                default_key.to_string(),
+                expand_secret(default_key),
                 default_protocol.to_string(),
             ),
             TierConfig::Full {
@@ -111,7 +111,7 @@ impl TierConfig {
                 protocol,
             } => {
                 let url = base_url.clone().unwrap_or_else(|| default_url.to_string());
-                let key = api_key.clone().unwrap_or_else(|| default_key.to_string());
+                let key = expand_secret(api_key.as_deref().unwrap_or(default_key));
                 let proto = protocol
                     .clone()
                     .unwrap_or_else(|| default_protocol.to_string());
@@ -346,12 +346,19 @@ impl Default for TipsConfig {
 
 fn default_tips_endpoints() -> Vec<String> {
     vec![
-        // GitHub only, for now. The Gitee mirror serves no tips.json: the
-        // file is not a release asset and deploy/release.sh never publishes
-        // one, so the Gitee URL answered 404 on 2026-11-16. Re-add
-        // https://gitee.com/chenkangzeng_admin/phimint/raw/release-metadata/tips.json
-        // once the file is published to the Gitee mirror.
+        // The tips content ships as a release asset, so the release URL is
+        // the source of truth. Both mirrors serve it: the GitHub release
+        // asset and the Gitee release-metadata branch (.json paths are not
+        // subject to Gitee's 451 risk control).
+        //
+        // 2026-11-19: this list used to carry only the GitHub endpoint, and
+        // both of them 404'd — no release ever published a tips.json, so the
+        // cloud content source had never worked and the client silently
+        // kept its built-in tips. The release pipeline now publishes the
+        // asset (scripts/gen-manifest.py --tips-file), and the endpoints are
+        // tried concurrently, so one unreachable mirror costs nothing.
         "https://github.com/hibuka-labs/phimint/releases/latest/download/tips.json".to_string(),
+        "https://gitee.com/chenkangzeng_admin/phimint/raw/release-metadata/tips.json".to_string(),
     ]
 }
 
@@ -597,7 +604,7 @@ impl ModelConfig {
         } else {
             no_anchor(&own_proto, top_proto)
         };
-        (model, url, key, proto)
+        (model, url, expand_secret(&key), proto)
     }
 
     /// The tier's declaration as configured, no fallback: what the file SAYS
@@ -665,7 +672,58 @@ impl ModelConfig {
             ));
         }
 
+        // Secret references must resolve at boot: a whole-value `${ENV:VAR}`
+        // api_key whose variable is unset names itself here instead of
+        // failing at auth time. The file itself never holds the secret (it
+        // is safe in a dotfiles repo) — resolution happens at use.
+        let tier_keys = [
+            Some(&self.main),
+            self.lite.as_ref(),
+            self.advanced.as_ref(),
+            self.model.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .filter_map(|tier| match tier {
+            TierConfig::Full { api_key, .. } => api_key.as_deref(),
+            TierConfig::Simple(_) => None,
+        });
+        for raw in self.api_key.as_deref().into_iter().chain(tier_keys) {
+            if let Some(name) = env_ref(raw)
+                && std::env::var(name).is_err()
+            {
+                return Err(ConfigError::ValidationError(format!(
+                    "api_key references ${{ENV:{name}}} but the environment variable \
+                     {name} is not set"
+                )));
+            }
+        }
+
         Ok(())
+    }
+}
+
+/// The variable name of a whole-value `${ENV:VAR}` secret reference — the
+/// same whole-value rule `add_tool` enforces. A partial form
+/// ("sk-${ENV:X}") is a literal, not a reference.
+pub(crate) fn env_ref(raw: &str) -> Option<&str> {
+    let inner = raw.strip_prefix("${ENV:")?.strip_suffix('}')?;
+    if inner.is_empty() || inner.contains(['{', '}', '$']) {
+        None
+    } else {
+        Some(inner)
+    }
+}
+
+/// Resolve a config secret at use: a whole-value `${ENV:VAR}` reference
+/// reads the environment, anything else is already the value. The config
+/// file never holds the secret itself — only the reference — so it can
+/// live in a dotfiles repo. An unset variable keeps the reference verbatim;
+/// `validate` names it at boot.
+pub(crate) fn expand_secret(raw: &str) -> String {
+    match env_ref(raw) {
+        Some(name) => std::env::var(name).unwrap_or_else(|_| raw.to_string()),
+        None => raw.to_string(),
     }
 }
 
