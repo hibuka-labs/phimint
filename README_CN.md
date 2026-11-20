@@ -370,6 +370,13 @@ cargo clippy           # lint
 
 README 演示 GIF 由录帧重建：`cargo test frame_reel -- --ignored` 把 ANSI 帧写到 `target/reel/`，再用 `python3 scripts/readme_reel.py` 渲染成 `docs/assets/readme-demo.gif`。
 
+## 版本策略
+
+phimint 目前是 **0.x**：每个发布的版本都能装、能跑、能自更新，但**公开 API 不承诺向后兼容**——
+把它当库用时请锁精确版本（`phimint = "=0.12.0"`），1.0 之后会承诺 API 稳定。
+
+细节见 [docs/versioning-policy.md](docs/versioning-policy.md)。
+
 ## 许可证
 
 MIT OR Apache-2.0（见 [LICENSE-MIT](LICENSE-MIT) 与 [LICENSE-APACHE](LICENSE-APACHE)）。

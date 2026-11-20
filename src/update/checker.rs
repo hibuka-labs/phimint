@@ -95,9 +95,21 @@ fn compare(
         return Ok(None);
     }
 
-    // Beta → stable downgrade: allow if current is prerelease and latest is not
+    // Prerelease → stable handover: a user on `1.0.0-beta.1` must still be
+    // offered `1.0.0` when the stable manifest catches up.
+    //
+    // The downgrade is only meaningful *within* a major: `0.3.0-beta.1` may
+    // fall back to `0.2.0`, because the beta was cut from the `0.3` line. But
+    // `1.0.0-beta.1` against a stable `0.12.0` is a different product line —
+    // offering it would call a downgrade an "upgrade" and send the user
+    // backwards across the boundary their beta was meant to cross.
+    //
+    // (`1.0.0 > 1.0.0-beta.1` holds on its own, so the same-number handover
+    // falls through to the normal comparison below. This branch exists for
+    // the same-major case only.)
     if current.pre != semver::Prerelease::EMPTY
         && latest.pre == semver::Prerelease::EMPTY
+        && current.major == latest.major
         && latest < *current
     {
         return Ok(Some(CheckResult::UpgradeAvailable {
@@ -203,6 +215,34 @@ mod tests {
         match result {
             Some(CheckResult::UpgradeAvailable { version, .. }) => assert_eq!(version, "0.2.0"),
             _ => panic!("expected UpgradeAvailable for beta→stable downgrade"),
+        }
+    }
+
+    /// protects: a prerelease user does not get an "upgrade" that crosses a
+    /// major boundary backwards. `1.0.0-beta.1` against a stable manifest still
+    /// on `0.12.0` is a *downgrade*, not an upgrade — offering it would send
+    /// the user to a release their beta was built to replace.
+    #[test]
+    fn compare_prerelease_does_not_downgrade_across_a_major() {
+        let current = Version::parse("1.0.0-beta.1").unwrap();
+        let manifest = make_manifest("0.12.0", "https://example.com/0.12.0");
+        let state = UpdateState::default();
+        let result = compare(&current, &manifest, "linux-x86_64", &state, "github", None).unwrap();
+        assert!(result.is_none(), "no upgrade may be offered across a major");
+    }
+
+    /// protects: the prerelease-to-stable handover does work — a user on
+    /// `1.0.0-beta.1` is offered `1.0.0`. This is the case the downgrade
+    /// branch was written for, and it must survive the fix above.
+    #[test]
+    fn compare_prerelease_is_offered_the_same_number_stable() {
+        let current = Version::parse("1.0.0-beta.1").unwrap();
+        let manifest = make_manifest("1.0.0", "https://example.com/1.0.0");
+        let state = UpdateState::default();
+        let result = compare(&current, &manifest, "linux-x86_64", &state, "github", None).unwrap();
+        match result {
+            Some(CheckResult::UpgradeAvailable { version, .. }) => assert_eq!(version, "1.0.0"),
+            _ => panic!("expected UpgradeAvailable for beta→stable handover"),
         }
     }
 

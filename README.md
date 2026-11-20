@@ -386,6 +386,14 @@ Dependencies are pure crates.io version references. To hack on a sibling crate (
 
 The README demo GIF is rebuilt from a recorded session: `cargo test frame_reel -- --ignored` writes ANSI frames to `target/reel/`, then `python3 scripts/readme_reel.py` renders them to `docs/assets/readme-demo.gif`.
 
+## Versioning
+
+phimint is on **0.x**: every released version installs, runs, and self-updates, but the **public API is not
+guaranteed to be backward compatible**. If you use it as a library, pin the exact version
+(`phimint = "=0.12.0"`); API stability is promised from 1.0 onwards.
+
+Details: [docs/versioning-policy.md](docs/versioning-policy.md).
+
 ## License
 
 MIT OR Apache-2.0 — see [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE).

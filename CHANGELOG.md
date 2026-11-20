@@ -44,6 +44,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Self-update works on Windows,** and the installer index is read as
   bytes.
 
+- **A prerelease build is no longer offered a downgrade across a major.**
+  A user on `1.0.0-beta.1` was told to "upgrade" to a stable `0.12.0` — a
+  backwards step across the boundary the beta was cut to cross. The
+  prerelease-to-stable handover itself still works: `1.0.0-beta.1` is offered
+  `1.0.0` when the stable manifest catches up.
+
+### Added
+- **A versioning policy, written down.** phimint is on 0.x: every release
+  installs and self-updates, but the public API is not guaranteed to be
+  backward compatible until 1.0. Library users are told to pin the exact
+  version. The policy also records what the release-channel fields
+  (`channel`, `mandatory`) do and — currently — do not do.
+  See `docs/versioning-policy.md`.
+
 ### License
 - **Dual-licensed as MIT OR Apache-2.0.**
 
