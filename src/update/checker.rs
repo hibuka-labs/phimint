@@ -26,8 +26,9 @@ pub enum CheckResult {
         mirror: String,
         /// The other mirror's manifest, when it also answered. The asset
         /// fallback reads the same version's URL from it, so a failed
-        /// download costs no extra network round-trip.
-        runner_up: Option<(String, Manifest)>,
+        /// download costs no extra network round-trip. Boxed: the variant
+        /// would otherwise dwarf `UpToDate` on every result.
+        runner_up: Option<Box<(String, Manifest)>>,
     },
 }
 
@@ -105,7 +106,7 @@ fn compare(
             notes: manifest.notes.clone(),
             sha256: entry.sha256.clone(),
             mirror: mirror.to_string(),
-            runner_up: runner_up.clone(),
+            runner_up: runner_up.clone().map(Box::new),
         }));
     }
 
@@ -117,7 +118,7 @@ fn compare(
             notes: manifest.notes.clone(),
             sha256: entry.sha256.clone(),
             mirror: mirror.to_string(),
-            runner_up: runner_up.clone(),
+            runner_up: runner_up.clone().map(Box::new),
         }));
     }
 
@@ -210,7 +211,15 @@ mod tests {
         let current = Version::parse("0.1.0").unwrap();
         let manifest = make_manifest("0.2.0", "https://example.com/0.2.0");
         let state = UpdateState::default();
-        let result = compare(&current, &manifest, "darwin-aarch64", &state, "github", None).unwrap();
+        let result = compare(
+            &current,
+            &manifest,
+            "darwin-aarch64",
+            &state,
+            "github",
+            None,
+        )
+        .unwrap();
         assert!(result.is_none());
     }
 
@@ -223,8 +232,15 @@ mod tests {
         let runner_up_manifest = make_manifest("0.2.0", "https://github.com/0.2.0");
         let runner_up = Some(("github".to_string(), runner_up_manifest));
 
-        let result =
-            compare(&current, &manifest, "linux-x86_64", &state, "gitee", runner_up).unwrap();
+        let result = compare(
+            &current,
+            &manifest,
+            "linux-x86_64",
+            &state,
+            "gitee",
+            runner_up,
+        )
+        .unwrap();
 
         match result {
             Some(CheckResult::UpgradeAvailable {
@@ -237,9 +253,12 @@ mod tests {
                 assert_eq!(download_url, "https://gitee.com/0.2.0");
                 // The runner-up rides along so the asset fallback can find the
                 // same version on the other mirror without another round-trip.
-                let (name, other) = runner_up.expect("runner-up kept");
+                let (name, other) = *runner_up.expect("runner-up kept");
                 assert_eq!(name, "github");
-                assert_eq!(other.platforms["linux-x86_64"].url, "https://github.com/0.2.0");
+                assert_eq!(
+                    other.platforms["linux-x86_64"].url,
+                    "https://github.com/0.2.0"
+                );
             }
             _ => panic!("expected UpgradeAvailable"),
         }

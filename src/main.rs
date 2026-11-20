@@ -95,7 +95,7 @@ async fn run() -> Result<()> {
     // they dispatch before the `cd` below and before any config is loaded.
     match cli.command {
         Some(Commands::Update { check }) => {
-            return run_update_command(check, cli.config.as_deref()).await;
+            return phimint::update::command::run(check, cli.config.as_deref()).await;
         }
         Some(Commands::Uninstall { keep_data, yes }) => {
             return run_uninstall_command(keep_data, yes);
@@ -779,99 +779,6 @@ async fn init_logging(
     tracing::info!(path = %session_log_path.display(), "logging initialized");
 
     Ok(sink_handle)
-}
-
-/// `phimint update` — check for a new version; self-replace when this is a
-/// standalone install, otherwise print the channel's own upgrade command.
-///
-/// Never writes over a package-manager-owned binary (brew checksums break).
-async fn run_update_command(check_only: bool, config_path: Option<&str>) -> Result<()> {
-    use phimint::update::checker::{self, CheckResult};
-    use phimint::update::install_source;
-    use phimint::update::mirror;
-
-    // Endpoints: explicit config wins, then PHIMINT_MIRROR, then the
-    // built-in mirror pair (raced).
-    let configured = match config_path {
-        Some(p) => {
-            config::ModelConfig::from_file(&PathBuf::from(p))?
-                .update
-                .endpoints
-        }
-        None => match config::ModelConfig::from_default_location() {
-            Ok(Some(c)) => c.update.endpoints,
-            _ => Vec::new(),
-        },
-    };
-    // The config's default list IS the built-in pair, so an untouched config
-    // must not suppress the race. Only a list the user actually wrote counts.
-    let configured = if configured == mirror::built_in_endpoints() {
-        None
-    } else {
-        Some(configured)
-    };
-    let endpoints = mirror::resolve(mirror::env_mirror(), configured);
-
-    let current = env!("CARGO_PKG_VERSION");
-    let source = install_source::detect();
-    let platform_key = phimint::update::platform::platform_key()?;
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(3))
-        .connect_timeout(std::time::Duration::from_secs(2))
-        .build()?;
-
-    let result = checker::check(
-        &client,
-        &endpoints,
-        &phimint::update::state::load(),
-        current,
-    )
-    .await?;
-
-    let Some(CheckResult::UpgradeAvailable {
-        version,
-        download_url,
-        sha256,
-        mirror: winning_mirror,
-        runner_up,
-        ..
-    }) = result
-    else {
-        println!("phimint {current} is up to date.");
-        return Ok(());
-    };
-
-    println!("phimint {version} available (current: {current}) - via {winning_mirror}.");
-    if check_only || !source.supports_self_update() {
-        // Managed installs (brew/npm/cargo) are upgraded by their manager.
-        println!("Upgrade with: {}", source.upgrade_command());
-        return Ok(());
-    }
-
-    // The other mirror's entry for the same version, when the race got it.
-    // The fallback reads the winner's digest: both mirrors publish the same
-    // archive, so the same checksum applies.
-    let fallback = runner_up.as_ref().and_then(|(_, other)| {
-        phimint::update::apply::fallback_entry(other, &platform_key).map(|entry| {
-            (
-                entry.url,
-                entry.sha256.unwrap_or_default(),
-            )
-        })
-    });
-    let fallback = fallback.as_ref().map(|(url, sha)| (url.as_str(), sha.as_str()));
-
-    println!("Downloading {download_url} ...");
-    let path = phimint::update::apply::download_and_replace(
-        &client,
-        &download_url,
-        sha256.as_deref(),
-        fallback,
-    )
-    .await?;
-    println!("Updated to {version}: {}", path.display());
-    println!("Restart phimint to use the new version.");
-    Ok(())
 }
 
 /// `phimint uninstall` — remove the binary and the data it left behind.

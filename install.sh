@@ -53,7 +53,7 @@ KEY="${OS}-${ARCH}"
 
 command -v tar >/dev/null 2>&1 || fail "tar is required."
 
-# ── 2. Index fetch: GitHub first, Gitee fallback (mainland China) ───────────
+# ── 2. Index fetch: both mirrors are probed at once ────────────────────────
 case "${PHIMINT_MIRROR:-auto}" in
     gitee)  INDEX_URLS="$GITEE_INDEX $GITHUB_INDEX" ;;
     github) INDEX_URLS="$GITHUB_INDEX $GITEE_INDEX" ;;
@@ -68,20 +68,69 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 VERSION=""
 ASSET_URL=""
 ASSET_SHA256=""
+
+# Every index is fetched at the same time. An unreachable mirror must not
+# delay the reachable one by a full connect timeout — that is the whole
+# difference between a 12-second install and a 30-second one on a
+# mainland-China network.
+#
+# Each fetch writes its index into a file and touches a `.ok` marker when it
+# succeeds. Waiting for all of them costs max(their deadlines), not the sum:
+# an unreachable mirror is bounded by curl's 5s connect timeout.
+INDEX_DIR="$TMP_DIR/index"
+mkdir -p "$INDEX_DIR"
+n=0
 for index_url in $INDEX_URLS; do
-    info "fetching index: $index_url"
-    INDEX="$(curl -fsSL --connect-timeout 5 --max-time 20 "$index_url" 2>/dev/null)" || INDEX=""
+    n=$((n + 1))
+    (
+        if curl -fsSL --connect-timeout 5 --max-time 20 "$index_url" \
+            > "$INDEX_DIR/$n.txt" 2>/dev/null; then
+            : > "$INDEX_DIR/$n.ok"
+        fi
+    ) &
+done
+wait
+
+# Parse every index that answered, in the order the URLs were given, so a
+# pinned mirror (PHIMINT_MIRROR) is still preferred.
+#
+# The three lists are parallel: entry N of each belongs to the same mirror.
+# They are built as positional parameters, so the Nth value is read with
+# `eval` rather than by splitting a space-joined string (an empty field
+# would shift every later index).
+set --
+n=0
+for index_url in $INDEX_URLS; do
+    n=$((n + 1))
+    [ -f "$INDEX_DIR/$n.ok" ] || continue
+    INDEX="$(cat "$INDEX_DIR/$n.txt")"
     [ -n "$INDEX" ] || continue
-    VERSION="$(printf '%s\n' "$INDEX" | awk '$1 == "version" { print $2; exit }')"
-    ASSET_URL="$(printf '%s\n' "$INDEX" | awk -v k="$KEY" '$1 == k { print $2; exit }')"
-    ASSET_SHA256="$(printf '%s\n' "$INDEX" | awk -v k="$KEY" '$1 == k { print $3; exit }')"
-    [ -n "$ASSET_URL" ] || { info "no entry for ${KEY} in this index"; continue; }
-    info "phimint ${VERSION} for ${KEY}"
-    if curl -fSL --connect-timeout 5 --max-time 300 -o "$TMP_DIR/phimint.tar.gz" "$ASSET_URL" 2>/dev/null; then
+    index_version="$(printf '%s\n' "$INDEX" | awk '$1 == "version" { print $2; exit }')"
+    index_url_asset="$(printf '%s\n' "$INDEX" | awk -v k="$KEY" '$1 == k { print $2; exit }')"
+    index_sha="$(printf '%s\n' "$INDEX" | awk -v k="$KEY" '$1 == k { print $3; exit }')"
+    [ -n "$index_url_asset" ] || { info "no entry for ${KEY} in ${index_url}"; continue; }
+    info "fetching index: $index_url"
+    set -- "$@" "$index_version" "$index_url_asset" "$index_sha"
+done
+[ "$#" -gt 0 ] || fail "could not fetch a prebuilt binary for ${KEY}."
+
+# Download the asset. Each mirror's index carries its own asset URL, so a
+# mirror that answers the probe but then stalls on the download falls back to
+# the other mirror's URL — the same failure the updater hit.
+attempt=0
+while [ "$attempt" -lt "$#" ]; do
+    attempt=$((attempt + 1))
+    eval "index_version=\${$((attempt * 3 - 2))}"
+    eval "index_url_asset=\${$((attempt * 3 - 1))}"
+    eval "index_sha=\${$((attempt * 3))}"
+    info "phimint ${index_version} for ${KEY}"
+    if curl -fSL --connect-timeout 5 --max-time 300 -o "$TMP_DIR/phimint.tar.gz" "$index_url_asset" 2>/dev/null; then
+        VERSION="$index_version"
+        ASSET_URL="$index_url_asset"
+        ASSET_SHA256="$index_sha"
         break
     fi
-    info "download failed: $ASSET_URL"
-    ASSET_URL=""
+    info "download failed: $index_url_asset"
 done
 [ -n "$ASSET_URL" ] || fail "could not fetch a prebuilt binary for ${KEY}."
 

@@ -48,22 +48,24 @@ pub fn endpoint_for(mirror: &str) -> Option<String> {
 /// the same one `install.sh` already honours, so the installer and the
 /// updater agree on which mirror the user asked for.
 pub fn resolve(env_mirror: Option<String>, configured: Option<Vec<String>>) -> Vec<String> {
-    if let Some(list) = configured {
-        if !list.is_empty() {
-            return list;
-        }
+    if let Some(list) = configured
+        && !list.is_empty()
+    {
+        return list;
     }
-    if let Some(name) = env_mirror {
-        if let Some(url) = endpoint_for(&name) {
-            return vec![url];
-        }
+    if let Some(name) = env_mirror
+        && let Some(url) = endpoint_for(&name)
+    {
+        return vec![url];
     }
     built_in_endpoints()
 }
 
 /// The `PHIMINT_MIRROR` value from the environment, if set.
 pub fn env_mirror() -> Option<String> {
-    env::var("PHIMINT_MIRROR").ok().filter(|v| !v.trim().is_empty())
+    env::var("PHIMINT_MIRROR")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
 }
 
 #[cfg(test)]

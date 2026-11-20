@@ -7,6 +7,7 @@
 
 pub mod apply;
 pub mod checker;
+pub mod command;
 pub mod error;
 pub mod install_source;
 pub mod manifest;

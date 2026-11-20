@@ -222,13 +222,8 @@ pub fn fallback_entry(
 ///
 /// `None` also means "no digest available at all", which the caller treats as
 /// an unverifiable download rather than a mismatch.
-pub fn expected_digest(
-    winner: Option<&str>,
-    fallback: Option<(&str, &str)>,
-) -> Option<String> {
-    let other = fallback
-        .map(|(_, sha)| sha)
-        .filter(|sha| !sha.is_empty());
+pub fn expected_digest(winner: Option<&str>, fallback: Option<(&str, &str)>) -> Option<String> {
+    let other = fallback.map(|(_, sha)| sha).filter(|sha| !sha.is_empty());
     match (winner, other) {
         (Some(w), Some(o)) if w != o => None,
         (Some(w), _) => Some(w.to_string()),
@@ -260,13 +255,14 @@ pub async fn download_and_replace(
 
     // A disagreement between the mirrors is refused before anything is
     // downloaded: the archives are not the same artifact.
-    if let (Some(winner), Some((_, other))) = (sha256, fallback) {
-        if !other.is_empty() && winner != other {
-            return Err(UpdateError::ChecksumMismatch {
-                expected: winner.to_string(),
-                actual: other.to_string(),
-            });
-        }
+    if let (Some(winner), Some((_, other))) = (sha256, fallback)
+        && !other.is_empty()
+        && winner != other
+    {
+        return Err(UpdateError::ChecksumMismatch {
+            expected: winner.to_string(),
+            actual: other.to_string(),
+        });
     }
 
     let bytes = match download_bytes(client, url).await {
@@ -300,10 +296,7 @@ pub async fn download_and_replace(
 ///
 /// The rate floor abandons a stalled download early instead of waiting out
 /// the full timeout.
-async fn download_bytes(
-    client: &reqwest::Client,
-    url: &str,
-) -> Result<Vec<u8>, UpdateError> {
+async fn download_bytes(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, UpdateError> {
     let resp = client
         .get(url)
         .timeout(DOWNLOAD_TIMEOUT)
@@ -357,7 +350,7 @@ mod tests {
             let options = zip::write::SimpleFileOptions::default();
             for (name, data) in files {
                 writer.start_file(*name, options).unwrap();
-                std::io::Write::write_all(&mut writer, *data).unwrap();
+                std::io::Write::write_all(&mut writer, data).unwrap();
             }
             writer.finish().unwrap();
         }
