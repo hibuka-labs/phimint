@@ -454,6 +454,10 @@ mod tests {
             thinking_disabled: false,
             original_thinking_enabled: true,
             remaining_turns: 50,
+            integrity: Default::default(),
+            has_visible_text: false,
+            has_thinking: false,
+            silent_retries_in_round: 0,
         }
     }
 
