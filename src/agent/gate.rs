@@ -40,6 +40,9 @@
 //! turn (where we no longer set `follow_up_message` and the guard is free to do
 //! its own completeness work) — and there we only append a marker, which is not
 //! a nudge at all. See `notes/verify-gate-design.md` §8.1.
+//!
+//! Dormant since 2026-11-20: the gate is not registered (`build.rs` explains
+//! why), verification is advice, and this module is the restore specification.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};

@@ -52,7 +52,8 @@ fn render_section(model: &str) -> String {
     format!(
         "\n\n{STAMP_HEADER}\n\n\
          The model serving this conversation is `{model}`. If asked which model you are, \
-         call `current_model` and answer with its result. Never repeat a model name from \
+         call `current_model` (load it with `activate_tool` first if it is named but not \
+         mounted) and answer with its result. Never repeat a model name from \
          earlier in this conversation — the session may have switched away from it.\n"
     )
 }

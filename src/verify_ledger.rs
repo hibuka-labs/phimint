@@ -16,6 +16,9 @@
 //! reason it could claim "verified" over code that did not compile.
 //!
 //! Nothing here runs commands or talks to the LLM. It is state plus predicates.
+//!
+//! Dormant since 2026-11-20: the gate that reads this ledger is off (`build.rs`
+//! explains why). Verification is advice, not a gate.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -163,10 +166,10 @@ impl Unverified {
                 error_count,
             } => {
                 format!(
-                    "`{command}` already ran and did not pass ({}, {} errors) {}; this is \
-                     not \"never verified\", it is \"verified and failed\". Fix and re-verify \
-                     before reporting; if you judge this deliverable with errors, say why in \
-                     the report.",
+                    "`{command}` ran and did not pass ({}, {} errors) {}; this is \
+                     not \"never verified\", it is \"verified and failed\". Re-run it after a \
+                     fix before you report — or, if this deliverable is meant to carry errors, \
+                     say so in the report. This is advice, not a stop.",
                     exit_code_note(*exit_code),
                     error_count,
                     edited_files(edited)
@@ -174,8 +177,9 @@ impl Unverified {
             }
             Unverified::Stale { edited, command } => {
                 format!(
-                    "The green light on hand predates the last change (`{command}` is stale) \
-                     {}; run `verify` again, then report.",
+                    "The green light predates the last change (`{command}` is stale) {}. \
+                     Re-run `verify` before you report — or say in the report why this change \
+                     does not need one. This is advice, not a stop.",
                     edited_files(edited)
                 )
             }

@@ -179,6 +179,11 @@ fn browser_names(tools: &[String]) -> Vec<&str> {
         .collect()
 }
 
+// Contract retired by the 2026-11-20 tool-face verdict (init 23 mounted /
+// 15 named-only — `src/agent/tests/tool_face.rs` pins it): the starter-five
+// face this asserts gave way to the `activate_tool` face. An e2e for the
+// activate flow is TODO (notes/tool-face-design.md).
+#[ignore = "starter-five contract retired by the 2026-11-20 tool-face verdict; see notes/tool-face-design.md"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn canvas_open_narrows_the_face_mid_session_and_close_restores_it() {
     let store = tempfile::tempdir().unwrap();

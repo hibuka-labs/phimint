@@ -23,6 +23,9 @@
 //!
 //! Parsing lives in `code-intel::verify` and is advisory only — the exit code
 //! is the verdict.
+//!
+//! Dormant since 2026-11-20 with the gate (`build.rs` explains why): the tool
+//! is registered but deferred — verification is advice, not enforcement.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;

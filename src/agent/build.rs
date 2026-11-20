@@ -500,18 +500,31 @@ pub async fn build_with_code_exec(
             code_engine_live,
             crate::shell::file_face::code_owns_file_tools(),
         ))
+        // Reply-language anchor (agent::language): re-derive the user's
+        // language from the conversation before every LLM call and keep one
+        // `<reply-language>` region in the system message — a current-state
+        // refresh like the catalog above, so a long session drowning in
+        // English tool output cannot pull the reply away from the user's own
+        // words. LAST of the prompt mutators on purpose: the browser
+        // tool-face surgery swallows trailing non-heading content into its
+        // region, so an anchor registered earlier would be eaten before the
+        // model sees it. Stateless (derived from messages) — resume, rotation
+        // and a baked skill prompt all heal on the next call.
+        .middleware(crate::agent::language::LanguageAnchorMiddleware)
         // verify gate, policy half (design §5.4): refuse to hand back code that
         // has no *fresh* green light behind it. `max_nudges = 1` is deliberate
         // (D1) — one interception per user message at most, then a visible
         // marker instead of a loop, so this can never spend more than a single
         // extra turn and never competes with `DefaultGuard` for the floor
         // (see the control-flow note in `agent::gate`).
-        // Verify gate OFF for the harness experiment (2026-11-16). Claude
-        // Code has no verify tool and no gate — it trusts "report outcomes
-        // faithfully". Session 20261116_31d16970 had the gate pull a traffic
-        // check to 261 turns over one real `cargo check` error, so it is the
-        // biggest remaining harness-specific driver. Restore alongside
-        // `verify` once the comparison is done.
+        // OFF (2026-11-16, kept off as policy 2026-11-20): verification is
+        // advice, not a gate — a hand-back trusts "report outcomes faithfully".
+        // The miss this guard is for (done said over code never rebuilt after
+        // the last edit) costs the user one round-trip; a misfire costs whole
+        // sessions (20261116_31d16970: 261 turns over one real `cargo check`
+        // error), and the miss shrinks as models improve while the friction
+        // does not. Dormant, not deleted — restore with the parked prompt
+        // rules in `src/agent/tests/prompt.rs` if the tail shows up again.
         // .middleware(crate::agent::gate::VerifyGateMiddleware::new(...))
         // Wrap-up nudge: the mirror of `reasoning_only_nudge`. That one fires
         // when the model thinks without acting; this one fires when it acts
@@ -681,10 +694,11 @@ pub async fn build_with_code_exec(
         builder = builder.middleware(crate::model::identity::ModelIdentityStamp::new(store));
     }
 
-    // Tool face (notes/tool-face-design.md): mount what this shape of work
-    // reaches for, name the rest. Same shape as Claude Code's 13 + 14 + a
-    // schema loader. The candidates are rendered here because this is the only
-    // place that holds the tool instances.
+    // Tool face (notes/tool-face-design.md): the init face is fixed — mount
+    // what this shape of work reaches for, name the rest. The candidates are
+    // rendered here because this is the only place that holds the tool
+    // instances. Growing the mounted set takes an explicit decision: the
+    // pinned count lives in `src/agent/tests/tool_face.rs`.
     let activation = phi_agent::ToolActivation::new();
     let mut candidates = Vec::new();
     for (name, _) in super::deferred::DEFERRED_TOOLS {

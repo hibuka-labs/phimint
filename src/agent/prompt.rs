@@ -213,8 +213,8 @@ pub(super) fn code_road_prompt(code_road: CodeExecMode, ns_face: &str) -> String
         CodeExecMode::Act => {
             let seed = ns_seed_region(ns_face);
             SYSTEM_PROMPT.replace(CODE_CELL_BULLET, "").replace(
-                "\n## Working in a codebase\n",
-                &format!("\n{CODE_ACT_SECTION}{seed}\n## Working in a codebase\n"),
+                "\n# Reading code and reporting\n",
+                &format!("\n{CODE_ACT_SECTION}{seed}\n# Reading code and reporting\n"),
             )
         }
     }

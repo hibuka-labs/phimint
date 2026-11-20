@@ -1,5 +1,11 @@
 //! Which tools phimint mounts, and which it only names.
 //!
+//! The init face is fixed (2026-11-20 用户拍板): the mounted set is pinned by
+//! `src/agent/tests/tool_face.rs` and grows only on an explicit decision —
+//! update that count on purpose. Everything in [`DEFERRED_TOOLS`] is
+//! named-only at init and loads on demand via `activate_tool`.
+//! Reference point: Claude Code mounts 13; fewer is better.
+//!
 //! Two lists feed one table: the roster in the system prompt and the
 //! candidates `activate_tool` can open. Two lists written separately drift —
 //! the roster promises something the opener cannot find. Build both from
@@ -24,41 +30,9 @@ pub const DEFERRED_TOOLS: &[(&str, &str)] = &[
     ("canvas_push", "render design output a person can look at"),
     ("canvas_close", "render design output a person can look at"),
     ("read_image", "read a picture's contents"),
-    (
-        "task_output",
-        "background tasks started with `background: true`",
-    ),
-    (
-        "task_input",
-        "background tasks started with `background: true`",
-    ),
-    (
-        "task_cancel",
-        "background tasks started with `background: true`",
-    ),
     ("send_message", "delegate independent work to a sub-agent"),
     ("close_agent", "delegate independent work to a sub-agent"),
     ("list_agents", "delegate independent work to a sub-agent"),
-    (
-        "memory_list",
-        "stored memories and the session's own record",
-    ),
-    (
-        "memory_write",
-        "stored memories and the session's own record",
-    ),
-    (
-        "memory_delete",
-        "stored memories and the session's own record",
-    ),
-    (
-        "notes_read_file",
-        "stored memories and the session's own record",
-    ),
-    (
-        "notes_write_file",
-        "stored memories and the session's own record",
-    ),
     ("current_model", "ask which model is serving this session"),
     ("add_tool", "mount a script as a callable tool"),
     ("verify", "run the project compile check"),

@@ -6,4 +6,5 @@
 
 mod prompt;
 mod support;
+mod tool_face;
 mod wiring;

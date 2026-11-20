@@ -49,8 +49,9 @@ use phi_agent::code_cell::{
 mod budget;
 mod build;
 mod code_road;
-mod deferred;
+pub mod deferred;
 pub mod gate;
+mod language;
 mod prompt;
 pub mod spawn_resolve;
 mod spill;

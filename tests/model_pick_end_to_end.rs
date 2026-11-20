@@ -773,9 +773,10 @@ async fn after_a_model_swap_the_next_request_names_the_new_model() {
             assert!(system.contains("`beta-model`"), "{system}");
             assert_eq!(system.matches("## Current model").count(), 1, "{system}");
         }
-        // The identity tool the stamp points at rides the request's tool
-        // list (a name match in the system copy cannot fake this — it only
-        // matches inside `tools`).
+        // The identity tool the stamp points at is reachable on the request:
+        // mounted on the tool list, or named in the deferred roster for
+        // `activate_tool` (the 2026-11-20 tool-face verdict names it
+        // named-only — `src/agent/tests/tool_face.rs` pins the face).
         for capture in &seen[before..] {
             let names: Vec<String> = capture
                 .body
@@ -793,8 +794,11 @@ async fn after_a_model_swap_the_next_request_names_the_new_model() {
                 })
                 .unwrap_or_default();
             assert!(
-                names.iter().any(|n| n == "current_model"),
-                "the `current_model` tool is on the wire: {names:?}"
+                names.iter().any(|n| n == "current_model")
+                    || stamped_systems(&seen[before..]).iter().any(|s| {
+                        s.contains("their schemas are not loaded") && s.contains("`current_model`")
+                    }),
+                "`current_model` is mounted or named in the roster: {names:?}"
             );
         }
     }
