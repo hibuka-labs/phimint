@@ -78,6 +78,22 @@ jobs:
       - name: Contract test
         run: pwsh -NoProfile -File tests/install_script_test.ps1
 
+  # ── Release asset contract ──
+  #
+  # scripts/gen-manifest.py decides what every release ships. It is Python,
+  # so the Rust gates never see it — and a release that quietly omits an
+  # asset is invisible until a user hits the 404. The tips band had exactly
+  # that failure: no release ever published tips.json, so the cloud content
+  # source never worked and the client silently kept its built-in tips.
+  release-assets:
+    name: release assets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Contract test
+        run: bash tests/gen_manifest_test.sh
+
   # ── Build & test ──
   test:
     name: test (stable)

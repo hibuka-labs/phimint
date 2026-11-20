@@ -7,6 +7,7 @@
 #   phimint-{version}-windows-x86_64.zip   (flat: one `phimint.exe`)
 #   manifest.json / manifest-gitee.json / sha256sums.txt
 #   install.sh / install.ps1
+#   tips.json    (cloud tips content; the client fetches it from this release)
 name: release
 
 on:
@@ -108,7 +109,8 @@ jobs:
             --version "$VERSION" \
             --dist-dir dist \
             --github-base "https://github.com/hibuka-labs/phimint/releases/download/${GITHUB_REF_NAME}" \
-            --gitee-base "https://gitee.com/chenkangzeng_admin/phimint/releases/download/${GITHUB_REF_NAME}"
+            --gitee-base "https://gitee.com/chenkangzeng_admin/phimint/releases/download/${GITHUB_REF_NAME}" \
+            --tips-file tips.json
           cp install.sh install.ps1 dist/
           ls -la dist/
 

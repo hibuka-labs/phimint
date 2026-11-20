@@ -1,0 +1,17 @@
+{
+  "items": [
+    { "kind": "note", "text": "phimint is built on phi-agent - docs: https://docs.phiagent.dev/" },
+    { "kind": "tip", "text": "Type @ to reference a file in your message, / for commands" },
+    { "kind": "tip", "text": "Press Ctrl+O to fold or unfold the thinking panel" },
+    { "kind": "tip", "text": "Enter sends your message, Ctrl+J starts a new line without sending" },
+    { "kind": "tip", "text": "Press Ctrl+C once to cancel the running task" },
+    { "kind": "tip", "text": "Press Ctrl+C twice to quit when idle" },
+    { "kind": "tip", "text": "Press Ctrl+Y to copy the last reply" },
+    { "kind": "tip", "text": "Press Ctrl+V to paste a screenshot - the terminal keeps Cmd+V" },
+    { "kind": "tip", "text": "Press Ctrl+L to redraw the screen if the display looks wrong" },
+    { "kind": "tip", "text": "Scroll history with the mouse wheel or fn+Up/Down" },
+    { "kind": "tip", "text": "Run /model to switch provider and model mid-session" },
+    { "kind": "tip", "text": "Run /upgrade to check for a newer phimint release" },
+    { "kind": "tip", "text": "Press Ctrl+P to open the session picker and resume past work" }
+  ]
+}
