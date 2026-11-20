@@ -25,6 +25,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 MENLO = "/System/Library/Fonts/Menlo.ttc"
 EMOJI_FONT = "/System/Library/Fonts/Apple Color Emoji.ttc"
+CJK_FONT = "/System/Library/Fonts/Hiragino Sans GB.ttc"  # wide glyphs (Menlo has none)
 
 FONT_SIZE = 16
 LINE_H = 22
@@ -173,10 +174,12 @@ def render(frame_text: str, cols: int, rows: int, fonts, emoji_font):
             tile = tile.resize((cell_px, cell_px), Image.LANCZOS)
             img.paste(tile, (int(x), int(y + (LINE_H - cell_px) / 2)), tile)
         else:
+            # Wide glyphs (CJK) get the CJK face; Menlo would draw tofu.
+            font = fonts["cjk"] if span == 2 else menlo[font_key]
             draw.text(
                 (x, y + LINE_H / 2),
                 ch,
-                font=menlo[font_key],
+                font=font,
                 fill=fg,
                 anchor="lm",
             )
@@ -210,6 +213,7 @@ def main() -> int:
         k: ImageFont.truetype(MENLO, FONT_SIZE, index=i)
         for k, i in (("r", 0), ("b", 1), ("i", 2), ("bi", 3))
     }
+    fonts["cjk"] = ImageFont.truetype(CJK_FONT, FONT_SIZE)
     emoji_font = ImageFont.truetype(EMOJI_FONT, 32)
 
     first = render(frames[0].read_text(), 100, 32, fonts, emoji_font)

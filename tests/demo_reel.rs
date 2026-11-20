@@ -319,3 +319,173 @@ fn frame_reel() {
         out_dir.display()
     );
 }
+
+/// The article demo reel: the opening promise, start to finish — one
+/// sentence in ("fix this package's error, add a test"), the agent
+/// decomposes, edits, verifies, lands green.
+#[test]
+#[ignore = "writes article demo assets; run explicitly with PHIMINT_REEL_OUT"]
+fn frame_reel_article() {
+    const W: u16 = 100;
+    const H: u16 = 32;
+
+    let out_dir = std::path::PathBuf::from(
+        std::env::var("PHIMINT_REEL_OUT").unwrap_or_else(|_| "target/reel-article".to_string()),
+    );
+    std::fs::create_dir_all(&out_dir).expect("create reel dir");
+
+    let mut app = App::new();
+    app.push_banner(brand_rows(
+        build(
+            std::path::Path::new("/Users/you/src/tiny-cfg"),
+            std::path::Path::new("/home/you/.phimint/sessions/20261119_article_demo"),
+            "0.11.0",
+            W as usize,
+        ),
+        ColorScheme::Dark,
+    ));
+
+    let mut frames: Vec<String> = Vec::new();
+    let mut snap = |app: &mut App| frames.push(snapshot_ansi(app, W, H));
+    snap(&mut app);
+
+    // The article's opening quote, verbatim.
+    app.push_user("修掉这个包的报错，再补个测试");
+    app.running = true;
+    snap(&mut app);
+
+    for chunk in [
+        "Let me reproduce the failure first, ",
+        "then fix it and pin it with a test.",
+    ] {
+        app.handle_event(TuiEvent::Runtime(reel_thought(chunk)));
+        snap(&mut app);
+    }
+
+    // 拆解: the plan block, then execute and verify.
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::PlanUpdated {
+        session_id: SessionId::new(1),
+        objective: "Fix the parser error and add a regression test".to_string(),
+        explanation: None,
+        plan: vec![
+            PlanItem {
+                step: "Reproduce the failing parse".into(),
+                status: PlanStepStatus::Completed,
+            },
+            PlanItem {
+                step: "Fix the panic and add a regression test".into(),
+                status: PlanStepStatus::InProgress,
+            },
+            PlanItem {
+                step: "Re-run the suite to green".into(),
+                status: PlanStepStatus::Pending,
+            },
+        ],
+        agent_id: None,
+        trace_id: None,
+    }));
+    snap(&mut app);
+
+    app.handle_event(TuiEvent::Runtime(reel_tool_started(
+        "execute_command",
+        r#"{"command":"cargo test","background":false}"#,
+    )));
+    snap(&mut app);
+    app.handle_event(TuiEvent::Runtime(reel_tool_finished(
+        "execute_command",
+        "test result: FAILED. 1 failed; 4 passed",
+    )));
+    snap(&mut app);
+
+    app.handle_event(TuiEvent::Runtime(reel_tool_started(
+        "read_file",
+        r#"{"path":"src/parser.rs"}"#,
+    )));
+    snap(&mut app);
+    app.handle_event(TuiEvent::Runtime(reel_tool_finished(
+        "read_file",
+        "Read 214 lines",
+    )));
+    snap(&mut app);
+
+    app.handle_event(TuiEvent::Runtime(reel_tool_started(
+        "edit_file",
+        r#"{"path":"src/parser.rs"}"#,
+    )));
+    snap(&mut app);
+    app.handle_event(TuiEvent::Runtime(reel_tool_finished(
+        "edit_file",
+        "Applied edit (+3 -1)",
+    )));
+    snap(&mut app);
+
+    app.handle_event(TuiEvent::Runtime(reel_tool_started(
+        "edit_file",
+        r#"{"path":"tests/parser.rs"}"#,
+    )));
+    snap(&mut app);
+    app.handle_event(TuiEvent::Runtime(reel_tool_finished(
+        "edit_file",
+        "Applied edit (+12)",
+    )));
+    snap(&mut app);
+
+    app.handle_event(TuiEvent::Runtime(reel_tool_started(
+        "execute_command",
+        r#"{"command":"cargo test","background":false}"#,
+    )));
+    snap(&mut app);
+    app.handle_event(TuiEvent::Runtime(reel_tool_finished(
+        "execute_command",
+        "test result: ok. 5 passed; 0 failed",
+    )));
+    snap(&mut app);
+
+    // The arc lands: every plan step ticks to completed.
+    app.handle_event(TuiEvent::Runtime(RuntimeEvent::PlanUpdated {
+        session_id: SessionId::new(1),
+        objective: "Fix the parser error and add a regression test".to_string(),
+        explanation: None,
+        plan: vec![
+            PlanItem {
+                step: "Reproduce the failing parse".into(),
+                status: PlanStepStatus::Completed,
+            },
+            PlanItem {
+                step: "Fix the panic and add a regression test".into(),
+                status: PlanStepStatus::Completed,
+            },
+            PlanItem {
+                step: "Re-run the suite to green".into(),
+                status: PlanStepStatus::Completed,
+            },
+        ],
+        agent_id: None,
+        trace_id: None,
+    }));
+    snap(&mut app);
+
+    for chunk in [
+        "修好了：`parse_object` 在空栈上 pop() 触发 panic，已加保护；",
+        "回归测试 `accepts_empty_object` 补进 `tests/parser.rs`。",
+        "cargo test：5 passed，绿灯收工。",
+    ] {
+        app.handle_event(TuiEvent::Runtime(reel_text(chunk)));
+        snap(&mut app);
+    }
+    app.handle_event(TuiEvent::TurnDone);
+    snap(&mut app);
+
+    for (i, frame) in frames.iter().enumerate() {
+        let path = out_dir.join(format!("frame_{i:04}.ans"));
+        let mut f = std::fs::File::create(&path).expect("write frame");
+        f.write_all(frame.as_bytes()).expect("write frame bytes");
+    }
+    println!(
+        "wrote {} frames ({}x{}) to {}",
+        frames.len(),
+        W,
+        H,
+        out_dir.display()
+    );
+}
