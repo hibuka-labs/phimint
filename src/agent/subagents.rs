@@ -86,9 +86,15 @@ pub(super) fn child_multi_agent_config(
         child_max_tool_output_chars: Some(tool_output_cap),
         // D3.1: the global nudge is off; the per-child rule owns it.
         child_read_only: false,
-        // Hang guard (S9.2): a stuck sub-agent is hard-stopped after 10 minutes and its Error is pushed to the parent.
+        // Hang guard (S9.2): a stuck sub-agent is hard-stopped at the wall
+        // below and its Error is pushed to the parent.
         control: ControlConfig {
-            task_timeout: Some(std::time::Duration::from_secs(10 * 60)),
+            // Wall-clock backstop only (2026-11-21 用户拍板): the model
+            // monitors its sub-agents via `list_agents` and stops a stuck one
+            // with `close_agent` itself — this fires only when that fails.
+            // 120 min: long enough for whole-repo analysis, short enough to
+            // bound a runaway tool loop.
+            task_timeout: Some(std::time::Duration::from_secs(120 * 60)),
             ..ControlConfig::default()
         },
         ..MultiAgentConfig::default()

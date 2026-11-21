@@ -625,7 +625,10 @@ pub async fn build_with_code_exec(
             Arc::new(crate::agent::spawn_resolve::StoreRouteSource { store, router });
         // Product convention: the audit lands next to the sessions
         // (`~/.phimint/model-route/`), so HOME isolation carries it.
+        // Windows sets USERPROFILE, not HOME — without the fallback the
+        // audit silently landed in the process cwd (the project root).
         let audit_dir = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
             .map(|home| PathBuf::from(home).join(".phimint").join("model-route"))
             .unwrap_or_default();
         let audit = crate::agent::spawn_resolve::AuditWriter::new(audit_dir);
@@ -713,9 +716,10 @@ pub async fn build_with_code_exec(
             None => tracing::warn!(tool = name, "roster names a tool that is not registered"),
         }
     }
+    let activate_tool = phi_agent::ActivateTool::new(activation.clone(), candidates);
     builder = builder
-        .with_tool_activation(activation.clone())
-        .register_tool_arc(phi_agent::ActivateTool::new(activation, candidates));
+        .with_tool_activation(activation)
+        .register_tool_arc(activate_tool.clone());
 
     let effort = reasoning_effort_from(reasoning_effort);
 
@@ -729,6 +733,15 @@ pub async fn build_with_code_exec(
             ..PhiAgentConfig::default()
         },
     )?;
+
+    // Late-registered tools (the multi-agent tools register inside
+    // `PhiAgent::build`; `add_tool` and the canvas trio mount even later) were
+    // not among the candidates the opener was built with. Hand it the
+    // registry's shared deferred-definition catalog so every roster name stays
+    // openable — session 20261121_f984398e had `close_agent` come back
+    // "not mountable". The catalog keeps filling as later registrations land.
+    activate_tool
+        .set_deferred_defs(agent.runtime().tools_mut().read().await.deferred_defs());
 
     Ok((
         agent,
