@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.2] - 2026-11-21
+
+### Fixed
+- **The binary is actually deleted on Windows.** The delete helper handed
+  `cmd` a path quoted for the C runtime (`\"C:\…\"`), which cmd does not
+  decode, so `del` failed silently and the binary survived every Windows
+  uninstall. The command line is now passed raw.
+- **A binary the user cannot unlink names the way out.** `install.sh` can
+  install into `/usr/local/bin` with sudo, and the binary is then
+  root-owned: the failure now names the `sudo rm` that finishes it, and
+  warns off `sudo phimint uninstall` (sudo's HOME is `/root`, so the
+  user's own `~/.phimint` and the PATH block in their rc file would be
+  skipped).
+
 ## [0.12.1] - 2026-11-21
 
 ### Fixed
