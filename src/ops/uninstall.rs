@@ -557,7 +557,25 @@ fn remove_self(exe: &Path) -> Result<()> {
 
 #[cfg(not(windows))]
 fn remove_self_inner(exe: &Path) -> Result<()> {
-    std::fs::remove_file(exe).with_context(|| format!("failed to delete {}", exe.display()))?;
+    if let Err(err) = std::fs::remove_file(exe) {
+        if err.kind() == std::io::ErrorKind::PermissionDenied {
+            // `install.sh` can fall back to `sudo` for /usr/local/bin; the
+            // binary is then root-owned and a normal user cannot unlink it.
+            // Name the finishing command, and warn off `sudo phimint
+            // uninstall` — sudo's HOME is /root, so the user's own data
+            // tree and rc block would be skipped.
+            anyhow::bail!(
+                "failed to delete {}: {err}\n  \
+                 the binary is owned by another user (a sudo install); remove it with:\n  \
+                 \x20 sudo rm {}\n  \
+                 (do not run `sudo phimint uninstall`: sudo's HOME is /root, so your\n  \
+                 \x20 ~/.phimint and the PATH block in your rc file would be skipped)",
+                exe.display(),
+                exe.display()
+            );
+        }
+        return Err(err).with_context(|| format!("failed to delete {}", exe.display()));
+    }
     println!("Removed {}", exe.display());
     Ok(())
 }
@@ -568,8 +586,13 @@ fn remove_self_inner(exe: &Path) -> Result<()> {
     // DETACHED_PROCESS: the helper gets no console window.
     const DETACHED_PROCESS: u32 = 0x0000_0008;
     let spec = format!("ping -n 3 127.0.0.1 >nul & del /f /q \"{}\"", exe.display());
+    // `raw_arg`, not `arg`: std quotes for the C runtime and escapes the
+    // path's quotes as `\"`, which cmd does not decode — `del` then sees
+    // `\C:\...\` and fails, so the binary survived every Windows uninstall
+    // (2026-11-21). The raw form keeps the quotes cmd actually parses.
     Command::new("cmd")
-        .args(["/C", &spec])
+        .arg("/C")
+        .raw_arg(&spec)
         .creation_flags(DETACHED_PROCESS)
         .spawn()
         .context("failed to schedule binary deletion")?;
