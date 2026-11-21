@@ -3306,7 +3306,7 @@ dependencies = [
 
 [[package]]
 name = "phimint"
-version = "0.12.1"
+version = "0.12.2"
 dependencies = [
  "agent-base",
  "anyhow",
