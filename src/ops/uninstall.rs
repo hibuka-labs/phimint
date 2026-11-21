@@ -51,6 +51,97 @@ pub fn dir_size(path: &Path) -> u64 {
         .sum()
 }
 
+/// Sessions whose process is still alive: their `session.lock` is held under
+/// an exclusive lock, the same liveness probe `cleanup_expired_sessions` and
+/// the /resume listing use. Deleting under them is what half-killed the
+/// 2026-11-21 uninstall, so they are named before the confirm prompt.
+pub fn live_sessions(data_dir: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(data_dir.join("sessions")) else {
+        return Vec::new();
+    };
+    let mut live: Vec<String> = entries
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.path().is_dir())
+        .filter(|entry| {
+            let lock = std::fs::File::open(entry.path().join("session.lock"));
+            matches!(&lock, Ok(file) if file.try_lock_shared().is_err())
+        })
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    live.sort();
+    live
+}
+
+/// Delete the data tree, live writers and all.
+///
+/// `std::fs::remove_dir_all` deletes entries while `readdir` streams the same
+/// directory; when a running session mutates the tree mid-walk, `readdir` may
+/// skip entries (POSIX leaves this unspecified) and the final `rmdir` then
+/// fails `ENOTEMPTY` — the 2026-11-21 uninstall died exactly there, halfway
+/// through `sessions/`, with the binary already gone. Renaming the tree out of
+/// the way first is one atomic step no writer can race: the product state is
+/// uninstalled even when the follow-up sweep gives up, and whatever survives
+/// is reported instead of aborting the run.
+fn delete_data_dir(data_dir: &Path) -> Result<()> {
+    let trash = trash_path(data_dir);
+    let sweep = match std::fs::rename(data_dir, &trash) {
+        Ok(()) => trash.as_path(),
+        Err(_) => data_dir,
+    };
+
+    if let Err(err) = std::fs::remove_dir_all(sweep) {
+        if sweep == data_dir {
+            // Not moved and not deleted: the tree is still where it was, so
+            // this one is a real failure — say how to finish by hand and let
+            // the caller stop here (the binary is removed last, so a retry of
+            // `phimint uninstall` is still possible).
+            anyhow::bail!(
+                "failed to delete {}: {err}\n  \
+                 close any running phimint sessions, then remove it yourself: {}",
+                data_dir.display(),
+                rm_hint(data_dir)
+            );
+        }
+        println!(
+            "Warning: some files could not be deleted and were left in {}\n  \
+             remove them with: {}",
+            sweep.display(),
+            rm_hint(sweep)
+        );
+    }
+
+    // A still-running session writes by absolute path and can recreate the
+    // tree under the user's feet; the uninstall must say so, not claim
+    // "no leftovers".
+    if data_dir.exists() {
+        println!(
+            "Warning: {} was recreated by a still-running session\n  \
+             close it and run: {}",
+            data_dir.display(),
+            rm_hint(data_dir)
+        );
+        return Ok(());
+    }
+
+    println!("Deleted {}", data_dir.display());
+    Ok(())
+}
+
+/// The manual-removal command the leftover hints print: `rm -rf` on Unix,
+/// `rmdir /s /q` on Windows (cmd and PowerShell both understand it).
+pub(crate) fn rm_hint(path: &Path) -> String {
+    if cfg!(windows) {
+        format!("rmdir /s /q \"{}\"", path.display())
+    } else {
+        format!("rm -rf {}", path.display())
+    }
+}
+
+/// Sibling directory the data tree is renamed into before sweeping.
+pub(crate) fn trash_path(data_dir: &Path) -> PathBuf {
+    data_dir.with_file_name(format!("{DATA_DIR_NAME}.trash-{}", std::process::id()))
+}
+
 /// Drop `dir` from a PATH-style variable.
 ///
 /// `sep` is `;` on Windows and `:` elsewhere. Comparison ignores case and
@@ -199,6 +290,8 @@ pub struct Plan {
     pub path_entry: Option<String>,
     /// Unix only: rc files carrying the installer's marker block.
     pub rc_blocks: Vec<PathBuf>,
+    /// Sessions still running against the data tree, named in the prompt.
+    pub live_sessions: Vec<String>,
 }
 
 /// Build the plan. Reads state only — nothing is removed here.
@@ -233,6 +326,13 @@ pub fn plan(remove_data: bool) -> Result<Plan> {
             .unwrap_or_default()
     };
 
+    // Live sessions only matter when their tree is about to go away.
+    let live = if remove_data {
+        live_sessions(&data)
+    } else {
+        Vec::new()
+    };
+
     Ok(Plan {
         source,
         binary_command,
@@ -242,6 +342,7 @@ pub fn plan(remove_data: bool) -> Result<Plan> {
         remove_data,
         path_entry,
         rc_blocks,
+        live_sessions: live,
     })
 }
 
@@ -259,58 +360,81 @@ impl Plan {
             "Detected install source: {channel}\n\nThis will:\n"
         ));
 
-        match &self.binary_command {
-            Some(cmd) => out.push_str(&format!("  1. remove the binary      — `{cmd}`\n")),
-            None => out.push_str(&format!(
-                "  1. remove the binary      — {}\n",
-                self.binary_path.display()
-            )),
-        }
-
+        // The steps are listed in the order they run: the binary goes last
+        // because once it is gone there is no `phimint uninstall` left to
+        // retry with.
+        let mut step = 1;
         if self.remove_data {
             out.push_str(&format!(
-                "  2. delete {}          — {} (config.json has your API key)\n",
+                "  {step}. delete {}          — {} (config.json has your API key)\n",
                 self.data_dir.display(),
                 format_bytes(self.data_bytes)
             ));
         } else {
             out.push_str(&format!(
-                "  2. keep {}        — {} (--keep-data)\n",
+                "  {step}. keep {}        — {} (--keep-data)\n",
                 self.data_dir.display(),
                 format_bytes(self.data_bytes)
             ));
         }
+        step += 1;
 
-        match &self.path_entry {
-            Some(dir) => out.push_str(&format!("  3. drop this from user PATH — {dir}\n")),
-            None => out.push_str("  3. (no PATH entry to clean)\n"),
+        if self.remove_data && !self.live_sessions.is_empty() {
+            out.push_str(&format!(
+                "  ! {} phimint sessions are still running: {}\n\
+                 \x20   close them first — their logs write into this tree while it is deleted\n",
+                self.live_sessions.len(),
+                self.live_sessions.join(", ")
+            ));
         }
 
-        for (step, rc) in self.rc_blocks.iter().enumerate() {
+        match &self.path_entry {
+            Some(dir) => out.push_str(&format!("  {step}. drop this from user PATH — {dir}\n")),
+            None => out.push_str(&format!("  {step}. (no PATH entry to clean)\n")),
+        }
+        step += 1;
+
+        for rc in &self.rc_blocks {
             out.push_str(&format!(
-                "  {}. remove the PATH block from {}\n",
-                step + 4,
+                "  {step}. remove the PATH block from {}\n",
                 rc.display()
             ));
+            step += 1;
+        }
+
+        match &self.binary_command {
+            Some(cmd) => out.push_str(&format!("  {step}. remove the binary      — `{cmd}`\n")),
+            None => out.push_str(&format!(
+                "  {step}. remove the binary      — {}\n",
+                self.binary_path.display()
+            )),
         }
 
         out
     }
 }
 
-/// Ask a yes/no question on stdin. Defaults to yes when the flag is set.
+/// Ask a yes/no question. `default_yes` is what an empty answer means: the
+/// main prompt defaults to yes, the live-session gate to no — an Enter key
+/// alone never deletes under running sessions.
 ///
 /// Destructive, so a non-interactive stdin never counts as consent: a pipe or
 /// a closed stdin used to read back an empty string, which the `[Y/n]` prompt
 /// would have taken as "yes". Without a human at the terminal the only way
 /// through is an explicit `--yes`.
-fn confirm(assume_yes: bool) -> Result<bool> {
-    use std::io::{IsTerminal, Write as _};
+fn confirm_with(
+    assume_yes: bool,
+    prompt: &str,
+    default_yes: bool,
+    tty: bool,
+    input: &mut impl std::io::BufRead,
+) -> Result<bool> {
+    use std::io::Write as _;
 
     if assume_yes {
         return Ok(true);
     }
-    if !std::io::stdin().is_terminal() {
+    if !tty {
         println!(
             "Refusing to uninstall without confirmation: stdin is not a terminal.\n\
              Re-run with --yes to proceed."
@@ -318,47 +442,83 @@ fn confirm(assume_yes: bool) -> Result<bool> {
         return Ok(false);
     }
 
-    print!("\nContinue? [Y/n] ");
+    print!("{prompt}");
     std::io::stdout().flush()?;
 
     let mut answer = String::new();
-    std::io::stdin().read_line(&mut answer)?;
+    input.read_line(&mut answer)?;
     let answer = answer.trim().to_lowercase();
-    Ok(answer.is_empty() || answer == "y" || answer == "yes")
+    Ok(if answer.is_empty() {
+        default_yes
+    } else {
+        answer == "y" || answer == "yes"
+    })
 }
 
 /// Carry out a confirmed plan.
 pub fn run(plan: &Plan, assume_yes: bool) -> Result<()> {
-    if !confirm(assume_yes)? {
+    use std::io::IsTerminal as _;
+
+    let tty = std::io::stdin().is_terminal();
+    let mut input = std::io::stdin().lock();
+    run_with(plan, assume_yes, tty, &mut input)
+}
+
+/// The testable core of `run`.
+pub(crate) fn run_with(
+    plan: &Plan,
+    assume_yes: bool,
+    tty: bool,
+    input: &mut impl std::io::BufRead,
+) -> Result<()> {
+    if !confirm_with(assume_yes, "\nContinue? [Y/n] ", true, tty, input)? {
         println!("Aborted. Nothing was changed.");
         return Ok(());
     }
 
-    // 1. Binary.
-    match &plan.binary_command {
-        Some(cmd) => remove_via_manager(cmd)?,
-        None => remove_self(&plan.binary_path)?,
+    // The one extra gate: deleting the data tree under live sessions kills
+    // their state, so it takes a second, default-no confirmation of its own.
+    if plan.remove_data && !plan.live_sessions.is_empty() {
+        println!(
+            "\n{} phimint sessions are still running: {}\n\
+             \x20   their state and logs are deleted under them",
+            plan.live_sessions.len(),
+            plan.live_sessions.join(", ")
+        );
+        if !confirm_with(assume_yes, "Delete anyway? [y/N] ", false, tty, input)? {
+            println!("Aborted. Nothing was changed.");
+            return Ok(());
+        }
     }
 
-    // 2. Data.
+    // The binary is removed LAST: once it is gone there is no
+    // `phimint uninstall` left to retry with, so every step that can fail
+    // runs while the command is still available.
+
+    // 1. Data — the step live sessions race, and the one that failed halfway
+    // on 2026-11-21 ("Directory not empty (os error 66)").
     if plan.remove_data && plan.data_dir.exists() {
-        std::fs::remove_dir_all(&plan.data_dir)
-            .with_context(|| format!("failed to delete {}", plan.data_dir.display()))?;
-        println!("Deleted {}", plan.data_dir.display());
+        delete_data_dir(&plan.data_dir)?;
     } else if plan.data_dir.exists() {
         println!("Kept {}", plan.data_dir.display());
     }
 
-    // 3. Windows user PATH.
+    // 2. Windows user PATH.
     if let Some(dir) = &plan.path_entry {
         strip_user_path(dir)?;
     }
 
-    // 4. The marker block the installer put into the rc file.
+    // 3. The marker block the installer put into the rc file.
     for rc in &plan.rc_blocks {
         if strip_marker_block_file(rc)? {
             println!("Removed the phimint PATH block from {}", rc.display());
         }
+    }
+
+    // 4. Binary.
+    match &plan.binary_command {
+        Some(cmd) => remove_via_manager(cmd)?,
+        None => remove_self(&plan.binary_path)?,
     }
 
     println!("\nphimint is uninstalled.");
@@ -466,293 +626,4 @@ fn strip_user_path(dir: &str) -> Result<()> {
     // install.sh never touches PATH; this is a no-op on Unix.
     println!("(no PATH entry to clean for {dir})");
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // ── strip_path_entry ────────────────────────────────────────────────
-
-    #[test]
-    fn strip_removes_exact_entry() {
-        assert_eq!(
-            strip_path_entry(
-                "/a/bin:/home/u/.local/bin:/b/bin",
-                "/home/u/.local/bin",
-                ':'
-            ),
-            "/a/bin:/b/bin"
-        );
-    }
-
-    #[test]
-    fn strip_ignores_trailing_separator_and_case() {
-        // install.ps1 records `~\.local\bin` while the exe path may differ
-        // only in case or trailing backslash.
-        assert_eq!(
-            strip_path_entry(
-                "C:\\a;C:\\Users\\u\\.local\\bin\\;C:\\b",
-                "c:\\users\\U\\.local\\bin",
-                ';'
-            ),
-            "C:\\a;C:\\b"
-        );
-    }
-
-    #[test]
-    fn strip_only_matches_full_entries_not_substrings() {
-        // `C:\foo` must not swallow `C:\foobar` — the bug install.ps1's
-        // `-notlike "*$InstallDir*"` check has, and the one we must not copy.
-        assert_eq!(
-            strip_path_entry("C:\\foo;C:\\foobar", "C:\\foo", ';'),
-            "C:\\foobar"
-        );
-    }
-
-    #[test]
-    fn strip_preserves_everything_else_verbatim() {
-        assert_eq!(
-            strip_path_entry("/opt/bin:/usr/bin", "/nowhere", ':'),
-            "/opt/bin:/usr/bin"
-        );
-    }
-
-    #[test]
-    fn strip_keeps_unrelated_empty_slots() {
-        // Never "tidy" the rest of the PATH — a corrupted PATH is worse than
-        // a leftover entry.
-        assert_eq!(strip_path_entry("/a::/b:/drop", "/drop", ':'), "/a::/b");
-    }
-
-    #[test]
-    fn strip_empty_dir_is_a_no_op() {
-        assert_eq!(strip_path_entry("/a:/b", "", ':'), "/a:/b");
-    }
-
-    #[test]
-    fn strip_windows_separators() {
-        assert_eq!(strip_path_entry("C:\\a;C:\\b", "C:\\b", ';'), "C:\\a");
-    }
-
-    // ── the installer's marker block ────────────────────────────────────
-
-    /// protects: the marker block the installer writes is removed from the
-    /// rc file, and every other line in it is kept — the uninstaller must not
-    /// touch the user's own configuration.
-    /// fails_when: the block survives the uninstall, or a line around it is
-    /// dropped with it.
-    /// no_claim: the blank line the installer put in front of the block — it
-    /// is cosmetic either way.
-    #[test]
-    fn the_marker_block_is_removed_and_the_rest_of_the_file_is_kept() {
-        let content = "export EDITOR=vim\n\n# >>> phimint >>>\n\
-             # added by phimint installer - delete this block to undo\n\
-             export PATH=\"/home/u/.local/bin:$PATH\"\n\
-             # <<< phimint <<<\n\nalias ll='ls -l'\n";
-        let stripped = strip_marker_block(content).expect("the block is found");
-        assert!(
-            !stripped.contains("phimint >>>"),
-            "the opening marker is gone: {stripped}"
-        );
-        assert!(
-            !stripped.contains("<<< phimint"),
-            "the closing marker is gone: {stripped}"
-        );
-        assert!(
-            !stripped.contains(".local/bin"),
-            "the PATH line is gone: {stripped}"
-        );
-        assert!(
-            stripped.contains("export EDITOR=vim"),
-            "the line before the block is kept: {stripped}"
-        );
-        assert!(
-            stripped.contains("alias ll='ls -l'"),
-            "the line after the block is kept: {stripped}"
-        );
-    }
-
-    /// protects: an rc file without the marker block is left exactly as it
-    /// was — the uninstaller never rewrites a file it has no business in.
-    /// fails_when: the file is rewritten (or truncated) when no block is
-    /// there.
-    #[test]
-    fn a_file_without_the_marker_is_left_alone() {
-        let content = "export EDITOR=vim\nalias ll='ls -l'\n";
-        assert_eq!(strip_marker_block(content), None);
-    }
-
-    /// protects: a marker without its closing line does not eat the rest of
-    /// the file. The block is the installer's, but the lines after an
-    /// unterminated one are the user's.
-    /// fails_when: the lines after an unterminated marker are deleted.
-    #[test]
-    fn an_unterminated_marker_does_not_eat_the_rest_of_the_file() {
-        let content = "# >>> phimint >>>\nexport PATH=/x\nmy own line\n";
-        assert_eq!(
-            strip_marker_block(content),
-            None,
-            "an unterminated block is left alone"
-        );
-    }
-
-    /// protects: the block is removed from the file on disk, and the file
-    /// keeps everything else.
-    /// fails_when: the file keeps the block, or loses a line around it.
-    #[test]
-    fn the_marker_block_is_removed_from_a_real_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let rc = dir.path().join(".zshrc");
-        std::fs::write(
-            &rc,
-            "export EDITOR=vim\n# >>> phimint >>>\nexport PATH=\"/x:$PATH\"\n# <<< phimint <<<\n",
-        )
-        .unwrap();
-
-        assert!(strip_marker_block_file(&rc).expect("the file is readable"));
-        let after = std::fs::read_to_string(&rc).unwrap();
-        assert!(!after.contains("phimint"), "the block is gone: {after}");
-        assert!(
-            after.contains("export EDITOR=vim"),
-            "the rest is kept: {after}"
-        );
-    }
-
-    /// protects: only the rc files that actually carry the block are listed
-    /// for removal — the uninstaller must not touch the other rc files.
-    /// fails_when: an rc file without a block is scheduled for rewriting.
-    #[test]
-    fn only_the_rc_files_that_carry_the_block_are_listed() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join(".zshrc"),
-            "# >>> phimint >>>\nexport PATH=\"/x:$PATH\"\n# <<< phimint <<<\n",
-        )
-        .unwrap();
-        std::fs::write(dir.path().join(".bashrc"), "export EDITOR=vim\n").unwrap();
-
-        let found = rc_files_with_blocks(dir.path());
-        assert_eq!(found, vec![dir.path().join(".zshrc")]);
-    }
-
-    /// protects: the candidate rc files are the ones the installer writes —
-    /// zsh, bash, fish and the fallback profile.
-    /// fails_when: a shell the installer supports has no candidate, so its
-    /// block is never removed.
-    #[test]
-    fn the_candidate_rc_files_cover_every_shell_the_installer_supports() {
-        let files = rc_candidates(Path::new("/home/u"));
-        let names: Vec<String> = files
-            .iter()
-            .map(|p| p.to_string_lossy().into_owned())
-            .collect();
-        assert!(
-            names.iter().any(|n| n.ends_with(".zshrc")),
-            "zsh: {names:?}"
-        );
-        assert!(
-            names.iter().any(|n| n.ends_with(".bashrc")),
-            "bash: {names:?}"
-        );
-        assert!(
-            names.iter().any(|n| n.ends_with(".profile")),
-            "profile: {names:?}"
-        );
-        assert!(
-            names.iter().any(|n| n.ends_with("config.fish")),
-            "fish: {names:?}"
-        );
-    }
-
-    // ── format_bytes ────────────────────────────────────────────────────
-
-    #[test]
-    fn bytes_formatting() {
-        assert_eq!(format_bytes(0), "0B");
-        assert_eq!(format_bytes(512), "512B");
-        assert_eq!(format_bytes(2048), "2.0K");
-        assert_eq!(format_bytes(61 * 1024 * 1024), "61.0M");
-        assert_eq!(format_bytes(2 * 1024 * 1024 * 1024), "2.0G");
-    }
-
-    // ── dir_size ────────────────────────────────────────────────────────
-
-    #[test]
-    fn size_of_missing_dir_is_zero() {
-        assert_eq!(dir_size(Path::new("/nope/not/here/at/all")), 0);
-    }
-
-    #[test]
-    fn size_sums_nested_files() {
-        let dir = std::env::temp_dir().join(format!("phimint-uninstall-{}", std::process::id()));
-        let nested = dir.join("a/b");
-        std::fs::create_dir_all(&nested).unwrap();
-        std::fs::write(dir.join("a/one.txt"), vec![0u8; 100]).unwrap();
-        std::fs::write(nested.join("two.txt"), vec![0u8; 50]).unwrap();
-
-        assert_eq!(dir_size(&dir), 150);
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn size_ignores_symlinks() {
-        let dir = std::env::temp_dir().join(format!("phimint-symlink-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("real.txt"), vec![0u8; 10]).unwrap();
-        std::os::unix::fs::symlink(dir.join("real.txt"), dir.join("link.txt")).unwrap();
-
-        assert_eq!(dir_size(&dir), 10);
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    // ── plan.describe ───────────────────────────────────────────────────
-
-    #[test]
-    fn describe_lists_channel_command_and_data_size() {
-        let plan = Plan {
-            source: InstallSource::Brew,
-            binary_command: Some("brew uninstall phimint".to_string()),
-            binary_path: PathBuf::from("/opt/homebrew/Cellar/phimint/0.2.0/bin/phimint"),
-            data_dir: PathBuf::from("/home/u/.phimint"),
-            data_bytes: 61 * 1024 * 1024,
-            remove_data: true,
-            path_entry: None,
-            rc_blocks: Vec::new(),
-        };
-        let text = plan.describe();
-        assert!(text.contains("Homebrew"), "channel missing: {text}");
-        assert!(
-            text.contains("brew uninstall phimint"),
-            "cmd missing: {text}"
-        );
-        assert!(text.contains("61.0M"), "size missing: {text}");
-        assert!(text.contains("API key"), "API-key warning missing: {text}");
-        assert!(text.contains("no PATH entry"), "PATH line missing: {text}");
-    }
-
-    #[test]
-    fn describe_marks_kept_data() {
-        let plan = Plan {
-            source: InstallSource::Cargo,
-            binary_command: Some("cargo uninstall phimint".to_string()),
-            binary_path: PathBuf::from("/home/u/.cargo/bin/phimint"),
-            data_dir: PathBuf::from("/home/u/.phimint"),
-            data_bytes: 0,
-            remove_data: false,
-            path_entry: Some("/home/u/.local/bin".to_string()),
-            rc_blocks: Vec::new(),
-        };
-        let text = plan.describe();
-        assert!(text.contains("--keep-data"), "keep marker missing: {text}");
-        assert!(
-            text.contains("/home/u/.local/bin"),
-            "PATH entry missing: {text}"
-        );
-        assert!(
-            !text.contains("API key"),
-            "keep-data must not warn about the key: {text}"
-        );
-    }
 }

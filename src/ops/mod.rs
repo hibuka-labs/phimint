@@ -4,3 +4,6 @@
 pub mod bin_shadow;
 pub mod terminal_restore;
 pub mod uninstall;
+
+#[cfg(test)]
+mod uninstall_tests;
