@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-11-21
+
+### Fixed
+- **`phimint uninstall` no longer dies halfway.** The data tree is renamed out
+  of the way before it is swept, so a running session writing into it can no
+  longer break the walk with "Directory not empty (os error 66)" — the
+  2026-11-21 run deleted the binary, left 900M behind and never cleaned the
+  PATH. The binary is removed last, so a failed uninstall stays retryable.
+- **Leftover hints name a command the platform has**: `rm -rf` on Unix,
+  `rmdir /s /q` on Windows.
+
+### Added
+- **Live sessions are named before anything is deleted.** A session still
+  holding its lock is listed in the prompt, and deleting under live sessions
+  takes a second confirmation that defaults to no.
+
+### Changed
+- **The install and first-run guidance shows both api_key ways** — a literal
+  key, or a `${ENV:VAR}` reference that keeps the secret out of the file —
+  next to a quick-start config (one provider, all three tiers) and an
+  advanced one (a provider per tier).
+- **The documented install one-liners carry no parentheses.** A trailing
+  `# Gitee (China)` comment broke the paste in a shell that does not take the
+  `#` for a comment start: zsh parsed `(China)` as a glob and died with
+  "unknown file attribute: C" before the installer ran.
+
 ## [0.12.0] - 2026-11-20
 
 ### Added

@@ -43,7 +43,7 @@ phimint 跑「理解需求 → 读码 → 多文件改 → 编译/测试 → 报
 
 ```bash
 curl -fsSL https://github.com/hibuka-labs/phimint/releases/latest/download/install.sh | bash   # GitHub
-curl -fsSL https://gitee.com/chenkangzeng_admin/phimint/releases/download/latest/install.sh | PHIMINT_MIRROR=gitee bash  # Gitee（国内）
+curl -fsSL https://gitee.com/chenkangzeng_admin/phimint/releases/download/latest/install.sh | PHIMINT_MIRROR=gitee bash  # Gitee 国内源
 ```
 
 Windows（PowerShell）：

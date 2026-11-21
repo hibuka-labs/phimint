@@ -218,4 +218,35 @@ if ($Written) {
 Write-Host ""
 Write-Host "✅ phimint $Version ready."
 Write-Host ""
-Write-Host "Next: open $ConfigPath, fill in the api_key line, then run:  phimint"
+Write-Host "Next: open $ConfigPath, fill in api_key, then run:  phimint"
+Write-Host ""
+Write-Host '  Quick start - one provider for all three tiers:'
+Write-Host '  {'
+Write-Host '    "base_url": "https://api.openai.com/v1",'
+Write-Host '    "api_key": "sk-...",'
+Write-Host '    "main": "gpt-5.4-mini",      // chat & coding'
+Write-Host '    "lite": "gpt-4o-mini",       // sub-agents & summaries'
+Write-Host '    "advanced": "o1-preview"     // architecture & hard problems'
+Write-Host '  }'
+Write-Host '  (lite/advanced are optional and fall back to main)'
+Write-Host ""
+Write-Host '  Advanced - a different provider per tier; api_key can be "${ENV:VAR}"'
+Write-Host '  to keep the key out of the file (set the var in your shell: $env:NAME'
+Write-Host '  = "sk-..."; a literal "sk-..." works too):'
+Write-Host '  {'
+Write-Host '    "main": {'
+Write-Host '      "model": "gpt-5.4-mini",'
+Write-Host '      "base_url": "https://api.openai.com/v1",'
+Write-Host '      "api_key": "${ENV:OPENAI_API_KEY}"'
+Write-Host '    },'
+Write-Host '    "lite": {'
+Write-Host '      "model": "deepseek-chat",'
+Write-Host '      "base_url": "https://api.deepseek.com/v1",'
+Write-Host '      "api_key": "${ENV:DEEPSEEK_API_KEY}"'
+Write-Host '    },'
+Write-Host '    "advanced": {'
+Write-Host '      "model": "claude-opus-4",'
+Write-Host '      "base_url": "https://api.anthropic.com",'
+Write-Host '      "api_key": "${ENV:ANTHROPIC_API_KEY}"'
+Write-Host '    }'
+Write-Host '  }'

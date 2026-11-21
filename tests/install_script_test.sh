@@ -284,5 +284,14 @@ run_installer LLM_CONFIG="$SANDBOX/home/.missing/config.json"
 check "a stale LLM_CONFIG falls through to the first existing default" \
     "$(grep -q "Next: open $SANDBOX/home/.phimint/config.json" "$SANDBOX/out.txt" && echo 0 || echo 1)"
 
+# ── The documented one-liners must survive a paste ──────────────────
+# A trailing comment with parentheses breaks in a shell that does not take
+# the `#` for a comment start: zsh parses `(China)` as a glob group and dies
+# with "unknown file attribute: C" before the installer ever runs (2026-11-21,
+# user report). Paren-free comments keep the line safe either way.
+_documented_parens="$(grep -hE '\| *bash' "$ROOT/README.md" "$ROOT/README_CN.md" | grep -c '(' || true)"
+check "the documented shell one-liners carry no parentheses" \
+    "$([ "$_documented_parens" = "0" ] && echo 0 || echo 1)"
+
 printf '\n%s passed, %s failed\n' "$PASSED" "$FAILED"
 [ "$FAILED" -eq 0 ]

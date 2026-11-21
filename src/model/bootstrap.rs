@@ -169,7 +169,10 @@ pub fn ensure_skeleton(path: &Path) -> std::io::Result<bool> {
 }
 
 /// The first-run message (decision 2): what is missing, where the file is,
-/// a fill-in snippet, and the exact remedy. Product strings are English.
+/// a fill-in snippet for both setup shapes, and the exact remedy. Product
+/// strings are English. The snippet mirrors the installer tail: the quick
+/// start (one provider, all three tiers) and the advanced shape (a provider
+/// per tier, keys kept out of the file as `${ENV:VAR}` references).
 pub fn missing_key_message(path: &Path) -> String {
     format!(
         "phimint is not configured yet.\n\
@@ -177,13 +180,38 @@ pub fn missing_key_message(path: &Path) -> String {
          \x20 config file: {path}\n\
          \x20 missing:     api_key\n\
          \n\
-         \x20 Open that file and fill in api_key (JSON5 - comments and trailing commas are fine):\n\
+         \x20 Open that file (JSON5 - comments and trailing commas are fine) and use\n\
+         \x20 one of these, filling in your values:\n\
          \n\
+         \x20   Quick start - one provider for all three tiers:\n\
          \x20   {{\n\
          \x20     \"base_url\": \"https://api.openai.com/v1\",\n\
-         \x20     \"protocol\": \"openai\",\n\
-         \x20     \"main\": \"gpt-5.4-mini\",\n\
-         \x20     \"api_key\": \"sk-your-key\"\n\
+         \x20     \"api_key\": \"sk-your-key\",\n\
+         \x20     \"main\": \"gpt-5.4-mini\",      // chat & coding\n\
+         \x20     \"lite\": \"gpt-4o-mini\",       // sub-agents & summaries\n\
+         \x20     \"advanced\": \"o1-preview\"     // architecture & hard problems\n\
+         \x20   }}\n\
+         \x20   (lite/advanced are optional and fall back to main)\n\
+         \n\
+         \x20   Advanced - a different provider per tier; api_key can be \"${{ENV:VAR}}\"\n\
+         \x20   to keep the key out of the file (set the var in your shell: export\n\
+         \x20   NAME=sk-...; a literal \"sk-...\" works too):\n\
+         \x20   {{\n\
+         \x20     \"main\": {{\n\
+         \x20       \"model\": \"gpt-5.4-mini\",\n\
+         \x20       \"base_url\": \"https://api.openai.com/v1\",\n\
+         \x20       \"api_key\": \"${{ENV:OPENAI_API_KEY}}\"\n\
+         \x20     }},\n\
+         \x20     \"lite\": {{\n\
+         \x20       \"model\": \"deepseek-chat\",\n\
+         \x20       \"base_url\": \"https://api.deepseek.com/v1\",\n\
+         \x20       \"api_key\": \"${{ENV:DEEPSEEK_API_KEY}}\"\n\
+         \x20     }},\n\
+         \x20     \"advanced\": {{\n\
+         \x20       \"model\": \"claude-opus-4\",\n\
+         \x20       \"base_url\": \"https://api.anthropic.com\",\n\
+         \x20       \"api_key\": \"${{ENV:ANTHROPIC_API_KEY}}\"\n\
+         \x20     }}\n\
          \x20   }}\n\
          \n\
          \x20 Other providers: copy base_url / main from the comment block at the top of the file.\n\
@@ -510,6 +538,20 @@ mod tests {
         assert!(msg.contains("api_key"), "names the missing field: {msg}");
         assert!(msg.contains("run phimint again"), "names the remedy: {msg}");
         assert!(msg.contains('"'), "carries a fill-in snippet: {msg}");
+    }
+
+    /// protects: the fill-in snippet teaches both api_key ways — a literal
+    /// and the `${ENV:VAR}` reference that keeps the key out of the file —
+    /// and names all three tiers, the same onboarding the installer tail
+    /// carries. fails_when: the env-reference way or a tier is missing.
+    #[test]
+    fn the_missing_key_message_teaches_both_key_ways_and_the_tiers() {
+        let msg = missing_key_message(Path::new("/root/.phimint/config.json"));
+        assert!(msg.contains("sk-your-key"), "plaintext way: {msg}");
+        assert!(msg.contains("${ENV:"), "env-reference way: {msg}");
+        assert!(msg.contains("\"main\""), "main tier: {msg}");
+        assert!(msg.contains("\"lite\""), "lite tier: {msg}");
+        assert!(msg.contains("\"advanced\""), "advanced tier: {msg}");
     }
 
     /// protects: the parse-error message carries the reason verbatim and the

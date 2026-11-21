@@ -42,14 +42,14 @@ One-liner (mainland China: use the Gitee line):
 
 ```bash
 curl -fsSL https://github.com/hibuka-labs/phimint/releases/latest/download/install.sh | bash   # GitHub
-curl -fsSL https://gitee.com/chenkangzeng_admin/phimint/releases/download/latest/install.sh | PHIMINT_MIRROR=gitee bash  # Gitee (China)
+curl -fsSL https://gitee.com/chenkangzeng_admin/phimint/releases/download/latest/install.sh | PHIMINT_MIRROR=gitee bash  # Gitee mirror
 ```
 
 Windows (PowerShell):
 
 ```powershell
 irm https://github.com/hibuka-labs/phimint/releases/latest/download/install.ps1 | iex   # GitHub
-$env:PHIMINT_MIRROR='gitee'; irm https://gitee.com/chenkangzeng_admin/phimint/releases/download/latest/install.ps1 | iex  # Gitee (China)
+$env:PHIMINT_MIRROR='gitee'; irm https://gitee.com/chenkangzeng_admin/phimint/releases/download/latest/install.ps1 | iex  # Gitee mirror
 ```
 
 The installer does the whole job: it puts the binary in `~/.local/bin` (or the
