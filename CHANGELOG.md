@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-22
+
+### Added
+- **The supported-platform floors are stated, and kept.** README (English
+  and Chinese) now names the minimum platform for every prebuilt binary:
+  Linux glibc 2.28+ (Ubuntu 20.04+, Debian 11+, Rocky/Alma 8+, Fedora 33+),
+  Windows 10 1809+ (the installer needs PowerShell 5.1+), macOS 12+. The
+  Linux binaries are linked against glibc 2.28 so they actually start on
+  those older distributions, the macOS binaries are pinned to
+  `MACOSX_DEPLOYMENT_TARGET=12.0`, and the release build smoke-tests the
+  Linux binary on Rocky Linux 8 — a binary that cannot start on the floor
+  it claims stops the release instead of shipping. Source installs
+  (`cargo install`) follow your own toolchain and are not bound by these
+  floors. The CI test suite now runs on Linux, macOS and Windows instead
+  of Linux alone.
+
+### Fixed
+- **The model-route audit directory lands where it belongs on Windows.**
+  The audit path was resolved from `HOME` and then `USERPROFILE` as two
+  separate lookups, and when neither was set it became an empty path — the
+  audit files were then written into the process's current directory,
+  which on Windows is the project root. All home resolution now goes
+  through one helper (`dirs::home_dir()`), and when no home directory
+  exists it warns and falls back to the system temp directory: an
+  absolute, visible place, never a silent relative one.
+
+- **A tool registered late is openable by name.** The `activate_tool`
+  opener was mounted before the tool registry knew about the tools
+  registered afterwards (the multi-agent, `add_tool` and canvas tools), so
+  asking for one of them came back "not mountable" even though the roster
+  promised it. The opener now shares the registry's deferred-definitions
+  catalog, so every tool the roster names can be opened.
+
+### Changed
+- **The sub-agent task wall is 120 minutes, not 10.** A sub-agent that ran
+  past ten minutes was hard-stopped and its findings were thrown away.
+  The wall is now two hours and acts as a backstop only — the model
+  watches its own sub-agents through `list_agents` and stops a stuck one
+  with `close_agent`. A child that does hit the wall now writes up what
+  it found before the stop, and that report reaches the parent instead of
+  being discarded with the run.
+
 ## [0.12.2] - 2026-11-21
 
 ### Fixed

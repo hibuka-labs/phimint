@@ -130,10 +130,7 @@ pub const DESIGN_CANVAS_NODES: &str = include_str!("../assets/design-canvas/node
 /// Future configuration (`.claude/phimint.toml` `[skills] dirs`) swaps in here;
 /// callers unchanged.
 pub fn default_skill_dirs() -> Vec<PathBuf> {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."));
+    let home = crate::paths::home_dir();
 
     vec![
         builtin_skills_dir(),                // bundled (lowest priority)
@@ -146,12 +143,7 @@ pub fn default_skill_dirs() -> Vec<PathBuf> {
 /// dir. Overridable by the same skill name in `~/.claude/skills` or the
 /// project's `.claude/skills`.
 pub fn builtin_skills_dir() -> PathBuf {
-    std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .join(".phimint")
-        .join("skills")
+    crate::paths::home_dir().join(".phimint").join("skills")
 }
 
 /// Materialize the bundled skills under `root` (normally

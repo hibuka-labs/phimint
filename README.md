@@ -81,6 +81,18 @@ sessions, history and notes. `--keep-data` leaves that directory alone,
 `--yes` skips the prompt. On Windows it also drops the PATH entry the installer
 added; on Unix it removes the marked PATH block from your shell profile.
 
+### Supported platforms
+
+| Platform | Minimum | Prebuilt artifacts |
+|---|---|---|
+| Linux | glibc 2.28 (Ubuntu 20.04, Debian 11, Rocky/Alma 8, Fedora 33+) | `x86_64`, `aarch64` |
+| Windows | Windows 10 1809+ (installer needs PowerShell 5.1+) | `x86_64` |
+| macOS | 12+ | Apple Silicon, Intel |
+
+Linux binaries link against glibc 2.28 so they start on older distros; CI
+builds and tests on Linux, Windows and macOS. Source installs
+(`cargo install`) follow your own toolchain instead.
+
 ### 2. Configure
 
 A one-minute step: you need an API key for any supported model provider

@@ -12,6 +12,7 @@ pub mod command;
 pub mod external;
 pub mod model;
 pub mod ops;
+pub mod paths;
 pub mod session;
 pub mod shell;
 pub mod tips;

@@ -41,15 +41,21 @@ jobs:
             target: x86_64-unknown-linux-gnu
             asset_key: linux-x86_64
             archive: tar.gz
+            zig: true
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             asset_key: linux-aarch64
             archive: tar.gz
+            zig: true
           - os: windows-2022
             target: x86_64-pc-windows-msvc
             asset_key: windows-x86_64
             archive: zip
     runs-on: ${{ matrix.os }}
+    env:
+      # macOS floor: binaries stay loadable on macOS 12+ (README "Supported
+      # platforms"). Ignored on linux/windows runners.
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
     steps:
       - uses: actions/checkout@v4
 
@@ -57,8 +63,33 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      # Linux prebuilts link against glibc 2.28 (Rocky/Alma 8, Ubuntu 20.04+):
+      # a plain build on ubuntu-22.04/24.04 runners bakes in glibc 2.35/2.39
+      # and the binary refuses to start on older distros.
+      - name: Install zig (linux glibc floor)
+        if: matrix.zig
+        uses: mlugg/setup-zig@v2
+
+      - name: Install cargo-zigbuild (linux glibc floor)
+        if: matrix.zig
+        uses: taiki-e/install-action@cargo-zigbuild
+
       - name: Build
+        if: ${{ !matrix.zig }}
         run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Build (zigbuild, glibc 2.28 floor)
+        if: matrix.zig
+        run: cargo zigbuild --release --locked --target ${{ matrix.target }}.2.28
+
+      # The glibc floor is a product claim (README "Supported platforms"):
+      # prove it at release time — if the binary cannot start on glibc 2.28,
+      # the release stops here instead of shipping it.
+      - name: Smoke on glibc 2.28 (Rocky Linux 8)
+        if: matrix.zig
+        run: |
+          docker run --rm -v "$PWD:/w" -w /w rockylinux:8 \
+            ./target/${{ matrix.target }}/release/phimint --version
 
       - name: Package archive (unix)
         if: matrix.archive == 'tar.gz'

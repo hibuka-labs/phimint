@@ -625,12 +625,11 @@ pub async fn build_with_code_exec(
             Arc::new(crate::agent::spawn_resolve::StoreRouteSource { store, router });
         // Product convention: the audit lands next to the sessions
         // (`~/.phimint/model-route/`), so HOME isolation carries it.
-        // Windows sets USERPROFILE, not HOME — without the fallback the
-        // audit silently landed in the process cwd (the project root).
-        let audit_dir = std::env::var("HOME")
-            .or_else(|_| std::env::var("USERPROFILE"))
-            .map(|home| PathBuf::from(home).join(".phimint").join("model-route"))
-            .unwrap_or_default();
+        // Cross-platform: paths::home_dir() resolves USERPROFILE on Windows and
+        // warns loudly when no home exists (never a silent relative path).
+        let audit_dir = crate::paths::home_dir()
+            .join(".phimint")
+            .join("model-route");
         let audit = crate::agent::spawn_resolve::AuditWriter::new(audit_dir);
         // Children share this process's cwd — the same base fact the
         // default factory injects into each child's prompt.
@@ -740,8 +739,7 @@ pub async fn build_with_code_exec(
     // registry's shared deferred-definition catalog so every roster name stays
     // openable — session 20261121_f984398e had `close_agent` come back
     // "not mountable". The catalog keeps filling as later registrations land.
-    activate_tool
-        .set_deferred_defs(agent.runtime().tools_mut().read().await.deferred_defs());
+    activate_tool.set_deferred_defs(agent.runtime().tools_mut().read().await.deferred_defs());
 
     Ok((
         agent,
@@ -754,10 +752,7 @@ pub async fn build_with_code_exec(
 
 /// The CLAUDE.md files injected into the system prompt, lowest priority first.
 fn agent_instructions_paths() -> Vec<PathBuf> {
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."));
+    let home = crate::paths::home_dir();
 
     vec![
         home.join(".claude").join("CLAUDE.md"), // user-level (lowest priority)

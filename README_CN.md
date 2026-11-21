@@ -79,6 +79,17 @@ cargo install phimint                    # 从 crates.io
 `--yes` 跳过确认。Windows 上还会摘掉安装脚本加进 PATH 的那条；Unix 上会
 从 shell 配置里删掉那段带标记的 PATH 块。
 
+### 支持平台
+
+| 平台 | 下限 | 预编译产物 |
+|---|---|---|
+| Linux | glibc 2.28（Ubuntu 20.04、Debian 11、Rocky/Alma 8、Fedora 33+） | `x86_64`、`aarch64` |
+| Windows | Windows 10 1809+（安装脚本需要 PowerShell 5.1+） | `x86_64` |
+| macOS | 12+ | Apple Silicon、Intel |
+
+Linux 二进制按 glibc 2.28 链接，老发行版也能起；CI 在 Linux / Windows / macOS
+三平台构建测试。源码安装（`cargo install`）不受此限，跟本机工具链走。
+
 ### 2. 配置
 
 一分钟的事：需要任一受支持的模型 provider 的 API key（OpenAI / Anthropic /

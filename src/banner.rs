@@ -5,7 +5,6 @@
 //! frame capture never see styling.
 
 use std::path::Path;
-use std::path::PathBuf;
 
 use phi_agent_tui::{BrandRow, ColorScheme, ShellToken};
 
@@ -264,7 +263,7 @@ fn push_char(spans: &mut Vec<BannerSpan>, ch: char, style: BannerStyle) {
 }
 
 /// A path shortened by replacing its `$HOME` prefix with `~`. `home` is the
-/// home directory (normally `env::var("HOME")`).
+/// home directory (normally `dirs::home_dir()`).
 pub fn shorten_home_with(path: &Path, home: Option<&Path>) -> String {
     let Some(home) = home else {
         return path.display().to_string();
@@ -282,12 +281,9 @@ pub fn shorten_home_with(path: &Path, home: Option<&Path>) -> String {
     s.into_owned()
 }
 
-/// `shorten_home_with` using `$HOME` from the environment.
+/// `shorten_home_with` using the home directory from `dirs`.
 pub fn shorten_home(path: &Path) -> String {
-    shorten_home_with(
-        path,
-        std::env::var("HOME").ok().map(PathBuf::from).as_deref(),
-    )
+    shorten_home_with(path, dirs::home_dir().as_deref())
 }
 
 /// The slogan row: brand voice (emphasis) + `   -   v{version}` tail.

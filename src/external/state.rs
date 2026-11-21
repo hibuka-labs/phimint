@@ -947,11 +947,8 @@ impl ExternalState {
 /// [`PluginSource::parse`].
 pub fn parse_plugin_source(spec: &str) -> Result<PluginSource, String> {
     let expanded = match spec.strip_prefix("~/") {
-        Some(rest) => match std::env::var_os("HOME") {
-            Some(home) => PathBuf::from(home)
-                .join(rest)
-                .to_string_lossy()
-                .into_owned(),
+        Some(rest) => match dirs::home_dir() {
+            Some(home) => home.join(rest).to_string_lossy().into_owned(),
             None => spec.to_string(),
         },
         None => spec.to_string(),
