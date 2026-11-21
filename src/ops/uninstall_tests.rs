@@ -565,3 +565,83 @@ fn the_manual_removal_hint_matches_the_platform() {
     #[cfg(windows)]
     assert!(hint.starts_with("rmdir /s /q"), "windows hint: {hint}");
 }
+
+/// protects: the Windows delete helper hands `cmd` a path cmd can parse.
+/// std's `args` quotes for the C runtime and escapes the path's own quotes
+/// as `\"`, which cmd does not decode — `del` then saw `\C:\...\` and the
+/// binary survived every Windows uninstall (2026-11-21). `raw_arg` keeps the
+/// path as written.
+/// fails_when: the child command sees an escaped path.
+#[test]
+#[cfg(windows)]
+fn the_windows_delete_command_receives_a_path_cmd_can_parse() {
+    use std::os::windows::process::CommandExt as _;
+
+    // The same shape the delete helper builds, echoed back so the test can
+    // read what cmd actually received.
+    let spec = "echo \"C:\\Program Files\\phimint.exe\"";
+    let output = std::process::Command::new("cmd")
+        .arg("/C")
+        .raw_arg(spec)
+        .output()
+        .expect("cmd runs");
+    let seen = String::from_utf8_lossy(&output.stdout);
+
+    assert!(
+        seen.contains(r"C:\Program Files\phimint.exe"),
+        "cmd saw the path: {seen}"
+    );
+    assert!(
+        !seen.contains(r#"\""#),
+        "the path must not arrive C-runtime escaped: {seen}"
+    );
+}
+
+/// protects: a binary the user cannot unlink (install.sh can install into
+/// /usr/local/bin with sudo) names the command that finishes the job, and
+/// warns off `sudo phimint uninstall` — sudo's HOME is /root, so the user's
+/// own ~/.phimint and the PATH block in their rc file would be skipped.
+/// fails_when: the failure is a bare "Permission denied" with no way forward.
+#[test]
+#[cfg(unix)]
+fn a_binary_the_user_cannot_unlink_names_the_finishing_command() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let home = tempfile::tempdir().unwrap();
+    let data = home.path().join(".phimint");
+    std::fs::create_dir_all(&data).unwrap();
+    let bin_dir = home.path().join("usr-local-bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let binary = bin_dir.join("phimint");
+    std::fs::write(&binary, b"bin").unwrap();
+    // A directory the user cannot write: unlinking a file needs write
+    // permission on its directory, so this fails like a root-owned binary.
+    std::fs::set_permissions(&bin_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+
+    let plan = Plan {
+        source: InstallSource::Standalone,
+        binary_command: None,
+        binary_path: binary,
+        data_dir: data,
+        data_bytes: 0,
+        remove_data: true,
+        path_entry: None,
+        rc_blocks: Vec::new(),
+        live_sessions: Vec::new(),
+    };
+    let outcome = run(&plan, true);
+
+    // Hand the tempdir its permissions back so it can clean up.
+    std::fs::set_permissions(&bin_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let err = outcome.expect_err("a binary we cannot unlink must fail loudly");
+    let text = format!("{err:#}");
+    assert!(
+        text.contains("sudo rm"),
+        "names the finishing command: {text}"
+    );
+    assert!(
+        text.contains("HOME"),
+        "warns off `sudo phimint uninstall`: {text}"
+    );
+}
