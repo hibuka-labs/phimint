@@ -302,6 +302,18 @@ async fn the_model_acts_in_code_and_the_session_survives_between_steps() {
     );
 }
 
+/// An artifact's bytes, with the line endings normalized to `\n`.
+///
+/// Python's text mode translates `\n` to `\r\n` on Windows, so a file a cell
+/// wrote carries the platform's newline convention. The assertions below are
+/// about the *content* (name/sum/max per source), not about which newline the
+/// platform writes — so the comparison normalizes the endings and the file on
+/// disk keeps whatever the platform produces.
+fn artifact_text(path: &std::path::Path) -> String {
+    let raw = std::fs::read_to_string(path).unwrap_or_default();
+    raw.replace("\r\n", "\n")
+}
+
 /// 判别门 (OV-2, T11): the M2 dogfood file chain — 8 sources → report +
 /// totals + renames — lands WHOLE in ONE code step, with no `code_cell`
 /// anywhere in the menu. The M2 shape could only do this by registering a
@@ -395,12 +407,12 @@ async fn the_file_chain_lands_whole_in_one_step_with_no_code_cell_in_the_menu() 
 
     // Artifacts: the chain's whole output, verified independently of the model.
     assert_eq!(
-        std::fs::read_to_string(ws.join("report.txt")).unwrap_or_default(),
+        artifact_text(&ws.join("report.txt")),
         expected_report,
         "report.txt must carry name/sum/max per source"
     );
     assert_eq!(
-        std::fs::read_to_string(ws.join("totals.txt")).unwrap_or_default(),
+        artifact_text(&ws.join("totals.txt")),
         format!("{grand}\n"),
         "totals.txt must carry the grand total"
     );
