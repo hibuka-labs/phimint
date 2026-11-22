@@ -21,7 +21,11 @@ pub mod update;
 pub mod verify_ledger;
 
 /// Shared test helpers (path shapes that hold on every platform).
-#[cfg(test)]
+///
+/// Public, not `#[cfg(test)]`-only: the integration tests in `tests/` need the
+/// same helpers — a path that is absolute on every platform, and a stem no
+/// interpreter claims — or they would hardcode a Unix path and fail on the
+/// Windows runner.
 pub mod testutil;
 
 // The desktop capability pack (desk.*) on the code-exec engine — compiled out

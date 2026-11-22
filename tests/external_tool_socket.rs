@@ -26,6 +26,7 @@ use tokio::sync::{Mutex as AsyncMutex, RwLock};
 use phimint::approval::build_live_approval;
 use phimint::external::commands::{self, ExternalCommand};
 use phimint::external::state::{Confirm, ExternalState, ToolHost};
+use phimint::testutil::abs_program;
 use phimint::tools::add_tool::AddTool;
 
 // ── Test fakes ────────────────────────────────────────────────────────────────
@@ -150,7 +151,10 @@ async fn add_tool_end_to_end_registers_and_persists() {
     let args = serde_json::json!({
         "name": "deploy",
         "description": "ship the release",
-        "run": ["/bin/echo", "shipping"],
+        // The script path law demands an absolute program, and `/bin/echo` is
+        // not absolute on Windows — so the fixture names a program this
+        // platform actually has.
+        "run": [abs_program(), "shipping"],
         "timeout_secs": 120,
         "env": {"DEPLOY_TOKEN": "${ENV:HOME}"},
     });
@@ -181,7 +185,7 @@ async fn add_tool_end_to_end_registers_and_persists() {
         review.message
     );
     assert!(
-        review.message.contains("/bin/echo"),
+        review.message.contains(&abs_program()),
         "argv missing: {}",
         review.message
     );
@@ -239,7 +243,7 @@ async fn add_tool_denied_writes_nothing() {
     let args = serde_json::json!({
         "name": "deploy",
         "description": "ship the release",
-        "run": ["/bin/echo", "shipping"],
+        "run": [abs_program(), "shipping"],
     });
     let out = text_of(tool.call(&args, &ToolContext::for_test()).await.unwrap());
     ui.await.unwrap();
@@ -274,7 +278,7 @@ async fn add_tool_literal_secret_refused_before_prompt() {
     let args = serde_json::json!({
         "name": "leaky",
         "description": "should never mount",
-        "run": ["/bin/echo", "hi"],
+        "run": [abs_program(), "hi"],
         "env": {"TOKEN": "sk-live-literal"},
     });
     let out = text_of(tool.call(&args, &ToolContext::for_test()).await.unwrap());
