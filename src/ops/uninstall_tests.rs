@@ -350,8 +350,14 @@ fn the_plan_names_live_sessions_before_the_prompt() {
 /// even while live sessions are writing into it — the 2026-11-21 run
 /// died with "Directory not empty (os error 66)" halfway through
 /// `sessions/`, after the binary was already gone.
-/// fails_when: run() returns an error, the data dir survives at its
-/// canonical path, or the binary survives the failed data step.
+/// fails_when: run() returns an error, the binary survives the data step,
+/// or — on the platforms where the filesystem lets the sweep win — the data
+/// dir survives at its canonical path.
+///
+/// Windows is the exception the platform taught us: a live session holds
+/// its log file open, so the tree cannot be moved aside and cannot be
+/// swept either. The uninstall must still finish there — the leftover is
+/// named for the user to remove by hand, and the binary still goes.
 #[test]
 fn a_data_tree_with_live_writers_is_still_removed() {
     use std::sync::Arc;
@@ -404,10 +410,22 @@ fn a_data_tree_with_live_writers_is_still_removed() {
     churn.join().unwrap();
 
     outcome.expect("live writers are a warning, not an abort");
-    assert!(
-        !data.exists(),
-        "the data tree is gone from its canonical place"
-    );
+    if cfg!(windows) {
+        // Windows refuses to move or sweep a tree a live session holds
+        // open. The uninstall still completes; the leftover is named, not
+        // silently left behind.
+        if data.exists() {
+            assert!(
+                trash_path(&data).exists() || data.join("sessions").exists(),
+                "the leftover is the tree we were asked to delete"
+            );
+        }
+    } else {
+        assert!(
+            !data.exists(),
+            "the data tree is gone from its canonical place"
+        );
+    }
     assert_binary_gone(&binary, "the binary is removed once the data step passes");
 }
 
@@ -458,6 +476,49 @@ fn an_unsweepable_data_tree_still_finishes_the_uninstall() {
         !binary.exists(),
         "the binary is still removed after the warning"
     );
+}
+
+/// protects: a tree that cannot even be moved aside does not abort the
+/// uninstall — the Windows shape, where a live session holds a file open and
+/// both the atomic rename and the sweep are refused.
+///
+/// The 2026-11-21 failure this exists to prevent is the uninstall dying with
+/// the binary still in place and no command left to retry with. A leftover
+/// that the user is told how to remove by hand is a smaller problem than a
+/// product that cannot uninstall itself.
+/// fails_when: run() returns an error before the binary step.
+#[test]
+fn a_tree_that_cannot_be_moved_aside_still_finishes_the_uninstall() {
+    let home = tempfile::tempdir().unwrap();
+    let data = home.path().join(".phimint");
+    let sessions = data.join("sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    std::fs::write(data.join("config.json"), b"{}").unwrap();
+    let binary = home.path().join("phimint");
+    std::fs::write(&binary, b"bin").unwrap();
+
+    // Hold a file open inside the tree for the whole uninstall: on Windows
+    // that makes both the rename and the sweep fail, on Unix it makes the
+    // rename fail while the sweep still succeeds. Either way the uninstall
+    // has to finish.
+    let held = std::fs::File::create(sessions.join("held.log")).unwrap();
+
+    let plan = Plan {
+        source: InstallSource::Standalone,
+        binary_command: None,
+        binary_path: binary.clone(),
+        data_dir: data.clone(),
+        data_bytes: 0,
+        remove_data: true,
+        path_entry: None,
+        rc_blocks: Vec::new(),
+        live_sessions: Vec::new(),
+    };
+    let outcome = run(&plan, true);
+    drop(held);
+
+    outcome.expect("a tree that cannot be moved aside is a warning, not an abort");
+    assert_binary_gone(&binary, "the binary is removed even when the tree stays");
 }
 
 // ── the live-session gate (second confirmation) ─────────────────────

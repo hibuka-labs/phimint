@@ -17,6 +17,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 
@@ -72,6 +73,63 @@ pub fn live_sessions(data_dir: &Path) -> Vec<String> {
     live
 }
 
+/// How many times a refused rename or a failed sweep is tried again.
+///
+/// A live writer mutates the tree while we walk it, and both the atomic
+/// rename and the sweep can lose that race. The retries are the difference
+/// between "the writer was mid-write" and "the writer holds the tree open
+/// forever" — the second case still fails, and is reported.
+const SWEEP_ATTEMPTS: u32 = 5;
+
+/// Pause before the next attempt. It grows with the attempt number so a
+/// writer that keeps a handle open gets a wider window, while a writer that
+/// only occasionally collides is not held up for long.
+fn sweep_backoff(attempt: u32) -> Duration {
+    Duration::from_millis(50 * u64::from(attempt + 1))
+}
+
+/// Move the data tree out of the way, atomically.
+///
+/// The rename is the one step no writer can race: the tree either is at its
+/// canonical path or at the trash path, never half-way. It is refused more
+/// often than one would think on Windows — a live session opens and closes
+/// files inside `sessions/` while we move the whole tree, and each of those
+/// opens can collide with the move — so the refusal is worth another try.
+fn rename_with_retry(from: &Path, to: &Path) -> Option<std::io::Error> {
+    let mut last = None;
+    for attempt in 0..SWEEP_ATTEMPTS {
+        match std::fs::rename(from, to) {
+            Ok(()) => return None,
+            Err(err) => {
+                last = Some(err);
+                if attempt + 1 < SWEEP_ATTEMPTS {
+                    std::thread::sleep(sweep_backoff(attempt));
+                }
+            }
+        }
+    }
+    last
+}
+
+/// Delete a tree, retrying while a live writer keeps mutating it.
+///
+/// Returns the last error when the sweep could not finish.
+fn sweep_with_retry(path: &Path) -> Option<std::io::Error> {
+    let mut last = None;
+    for attempt in 0..SWEEP_ATTEMPTS {
+        match std::fs::remove_dir_all(path) {
+            Ok(()) => return None,
+            Err(err) => {
+                last = Some(err);
+                if attempt + 1 < SWEEP_ATTEMPTS {
+                    std::thread::sleep(sweep_backoff(attempt));
+                }
+            }
+        }
+    }
+    last
+}
+
 /// Delete the data tree, live writers and all.
 ///
 /// `std::fs::remove_dir_all` deletes entries while `readdir` streams the same
@@ -90,13 +148,22 @@ pub fn live_sessions(data_dir: &Path) -> Vec<String> {
 /// uninstall abort (the binary still in place, the data tree still in place)
 /// over a tree that could mostly be deleted. So: rename when it works, and
 /// when it does not, sweep the tree where it stands and report what is left.
+///
+/// A leftover is a warning, never a failure. The uninstall has steps left
+/// after this one — the PATH entry, the rc block, the binary — and a user
+/// told exactly which directory to remove by hand is better off than one
+/// whose uninstall died with the tree still in place. What must never happen
+/// is the 2026-11-21 shape: the binary gone and the command that would have
+/// finished the job gone with it.
 fn delete_data_dir(data_dir: &Path) -> Result<()> {
     let trash = trash_path(data_dir);
-    let renamed = std::fs::rename(data_dir, &trash).is_ok();
+    let renamed = rename_with_retry(data_dir, &trash).is_none();
     let sweep = if renamed { trash.as_path() } else { data_dir };
 
-    if let Err(err) = std::fs::remove_dir_all(sweep) {
-        if renamed {
+    let sweep_err = sweep_with_retry(sweep);
+    match &sweep_err {
+        None => println!("Deleted {}", data_dir.display()),
+        Some(err) if renamed => {
             // Moved out of the way and not deleted: the product state is
             // uninstalled, so this is a leftover to report, not a failure.
             println!(
@@ -105,14 +172,15 @@ fn delete_data_dir(data_dir: &Path) -> Result<()> {
                 sweep.display(),
                 rm_hint(sweep)
             );
-        } else {
-            // Not moved and not deleted: the tree is still where it was, so
-            // this one is a real failure — say how to finish by hand and let
-            // the caller stop here (the binary is removed last, so a retry of
-            // `phimint uninstall` is still possible).
-            anyhow::bail!(
-                "failed to delete {}: {err}\n  \
-                 close any running phimint sessions, then remove it yourself: {}",
+        }
+        Some(err) => {
+            // Not moved and not deleted: the tree is still where it was. The
+            // uninstall still finishes — a running session can hold a file
+            // open that no deletion can take, and that is the user's session
+            // to close, not a reason to strand them without the command.
+            println!(
+                "Warning: {} could not be fully deleted: {err}\n  \
+                 close any running phimint sessions, then remove it with: {}",
                 data_dir.display(),
                 rm_hint(data_dir)
             );
@@ -121,18 +189,18 @@ fn delete_data_dir(data_dir: &Path) -> Result<()> {
 
     // A still-running session writes by absolute path and can recreate the
     // tree under the user's feet; the uninstall must say so, not claim
-    // "no leftovers".
-    if data_dir.exists() {
+    // "no leftovers". Only a sweep that really deleted the tree can be
+    // followed by a reappearance — a tree that never went is not "recreated",
+    // it is the leftover the warning above already named.
+    if sweep_err.is_none() && data_dir.exists() {
         println!(
             "Warning: {} was recreated by a still-running session\n  \
              close it and run: {}",
             data_dir.display(),
             rm_hint(data_dir)
         );
-        return Ok(());
     }
 
-    println!("Deleted {}", data_dir.display());
     Ok(())
 }
 

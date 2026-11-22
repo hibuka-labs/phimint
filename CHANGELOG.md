@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **The uninstall finishes on Windows, even under a live session.** A running
+  session holds its log file open, so the atomic rename that moves the data
+  tree out of the way is refused with a sharing violation, and the sweep that
+  follows is refused too. That refusal was treated as a fatal error, so
+  `phimint uninstall` aborted with the binary still in place and the data
+  tree still in place — the same shape as the 2026-11-21 failure it was
+  written to prevent. The rename and the sweep are now retried (a writer
+  that is mid-write loses the race only for a moment), and a leftover is
+  reported with the exact command to remove it by hand instead of aborting
+  the run. The steps that follow — the PATH entry, the rc block, the binary —
+  now happen either way.
+
 ## [0.13.0] - 2026-11-22
 
 ### Added
