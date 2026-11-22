@@ -1,6 +1,6 @@
 [package]
 name = "phimint"
-version = "0.12.2"
+version = "0.13.0"
 edition = "2024"
 description = "phimint — a terminal AI coding agent built on phi-agent. Not just good at chat: it reads the code, changes it, compiles and tests until the job is done."
 license = "MIT OR Apache-2.0"
@@ -31,14 +31,14 @@ code-exec = ["phi-agent/code-exec", "dep:phi-ns", "dep:phi-ns-desktop"]
 # everything else the product needs (llm_trait, create_provider, guard,
 # max_turns_nudge, registry snapshots, fan-in router) — no direct deps on
 # agent-base / agent-works / phi-kernel-tools / llm-unified.
-phi-agent = { version = "0.24.0", features = ["shell", "multi-agent", "skill", "memory", "plugin-wasm"] }
+phi-agent = { version = "0.24.1", features = ["shell", "multi-agent", "skill", "memory", "plugin-wasm"] }
 # Context rotation tools (notes, history, handoff) — the I/O layer.
-phi-kernel-tools = { version = "0.16.0", features = ["context", "shell"] }
+phi-kernel-tools = { version = "0.16.1", features = ["context", "shell"] }
 # The runtime kernel's guard contract types (`ReactLoopGuard`, `GuardCtx`,
 # `GuardDecision`, the engine's notice/provider handles) — named directly by
 # `src/model/lite_pin.rs` to pin the judge to its tier without a framework
 # change. Same minor as the phi family's agent-works/phi-kernel-tools.
-agent-base = { version = "0.16.0" }
+agent-base = { version = "0.16.1" }
 # Chat-style TUI components (lines/transcript/stream/markdown/completion/…),
 # extracted from src/ui/ — the product keeps only the shell (app/render/handlers).
 phi-tui = { version = "0.5.0" }
