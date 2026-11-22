@@ -310,17 +310,25 @@ fn non_empty_arg(args: &Value, key: &str) -> Option<String> {
 
 /// Whether a model-supplied scope names a location outside the workspace.
 ///
-/// `Path::join` lets an absolute scope replace the root outright, and `..`
+/// `Path::join` lets a rooted scope replace the root outright, and `..`
 /// components walk out of it lexically. Both are refused rather than silently
 /// reinterpreted: the scope is a hint about what changed, and a hint pointing
-/// outside the workspace is not ours to read. The absolute branch compares
-/// lexically normalised paths — `Path::starts_with` is component-wise but does
-/// not collapse `..`, so `/w/../../etc` would otherwise pass as "under /w"
-/// (review finding v11/adversarial-native#6).
+/// outside the workspace is not ours to read.
+///
+/// The test is "does `root.join(scope)` still sit under `root`", not "is the
+/// scope absolute" — `Path::is_absolute` is platform-shaped (`/etc` is not
+/// absolute on Windows: it has no drive prefix), but `join` replaces the root
+/// on **every** platform when the scope is rooted. So the rooted scope was
+/// slipping past the guard on Windows: the model asked to verify `/etc`, the
+/// join produced `C:\etc`, and the walk left the workspace. Comparing the
+/// joined path against the root catches it everywhere.
+///
+/// The comparison is component-wise on lexically normalised paths:
+/// `Path::starts_with` does not collapse `..`, so `/w/../../etc` would
+/// otherwise pass as "under /w" (review finding v11/adversarial-native#6).
 fn scope_escapes_workspace(root: &Path, scope: &Path) -> bool {
-    if scope.is_absolute() {
-        return !lexical_normalize(scope).starts_with(lexical_normalize(root));
-    }
+    // A scope that walks above the root lexically (`..` past the root) is
+    // refused outright.
     let mut depth: i32 = 0;
     for comp in scope.components() {
         match comp {
@@ -334,7 +342,12 @@ fn scope_escapes_workspace(root: &Path, scope: &Path) -> bool {
             _ => {}
         }
     }
-    false
+    // The join-and-compare catches the rooted scopes: on every platform a
+    // rooted scope replaces the root in `join`, so the result tells the truth
+    // about where the walk would land.
+    let joined = lexical_normalize(&root.join(scope));
+    let root = lexical_normalize(root);
+    !joined.starts_with(&root)
 }
 
 /// Collapse `.` and `..` components without touching the filesystem (the path

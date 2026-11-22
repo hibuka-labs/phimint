@@ -176,10 +176,22 @@ mod tests {
         ScriptToolEntry::new(name, "description", run).unwrap()
     }
 
+    /// The program path in these fixtures must be absolute **on the platform
+    /// running the test** — the script path law rejects a relative program,
+    /// and `/bin/true` is not absolute on Windows.
+    fn prog() -> String {
+        crate::testutil::abs_program()
+    }
+
+    /// The same path, JSON-escaped, for the raw JSON literals below.
+    fn prog_json() -> String {
+        crate::testutil::abs_program_json()
+    }
+
     #[test]
     fn file_shape_is_object_with_tools_array() {
         let path = std::env::temp_dir().join(format!("tools-{}.json", std::process::id()));
-        let entries = vec![entry("deploy", vec!["/bin/true".into()])];
+        let entries = vec![entry("deploy", vec![prog()])];
         save(&path, &entries).unwrap();
         let raw = std::fs::read_to_string(&path).unwrap();
         assert!(raw.contains("\"tools\""), "file form: {raw}");
@@ -194,7 +206,10 @@ mod tests {
         let path = std::env::temp_dir().join(format!("tools-bare-{}.json", std::process::id()));
         std::fs::write(
             &path,
-            r#"[{"name":"deploy","description":"d","run":["/bin/true"]}]"#,
+            format!(
+                r#"[{{"name":"deploy","description":"d","run":["{}"]}}]"#,
+                prog_json()
+            ),
         )
         .unwrap();
         let report = load(&path);
@@ -216,14 +231,17 @@ mod tests {
     #[test]
     fn bad_entry_and_duplicate_are_skipped_with_notice() {
         let path = std::env::temp_dir().join(format!("tools-skip-{}.json", std::process::id()));
+        let p = prog_json();
         std::fs::write(
             &path,
-            r#"{"tools":[
-                {"name":"deploy","description":"d","run":["/bin/true"]},
-                {"name":"deploy","description":"dup","run":["/bin/true"]},
-                {"name":"relative","description":"bad path","run":["./not-absolute"]},
-                {"name":"ok","description":"d","run":["/bin/true"]}
-            ]}"#,
+            format!(
+                r#"{{"tools":[
+                {{"name":"deploy","description":"d","run":["{p}"]}},
+                {{"name":"deploy","description":"dup","run":["{p}"]}},
+                {{"name":"relative","description":"bad path","run":["./not-absolute"]}},
+                {{"name":"ok","description":"d","run":["{p}"]}}
+            ]}}"#
+            ),
         )
         .unwrap();
         let report = load(&path);
@@ -242,9 +260,9 @@ mod tests {
     #[test]
     fn insert_and_remove_roundtrip() {
         let mut entries = Vec::new();
-        insert(&mut entries, entry("deploy", vec!["/bin/true".into()])).unwrap();
+        insert(&mut entries, entry("deploy", vec![prog()])).unwrap();
         assert!(matches!(
-            insert(&mut entries, entry("deploy", vec!["/bin/true".into()])),
+            insert(&mut entries, entry("deploy", vec![prog()])),
             Err(ToolsFileError::Duplicate { .. })
         ));
         let removed = remove_entry(&mut entries, "deploy").unwrap();

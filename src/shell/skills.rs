@@ -537,10 +537,19 @@ mod tests {
                 contains_rule("~/.phimint/skills/design-canvas/nodes.md"),
                 "the core must point at the on-demand detail with a resolvable path"
             );
+            // The budget is measured in characters, and a CRLF checkout adds
+            // one character per line. The core sat four characters under the
+            // limit — on a Windows runner, where the file lands with CRLF
+            // endings, it was 309 over and the skill tool truncated the tail
+            // (and the test failed). The check is therefore against the
+            // worst case, and the file carries room to spare.
+            const BUDGET: usize = 16_000;
+            let chars = DESIGN_CANVAS_SKILL.chars().count();
+            let crlf = DESIGN_CANVAS_SKILL.matches('\n').count();
             assert!(
-                DESIGN_CANVAS_SKILL.chars().count() < 16_000,
-                "skill body is past the skill tool's truncation budget: {}",
-                DESIGN_CANVAS_SKILL.chars().count()
+                chars + crlf < BUDGET,
+                "skill body is past the skill tool's truncation budget: {chars} (CRLF: {})",
+                chars + crlf
             );
             // The closed vocabulary lives in the detail file — layout, chrome,
             // controls, data — not re-typed into the judgment core.

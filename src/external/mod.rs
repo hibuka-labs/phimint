@@ -144,9 +144,14 @@ mod tests {
             r#"[{"name":"notion","enabled":true,"transport":{"type":"stdio","command":"npx","args":[],"env":{"NOTION_TOKEN":"${ENV:NOTION_TOKEN}"}}}]"#,
         )
         .unwrap();
+        // The script path law wants an absolute program — and `/bin/true` is
+        // not absolute on Windows, so the fixture uses this platform's path.
         std::fs::write(
             tmp.path().join("tools.json"),
-            r#"{"tools":[{"name":"deploy","description":"d","run":["/bin/true"]}]}"#,
+            format!(
+                r#"{{"tools":[{{"name":"deploy","description":"d","run":["{}"]}}]}}"#,
+                crate::testutil::abs_program_json()
+            ),
         )
         .unwrap();
         let surfaces = load_surfaces(tmp.path());
@@ -170,7 +175,7 @@ mod tests {
             name: "deploy".into(),
             description: "d".into(),
             parameters: Default::default(),
-            run: vec!["/bin/true".into()],
+            run: vec![crate::testutil::abs_program()],
             timeout_ms: None,
             env: std::collections::BTreeMap::from([(
                 "TARGET".to_string(),

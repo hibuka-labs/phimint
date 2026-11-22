@@ -708,8 +708,10 @@ async fn agent_add_tool_writes_registers_after_full_facts_allow() {
     // timeout, not just names.
     let asked = confirm.seen.lock().unwrap();
     assert_eq!(asked.len(), 1);
+    // The argv is rendered with `{:?}` (Debug), so a Windows path's backslashes
+    // appear escaped — compare the same way the renderer produced it.
     assert!(
-        asked[0].contains(&real_script().display().to_string()),
+        asked[0].contains(&format!("{:?}", real_script().display().to_string())),
         "{}",
         asked[0]
     );

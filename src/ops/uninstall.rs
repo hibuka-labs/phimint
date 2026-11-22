@@ -82,15 +82,30 @@ pub fn live_sessions(data_dir: &Path) -> Vec<String> {
 /// the way first is one atomic step no writer can race: the product state is
 /// uninstalled even when the follow-up sweep gives up, and whatever survives
 /// is reported instead of aborting the run.
+///
+/// The rename is an optimisation, not the contract. On Windows a running
+/// session holds its log file open, and renaming a directory that holds an
+/// open file fails with a sharing violation — so the rename there is
+/// routinely refused, and treating that refusal as fatal made the whole
+/// uninstall abort (the binary still in place, the data tree still in place)
+/// over a tree that could mostly be deleted. So: rename when it works, and
+/// when it does not, sweep the tree where it stands and report what is left.
 fn delete_data_dir(data_dir: &Path) -> Result<()> {
     let trash = trash_path(data_dir);
-    let sweep = match std::fs::rename(data_dir, &trash) {
-        Ok(()) => trash.as_path(),
-        Err(_) => data_dir,
-    };
+    let renamed = std::fs::rename(data_dir, &trash).is_ok();
+    let sweep = if renamed { trash.as_path() } else { data_dir };
 
     if let Err(err) = std::fs::remove_dir_all(sweep) {
-        if sweep == data_dir {
+        if renamed {
+            // Moved out of the way and not deleted: the product state is
+            // uninstalled, so this is a leftover to report, not a failure.
+            println!(
+                "Warning: some files could not be deleted and were left in {}\n  \
+                 remove them with: {}",
+                sweep.display(),
+                rm_hint(sweep)
+            );
+        } else {
             // Not moved and not deleted: the tree is still where it was, so
             // this one is a real failure — say how to finish by hand and let
             // the caller stop here (the binary is removed last, so a retry of
@@ -102,12 +117,6 @@ fn delete_data_dir(data_dir: &Path) -> Result<()> {
                 rm_hint(data_dir)
             );
         }
-        println!(
-            "Warning: some files could not be deleted and were left in {}\n  \
-             remove them with: {}",
-            sweep.display(),
-            rm_hint(sweep)
-        );
     }
 
     // A still-running session writes by absolute path and can recreate the

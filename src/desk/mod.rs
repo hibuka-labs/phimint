@@ -31,12 +31,18 @@ use serde_json::Value;
 /// name for PATH lookup. Same variable the p3 real-device suite reads.
 const STUB_ENV: &str = "PHI_NS_CUA_STUB_BIN";
 /// The install slot every phimint companion binary uses (`~/.local/bin`).
-const STUB_SLOT: &str = ".local/bin/phi-ns-cua-stub";
+///
+/// Split into components, not one string with a `/`: `Path::join` keeps the
+/// separator it is given, so `home.join(".local/bin/phi-ns-cua-stub")` yields
+/// `C:\Users\me\.local/bin/phi-ns-cua-stub` on Windows — a path the OS still
+/// resolves, but one that no longer matches the spelling the rest of the
+/// codebase (and the tests) use.
+const STUB_SLOT: &[&str] = &[".local", "bin", "phi-ns-cua-stub"];
 
 /// Explicit override for the cua driver the stub wraps. Same variable the
 /// p3 real-device suite reads.
 const DRIVER_ENV: &str = "CUA_DRIVER_BIN";
-const DRIVER_SLOT: &str = ".local/bin/cua-driver-local";
+const DRIVER_SLOT: &[&str] = &[".local", "bin", "cua-driver-local"];
 /// PATH-name fallback when neither override nor slot is present — the spawn
 /// then fails with the stub's own "required executable not found", which is
 /// the honest place to say it.
@@ -67,7 +73,7 @@ fn resolve_stub(env: Option<OsString>, home: Option<&Path>) -> Option<PathBuf> {
     if let Some(override_value) = env {
         return Some(PathBuf::from(override_value));
     }
-    let slot = home?.join(STUB_SLOT);
+    let slot = home?.join(STUB_SLOT.join(std::path::MAIN_SEPARATOR_STR));
     slot.is_file().then_some(slot)
 }
 
@@ -77,7 +83,7 @@ fn resolve_driver(env: Option<OsString>, home: Option<&Path>) -> String {
     if let Some(override_value) = env {
         return override_value.to_string_lossy().into_owned();
     }
-    match home.map(|home| home.join(DRIVER_SLOT)) {
+    match home.map(|home| home.join(DRIVER_SLOT.join(std::path::MAIN_SEPARATOR_STR))) {
         Some(slot) if slot.is_file() => slot.to_string_lossy().into_owned(),
         _ => DRIVER_FALLBACK.to_string(),
     }
@@ -233,10 +239,20 @@ mod tests {
         );
     }
 
+    /// The install slot directory, spelled in the platform's own components.
+    ///
+    /// `Path::join(".local/bin")` gives `home/.local/bin` on every platform,
+    /// while the code under test joins the components with the platform
+    /// separator — so on Windows the two point at different directories and
+    /// the lookup misses. The fixture must be built the same way.
+    fn slot_dir(home: &std::path::Path) -> std::path::PathBuf {
+        home.join(".local").join("bin")
+    }
+
     #[test]
     fn stub_resolution_falls_back_to_the_install_slot_only_when_present() {
         let home = tempfile::tempdir().unwrap();
-        let slot = home.path().join(".local/bin");
+        let slot = slot_dir(home.path());
         std::fs::create_dir_all(&slot).unwrap();
         let stub = slot.join("phi-ns-cua-stub");
         std::fs::write(&stub, b"#!/bin/sh\n").unwrap();
@@ -258,7 +274,7 @@ mod tests {
     #[test]
     fn driver_resolution_falls_back_slot_then_path_name() {
         let home = tempfile::tempdir().unwrap();
-        let slot = home.path().join(".local/bin");
+        let slot = slot_dir(home.path());
         std::fs::create_dir_all(&slot).unwrap();
         let driver = slot.join("cua-driver-local");
         std::fs::write(&driver, b"#!/bin/sh\n").unwrap();

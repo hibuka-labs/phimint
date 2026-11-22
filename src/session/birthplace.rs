@@ -118,11 +118,12 @@ fn repo_hits(session_dir: &Path, base_dir: &Path, home: &Path) -> Vec<(PathBuf, 
             continue;
         };
         for token in path_tokens(&content) {
-            let root = match resolved.get(token) {
+            let token = unescape_path(token);
+            let root = match resolved.get(&token) {
                 Some(root) => root.clone(),
                 None => {
-                    let root = repo_root_of(Path::new(token), home);
-                    resolved.insert(token.to_string(), root.clone());
+                    let root = repo_root_of(Path::new(&token), home);
+                    resolved.insert(token, root.clone());
                     root
                 }
             };
@@ -187,13 +188,45 @@ fn evidence_files(session_dir: &Path, base_dir: &Path) -> Vec<PathBuf> {
 /// format. A path ends at the first character no real path uses, which is
 /// what keeps a path stuck against CJK text (`…/codex。然后`) from swallowing
 /// the sentence after it.
+///
+/// The character set is platform-independent on purpose: a transcript written
+/// on Windows names Windows paths, and that transcript can be read on any
+/// machine. So the separators (`\` and `:`) are always path characters, and a
+/// path is recognised by where it *starts* — at a root.
 fn path_tokens(text: &str) -> impl Iterator<Item = &str> {
     text.split(|c: char| !is_path_char(c))
-        .filter(|t| t.starts_with('/') && t.len() <= MAX_TOKEN_LEN)
+        .filter(|t| t.len() <= MAX_TOKEN_LEN && starts_a_path(t))
+}
+
+/// Whether a token begins at a path root.
+///
+/// `/work/repo` starts at the Unix root; `C:\work\repo` starts at a Windows
+/// drive. Both are absolute, and both name a place — which is the only thing
+/// this filter asks.
+fn starts_a_path(token: &str) -> bool {
+    token.starts_with('/') || has_drive_prefix(token)
+}
+
+/// Whether the token begins with a Windows drive prefix (`C:` or `C:\`).
+fn has_drive_prefix(token: &str) -> bool {
+    let bytes = token.as_bytes();
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'\\' || bytes[2] == b'/')
+}
+
+/// The path a token names, with the JSON escaping undone.
+///
+/// Transcripts are JSON, so a Windows path is stored with its separators
+/// doubled (`C:\\Users\\...`). The doubling is an artefact of the encoding,
+/// not of the path, and the filesystem wants the single-separator form.
+fn unescape_path(token: &str) -> String {
+    token.replace("\\\\", "\\")
 }
 
 fn is_path_char(c: char) -> bool {
-    c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-' | '~' | '+' | '@')
+    c.is_ascii_alphanumeric() || matches!(c, '/' | '\\' | ':' | '.' | '_' | '-' | '~' | '+' | '@')
 }
 
 /// The repository a path lives in: the nearest ancestor with a `.git`.

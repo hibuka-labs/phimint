@@ -112,10 +112,18 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # ripgrep/repomap tests shell out to `rg` (preinstalled on mac/win runners)
-      - name: Install ripgrep
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y ripgrep
+      # No ripgrep install step. code-intel 0.1.3 walks and searches
+      # **in-process** (`ignore` + `regex::bytes`), so the repomap/ripgrep
+      # tests need no `rg` binary. They used to shell out to `rg`, and this
+      # file carried a note claiming macOS and Windows runners ship it —
+      # they do not. The matrix therefore looked green on Linux and red on
+      # the other two ("failed to run `rg`: program not found"). Installing
+      # ripgrep on every runner papered over a dependency the product no
+      # longer has; the dependency is gone instead.
+      #
+      # If a test ever needs an external binary again, it must say so in the
+      # test itself and the runner must provide it — a missing tool must
+      # fail loudly, not be papered over by a workflow step.
 
       - name: Build
         run: cargo build --verbose
@@ -153,9 +161,8 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
-      # ripgrep/repomap tests shell out to `rg`
-      - name: Install ripgrep
-        run: sudo apt-get update && sudo apt-get install -y ripgrep
+      # No ripgrep install step: code-intel 0.1.3 searches in-process, so the
+      # library tests need no external binary (see the test job for why).
 
       # Line-coverage gate on the binary crate. Threshold set with headroom
       # for CI variance; ratchet upward as coverage improves.

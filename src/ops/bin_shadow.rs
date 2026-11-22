@@ -103,16 +103,19 @@ mod tests {
         );
     }
 
+    /// The de-duplication is by canonical path, so a symlink to the same binary
+    /// is one candidate, not a shadow. Unix-only: creating a symlink on
+    /// Windows needs a privilege the CI runner does not have, and the
+    /// fallback (a plain copy) is a *different* file — two distinct binaries
+    /// in the PATH, which is exactly what the shadow notice is for.
+    #[cfg(unix)]
     #[test]
     fn symlinked_duplicates_are_not_shadows() {
         let dir = tempfile::tempdir().unwrap();
         let real = write_exe(dir.path());
         let link_dir = dir.path().join("link-dir");
         std::fs::create_dir(&link_dir).unwrap();
-        #[cfg(unix)]
         std::os::unix::fs::symlink(&real, link_dir.join(exe_name())).unwrap();
-        #[cfg(not(unix))]
-        std::fs::copy(&real, link_dir.join(exe_name())).unwrap();
 
         let path_var = std::env::join_paths([dir.path().to_path_buf(), link_dir.clone()]).unwrap();
         assert_eq!(candidates_in(&path_var).len(), 1, "symlink counted twice");

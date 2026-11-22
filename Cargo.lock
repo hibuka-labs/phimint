@@ -600,11 +600,13 @@ dependencies = [
 
 [[package]]
 name = "code-intel"
-version = "0.1.2"
+version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "29b12b588e398cbad250f6eee297c73973473a71f0eeff4d9f4de515d56cdd00"
+checksum = "f38590ecbfd08d57352c4d8abbd4d7e83ad44d58039393123a9450f15c1c01f1"
 dependencies = [
+ "ignore",
  "lsp-types",
+ "regex",
  "serde_json",
  "tracing",
  "tree-sitter",

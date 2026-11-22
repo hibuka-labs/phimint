@@ -1,0 +1,6 @@
+# The design-canvas skill body is size-capped in characters, and the cap is
+# measured on the file as it lands on disk. A CRLF checkout adds one
+# character per line — 313 characters here — which is enough to push the
+# core past the skill tool's 16 000-character budget and cost the model its
+# tail. The file is a skill body, not a shell script: LF for it, and only it.
+src/assets/design-canvas/SKILL.md text eol=lf

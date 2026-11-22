@@ -22,20 +22,19 @@ file holds the judgment: where each question goes and what the law is.
 ## When to open the canvas (routing)
 
 Decide per question, not per session. A question *about* UI is not
-automatically a visual question: "what kind of wizard flow do you want?" is a
-text question; "which of these two wizard layouts feels right?" is visual.
+automatically a visual question: "what kind of wizard flow do you want?" is
+text; "which of these two wizard layouts feels right?" is visual.
 
 - **Pure text decisions** — "should we do X", "which first", "which tech".
   When the answer is one of 2-4 candidates you can name, ask with `ask_user`
   and let the terminal picker take it. Do NOT open the canvas for these. An
   open-ended question (a goal, a path, a number) is not a pick — ask it in
-  your reply text.
+  your reply.
 - **Appearance questions** — "what should it look like", layout / styling /
   side-by-side comparison — open the canvas and show the candidates.
 - **When unsure, open the canvas.** The cost is asymmetric: opening by
   mistake costs one screen of HTML and a glance; staying in text by mistake
-  costs two or three rounds of trying to describe a picture in words — each
-  round a full screen — plus the user's time.
+  costs rounds of describing a picture in words, plus the user's time.
   Not opening is the more expensive mistake.
 - The user can switch medium at any moment ("用图给我看" / "就文字说"). Honor
   the switch and continue from what you already have; never make them
@@ -54,11 +53,11 @@ tool result in this turn — nothing to wait for.
 - `question` is the decision in one line; `options` are 2-4 candidates
   (`id`, `label`, optional one-line `note`), in the user's language.
 - The result is `picked: <label> (id: <id>)`, or `skipped` on Esc. A skip is
-  an answer too — carry on with what you have, never re-ask it.
+  an answer too — carry on, never re-ask it.
 - The answer is permanent for the whole design task. A checklist step saying
   「确认概念选择」 is already satisfied by the answer in your transcript — tick
-  it off from there. Never ask the same question again: a re-ask is losing
-  their answer, not being thorough.
+  it off. Never ask the same question again: a re-ask is losing their answer,
+  not being thorough.
 - One live question at a time across both surfaces: if a canvas screen is up,
   its question is the live one.
 
@@ -71,19 +70,19 @@ have not named: name the candidates first, then the picker.
 - One screen = one decision point. Push when you have concrete candidates the
   user can judge side by side.
 - Don't push for progress, status, or to re-show what they just picked — the
-  terminal transcript already has that.
+  transcript already has that.
 - Never push a question that is already on the screen or that they just
   answered — not as a variant, not "with more context". `canvas_push`
-  replaces the screen, wiping the pick they just made. Extra detail and
-  refinements go in terminal text.
+  replaces the screen, wiping the pick they just made. Extra detail goes in
+  terminal text.
 - One live question at a time. When a pick settles the screen's question,
   deliver the outcome (a text summary, or a display-only screen of the chosen
   design) before asking anything else — a chain of question screens reads as
   an interrogation. A "continue working" nudge means add substance to what
-  you owe; never re-ask a question that was already answered.
+  you owe; never re-ask an answered question.
 - After each turn the host replaces the screen with a
-  "Continue in the terminal…" waiting screen (summary of decided / pending).
-  You never craft that screen; your next `canvas_push` simply overwrites it.
+  "Continue in the terminal…" waiting screen. You never craft that screen;
+  your next `canvas_push` overwrites it.
 - When the design question is settled, call `canvas_close`. Open tabs then
   show a farewell screen and the user can close the tab.
 
@@ -96,7 +95,7 @@ have not named: name the candidates first, then the picker.
 - `subtitle` — optional one-line context under it.
 - `options` — 2–4 candidates: stable ASCII `id` (`a`, `b`, `c`), short
   `label`, optional one-line `note` naming what differs. Empty `options` = a
-  display-only screen (no pick expected).
+  display-only screen.
 - `multiselect: true` when several independent picks make sense (adds
   confirm / skip). Default is single-pick.
 
@@ -122,10 +121,10 @@ caption is rendered from its `options[].label`, and the options panel from
 detail — show that detail. The vocabulary saves them money when it can hold
 their description; it is not allowed to quietly shrink it. 「按钮做成圆角胶囊」
 is not `button`; it is `body_html` with a pill button. Sending a square button
-and calling it close is worse than sending nothing — the user now has to
-correct a picture instead of describing a wish. If you are not sure a
-description fits the kinds, read the tables in `nodes.md` again; if it still
-does not fit, escape — never shrink the request to make it fit.
+and calling it close is worse than nothing — the user then corrects a picture
+instead of describing a wish. If a description may not fit the kinds, read
+`nodes.md` again; if it still does not fit, escape — never shrink the request
+to make it fit.
 
 ## Fidelity follows the question
 
@@ -138,21 +137,21 @@ from how much effort you want to spend:
 | color, brand, which palette | `color` | the real theme colors as flat blocks |
 | material, finish, "more glass" | `texture` | colors + frost / elevation / edge / glow |
 
-The same `mock` renders differently at each level. Asking "which palette?" at
-`wireframe` makes the user judge blind; asking "which layout?" at `texture`
-spends tokens on polish that is not under discussion.
+The same `mock` renders differently at each level: "which palette?" at
+`wireframe` makes the user judge blind, "which layout?" at `texture` spends
+tokens on polish that is not under discussion.
 
 A refinement round edits fields. 「玻璃更厚、阴影更明显、边界更亮」 is
-`frost`+1, `elevation`+1, `edge`+1 — every other token and every node stays
-exactly as it was. Resending a redesigned screen is how a one-line change
-becomes a full-page rewrite; don't.
+`frost`+1, `elevation`+1, `edge`+1 — every other token and node stays as it
+was. Resending a redesigned screen turns a one-line change into a full-page
+rewrite; don't.
 
 ## When to escape to `body_html`
 
-The vocabulary is deliberately small, because a small vocabulary is what keeps
-a screen cheap to send and a revision a field edit. It holds the shapes design
-questions actually take — page skeletons, device and window chrome,
-high-frequency controls, dense data, dashboard widgets.
+The vocabulary is deliberately small — that keeps a screen cheap to send and
+a revision a field edit. It holds the shapes design questions take: page
+skeletons, device and window chrome, high-frequency controls, dense data,
+dashboard widgets.
 
 **If a kind holds the shape the user described, `screen` is not optional.**
 Escaping a settings page, a dashboard, or a dialog flow to hand-written HTML
@@ -161,8 +160,8 @@ you decide. Escape only when nothing there holds the described shape:
 
 - a silhouette the kinds have no shape for — a pill button, a slider, a date
   picker, a breadcrumb, a floating action button
-- a layout the vocabulary has no shape for — a timeline, a kanban board, a
-  flow diagram with connectors, a masonry grid
+- a layout the vocabulary cannot hold — a timeline, a kanban board, a flow
+  diagram with connectors, a masonry grid
 - a device or window the mocks cannot wear — a desktop window with a menu
   bar, a tablet split view, a watch face
 - any detail the user named and the tokens cannot place — corner radius, type
@@ -185,31 +184,29 @@ It is separate from the user's canvas tab and needs no consent.
 `canvas_open` returns the canvas URL. Open it and look:
 
 1. `browser_navigate` to that URL (loopback, no approval).
-2. `browser_screenshot` — the image is exactly what the user is seeing,
-   options panel and all.
+2. `browser_screenshot` — the image is exactly what the user sees, options
+   panel and all.
 
 **A `body_html` escape: always look.** You wrote that markup by hand and it
-can overflow or collide — screenshot before you call the screen done.
+can overflow or collide — screenshot before calling the screen done.
 
 **A `screen`: on demand, not after every push.** The host renders it
 deterministically from your tokens and you know its shape before you send it.
-Reach for the browser when the outcome is open —
-- copy long enough to wrap, or CJK labels in narrow columns
-- candidates that must line up, or a layout holding a fixed proportion
-- anything you would not bet on blind
+Reach for the browser when the outcome is open — copy long enough to wrap,
+candidates that must line up, a layout holding a fixed proportion, anything
+you would not bet on blind.
 
 Then fix it yourself: edit the fields and push again. "I think the button
 wraps" is work you have not done — look, then fix, then show. The budget is
 one look, one fix, one confirming look: a third round of measuring pixels is
-you stalling, and every re-push re-asks the question the user may have just
+you stalling, and every re-push re-asks a question the user may have just
 answered. Only bring the user in when a decision is left, not when a
 rendering is left.
 
-Five tools change the page (`browser_click`, `browser_input_fill`,
-`browser_select`, `browser_press_key`, `browser_evaluate`) and ask before
-they run; `browser_evaluate` asks every time. Opening a URL outside the
-machine asks too. Everything else — screenshot, snapshot, tabs, scroll — is
-yours to use freely.
+Tools that change the page (`browser_click`, `browser_input_fill`,
+`browser_select`, `browser_press_key`, `browser_evaluate`) ask before they
+run; `browser_evaluate` asks every time, and so does opening a URL outside
+the machine. Everything else is yours to use freely.
 
 ## Reference material
 
@@ -225,10 +222,10 @@ you have not actually seen — ask where it lives rather than inventing one.
 
 Once you have looked, put the image beside what you propose: `canvas_push`
 takes `reference: { src, caption }` and the host renders it next to the
-candidates, so the user compares against the real thing instead of your
-memory of it. `src` is a path on disk or an http(s)/`data:` URI — the host
-copies a file it can read and serves it from the canvas. For a page you just
-opened, screenshot it to a scratch path and name that:
+candidates, so the user compares against the real thing, not your memory of
+it. `src` is a path on disk or an http(s)/`data:` URI — the host copies a
+file it can read and serves it from the canvas. For a page you just opened,
+screenshot it to a scratch path and name that:
 
     browser_screenshot { "save_to": "/tmp/ref-01.png" }   # still shows you the image
     canvas_push { …, "reference": { "src": "/tmp/ref-01.png", "caption": "正泰首页" } }
@@ -239,22 +236,21 @@ have two references, pick the one the user actually named.
 
 ## Versions
 
-Every screen you push becomes a version. The canvas keeps the history itself:
-a rail of past screens on any screen that is not the newest design, and 「对比」
-next to it. Nothing here is yours to build.
+Every screen you push becomes a version. The canvas keeps the history: a rail
+of past screens on any screen that is not the newest design, and 「对比」 next
+to it. Nothing here is yours to build.
 
 Put the version in the title when you are iterating (「v2 · 深色玻璃」), so the
 rail reads like a history. When the user goes back to an older one — 「回看
 v1」, 「并排看下」 — they are looking at the canvas, not asking you to push it
 again: answer from what is on screen. Name the URL (`…/screens/N`) — the rail
-is not on every page. `y` and Ctrl+B open the newest design screen.
+is not on every page. `y` and Ctrl+B open the newest screen.
 
 ## Design decision record
 
 When the discussion lands — 「就这样」, 「按这个做」, or they move on to
 building it — leave the record behind as `notes/design-decisions.md` (or
-wherever they keep specs). The next step reads it as input, so hold the
-shape:
+wherever they keep specs). The next step reads it as input, so hold the shape:
 
     # Design decisions
 
@@ -286,10 +282,10 @@ When it lands on "make it real", the settled mock is the contract for the code.
 
 - **Default stack:** React + Vite + Ant Design — unless the user names another
   (their existing `package.json` is a name). Swapping the library swaps the
-  component mapping, not this discipline. Name the stack in the decision record
-  so a later session can pick it up cold. If `npm install` stalls against the
-  default registry, retry against a fast mirror (e.g.
-  `--registry=https://registry.npmmirror.com`) — a stall is network, not a
+  component mapping, not this discipline. Name the stack in the record so a
+  later session can pick it up cold. If `npm install` stalls against the
+  default registry, retry against a fast mirror
+  (`--registry=https://registry.npmmirror.com`) — a stall is network, not a
   broken project.
 - **Implementation is a mechanical translation of the mock.** Keep the chosen
   forms exactly — chart type, plain text where the mock shows plain text, no
@@ -300,7 +296,7 @@ When it lands on "make it real", the settled mock is the contract for the code.
 - **Tokens land on every visual surface.** Theme tokens go into the app theme
   (antd `ConfigProvider`) and into chart colors (e.g. `@ant-design/plots`
   `scale.color.range`). A surface painting library-default colors over the
-  chosen palette is a bug — `browser_screenshot` before calling the page done.
+  chosen palette is a bug — screenshot before calling the page done.
 
 ## While the canvas is open
 

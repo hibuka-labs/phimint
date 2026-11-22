@@ -20,6 +20,10 @@ pub mod tools;
 pub mod update;
 pub mod verify_ledger;
 
+/// Shared test helpers (path shapes that hold on every platform).
+#[cfg(test)]
+pub mod testutil;
+
 // The desktop capability pack (desk.*) on the code-exec engine — compiled out
 // with the engine under `--no-default-features`. It carries the device consent
 // posture (posture B) and the bridge to the approval popup: no engine, no
