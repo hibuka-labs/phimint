@@ -7,27 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-- **The confirm box shows the path that actually runs.** The `add_tool`
-  confirmation rendered the argv with Rust's debug formatting, so a Windows
-  path came out with every backslash doubled — a human read
-  `C:\\Users\\me\\tool.exe`, which is not the path the tool would run. The
-  argv is now listed one element per line, verbatim. The confirmation exists
-  to show the full picture; a picture that misstates the path is worse than
-  no picture.
-- **The uninstall finishes on Windows, even under a live session.** A running
-  session holds its log file open, so the atomic rename that moves the data
-  tree out of the way is refused with a sharing violation, and the sweep that
-  follows is refused too. That refusal was treated as a fatal error, so
-  `phimint uninstall` aborted with the binary still in place and the data
-  tree still in place — the same shape as the 2026-11-21 failure it was
-  written to prevent. The rename and the sweep are now retried (a writer
-  that is mid-write loses the race only for a moment), and a leftover is
-  reported with the exact command to remove it by hand instead of aborting
-  the run. The steps that follow — the PATH entry, the rc block, the binary —
-  now happen either way.
-
-## [0.13.0] - 2026-11-22
+## [0.13.0] - 2026-11-23
 
 ### Added
 - **The supported-platform floors are stated, and kept.** README (English
@@ -44,6 +24,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of Linux alone.
 
 ### Fixed
+- **The confirm box shows the path that actually runs.** The `add_tool`
+  confirmation rendered the argv with Rust's debug formatting, so a Windows
+  path came out with every backslash doubled — a human read
+  `C:\\Users\\me\\tool.exe`, which is not the path the tool would run. The
+  argv is now listed one element per line, verbatim. The confirmation exists
+  to show the full picture; a picture that misstates the path is worse than
+  no picture.
+
+- **The uninstall finishes on Windows, even under a live session.** A running
+  session holds its log file open, so the atomic rename that moves the data
+  tree out of the way is refused with a sharing violation, and the sweep that
+  follows is refused too. That refusal was treated as a fatal error, so
+  `phimint uninstall` aborted with the binary still in place and the data
+  tree still in place — the same shape as the 2026-11-21 failure it was
+  written to prevent. The rename and the sweep are now retried (a writer
+  that is mid-write loses the race only for a moment), and a leftover is
+  reported with the exact command to remove it by hand instead of aborting
+  the run. The steps that follow — the PATH entry, the rc block, the binary —
+  now happen either way.
+
 - **The model-route audit directory lands where it belongs on Windows.**
   The audit path was resolved from `HOME` and then `USERPROFILE` as two
   separate lookups, and when neither was set it became an empty path — the
