@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **The confirm box shows the path that actually runs.** The `add_tool`
+  confirmation rendered the argv with Rust's debug formatting, so a Windows
+  path came out with every backslash doubled — a human read
+  `C:\\Users\\me\\tool.exe`, which is not the path the tool would run. The
+  argv is now listed one element per line, verbatim. The confirmation exists
+  to show the full picture; a picture that misstates the path is worse than
+  no picture.
 - **The uninstall finishes on Windows, even under a live session.** A running
   session holds its log file open, so the atomic rename that moves the data
   tree out of the way is refused with a sharing violation, and the sweep that

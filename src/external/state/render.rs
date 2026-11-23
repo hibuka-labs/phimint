@@ -79,11 +79,21 @@ pub(super) fn render_capability(cap: &ResolvedCapability) -> String {
 
 /// Full-picture confirmation copy for an agent-written tool entry (used by
 /// the `add_tool` tool).
+///
+/// The argv is rendered **one element per line, verbatim** — never with
+/// `{:?}`. Debug escapes a Windows path's backslashes (`C:\\Users\\…`), so a
+/// human would read a path that is not the one that runs, and the copy would
+/// misstate the very fact the confirmation exists to show. `run` elements are
+/// executed directly (never through a shell), so the honest rendering is the
+/// raw text, one element per line.
 pub fn render_tool_entry_review(entry: &ScriptToolEntry) -> String {
     let mut out = format!(
-        "add script tool `{}`\nconfirm or abort with the keys below\n\n  description: {}\n  argv: {:?}\n",
-        entry.name, entry.description, entry.run
+        "add script tool `{}`\nconfirm or abort with the keys below\n\n  description: {}\n  argv:\n",
+        entry.name, entry.description
     );
+    for arg in &entry.run {
+        out.push_str(&format!("    {arg}\n"));
+    }
     let timeout = entry.timeout_ms.map(|ms| ms / 1_000).unwrap_or(60);
     out.push_str(&format!("  timeout: {timeout}s\n"));
     if !entry.env.is_empty() {
