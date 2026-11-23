@@ -22,6 +22,14 @@ jobs:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Cache even when the build fails. The default (`false`) means a
+          # failing job saves nothing, so the next run starts cold: the
+          # Windows test job rebuilt the whole dependency tree from scratch
+          # every round (8 min vs 1 min elsewhere) and never got faster,
+          # because the round before it had failed and saved nothing. Saving
+          # on failure breaks that loop — the fix round starts warm.
+          cache-on-failure: true
 
       - name: Format check
         run: cargo fmt --all --check
@@ -51,6 +59,8 @@ jobs:
           targets: x86_64-pc-windows-msvc
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
       - name: Compile for windows
         run: cargo check --all-targets --target x86_64-pc-windows-msvc
@@ -100,7 +110,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # `windows-2022`, not `windows-latest`: the release workflow builds the
+        # shipped windows-x86_64 binary on windows-2022, so that is the
+        # platform worth testing. `windows-latest` had already moved to
+        # Windows Server 2025 — a different image from the one that builds the
+        # release, and a different one from the `check (windows)` job
+        # (windows-2022). Testing on the image that ships the binary is the
+        # point of the matrix.
+        os: [ubuntu-latest, macos-latest, windows-2022]
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -111,6 +128,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
       # No ripgrep install step. code-intel 0.1.3 walks and searches
       # **in-process** (`ignore` + `regex::bytes`), so the repomap/ripgrep
@@ -157,6 +176,8 @@ jobs:
           components: llvm-tools-preview
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
