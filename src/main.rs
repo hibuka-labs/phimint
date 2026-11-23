@@ -568,6 +568,10 @@ async fn run() -> Result<()> {
         // context-rotation store — this file is a sibling, not a tenant.
         // (Written before `data_dir` because the field moves `base_dir`.)
         input_history: Some(base_dir.join("input-history.jsonl")),
+        // FinalShell (macOS) translates one wheel gesture into wheel events
+        // PLUS synthesized bare ↑/↓ — the arrow half flips input history
+        // while the user scrolls. Drop the companions; real arrows pass.
+        scroll_arrow_guard: true,
         data_dir: base_dir,
         // Frame-log instrument trio on, phimint's file names (T11 seam;
         // `None` would turn the whole trio off).
