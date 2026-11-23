@@ -1,0 +1,26 @@
+{
+    "version": "0.13.0",
+    "description": "A terminal AI coding agent built on phi-agent. Not just good at chat: it reads the code, changes it, compiles and tests until the job is done.",
+    "homepage": "https://github.com/hibuka-labs/phimint",
+    "license": "MIT",
+    "notes": [
+        "phimint needs one API key in ~/.phimint/config.json — run `phimint` once and it walks you through it.",
+        "This bucket serves the Windows build from the Gitee mirror (same bits as the GitHub release); phimint also ships on Homebrew, npm and crates.io."
+    ],
+    "url": "https://gitee.com/chenkangzeng_admin/phimint/releases/download/v0.13.0/phimint-0.13.0-windows-x86_64.zip",
+    "hash": "39f5745aabfb5a0a819ce0ba2d61e999e90e14678f6a2ef93215e64365e978e6",
+    "bin": "phimint.exe",
+    "checkver": {
+        "url": "https://gitee.com/api/v5/repos/chenkangzeng_admin/phimint/releases/latest",
+        "jsonpath": "$.tag_name",
+        "regex": "v?([\\d.]+)"
+    },
+    "autoupdate": {
+        "url": "https://gitee.com/chenkangzeng_admin/phimint/releases/download/v$version/phimint-$version-windows-x86_64.zip",
+        "hash": {
+            "mode": "extract",
+            "url": "https://gitee.com/chenkangzeng_admin/phimint/releases/download/v$version/sha256sums.txt",
+            "regex": "(?m)^([a-fA-F0-9]{64})\\s+phimint-$version-windows-x86_64\\.zip$"
+        }
+    }
+}

@@ -69,8 +69,21 @@ npm install -g phimint                   # 也支持 pnpm add -g / yarn global a
 cargo install phimint                    # 从 crates.io
 ```
 
+Windows 上还可以用 [winget](https://learn.microsoft.com/windows/package-manager/) 和
+[Scoop](https://scoop.sh)：
+
+```powershell
+winget install hibuka-labs.phimint        # Windows 包管理器
+```
+
+```powershell
+scoop bucket add hibuka-labs https://github.com/hibuka-labs/scoop-bucket
+scoop install phimint                    # Scoop
+```
+
 升级：一键脚本安装的用 `phimint update`；其余按安装方式选
-`brew upgrade phimint` / `npm install -g phimint@latest` / `cargo install phimint --force`。
+`brew upgrade phimint` / `npm install -g phimint@latest` / `cargo install phimint --force` /
+`winget upgrade hibuka-labs.phimint` / `scoop update phimint`。
 国内下载走 [Gitee Releases](https://gitee.com/chenkangzeng_admin/phimint/releases)，
 更新检查器会自动兜底到 Gitee 镜像。
 
@@ -195,7 +208,7 @@ phimint [OPTIONS] [COMMAND]
 
 Commands:
   update             升级到最新版本（一键脚本安装的自替换二进制；
-                     brew/npm/cargo 安装的给出对应升级命令）。
+                     brew/npm/cargo/winget/scoop 安装的给出对应升级命令）。
                      `phimint update --check` 仅检查不升级。
 
   uninstall          卸载 phimint 并清掉它留下的数据。二进制交给当初

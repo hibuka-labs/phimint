@@ -69,8 +69,21 @@ npm install -g phimint                   # also: pnpm add -g phimint / yarn glob
 cargo install phimint                    # from crates.io
 ```
 
+On Windows, [winget](https://learn.microsoft.com/windows/package-manager/) and
+[Scoop](https://scoop.sh) are available:
+
+```powershell
+winget install hibuka-labs.phimint        # Windows Package Manager
+```
+
+```powershell
+scoop bucket add hibuka-labs https://github.com/hibuka-labs/scoop-bucket
+scoop install phimint                    # Scoop
+```
+
 Upgrade: `phimint update` for one-liner installs, or `brew upgrade phimint` /
-`npm install -g phimint@latest` / `cargo install phimint --force` — matching how
+`npm install -g phimint@latest` / `cargo install phimint --force` /
+`winget upgrade hibuka-labs.phimint` / `scoop update phimint` — matching how
 you installed. Mainland China users can download from
 [Gitee Releases](https://gitee.com/chenkangzeng_admin/phimint/releases);
 the updater falls back to the Gitee mirror automatically.
@@ -208,8 +221,9 @@ phimint [OPTIONS] [COMMAND]
 
 Commands:
   update             upgrade to the latest release (self-replaces standalone
-                     installs; brew/npm/cargo installs get the matching upgrade
-                     command instead). `phimint update --check` reports only.
+                     installs; brew/npm/cargo/winget/scoop installs get the
+                     matching upgrade command instead). `phimint update --check`
+                     reports only.
 
   uninstall          remove phimint and the data it left behind. The binary goes
                      back to whichever channel installed it; then ~/.phimint/

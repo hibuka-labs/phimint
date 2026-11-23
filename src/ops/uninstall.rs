@@ -431,6 +431,8 @@ impl Plan {
             InstallSource::Brew => "Homebrew",
             InstallSource::Npm => "npm",
             InstallSource::Cargo => "cargo",
+            InstallSource::Winget => "winget",
+            InstallSource::Scoop => "scoop",
             InstallSource::Standalone => "the standalone installer",
         };
         out.push_str(&format!(

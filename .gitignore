@@ -20,6 +20,9 @@ notes/
 # local release tooling, progress history, internal planning — never public
 deploy/
 
+# winget schema cache (fetched by winget/tools/validate.py)
+winget/.schema-cache/
+
 # internal planning (turn into GitHub issues before deleting) — never public
 TODOS.md
 

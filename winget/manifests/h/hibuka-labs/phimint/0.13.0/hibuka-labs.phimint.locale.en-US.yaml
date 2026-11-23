@@ -1,0 +1,37 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+
+PackageIdentifier: hibuka-labs.phimint
+PackageVersion: 0.13.0
+PackageLocale: en-US
+Publisher: hibuka-labs
+PublisherUrl: https://github.com/hibuka-labs
+PublisherSupportUrl: https://github.com/hibuka-labs/phimint/issues
+Author: hibuka-labs
+PackageName: phimint
+PackageUrl: https://github.com/hibuka-labs/phimint
+License: MIT
+LicenseUrl: https://github.com/hibuka-labs/phimint/blob/main/LICENSE-MIT
+ShortDescription: A terminal AI coding agent built on phi-agent
+Description: |-
+  phimint is a terminal AI coding agent built on phi-agent. Not just good at chat: it reads the code, changes it, compiles and tests until the job is done.
+
+  It runs the full coding loop — understand the request, read the code, change multiple files, compile and test, iterate on failures. Features include code cells (CodeAct) that run code in a resident Python session, a streaming TUI, multi-agent fan-out, LSP-powered diagnostics, pull-based repository context, and three approval modes (auto / ask / deny).
+
+  phimint needs one API key in ~/.phimint/config.json — run it once and it walks you through it.
+Moniker: phimint
+Tags:
+- agent
+- ai
+- assistant
+- coding
+- cli
+- coding-agent
+- llm
+- rust
+- terminal
+- tui
+ReleaseNotes: |-
+  See the full changelog: https://github.com/hibuka-labs/phimint/releases/tag/v0.13.0
+ReleaseNotesUrl: https://github.com/hibuka-labs/phimint/releases/tag/v0.13.0
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

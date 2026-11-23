@@ -1,0 +1,19 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+
+PackageIdentifier: hibuka-labs.phimint
+PackageVersion: 0.13.0
+InstallerType: zip
+NestedInstallerType: portable
+ReleaseDate: "2026-11-23"
+Installers:
+- Architecture: x64
+  NestedInstallerFiles:
+  - RelativeFilePath: phimint.exe
+    PortableCommandAlias: phimint
+  InstallerUrl: https://github.com/hibuka-labs/phimint/releases/download/v0.13.0/phimint-0.13.0-windows-x86_64.zip
+  InstallerSha256: 39F5745AABFB5A0A819CE0BA2D61E999E90E14678F6A2EF93215E64365E978E6
+  Dependencies:
+    PackageDependencies:
+    - PackageIdentifier: Microsoft.VCRedist.2015+.x64
+ManifestType: installer
+ManifestVersion: 1.6.0

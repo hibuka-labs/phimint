@@ -162,6 +162,20 @@
   .install {
     margin: 42px auto 0; max-width: 640px; text-align: left;
   }
+  /* Platform row: which OS are you on? */
+  .platform-row {
+    display: flex; gap: 6px; margin-bottom: 10px;
+  }
+  .platform-row button {
+    font-family: var(--mono); font-size: 12.5px; color: var(--dim);
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; padding: 7px 15px; cursor: pointer;
+    transition: color .15s, border-color .15s, background .15s;
+  }
+  .platform-row button:hover { color: var(--muted); border-color: var(--muted); }
+  .platform-row button.on {
+    color: var(--mint); border-color: var(--mint); background: var(--bg-soft);
+  }
   .install-tabs {
     display: flex; gap: 4px; padding: 5px 5px 0;
     background: var(--panel); border: 1px solid var(--line);
@@ -172,7 +186,20 @@
     background: transparent; border: none; cursor: pointer;
     padding: 9px 18px; border-radius: 8px 8px 0 0;
     transition: color .15s, background .15s;
+    white-space: nowrap;
   }
+  /* A tab the current platform does not offer: not selectable, just absent. */
+  .install-tabs button.hidden { display: none; }
+  /* The primary channel leads on each platform: winget on Windows, brew on
+     macOS, the install script on Linux. The DOM order is shared by every
+     platform, so the order comes from here. */
+  .install-tabs button { order: 9; }
+  .install[data-platform="windows"] .install-tabs button[data-cmd="winget"] { order: 1; }
+  .install[data-platform="windows"] .install-tabs button[data-cmd="scoop"]  { order: 2; }
+  .install[data-platform="windows"] .install-tabs button[data-cmd="curl"]   { order: 3; }
+  .install[data-platform="macos"] .install-tabs button[data-cmd="brew"]    { order: 1; }
+  .install[data-platform="macos"] .install-tabs button[data-cmd="curl"]    { order: 2; }
+  .install[data-platform="linux"] .install-tabs button[data-cmd="curl"]    { order: 1; }
   .install-tabs button:hover { color: var(--muted); }
   .install-tabs button.on {
     color: var(--mint); background: var(--bg-soft);
@@ -603,16 +630,23 @@
 <!-- ============ HERO ============ -->
 <section class="hero">
   <div class="wrap">
-    <div class="tag reveal"><span class="dot"></span> v0.10.0 released · MIT licensed · macOS / Linux / Windows</div>
+    <div class="tag reveal"><span class="dot"></span> v0.13.0 released · MIT licensed · macOS / Linux / Windows</div>
     <h1 class="wordmark reveal">phimint</h1>
     <p class="tagline reveal">Open-source AI coding agent</p>
     <p class="sub reveal" data-pretext>Hand the coding to a dependable colleague — light, steady, and lean over long runs. <span class="nb">Written in pure Rust</span>.</p>
 
     <!-- Install tabs -->
     <div class="install reveal">
+      <div class="platform-row" role="group" aria-label="Choose your platform">
+        <button type="button" data-platform="windows" data-en="Windows">Windows</button>
+        <button type="button" data-platform="macos" data-en="macOS">macOS</button>
+        <button type="button" data-platform="linux" data-en="Linux">Linux</button>
+      </div>
       <div class="install-tabs" role="tablist">
         <button class="on" data-cmd="curl" role="tab" aria-selected="true">curl</button>
         <button data-cmd="brew" role="tab" aria-selected="false">brew</button>
+        <button data-cmd="winget" role="tab" aria-selected="false">winget</button>
+        <button data-cmd="scoop" role="tab" aria-selected="false">scoop</button>
         <button data-cmd="npm" role="tab" aria-selected="false">npm</button>
         <button data-cmd="cargo" role="tab" aria-selected="false">cargo</button>
       </div>
@@ -644,11 +678,11 @@
 <!-- ============ TRUST STRIP (hard facts, not vanity stats) ============ -->
 <div class="trust">
   <div class="wrap trust-row">
-    <div class="trust-item reveal"><b>4 install channels</b><span>curl · brew · npm · cargo</span></div>
+    <div class="trust-item reveal"><b>6 install channels</b><span>curl · brew · winget · scoop · npm · cargo</span></div>
     <div class="trust-item reveal"><b>3 platforms</b><span>macOS · Linux · Windows</span></div>
     <div class="trust-item reveal"><b>MIT License</b><span>open source, you stay in control</span></div>
     <div class="trust-item reveal"><b>Rust</b><span>edition 2024 · single binary</span></div>
-    <div class="trust-item reveal"><b>v0.10.0</b><span>2026-11 · shipping steadily</span></div>
+    <div class="trust-item reveal"><b>v0.13.0</b><span>2026-11 · shipping steadily</span></div>
   </div>
 </div>
 
@@ -742,9 +776,16 @@
     <p class="lede reveal">Thirty seconds to install. Your next all-green delivery starts here.</p>
 
     <div class="install reveal" style="text-align: left;">
+      <div class="platform-row" role="group" aria-label="Choose your platform">
+        <button type="button" data-platform="windows" data-en="Windows">Windows</button>
+        <button type="button" data-platform="macos" data-en="macOS">macOS</button>
+        <button type="button" data-platform="linux" data-en="Linux">Linux</button>
+      </div>
       <div class="install-tabs" role="tablist">
         <button class="on" data-cmd="curl" role="tab" aria-selected="true">curl</button>
         <button data-cmd="brew" role="tab" aria-selected="false">brew</button>
+        <button data-cmd="winget" role="tab" aria-selected="false">winget</button>
+        <button data-cmd="scoop" role="tab" aria-selected="false">scoop</button>
         <button data-cmd="npm" role="tab" aria-selected="false">npm</button>
         <button data-cmd="cargo" role="tab" aria-selected="false">cargo</button>
       </div>
@@ -844,44 +885,142 @@ window.Pretext = {walkLineRanges:$1,setLocale:D1,profilePrepare:V1,prepareWithSe
   }
 
   /* ---------- Install tabs (both install blocks share behavior) ---------- */
+  /* One command table for every platform: the platform decides which tabs
+     show up, and each tab resolves to the command for the *current*
+     platform. A command may be platform-specific (winget only exists on
+     Windows), so it is a function of the platform, not a plain string. */
   var COMMANDS = {
-    curl:  function () {
+    curl: function (platform) {
+      if (platform === "windows") {
+        return L(
+          "irm https://gitee.com/chenkangzeng_admin/phimint/releases/download/latest/install.ps1 | iex",
+          "irm https://github.com/hibuka-labs/phimint/releases/latest/download/install.ps1 | iex"
+        );
+      }
       return L(
-        "curl -fsSL https://github.com/hibuka-labs/phimint/releases/latest/download/install.sh | bash",
+        "curl -fsSL https://gitee.com/chenkangzeng_admin/phimint/releases/download/latest/install.sh | PHIMINT_MIRROR=gitee bash",
         "curl -fsSL https://github.com/hibuka-labs/phimint/releases/latest/download/install.sh | bash"
       );
     },
     brew:  "brew install hibuka-labs/phimint/phimint",
+    winget: "winget install hibuka-labs.phimint",
+    scoop: function () {
+      return L(
+        "scoop bucket add hibuka-labs https://github.com/hibuka-labs/scoop-bucket; scoop install phimint",
+        "scoop bucket add hibuka-labs https://github.com/hibuka-labs/scoop-bucket; scoop install phimint"
+      );
+    },
     npm:   "npm install -g phimint",
     cargo: "cargo install phimint"
   };
-  function resolveCmd(name) {
+  /* Which command tabs each platform offers. The first entry of the list is
+     the one that gets selected when you switch to that platform. */
+  var PLATFORM_TABS = {
+    windows: ["winget", "scoop", "curl", "npm", "cargo"],
+    macos:   ["brew", "curl", "npm", "cargo"],
+    linux:   ["curl", "npm", "cargo"]
+  };
+  var currentPlatform = "macos";
+  function resolveCmd(name, platform) {
     var v = COMMANDS[name];
-    return typeof v === "function" ? v() : v;
+    return typeof v === "function" ? v(platform) : v;
+  }
+  function detectPlatform() {
+    var p = (navigator.userAgentData && navigator.userAgentData.platform) ||
+            navigator.platform || "";
+    p = p.toLowerCase();
+    if (p.indexOf("win") === 0) return "windows";
+    if (p.indexOf("mac") === 0) return "macos";
+    if (p.indexOf("linux") === 0 || p.indexOf("android") === 0) return "linux";
+    return "macos";
+  }
+  function applyPlatform(block, platform, preferred) {
+    var allowed = PLATFORM_TABS[platform] || PLATFORM_TABS.macos;
+    block.setAttribute("data-platform", platform);
+    var tabs = block.querySelectorAll(".install-tabs button");
+    var code = block.querySelector("code");
+    var hl = code && code.querySelector(".hl");
+    var picked = null;
+    tabs.forEach(function (tab) {
+      var name = tab.dataset.cmd;
+      var show = allowed.indexOf(name) !== -1;
+      tab.classList.toggle("hidden", !show);
+      if (!show) { tab.classList.remove("on"); tab.setAttribute("aria-selected", "false"); }
+    });
+    /* Prefer the platform's own first choice (winget on Windows, brew on
+       macOS); fall back to the first tab this platform does offer. */
+    var wanted = preferred || allowed[0];
+    tabs.forEach(function (tab) {
+      if (tab.classList.contains("hidden")) return;
+      if (tab.dataset.cmd === wanted) picked = tab;
+    });
+    if (!picked) {
+      tabs.forEach(function (tab) {
+        if (tab.classList.contains("hidden")) return;
+        if (!picked) picked = tab;
+      });
+    }
+    if (!picked) return;
+    tabs.forEach(function (t) { t.classList.remove("on"); t.setAttribute("aria-selected", "false"); });
+    picked.classList.add("on"); picked.setAttribute("aria-selected", "true");
+    if (hl) hl.textContent = resolveCmd(picked.dataset.cmd, platform);
   }
   function refreshInstallCmds() {
     document.querySelectorAll(".install").forEach(function (block) {
       var active = block.querySelector(".install-tabs button.on");
       var code = block.querySelector("code");
       var hl = code && code.querySelector(".hl");
-      if (active && hl) hl.textContent = resolveCmd(active.dataset.cmd);
+      if (active && hl) hl.textContent = resolveCmd(active.dataset.cmd, currentPlatform);
     });
   }
   window.__phimintRefreshInstallCmd = refreshInstallCmds;
+  currentPlatform = detectPlatform();
+  /* The platform is one choice for the page, not one per install block: the
+     hero widget and the closing one must never disagree about which OS the
+     visitor is on. */
+  function selectPlatform(platform) {
+    currentPlatform = platform;
+    document.querySelectorAll(".platform-row").forEach(function (row) {
+      row.querySelectorAll("button").forEach(function (b) {
+        b.classList.toggle("on", b.dataset.platform === platform);
+      });
+    });
+    document.querySelectorAll(".install").forEach(function (block) {
+      applyPlatform(block, platform);
+    });
+  }
+  window.__phimintSelectPlatform = selectPlatform;
   document.querySelectorAll(".install").forEach(function (block) {
     var tabs = block.querySelectorAll(".install-tabs button");
     var code = block.querySelector("code");
     var btn  = block.querySelector(".copy");
+    var platformBtns = block.querySelectorAll(".platform-row button");
     tabs.forEach(function (tab) {
       tab.addEventListener("click", function () {
         tabs.forEach(function (t) { t.classList.remove("on"); t.setAttribute("aria-selected", "false"); });
         tab.classList.add("on"); tab.setAttribute("aria-selected", "true");
-        var cmd = resolveCmd(tab.dataset.cmd);
+        var cmd = resolveCmd(tab.dataset.cmd, currentPlatform);
         code.innerHTML = '<span class="p">$ </span><span class="hl"></span>';
         code.querySelector(".hl").textContent = cmd;
         btn.classList.remove("done"); btn.textContent = L("复制", "Copy");
       });
     });
+    platformBtns.forEach(function (pb) {
+      pb.addEventListener("click", function () {
+        selectPlatform(pb.dataset.platform);
+      });
+    });
+    applyPlatform(block, currentPlatform);
+  });
+  /* Mark the detected platform on every platform row. */
+  document.querySelectorAll(".platform-row").forEach(function (row) {
+    row.querySelectorAll("button").forEach(function (b) {
+      b.classList.toggle("on", b.dataset.platform === currentPlatform);
+    });
+  });
+  document.querySelectorAll(".install").forEach(function (block) {
+    var code = block.querySelector("code");
+    var btn  = block.querySelector(".copy");
     btn.addEventListener("click", function () {
       var cmd = code.querySelector(".hl").textContent;
       function ok() { btn.textContent = L("已复制 ✓", "Copied ✓"); btn.classList.add("done");

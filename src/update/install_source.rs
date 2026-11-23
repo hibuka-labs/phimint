@@ -17,6 +17,10 @@ pub enum InstallSource {
     Npm,
     /// `cargo install` (binary in the Cargo bin dir).
     Cargo,
+    /// Windows Package Manager (binary under the WinGet packages dir).
+    Winget,
+    /// Scoop (binary under the scoop apps dir).
+    Scoop,
     /// Standalone: curl installer, or a manually dropped binary.
     Standalone,
 }
@@ -28,6 +32,8 @@ impl InstallSource {
             InstallSource::Brew => "brew",
             InstallSource::Npm => "npm",
             InstallSource::Cargo => "cargo",
+            InstallSource::Winget => "winget",
+            InstallSource::Scoop => "scoop",
             InstallSource::Standalone => "standalone",
         }
     }
@@ -38,6 +44,8 @@ impl InstallSource {
             "brew" => Some(InstallSource::Brew),
             "npm" => Some(InstallSource::Npm),
             "cargo" => Some(InstallSource::Cargo),
+            "winget" => Some(InstallSource::Winget),
+            "scoop" => Some(InstallSource::Scoop),
             "standalone" => Some(InstallSource::Standalone),
             _ => None,
         }
@@ -49,6 +57,8 @@ impl InstallSource {
             InstallSource::Brew => "brew upgrade phimint",
             InstallSource::Npm => "npm install -g phimint@latest",
             InstallSource::Cargo => "cargo install phimint --force",
+            InstallSource::Winget => "winget upgrade hibuka-labs.phimint",
+            InstallSource::Scoop => "scoop update phimint",
             // Self-replace: `phimint update` is handled by the CLI subcommand.
             InstallSource::Standalone => "phimint update",
         }
@@ -72,6 +82,8 @@ impl InstallSource {
             InstallSource::Brew => "brew uninstall phimint",
             InstallSource::Npm => "npm uninstall -g phimint",
             InstallSource::Cargo => "cargo uninstall phimint",
+            InstallSource::Winget => "winget uninstall hibuka-labs.phimint",
+            InstallSource::Scoop => "scoop uninstall phimint",
             // Self-removal: `phimint uninstall` deletes its own executable.
             InstallSource::Standalone => "phimint uninstall",
         }
@@ -89,6 +101,8 @@ impl InstallSource {
 /// - Homebrew: Cellar or homebrew prefix in the path
 /// - npm/pnpm/yarn: under a `node_modules` tree
 /// - cargo: under the Cargo home bin dir
+/// - winget: under the WinGet packages dir
+/// - scoop: under the scoop apps dir
 /// - anything else: standalone
 pub fn detect_from_path(exe: &Path) -> InstallSource {
     // Lossy lowercase: paths are case-sensitive on some systems but the
@@ -104,6 +118,10 @@ pub fn detect_from_path(exe: &Path) -> InstallSource {
         InstallSource::Npm
     } else if s.contains("/.cargo/bin/") || s.contains("\\.cargo\\bin\\") {
         InstallSource::Cargo
+    } else if s.contains("\\winget\\packages\\") || s.contains("/winget/packages/") {
+        InstallSource::Winget
+    } else if s.contains("\\scoop\\apps\\") || s.contains("/scoop/apps/") {
+        InstallSource::Scoop
     } else {
         InstallSource::Standalone
     }
@@ -185,11 +203,33 @@ mod tests {
     }
 
     #[test]
+    fn winget_packages_dir() {
+        assert_eq!(
+            detect_from_path(&PathBuf::from(
+                r"C:\Users\x\AppData\Local\Microsoft\WinGet\Packages\hibuka-labs.phimint_Microsoft.Winget.Source_8wekyb3d8bbwe\phimint.exe"
+            )),
+            InstallSource::Winget
+        );
+    }
+
+    #[test]
+    fn scoop_apps_dir() {
+        assert_eq!(
+            detect_from_path(&PathBuf::from(
+                r"C:\Users\x\scoop\apps\phimint\current\phimint.exe"
+            )),
+            InstallSource::Scoop
+        );
+    }
+
+    #[test]
     fn roundtrip_str() {
         for src in [
             InstallSource::Brew,
             InstallSource::Npm,
             InstallSource::Cargo,
+            InstallSource::Winget,
+            InstallSource::Scoop,
             InstallSource::Standalone,
         ] {
             assert_eq!(InstallSource::parse(src.as_str()), Some(src));
@@ -203,6 +243,8 @@ mod tests {
         assert!(!InstallSource::Brew.supports_self_update());
         assert!(!InstallSource::Npm.supports_self_update());
         assert!(!InstallSource::Cargo.supports_self_update());
+        assert!(!InstallSource::Winget.supports_self_update());
+        assert!(!InstallSource::Scoop.supports_self_update());
     }
 
     #[test]
@@ -231,6 +273,14 @@ mod tests {
             InstallSource::Cargo.uninstall_command(),
             "cargo uninstall phimint"
         );
+        assert_eq!(
+            InstallSource::Winget.uninstall_command(),
+            "winget uninstall hibuka-labs.phimint"
+        );
+        assert_eq!(
+            InstallSource::Scoop.uninstall_command(),
+            "scoop uninstall phimint"
+        );
     }
 
     #[test]
@@ -239,6 +289,8 @@ mod tests {
             InstallSource::Brew,
             InstallSource::Npm,
             InstallSource::Cargo,
+            InstallSource::Winget,
+            InstallSource::Scoop,
             InstallSource::Standalone,
         ] {
             assert_eq!(src.is_managed(), !src.supports_self_update());
