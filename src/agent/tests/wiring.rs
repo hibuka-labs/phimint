@@ -301,6 +301,23 @@ fn system_prompt_base_has_no_memory_section() {
     );
 }
 
+/// protects: the product owns the memory write-path limits — phimint tunes them
+/// in `apply_product_memory_limits` (the design §12 override entry) instead of
+/// inheriting the framework default invisibly, so a product change to a limit
+/// is one deliberate edit here. fails_when: the entry is dropped and the
+/// numbers drift to whatever `agent-works` defaults to. no_claim: the values
+/// themselves are optimal — they are the product's chosen numbers.
+#[test]
+fn the_product_owns_the_memory_write_path_limits() {
+    let mut memory = MemoryConfig::claude_compatible(std::path::Path::new("/tmp/mem-limits"));
+    crate::agent::build::apply_product_memory_limits(&mut memory);
+    assert!(memory.limits.enabled, "limits on by default");
+    assert_eq!(memory.limits.hook_max_chars, 80);
+    assert_eq!(memory.limits.body_max_chars, 3000);
+    assert_eq!(memory.limits.index_max_bytes, 10_240);
+    assert_eq!(memory.limits.store_hard_entries, 500);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn built_agent_receives_memory_prompt_for_its_workspace() {
     // Wiring guard: with memory_config wired in build(), the live request

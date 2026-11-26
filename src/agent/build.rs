@@ -433,6 +433,11 @@ pub async fn build_with_code_exec(
         .memory_config({
             let mut memory = MemoryConfig::claude_compatible(&workspace_root);
             memory.prompt_template = crate::agent::prompt::MEMORY_PROMPT_TEMPLATE.to_string();
+            // Product-override entry for the write-path limits (design §12):
+            // the framework owns the mechanism + defaults; phimint tunes the
+            // numbers here. This is the one product-controlled point — a
+            // `[memory]` config section / CLI flag / env feeds these fields.
+            apply_product_memory_limits(&mut memory);
             memory
         })
         // base_agent_builder caps tool output at 4000 chars and REJECTS (rather
@@ -797,6 +802,22 @@ fn register_browser_tools(builder: AgentBuilder) -> (AgentBuilder, Vec<String>) 
         builder = builder.register_tool_arc(tool);
     }
     (builder, names)
+}
+
+/// phimint's product overrides for the memory write-path limits (design §12:
+/// defaults live in `agent-works`' `MemoryLimits`; the product tunes them here).
+///
+/// This is the product-controlled entry for the memory limits — the one place a
+/// `[memory]` config section, CLI flag, or env var feeds. Today it sets
+/// phimint's chosen values explicitly (so the numbers are owned by the product,
+/// not inherited invisibly from the framework); the config-file plumbing that
+/// fills these fields is the deferred product surface.
+pub fn apply_product_memory_limits(memory: &mut MemoryConfig) {
+    memory.limits.enabled = true;
+    memory.limits.hook_max_chars = 80;
+    memory.limits.body_max_chars = 3000;
+    memory.limits.index_max_bytes = 10_240;
+    memory.limits.store_hard_entries = 500;
 }
 
 /// The reasoning-loop guard: nudge, then disable thinking, failing open.
