@@ -51,6 +51,9 @@ pub fn default_items() -> Vec<TipItem> {
         TipItem::tip("Press Ctrl+V to paste a screenshot - the terminal keeps Cmd+V"),
         TipItem::tip("Press Ctrl+L to redraw the screen if the display looks wrong"),
         TipItem::tip("Scroll history with the mouse wheel or fn+Up/Down"),
+        TipItem::tip(
+            "Trackpad scrolling needs View > Allow Mouse Reporting; fn+Up/fn+Down always work",
+        ),
     ]
 }
 
@@ -190,6 +193,21 @@ mod tests {
         assert_eq!(items[0].kind, TipKind::Note);
         assert!(items[0].text.contains("docs.phiagent.dev"));
         assert!(items[1..].iter().all(|i| i.kind == TipKind::Tip));
+    }
+
+    /// The wheel dies silently when the terminal keeps the swipe for itself
+    /// (macOS Terminal.app: View > Allow Mouse Reporting off). The full
+    /// warning only rides the boot notice at the top of the transcript —
+    /// which is exactly where an unscrollable view cannot reach — so the
+    /// recovery path must also rotate in the always-visible tips band.
+    #[test]
+    fn defaults_carry_the_wheel_recovery_hint() {
+        let items = default_items();
+        assert!(
+            items
+                .iter()
+                .any(|i| i.text.contains("Allow Mouse Reporting") && i.text.contains("fn+Up"))
+        );
     }
 
     #[test]
