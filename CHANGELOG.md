@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-11-25
+
+### Changed
+
+- **The README opens with one sentence that says what phimint is.** It used to
+  open with the framework it is built on; it now opens with the thing a
+  newcomer came for: a single Rust binary, no Node.js or Python to install,
+  and a full coding task on a 1-core, 1 GB machine. The second sentence says
+  where that comes from — the agent runtime is [phi-agent](https://docs.phiagent.dev/),
+  a framework released on its own. Both READMEs then keep only what earns its
+  place: the feature list, the install path, two worked examples and a short
+  quick reference. The full reference — every flag, every key, the tool
+  surface, the session files and the internal layout — moved to
+  `docs/USAGE.md` and `docs/USAGE_CN.md`. The English README is 229 lines; it
+  was 392.
+
+- **The landing page says the same thing.** The hero line on both the English
+  and the Chinese page now carries that sentence. The Chinese page keeps its
+  media-coverage line (the Xuanwu community recommendation); the English page
+  does not carry it.
+
+- **winget is off the pages.** The winget manifest is not upstream in
+  `microsoft/winget-pkgs` yet, so `winget install` still fails. The landing
+  pages and both READMEs no longer offer it as a channel; the five that work
+  (curl, brew, scoop, npm, cargo) do.
+
+- **The GitHub repository says the same thing.** The About box carried a list
+  of mechanisms ("multi-agent fan-out, LSP-powered fast inner loop…"); it now
+  carries the one-liner, and the topic list gained `ai-agent`, `coding-agent`,
+  `mcp` and `codeact`.
+
+### Fixed
+
+- **The wheel hint rides the tips band.** On macOS Terminal.app the wheel
+  stops scrolling the transcript unless View → Allow Mouse Reporting is on —
+  a setting the terminal keeps for itself. The warning only rode the boot
+  notice at the top of the transcript, which is exactly where an unscrollable
+  view cannot reach it. The recovery path (`fn+Up` / `fn+Down`) now also
+  rotates in the always-visible tips band.
+
 ## [0.13.0] - 2026-11-23
 
 ### Added

@@ -190,13 +190,12 @@
   }
   /* A tab the current platform does not offer: not selectable, just absent. */
   .install-tabs button.hidden { display: none; }
-  /* The primary channel leads on each platform: winget on Windows, brew on
+  /* The primary channel leads on each platform: scoop on Windows, brew on
      macOS, the install script on Linux. The DOM order is shared by every
      platform, so the order comes from here. */
   .install-tabs button { order: 9; }
-  .install[data-platform="windows"] .install-tabs button[data-cmd="winget"] { order: 1; }
-  .install[data-platform="windows"] .install-tabs button[data-cmd="scoop"]  { order: 2; }
-  .install[data-platform="windows"] .install-tabs button[data-cmd="curl"]   { order: 3; }
+  .install[data-platform="windows"] .install-tabs button[data-cmd="scoop"]  { order: 1; }
+  .install[data-platform="windows"] .install-tabs button[data-cmd="curl"]   { order: 2; }
   .install[data-platform="macos"] .install-tabs button[data-cmd="brew"]    { order: 1; }
   .install[data-platform="macos"] .install-tabs button[data-cmd="curl"]    { order: 2; }
   .install[data-platform="linux"] .install-tabs button[data-cmd="curl"]    { order: 1; }
@@ -604,7 +603,16 @@
      blocks first paint, and keep it cookieless so no consent banner is needed.
      TODO: the script stays off until the backend and the website id are real —
      shipping it with a placeholder id buys a third-party request per visitor
-     and collects nothing. Uncomment the line once both exist. -->
+     and collects nothing. Uncomment the line once both exist.
+
+     Enable (one step, both pages): sign up at https://cloud.umami.is with
+     phimint@hibuka.com, add a website for "hibuka-labs.github.io", copy the
+     website id from Settings -> Websites, paste it below and drop the comment
+     markers. The Chinese and English pages carry the same script, so both
+     report into one website. Fallback if that signup is closed: GoatCounter
+     (https://goatcounter.com — script-only, no cookies):
+     <script data-goatcounter="https://<code>.goatcounter.com/count" async
+     src="//gc.zgo.at/count.js"></script> -->
 <!-- <script defer src="https://cloud.umami.is/script.js" data-website-id="REPLACE_WITH_UMAMI_WEBSITE_ID"></script> -->
 </head>
 <body>
@@ -633,7 +641,7 @@
     <div class="tag reveal"><span class="dot"></span> v0.13.0 released · MIT licensed · macOS / Linux / Windows</div>
     <h1 class="wordmark reveal">phimint</h1>
     <p class="tagline reveal">Open-source AI coding agent</p>
-    <p class="sub reveal" data-pretext>Hand the coding to a dependable colleague — light, steady, and lean over long runs. <span class="nb">Written in pure Rust</span>.</p>
+    <p class="sub reveal" data-pretext>A terminal AI coding agent written in Rust — no Node.js or Python, one binary to download, and 1 core with 1 GB of RAM runs a full coding task.</p>
 
     <!-- Install tabs -->
     <div class="install reveal">
@@ -645,7 +653,6 @@
       <div class="install-tabs" role="tablist">
         <button class="on" data-cmd="curl" role="tab" aria-selected="true">curl</button>
         <button data-cmd="brew" role="tab" aria-selected="false">brew</button>
-        <button data-cmd="winget" role="tab" aria-selected="false">winget</button>
         <button data-cmd="scoop" role="tab" aria-selected="false">scoop</button>
         <button data-cmd="npm" role="tab" aria-selected="false">npm</button>
         <button data-cmd="cargo" role="tab" aria-selected="false">cargo</button>
@@ -678,7 +685,7 @@
 <!-- ============ TRUST STRIP (hard facts, not vanity stats) ============ -->
 <div class="trust">
   <div class="wrap trust-row">
-    <div class="trust-item reveal"><b>6 install channels</b><span>curl · brew · winget · scoop · npm · cargo</span></div>
+    <div class="trust-item reveal"><b>5 install channels</b><span>curl · brew · scoop · npm · cargo</span></div>
     <div class="trust-item reveal"><b>3 platforms</b><span>macOS · Linux · Windows</span></div>
     <div class="trust-item reveal"><b>MIT License</b><span>open source, you stay in control</span></div>
     <div class="trust-item reveal"><b>Rust</b><span>edition 2024 · single binary</span></div>
@@ -690,18 +697,18 @@
 <section id="features">
   <div class="wrap">
     <div class="kicker reveal">Capabilities</div>
-    <h2 class="reveal">Not autocomplete for one line — it finishes the whole task.</h2>
+    <h2 class="reveal">One file, one coding loop — no Node, no setup hoops.</h2>
     <p class="lede reveal" data-pretext>From a request to working changes, it runs the whole loop itself.</p>
 
-    <!-- Story 1 -->
     <div class="feat-grid">
-      <div class="feat-item reveal"><span class="fl">Multi-agent</span><p>Splits hard problems across sub-agents and brings back the full reports.</p></div>
-      <div class="feat-item reveal"><span class="fl">LSP for the model</span><p>Attaches the right language server per project (rust-analyzer / TypeScript / clangd…); type errors land right after an edit — no full rebuild, the agent sees its own mistakes.</p></div>
-      <div class="feat-item reveal"><span class="fl">Tokens where they matter</span><p>Searches and reads on demand instead of stuffing the repo into the conversation; token-heavy exploration runs in sub-agents that return only the report; long tasks roll into a fresh window with notes and a handoff — no lossy summarization.</p></div>
-      <div class="feat-item reveal"><span class="fl">No spin, no drop</span><p>It corrects itself when it spins and wraps up on time; a guard even catches providers that lie about truncation — no stalling on your dime, the job gets to done.</p></div>
-      <div class="feat-item reveal"><span class="fl">Clear permission boundaries</span><p>Three modes, switchable any time: full auto, confirm each write (allow once / allow always for that exact command or file / deny), or read-only. Shell commands are risk-graded — dangerous ones flash red first.</p></div>
-      <div class="feat-item reveal"><span class="fl">No skimping on hard work, no waste on trivia</span><p>Advanced for hard problems, main for the day-to-day, lite for trivia — each tier can point at its own provider. You set the cost.</p></div>
-      <div class="feat-item reveal"><span class="fl">Ultralight, and it's just one file</span><p>One <code>curl</code> line gets you a single executable — no Node, Python, or other runtime on the side, nothing bundled. Don't want it anymore? <code>phimint uninstall</code> removes it — binary, config, sessions, all of it.</p></div>
+      <div class="feat-item reveal"><span class="fl">Light by nature, just one file</span><p>A single static Rust binary with zero runtime dependencies — no Node, no Python. SSH onto a bare 1-core 1-GB server, one <code>curl</code> line, and you're in a full coding session.</p></div>
+      <div class="feat-item reveal"><span class="fl">Native LSP fast inner loop</span><p>Attaches the right language server per project (rust-analyzer / TypeScript / clangd…); <code>file:line:col</code> diagnostics land right after an edit, no full rebuild. A tree-sitter repo map plus ripgrep pulls context on demand instead of stuffing the repo into the window.</p></div>
+      <div class="feat-item reveal"><span class="fl">CodeAct does the grunt work</span><p>Bulk renames and data wrangling ride one Python script instead of a long chain of single-purpose tool calls. The session is resident: variables and functions survive across calls, and intermediate data stays local instead of round-tripping the model — fewer round-trips is where the tokens are saved. Works fine without Python.</p></div>
+      <div class="feat-item reveal"><span class="fl">Parallel sub-agents</span><p>Splits hard problems into parallel slices for read-only investigators (write capability requested per spawn); full reports arrive batched at the turn boundary, no polling — the task panel tracks each one live.</p></div>
+      <div class="feat-item reveal"><span class="fl">UI &amp; product design support</span><p>For layout and option trade-offs, candidates are laid out side by side on a browser canvas — your click comes back as a real user turn, the agent never decides for you. Conceptual questions go through a terminal picker (2–4 options).</p></div>
+      <div class="feat-item reveal"><span class="fl">Plugin model: everything is a plugin</span><p>MCP servers, user scripts and wasm packs all plug in behind the same contract (WIT + Component Model), so adding capability never means touching the core. <code>/tools</code> lists every tool's source and permission tier, with one-key disable.</p></div>
+      <div class="feat-item reveal"><span class="fl">No skimping on hard work, no waste on trivia</span><p>Advanced for hard problems, main for the day-to-day, lite for trivia — each tier can point at its own provider, so cheap work never burns the expensive model. You set the cost.</p></div>
+      <div class="feat-item reveal"><span class="fl">Clear permission boundaries</span><p>Three modes — full auto, confirm each write, read-only — switchable any time, and sub-agents inherit them. Risk-graded shell commands; secrets on disk only as <code>${ENV:VAR}</code> references; the desktop agent can look and point, but asks every time before changing anything.</p></div>
     </div>
   </div>
 </section>
@@ -731,7 +738,7 @@
     <div class="faq-list">
       <details class="reveal">
         <summary>What is phimint, and how is it different from the AI coding tool I use today?<span class="plus">+</span></summary>
-        <div class="answer" data-pretext>phimint is an open-source AI coding agent that runs the full coding loop: understand the request, read the code, change multiple files, compile and test, iterate on failures. Three things set it apart: <b>multi-agent fan-out with full reports injected back</b> — split the problem across sub-agents and their complete reports arrive together, no polling and nothing dropped; <b>LSP wired into the loop</b> — type errors land right after an edit, so the agent sees its own mistakes and fixes them without a full rebuild; <b>models on your terms</b> — advanced for hard problems, lite for trivia, each tier pointed at any provider with your own API key, MIT licensed, code and data stay on your machine.</div>
+        <div class="answer" data-pretext>One file, and the AI coding loop runs end to end.<br>A terminal AI coding agent written in Rust — no Node or Python to install; a bare 1-core 1-GB server and one <code>curl</code> line get you going.<br>The key calls are yours: layout and options laid out side by side on a browser canvas, where a click is what counts; three model tiers, each pointed at your own provider on demand, secrets on disk only as references, and your code and data staying local. Open source, MIT licensed.</div>
       </details>
       <details class="reveal">
         <summary>Can I keep using my existing .claude/skills?<span class="plus">+</span></summary>
@@ -784,7 +791,6 @@
       <div class="install-tabs" role="tablist">
         <button class="on" data-cmd="curl" role="tab" aria-selected="true">curl</button>
         <button data-cmd="brew" role="tab" aria-selected="false">brew</button>
-        <button data-cmd="winget" role="tab" aria-selected="false">winget</button>
         <button data-cmd="scoop" role="tab" aria-selected="false">scoop</button>
         <button data-cmd="npm" role="tab" aria-selected="false">npm</button>
         <button data-cmd="cargo" role="tab" aria-selected="false">cargo</button>
@@ -887,22 +893,20 @@ window.Pretext = {walkLineRanges:$1,setLocale:D1,profilePrepare:V1,prepareWithSe
   /* ---------- Install tabs (both install blocks share behavior) ---------- */
   /* One command table for every platform: the platform decides which tabs
      show up, and each tab resolves to the command for the *current*
-     platform. A command may be platform-specific (winget only exists on
-     Windows), so it is a function of the platform, not a plain string. */
+     platform. A command may be platform-specific (the PowerShell installer
+     only exists on Windows), so it is a function of the platform, not a
+     plain string. */
   var COMMANDS = {
     curl: function (platform) {
       if (platform === "windows") {
-        return L(
-          "irm https://gitee.com/chenkangzeng_admin/phimint/releases/download/latest/install.ps1 | iex",
-          "irm https://github.com/hibuka-labs/phimint/releases/latest/download/install.ps1 | iex"
-        );
+        return "irm https://github.com/hibuka-labs/phimint/releases/latest/download/install.ps1 | iex";
       }
-      return L(
-        "curl -fsSL https://gitee.com/chenkangzeng_admin/phimint/releases/download/latest/install.sh | PHIMINT_MIRROR=gitee bash",
-        "curl -fsSL https://github.com/hibuka-labs/phimint/releases/latest/download/install.sh | bash"
-      );
+      return "curl -fsSL https://github.com/hibuka-labs/phimint/releases/latest/download/install.sh | bash";
     },
     brew:  "brew install hibuka-labs/phimint/phimint",
+    // winget: the manifest is ready but the package is not merged into
+    // microsoft/winget-pkgs yet, so `winget install` would fail. Keep the
+    // command out of the tabs until it lands upstream.
     winget: "winget install hibuka-labs.phimint",
     scoop: function () {
       return L(
@@ -916,7 +920,7 @@ window.Pretext = {walkLineRanges:$1,setLocale:D1,profilePrepare:V1,prepareWithSe
   /* Which command tabs each platform offers. The first entry of the list is
      the one that gets selected when you switch to that platform. */
   var PLATFORM_TABS = {
-    windows: ["winget", "scoop", "curl", "npm", "cargo"],
+    windows: ["scoop", "curl", "npm", "cargo"],
     macos:   ["brew", "curl", "npm", "cargo"],
     linux:   ["curl", "npm", "cargo"]
   };
@@ -947,7 +951,7 @@ window.Pretext = {walkLineRanges:$1,setLocale:D1,profilePrepare:V1,prepareWithSe
       tab.classList.toggle("hidden", !show);
       if (!show) { tab.classList.remove("on"); tab.setAttribute("aria-selected", "false"); }
     });
-    /* Prefer the platform's own first choice (winget on Windows, brew on
+    /* Prefer the platform's own first choice (scoop on Windows, brew on
        macOS); fall back to the first tab this platform does offer. */
     var wanted = preferred || allowed[0];
     tabs.forEach(function (tab) {

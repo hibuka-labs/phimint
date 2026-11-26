@@ -1,6 +1,10 @@
 # phimint
 
-**Pronounced** `/ˈfaɪmɪnt/` ("fie-mint", phi + mint) — a terminal AI coding agent built on [phi-agent](https://docs.phiagent.dev/), the agent runtime beneath it. *Not just good at chat — it gets the job done right.*
+**Pronounced** `/ˈfaɪmɪnt/` ("fie-mint", phi + mint).
+
+**A terminal AI coding agent written in Rust — no Node.js or Python, one binary to download, and 1 core with 1 GB of RAM runs a full coding task.**
+
+Built on [phi-agent](https://docs.phiagent.dev/) — the agent runtime ships as its own framework; phimint keeps only the terminal layer.
 
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
 [![Rust](https://img.shields.io/badge/Rust-edition%202024-orange.svg)](https://www.rust-lang.org)
@@ -10,25 +14,18 @@
 
 *phimint needs one API key in `~/.phimint/config.json` — a one-minute step, see [Quick start](#quick-start).*
 
-phimint runs the full coding loop — understand the request, read the code, change multiple files, compile and test, iterate on failures.
-
 Project page: [hibuka-labs.github.io/phimint](https://hibuka-labs.github.io/phimint/) — English / [中文](https://hibuka-labs.github.io/phimint/zh/).
 
 ## Features
 
-- **Code cells (CodeAct)** — `code_cell` runs code in a resident Python session: one call is one step of cells sharing one session, so variables, imports and functions survive across calls. Mechanical multi-step work (bulk edits, renaming, data wrangling) rides a short cell script instead of a long chain of single-purpose tool calls. The engine is behind a compile-time kill switch — `--no-default-features` drops it from the binary entirely.
-- **Streaming TUI** — ratatui + crossterm: fixed bottom composer, token-by-token streaming, inline tool calls, live line-by-line shell output, approval popups, startup banner that detects your terminal's light/dark background.
-- **Slash commands** — `.claude/skills`-compatible skills: `/skill-name args` injects the skill body into the turn. `/resume` reopens a previous session with an interactive picker.
-- **External tools** — plug in your own tools behind one contract (WIT + Component Model): MCP servers (`/connect`), user scripts, and wasm plugin packs (`plugin add` / `plugin remove`). `/tools` shows every tool's source, namespace and tier with one-key disable; secrets live only as `${ENV:VAR}` references — never literal on disk; `add_tool` lets the agent write and register a tool for you behind a full confirmation card (argv, absolute path, timeout).
-- **Pull-based context** — `repo_map` (tree-sitter symbol/structure index) plus `search_content` (ripgrep). The agent searches and reads on demand instead of stuffing the whole repo into context.
-- **LSP fast inner loop** — lazily started per-language servers (rust-analyzer, typescript-language-server, clangd); `file:line:col` diagnostics in seconds without recompiling. Falls back to shell when a server is missing.
-- **Multi-agent fan-out, push-based fan-in** — `spawn_agent` sends sub-agents to investigate (read-only by default; write capability is requested per spawn when a task must edit). The main agent gets the **full reports at end of turn** (no polling). The TUI task panel tracks each sub-agent live; a 10-minute per-task hard timeout guarantees delivery.
-- **Design canvas & `ask_user`** — the agent can *show* you options instead of describing them: 2–4 candidates land as a screen in your browser (layout mockups, option sets, comparisons) and your click comes back as a real user turn; `ask_user` asks concept picks right in the terminal picker. The browser opens only after a one-time consent, busy clicks queue at the turn boundary, and while a screen awaits your pick the run parks — the agent never decides your design choices for you.
-- **Desktop with consent** — the agent can look at your screen and move the pointer. *Looking* and *moving* never ask; changing the machine asks every time, through the same approval gate the tool path already uses.
-- **Three approval modes** — `auto` (full auto), `ask` (prompt on writes/risky shell), `deny` (read-only). Sub-agents inherit the main agent's mode: in `ask`, every sub-agent write prompts in a popup that names the requesting sub-agent.
-- **Guardrails** — reasoning-only spin correction, max-turns nudge, provider truncation guard (lying `finish_reason` tolerance, from agent-base), 16k tool-output cap.
-- **Multi-language** — `code-intel` registry (extension → LSP server → build-command fallback): Rust, TypeScript, JavaScript, C, C++ out of the box.
-- **Modular base** — chat UI components and language intelligence are distilled into their own crates: [`phi-tui`](https://github.com/hibuka-labs/phi-tui) (chat TUI components) and [`code-intel`](https://github.com/hibuka-labs/code-intel) (LSP/repomap/ripgrep cores). phimint keeps only the product shell.
+- **Light by nature** — a single static Rust binary with zero runtime dependencies: no Node.js, no Python. SSH onto a bare 1-core 1-GB server, one curl line, and you're in a full coding session.
+- **Native LSP fast inner loop** — per-language servers start lazily (rust-analyzer / typescript-language-server / clangd); seconds after an edit you get `file:line:col` diagnostics, no recompile. A tree-sitter repo map plus ripgrep pulls context on demand instead of stuffing the repo into the window.
+- **CodeAct does the grunt work** — bulk renames and data wrangling ride one Python script instead of a long chain of single-purpose tool calls. The session is resident: last call's variables and functions are still there for the next, and intermediate data stays local instead of round-tripping the model — fewer round-trips is where the tokens are saved. Works fine without Python; the engine sits behind a compile-time switch, `--no-default-features` drops it entirely.
+- **Parallel sub-agents** — run several investigations at once: read-only by default, write capability requested per spawn; reports are pushed at the turn boundary, no polling; the task panel tracks each one live.
+- **UI & product design support** — for layout or option trade-offs, candidates are laid out side by side on a browser canvas; your click comes back as a real user turn — the agent never decides for you. Conceptual questions go through a terminal picker (`ask_user`, 2–4 options).
+- **Plugin model** — everything is a plugin: MCP servers, user scripts and wasm packs all plug in behind the same contract (WIT + Component Model), so adding capability never means touching the core. `/tools` lists every tool's source, namespace and permission tier, with one-key disable.
+- **Model tiers that match the budget** — `main` for the conversation, `lite` for sub-agents and summaries, `advanced` for the hard problems; cheap work never burns the expensive model.
+- **You stay in control** — approval modes `auto` / `ask` / `deny` (sub-agents inherit them); secrets land on disk only as `${ENV:VAR}` references; the desktop agent can look at your screen and move the pointer, but asks every time before changing anything.
 
 ## Quick start
 
@@ -38,28 +35,22 @@ add an API key, run.
 ### 1. Install
 
 Prebuilt binaries ship with every release (macOS / Linux / Windows, arm64 + x64).
-One-liner (mainland China: use the Gitee line):
+One-liner:
 
 ```bash
-curl -fsSL https://github.com/hibuka-labs/phimint/releases/latest/download/install.sh | bash   # GitHub
-curl -fsSL https://gitee.com/chenkangzeng_admin/phimint/releases/download/latest/install.sh | PHIMINT_MIRROR=gitee bash  # Gitee mirror
+curl -fsSL https://github.com/hibuka-labs/phimint/releases/latest/download/install.sh | bash
 ```
 
 Windows (PowerShell):
 
 ```powershell
-irm https://github.com/hibuka-labs/phimint/releases/latest/download/install.ps1 | iex   # GitHub
-$env:PHIMINT_MIRROR='gitee'; irm https://gitee.com/chenkangzeng_admin/phimint/releases/download/latest/install.ps1 | iex  # Gitee mirror
+irm https://github.com/hibuka-labs/phimint/releases/latest/download/install.ps1 | iex
 ```
 
-The installer does the whole job: it puts the binary in `~/.local/bin` (or the
-first writable directory already on your `PATH`), adds that directory to your
-shell profile if it has to, verifies the download's checksum, and writes a
-ready-to-edit `~/.phimint/config.json`. What is left for you is the `api_key`
-line in that file. No `python3`, no `sudo`, no manual `export PATH=`.
-
-Set `PHIMINT_NO_PATH_EDIT=1` if you would rather manage `PATH` yourself, and
-`PHIMINT_INSTALL_DIR=<dir>` to choose the install directory.
+The installer does the whole job: binary into `~/.local/bin` (PATH handled for
+you), download checksum verified, `~/.phimint/config.json` written — all that's
+left is the `api_key` line. `PHIMINT_NO_PATH_EDIT=1` keeps `PATH` yours;
+`PHIMINT_INSTALL_DIR=<dir>` picks the install directory.
 
 Or use a package manager:
 
@@ -69,12 +60,7 @@ npm install -g phimint                   # also: pnpm add -g phimint / yarn glob
 cargo install phimint                    # from crates.io
 ```
 
-On Windows, [winget](https://learn.microsoft.com/windows/package-manager/) and
-[Scoop](https://scoop.sh) are available:
-
-```powershell
-winget install hibuka-labs.phimint        # Windows Package Manager
-```
+On Windows, [Scoop](https://scoop.sh) is available:
 
 ```powershell
 scoop bucket add hibuka-labs https://github.com/hibuka-labs/scoop-bucket
@@ -83,16 +69,11 @@ scoop install phimint                    # Scoop
 
 Upgrade: `phimint update` for one-liner installs, or `brew upgrade phimint` /
 `npm install -g phimint@latest` / `cargo install phimint --force` /
-`winget upgrade hibuka-labs.phimint` / `scoop update phimint` — matching how
-you installed. Mainland China users can download from
-[Gitee Releases](https://gitee.com/chenkangzeng_admin/phimint/releases);
-the updater falls back to the Gitee mirror automatically.
+`scoop update phimint` — matching how you installed.
 
-Uninstall: `phimint uninstall`. It removes the binary through whichever channel
-installed it, then deletes `~/.phimint/` — your config (including the API key),
-sessions, history and notes. `--keep-data` leaves that directory alone,
-`--yes` skips the prompt. On Windows it also drops the PATH entry the installer
-added; on Unix it removes the marked PATH block from your shell profile.
+Uninstall: `phimint uninstall` — removes the binary and `~/.phimint/` (config
+including the API key, sessions, history), plus the PATH entry the installer
+added. `--keep-data` keeps the data; `--yes` skips the prompt.
 
 ### Supported platforms
 
@@ -135,52 +116,27 @@ The file is JSON5 — comments and trailing commas welcome:
 }
 ```
 
-Different provider per tier:
+Different provider per tier — each tier can be an object with its own `model` /
+`base_url` / `api_key`:
 
 ```json
 {
-  "main": { "model": "gpt-5.4-mini", "base_url": "https://api.openai.com/v1", "api_key": "sk-openai" },
-  "lite": { "model": "deepseek-chat", "base_url": "https://api.deepseek.com/v1", "api_key": "sk-deepseek" },
+  "main":     { "model": "gpt-5.4-mini", "base_url": "https://api.openai.com/v1", "api_key": "sk-openai" },
+  "lite":     { "model": "deepseek-chat", "base_url": "https://api.deepseek.com/v1", "api_key": "sk-deepseek" },
   "advanced": { "model": "claude-opus-4", "base_url": "https://api.anthropic.com", "api_key": "sk-ant" }
 }
 ```
 
-Three tiers, three jobs. `main` is the chat session you talk to. `lite` is the
-cheap lane: a sub-agent spawn resolves it by default, and the completion judge
-stays on it even after a `/model` pick — that job is classification, not
-conversation. An unconfigured `lite` follows `main`, so a one-model setup
-keeps working. `advanced` is the strong lane for the work that deserves it.
+Three tiers, three jobs: `main` is the chat session you talk to, `lite` is the
+cheap lane (sub-agents and the completion judge default to it), `advanced` is
+the strong lane for the work that deserves it. An unconfigured tier follows
+`main`, so a one-model setup keeps working. `/lite <name>` and
+`/advanced <name>` retarget a tier; `/models` lists what is configured.
 
-| Tier | Serves |
-|---|---|
-| `main` | the chat session — the `model` pointer below overrides it |
-| `lite` | sub-agent spawns by default, and the completion judge |
-| `advanced` | the strong lane — a spawn can ask for it by name |
-
-`/lite <name>` and `/advanced <name>` retarget a tier, and the next spawn picks
-the new name up. `/models` lists what is configured; `/focus` parks the chat on
-the `lite` tier for the length of a session.
-
-`/model` switching is stored as a top-level `model` **selection pointer** — a
-separate key that overrides `main` while it is present. A switch never
-rewrites the tier definitions above; only this pointer moves:
-
-```json
-{
-  "main": "gpt-5.4-mini",
-  "model": "gpt-5.4"
-}
-```
-
-The pointer is a bare model name, or an object carrying only the endpoint
-fields that differ from this file's defaults (e.g.
-`"model": { "model": "claude-opus-4", "base_url": "https://api.anthropic.com", "api_key": "sk-ant" }`).
-Bare `/model` opens a picker over the configured models (with a *Clear
-selection* row); `/model <name>` sets one by name. Clearing the selection
-deletes the pointer and falls back to the configured `main`. `lite` and
-`advanced` are never touched by a switch — an unconfigured tier follows the
-effective `main`, which is the pointer while one is set. If a pointer is in
-force at startup, phimint names it in a boot notice.
+`/model` switches the conversation's model for this session only, as a top-level
+`model` selection pointer that overrides `main` without rewriting the tier
+definitions. Bare `/model` opens a picker (with a *Clear selection* row); a
+cleared selection falls back to the configured `main`.
 
 Or pass everything on the command line (see `config.json.example` for the full schema):
 
@@ -200,223 +156,34 @@ cd your-project && phimint
 
 Type a task at the composer — e.g. `add a cached get_user function to the lib` —
 and watch it read the code, edit, compile, and test until green. Keys, approval
-modes, and a full walkthrough live under [Usage](#usage).
+modes, and a full walkthrough live in the [user manual](docs/USAGE.md).
 
-### Run from source
+## Quick reference
 
-Requires a Rust toolchain (edition 2024). Optional: language servers on `PATH`
-(rust-analyzer, typescript-language-server, clangd) for the LSP fast loop;
-`cargo` / `npm` / `make` and friends for whatever project you point it at.
-Everything else comes from crates.io — `cargo build` needs no sibling checkouts.
-
-```bash
-cargo run                                # run straight from the source tree
-cargo run -- -w ../some-project          # point at another workspace
-```
-
-## Usage
-
-```
-phimint [OPTIONS] [COMMAND]
-
-Commands:
-  update             upgrade to the latest release (self-replaces standalone
-                     installs; brew/npm/cargo/winget/scoop installs get the
-                     matching upgrade command instead). `phimint update --check`
-                     reports only.
-
-  uninstall          remove phimint and the data it left behind. The binary goes
-                     back to whichever channel installed it; then ~/.phimint/
-                     (API key, sessions, history, notes) is deleted and the
-                     PATH entry the installer added is dropped — the user-PATH
-                     entry on Windows, the marked block in your shell profile on
-                     Unix. --keep-data leaves ~/.phimint/ alone. --yes skips
-                     the prompt.
-
-  init               write the config skeleton without starting the TUI. The
-                     installer runs `phimint init --if-missing`; an existing
-                     config is never touched.
-
-  config             inspect or edit the config file without starting the TUI.
-                     `config show` prints what phimint resolved with the API key
-                     masked; `config set <key> <value>` writes one member
-                     (api_key, base_url, protocol, main). For api_key, pass `-`
-                     to read the secret from stdin instead of the command line.
-
-  -w, --workspace <PATH>       workspace directory (default: current directory)
-      --model <NAME>           main model for this run only (overrides the
-                              config.json `model` pointer and `main`; never
-                              written back to the file)
-      --lite-model <NAME>      lite model (overrides config.json)
-      --advanced-model <NAME>  advanced model (overrides config.json)
-      --base-url <URL>         API base URL (overrides config.json)
-      --api-key <KEY>          API key (overrides config.json)
-      --protocol <PROTO>       API protocol (default: inferred from model)
-      --config <PATH>          config file path (default: ~/.phimint/config.json)
-      --approval <MODE>        auto (default) / ask / deny
-      --shell-timeout-ms <N>   shell command timeout (default 120000)
-      --session <ID>           session ID (default: auto; reuse to append turns)
-      --resume                 pick a previous session interactively
-      --log-level <LEVEL>      session.log level (default info)
-      --color-scheme <S>       banner colors: auto (default) / dark / light
-      --banner <on|off>        startup banner (default on)
-      --thinking-budget <N>    reasoning token budget (default 8192)
-      --reasoning-effort <E>   none/low/medium/high/xhigh (default medium)
-      --token-budget <N>       context-window token budget (default 210000)
-      --session-retention-days <N>  days to keep session history (default 30)
-      --no-update-check        skip the startup update check
-```
-
-### Interface & interaction
-
-- **Composer & transcript** — fixed bottom composer (multi-line, bracketed paste, CJK double-width aware); output streams token-by-token with markdown rendering. Type `@` for file-path completion, `/` for the skill picker.
-- **Keys**
-
-  | Key | Action |
-  |---|---|
-  | `Enter` | send (also jumps to the newest lines) |
-  | `Ctrl+J` | newline (works on every terminal; `Shift+Enter` too where the Kitty keyboard protocol is reported) |
-  | `Up` / `Down` | recall sent inputs (fish-style: your current draft cycles with them) |
-  | `Alt+Up` / `Alt+Down` | move the cursor inside a multi-line draft |
-  | `Shift+Tab` | toggle approval mode (auto ⇄ ask) |
-  | `Ctrl+O` | expand/collapse thinking blocks and long pasted messages |
-  | `Ctrl+V` | paste a clipboard image (screenshot) — a model that cannot see images is refused |
-  | `Ctrl+Y` | copy the last reply |
-  | `Ctrl+C` | context-sensitive: copy selection → cancel run (a draft that produced nothing comes back to the composer) → clear the composer draft → quit (press twice) |
-  | `Ctrl+D` | quit |
-  | `Esc` | clear selection, else clear the composer |
-  | `PageUp` / `PageDown` | scroll the transcript |
-  | `Ctrl+End` | jump to the newest lines |
-
-- **Mouse** — wheel scrolls; left-drag selects lines; right-click opens a copy menu.
-- **Terminal.app** — turn on **View → Allow Mouse Reporting** or the wheel will not scroll the transcript; without it, page with `fn+Up` / `fn+Down`. This terminal also skips the Kitty keyboard protocol, so it never sees `Cmd+C` as copy — select first, then press `Ctrl+C`, or use the right-click menu.
-- **Approvals**
-
-  | Mode | Behavior |
-  |---|---|
-  | `auto` | everything allowed; write-capable sub-agents write freely too |
-  | `ask` | each write prompts: `y` allow once / `a` allow always / `n` deny |
-  | `deny` | read-only; all writes rejected |
-
-  `Shift+Tab` toggles `auto` ⇄ `ask` mid-session (the status bar shows the
-  current mode); `--approval` picks the starting mode.
-
-### A typical task
-
-```
-you: "add a cached get_user function to the lib"
-1. repo_map for structure → search_content to locate → read_file the relevant code
-2. edit_file / write_file the change
-3. diagnostics for type errors in seconds (LSP fast loop, no recompile)
-4. execute_command cargo check / tests → fix → rerun until green
-5. summarize the diff and report
-```
-
-### A typical multi-agent run
-
-```
-you: "investigate questions X / Y / Z"
-1. spawn_agent × 3 read-only sub-agents (each a narrow slice), main agent ends the turn
-2. while they run, the main agent does nothing — reports are pushed, not polled
-3. reports arrive batched at once (the task panel shows each sub-agent live)
-4. the main agent synthesizes the findings and applies the edits itself — or, for independent work, spawns write-capable sub-agents on disjoint file sets
-```
-
-## Tool surface
-
-| Tool | What it does |
+| Key | Action |
 |---|---|
-| `code_cell` | run code cells in a resident Python session — state (variables, imports, functions) survives across calls; the fast lane for bulk edits, renaming and data wrangling |
-| `read_file` / `write_file` / `edit_file` / `list_files` | file I/O and surgical edits (`edit_file` is atomic with 4-level matching; phi-kernel-tools) |
-| `read_image` | read an image the model can actually see — paste a screenshot with Ctrl+V and the agent looks at it (or point it at a file; phi-kernel-tools) |
-| `execute_command` | shell (builds/tests/anything; streamed line-by-line, timeout + cancel kills the process group; output over the tool budget spills to a file the agent can read back) |
-| `search_content` | ripgrep content search (regex) |
-| `repo_map` | tree-sitter symbol/structure index (multi-language, pull-based context) |
-| `diagnostics` | LSP diagnostics (fast loop without recompiling; degrades to shell) |
-| `verify` | run the project's own compile-level check (`cargo check`, `tsc --noEmit`) and report the compiler's real exit code — the command comes from the project (its config, then a convention it already uses, then the language default), never from the model. Verification is advisory: nothing forces it, and a hand-back trusts an honest report |
-| `update_plan` | structured checklist for complex tasks (display-only, Codex-style; agent-base) |
-| `current_model` | the model serving this session (the agent calls it before answering "which model are you") |
-| `spawn_agent` / `send_message` / `wait_agent` / `list_agents` / `close_agent` | sub-agent primitives (agent-works; preferred pattern: spawn, end turn, await push) |
-| `add_tool` | the agent writes and registers a tool for you (root-only; full confirmation card before anything lands) |
-| `canvas_open` / `canvas_push` / `canvas_close` | design canvas — browser screens with clickable options; one-time consent to open the browser ([`phi-canvas`](https://github.com/hibuka-labs/phi-canvas)) |
-| `ask_user` | terminal picker for concept picks (2–4 candidates, one shot, Esc = skip; you can type a question back instead of picking) |
-| `/connect` · `/tools` · `plugin add` / `plugin remove` | external tool surfaces: MCP servers, script tools, wasm plugin packs (approval ledger per tool, fail-closed) |
+| `Enter` | send |
+| `Ctrl+J` | newline in the composer |
+| `Shift+Tab` | toggle the approval mode (`auto` ⇄ `ask`) |
+| `Up` / `Down` | recall sent inputs |
+| `Ctrl+C` | copy selection → cancel the run → clear the draft → quit |
+| `Ctrl+V` | paste a screenshot |
+| `Esc` | clear the selection, else the composer |
 
-## How it works
+Approval modes: `auto` (everything allowed) · `ask` (confirm each write) ·
+`deny` (read-only). Sub-agents inherit the mode of the main agent.
 
-phimint is a consumer of the [`phi-agent`](https://docs.phiagent.dev/) framework: the agent loop, ReAct, approvals, session event stream and guards all come from the framework (one facade dependency). phimint brings the product shell — system prompt, tool registration, approval wiring, TUI.
+Common commands: `phimint update` · `phimint uninstall` · `phimint init` ·
+`phimint config show` · `phimint --resume`.
 
-- **Push-based fan-in** (agent-works) — sub-agent reports are held on completion and injected as a new turn the instant the main agent's turn ends; progress is display-only (never wakes or interrupts). A task over 10 minutes is hard-stopped with an Error result, so a hung child can always wake the parent. Sub-agents are read-only by default — `write_file` / `edit_file` / `execute_command` stay off their tool surface until write capability is requested for that spawn (`tools: "write"`, or a `coder`/`tester` preset). Write-capable children work disjoint file sets under a file lock (`file locked by <agent>` on collision), and in `ask` every child write is confirmed in a popup.
-- **TUI architecture** — the shell in `phi-agent-tui` runs a background task per agent turn pushing `RuntimeEvent`s over an mpsc channel; the main loop feeds events into the `App` state machine, polls keys and repaints. `src/shell/wire.rs` fills every slot the shell offers, so the wording and the policy stay on this side. Input and events only meet through channels — no shared mutable state, zero intrusion into the agent loop.
-- **Task panel** — the shell's `task_panel.rs` books sub-agent lifecycle (appears on spawn, flips on done, recycled 3s after completion, deferred while the root is busy or you're looking at the panel). Each sub-agent streams into its own buffer so interleaved output never cuts lines.
-- **LSP** — `code-intel` lazily starts one server per language, syncs `didOpen`/`didChange`/`didSave` with cached `publishDiagnostics`, pulled by the `diagnostics` tool. The registry picks the server; code-intel knows nothing about phimint.
-- **Guards** (framework-provided, product-tuned) — reasoning-only spin: two empty turns in a row injects an "act now" nudge and disables thinking; the end-of-turn judge fails open; `MaxTurnsNudgeMiddleware` forces a final answer in the last 3 turns of a 256-turn budget.
-
-## Sessions & observability
-
-Every run lands a session directory under `~/.phimint/sessions/<id>/`:
-
-| File | Contents |
-|---|---|
-| `session.log` | tracing log (via log-core) |
-| `turn_NNN.jsonl` | structured per-turn event stream (tool calls, text deltas, reasoning …) |
-| `frames.txt` | flip-book of TUI frames (colors stripped, layout kept) for offline UI replay |
-| `perf.log` | per-frame render-time CSV (performance regression hunting) |
-| `session_metrics.json` | per-turn token usage and session totals (phi-telemetry) |
-
-Re-running with `--session <id>` appends new turns to the same directory; `--resume` picks one interactively.
-
-Composer history lives in `~/.phimint/input-history.jsonl`, next to the
-`sessions/` directory (owner-only, one global file; `Up` / `Down` recall it
-per workspace).
-
-## Project structure
-
-```
-phimint/
-├── src/
-│   ├── main.rs        # CLI entry (clap), assembly, banner color detection
-│   ├── lib.rs         # module root — the binary is a thin shell over it
-│   ├── cli.rs         # the CLI surface: every flag and subcommand
-│   ├── command.rs     # shell command parsing + risk classification
-│   ├── agent.rs       # system prompt + tool registration + multi-agent/guard/approval wiring
-│   ├── agent/         # agent assembly: build.rs, gate.rs (the verify gate), prompt.rs, spawn_resolve.rs
-│   ├── approval.rs    # two layers: ApprovalPolicy gate + decision handler (TUI queue)
-│   ├── banner.rs      # startup banner (light + dark palettes)
-│   ├── model/         # config, tiers, routing, persistence, the first-run gate
-│   ├── shell/         # the TUI shell: wire.rs fills phi-agent-tui's slots
-│   ├── tools/         # application tool shells (cores live in code-intel / phi-kernel-tools)
-│   │   ├── diagnostics.rs   # LSP diagnostics tool
-│   │   ├── repomap.rs       # repo_map tool
-│   │   ├── ripgrep.rs       # search_content tool
-│   │   └── verify.rs        # the compile-level check behind the verify gate
-│   ├── external/      # the external tool socket: MCP servers, script tools, wasm plugins
-│   ├── session/       # session store, resume, retention
-│   ├── ops/           # uninstall, terminal restore, install-source bookkeeping
-│   ├── update/        # update checker + release manifest
-│   └── verify_ledger.rs # the gate's evidence ledger: is the green light newer than the edit?
-└── Cargo.toml
-```
-
-## Development
-
-```bash
-cargo build            # compile
-cargo test             # all tests (unit tests live in standalone *_tests.rs files)
-cargo clippy           # lint
-```
-
-Tests are split from business code (module-separated tests): `app.rs`, `render.rs` and friends hold logic only; tests sit in `app_tests.rs` etc., `#[cfg(test)]`-isolated from production builds but still inside the crate, so `pub(crate)` members are reachable.
-
-Dependencies are pure crates.io version references. To hack on a sibling crate (phi-agent, phi-tui, …) at the same time, add an uncommitted `[patch.crates-io]` path override (see [CONTRIBUTING.md](CONTRIBUTING.md)). Design notes live in `notes/` (local, not committed); `docs/` holds public-facing documentation and assets.
-
-The README demo GIF is rebuilt from a recorded session: `cargo test frame_reel -- --ignored` writes ANSI frames to `target/reel/`, then `python3 scripts/readme_reel.py` renders them to `docs/assets/readme-demo.gif`.
+Full key map, every flag, the tool surface, session files and internals:
+**[docs/USAGE.md](docs/USAGE.md)** — [中文](docs/USAGE_CN.md).
 
 ## Versioning
 
 phimint is on **0.x**: every released version installs, runs, and self-updates, but the **public API is not
 guaranteed to be backward compatible**. If you use it as a library, pin the exact version
-(`phimint = "=0.12.0"`); API stability is promised from 1.0 onwards.
+(`phimint = "=0.13.0"`); API stability is promised from 1.0 onwards.
 
 Details: [docs/versioning-policy.md](docs/versioning-policy.md).
 
@@ -427,5 +194,7 @@ MIT OR Apache-2.0 — see [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENS
 ## Contact
 
 GitHub Issues — [hibuka-labs/phimint](https://github.com/hibuka-labs/phimint/issues)
+
+If you find phimint useful, a ⭐ helps others discover it.
 
 [中文](README_CN.md)

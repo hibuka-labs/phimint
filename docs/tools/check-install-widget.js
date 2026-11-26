@@ -94,7 +94,7 @@ function makeInstallBlock() {
   });
   block.children.push(platformRow);
   const tabs = new El("div", { class: "install-tabs" });
-  ["curl", "brew", "winget", "scoop", "npm", "cargo"].forEach((c) => {
+  ["curl", "brew", "scoop", "npm", "cargo"].forEach((c) => {
     tabs.children.push(makeButton(c));
   });
   block.children.push(tabs);
@@ -178,7 +178,7 @@ const tabs = block.querySelectorAll(".install-tabs button");
    visual order per platform; the shim has no layout, so the test sorts by
    the same rules the stylesheet encodes. */
 const ORDER = {
-  windows: { winget: 1, scoop: 2, curl: 3, npm: 8, cargo: 9 },
+  windows: { scoop: 1, curl: 2, npm: 8, cargo: 9 },
   macos: { brew: 1, curl: 2, npm: 8, cargo: 9 },
   linux: { curl: 1, npm: 8, cargo: 9 },
 };
@@ -205,16 +205,11 @@ check("macos brew command", hlText(), "brew install hibuka-labs/phimint/phimint"
 
 console.log("\nswitch to Windows:");
 clickPlatform("windows");
-check("windows tabs", visible().join(","), "winget,scoop,curl,npm,cargo");
-check("windows active tab", active(), "winget");
-check("windows winget command", hlText(), "winget install hibuka-labs.phimint");
+check("windows tabs", visible().join(","), "scoop,curl,npm,cargo");
+check("windows active tab", active(), "scoop");
 check("windows platform button marked", platformButtons.find((b) => b.dataset.platform === "windows").classList.contains("on"), true);
 
 const winTabs = tabs;
-winTabs.find((t) => t.dataset.cmd === "scoop").click();
-check("scoop command", hlText(),
-  "scoop bucket add hibuka-labs https://github.com/hibuka-labs/scoop-bucket; scoop install phimint");
-
 winTabs.find((t) => t.dataset.cmd === "curl").click();
 check("windows curl is the PowerShell one", hlText(),
   "irm https://github.com/hibuka-labs/phimint/releases/latest/download/install.ps1 | iex");
