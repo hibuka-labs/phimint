@@ -289,7 +289,11 @@ check "a stale LLM_CONFIG falls through to the first existing default" \
 # the `#` for a comment start: zsh parses `(China)` as a glob group and dies
 # with "unknown file attribute: C" before the installer ever runs (2026-11-21,
 # user report). Paren-free comments keep the line safe either way.
-_documented_parens="$(grep -hE '\| *bash' "$ROOT/README.md" "$ROOT/README_CN.md" | grep -c '(' || true)"
+# The Chinese one-liner lives with the China mirrors (deploy/cn/); on a
+# checkout that carries it, it gets the same paren check as the English one.
+_CN_README="$ROOT/README_CN.md"
+[ -f "$_CN_README" ] || _CN_README="$ROOT/deploy/cn/README.md"
+_documented_parens="$(grep -hE '\| *(PHIMINT_MIRROR=[a-z]+ +)?bash' "$ROOT/README.md" "$_CN_README" 2>/dev/null | grep -c '(' || true)"
 check "the documented shell one-liners carry no parentheses" \
     "$([ "$_documented_parens" = "0" ] && echo 0 || echo 1)"
 

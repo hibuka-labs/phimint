@@ -8,13 +8,14 @@ Built on [phi-agent](https://docs.phiagent.dev/) — the agent runtime ships as 
 
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
 [![Rust](https://img.shields.io/badge/Rust-edition%202024-orange.svg)](https://www.rust-lang.org)
-[![中文](https://img.shields.io/badge/README-中文-blue.svg)](README_CN.md)
 
 ![phimint demo](docs/assets/readme-demo.gif)
 
 *phimint needs one API key in `~/.phimint/config.json` — a one-minute step, see [Quick start](#quick-start).*
 
 Project page: [hibuka-labs.github.io/phimint](https://hibuka-labs.github.io/phimint/) — English / [中文](https://hibuka-labs.github.io/phimint/zh/).
+
+Chinese README and China mirrors: [Gitee](https://gitee.com/chenkangzeng_admin/phimint) · [AtomGit](https://atomgit.com/hibuka-labs/phimint).
 
 ## Features
 
@@ -177,13 +178,13 @@ Common commands: `phimint update` · `phimint uninstall` · `phimint init` ·
 `phimint config show` · `phimint --resume`.
 
 Full key map, every flag, the tool surface, session files and internals:
-**[docs/USAGE.md](docs/USAGE.md)** — [中文](docs/USAGE_CN.md).
+**[docs/USAGE.md](docs/USAGE.md)**. The Chinese manual ships with the China mirrors.
 
 ## Versioning
 
 phimint is on **0.x**: every released version installs, runs, and self-updates, but the **public API is not
 guaranteed to be backward compatible**. If you use it as a library, pin the exact version
-(`phimint = "=0.13.0"`); API stability is promised from 1.0 onwards.
+(`phimint = "=0.14.0"`); API stability is promised from 1.0 onwards.
 
 Details: [docs/versioning-policy.md](docs/versioning-policy.md).
 
@@ -196,5 +197,3 @@ MIT OR Apache-2.0 — see [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENS
 GitHub Issues — [hibuka-labs/phimint](https://github.com/hibuka-labs/phimint/issues)
 
 If you find phimint useful, a ⭐ helps others discover it.
-
-[中文](README_CN.md)

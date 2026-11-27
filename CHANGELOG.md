@@ -7,7 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.13.1] - 2026-11-25
+## [0.14.0] - 2026-11-27
+
+### Added
+
+- **Scoop is a channel, and the install page knows your platform.** The landing
+  pages detect the visitor's platform and put the matching command first; the
+  Scoop bucket carries phimint, so `scoop install phimint` works on Windows
+  next to brew, npm, cargo and the curl one-liner.
+
+- **phimint owns its memory write-path limits.** The framework carries the
+  mechanism and its defaults; the product now sets the caps itself, in one
+  place: the entry hook at 80 characters, an entry body at 3000, the index at
+  10 KB, and 500 stored entries. The numbers are no longer inherited
+  invisibly.
 
 ### Changed
 
@@ -16,12 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   newcomer came for: a single Rust binary, no Node.js or Python to install,
   and a full coding task on a 1-core, 1 GB machine. The second sentence says
   where that comes from — the agent runtime is [phi-agent](https://docs.phiagent.dev/),
-  a framework released on its own. Both READMEs then keep only what earns its
+  a framework released on its own. The README then keeps only what earns its
   place: the feature list, the install path, two worked examples and a short
   quick reference. The full reference — every flag, every key, the tool
   surface, the session files and the internal layout — moved to
-  `docs/USAGE.md` and `docs/USAGE_CN.md`. The English README is 229 lines; it
-  was 392.
+  `docs/USAGE.md`. The English README is 229 lines; it was 392.
 
 - **The landing page says the same thing.** The hero line on both the English
   and the Chinese page now carries that sentence. The Chinese page keeps its
@@ -30,13 +42,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **winget is off the pages.** The winget manifest is not upstream in
   `microsoft/winget-pkgs` yet, so `winget install` still fails. The landing
-  pages and both READMEs no longer offer it as a channel; the five that work
+  pages and the README no longer offer it as a channel; the five that work
   (curl, brew, scoop, npm, cargo) do.
 
 - **The GitHub repository says the same thing.** The About box carried a list
   of mechanisms ("multi-agent fan-out, LSP-powered fast inner loop…"); it now
   carries the one-liner, and the topic list gained `ai-agent`, `coding-agent`,
   `mcp` and `codeact`.
+
+- **GitHub speaks English; the China mirrors speak Chinese.** GitHub keeps the
+  English README and manual. The Chinese README and manual now ship with the
+  Gitee and AtomGit mirrors — the AtomGit copy carries that platform's badge
+  and a link back to GitHub — and the English README points at both mirrors in
+  one line.
 
 ### Fixed
 
@@ -46,6 +64,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   notice at the top of the transcript, which is exactly where an unscrollable
   view cannot reach it. The recovery path (`fn+Up` / `fn+Down`) now also
   rotates in the always-visible tips band.
+
+- **Scrolling no longer flips your input history.** On FinalShell (macOS) one
+  wheel gesture arrives as a wheel event plus a synthesized bare ↑/↓; the arrow
+  half reached the composer and jumped to an old input, so scrolling read as
+  "the composer suddenly holds yesterday's line". phimint now drops the arrows
+  that ride in with a wheel gesture, and leaves real keystrokes — and
+  Alt+↑/↓ cursor movement — alone.
 
 ## [0.13.0] - 2026-11-23
 

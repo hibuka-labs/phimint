@@ -2,7 +2,7 @@
 
 The complete reference: commands, keys, approvals, the tool surface,
 session files and the internal layout. Install and first run live in the
-[README](../README.md) — [中文版](USAGE_CN.md)
+[README](../README.md) — [中文版](https://gitee.com/chenkangzeng_admin/phimint/blob/main/docs/USAGE_CN.md)
 
 ## Command line
 
