@@ -140,7 +140,14 @@ def sync(target, check_only):
         (clone / "README.md").write_text(readme)
         (clone / "docs").mkdir(exist_ok=True)
         (clone / "docs" / "USAGE_CN.md").write_text(usage)
-        git("add", "README.md", "docs/USAGE_CN.md", cwd=clone)
+        # The AtomGit org profile renders one file of one repo — the org index
+        # (Chinese family listing) lives here so GitHub never carries it.
+        org_index = CN_DIR.parent / "brand" / "ORG_README.md"
+        add_paths = ["README.md", "docs/USAGE_CN.md"]
+        if target == "atomgit" and org_index.is_file():
+            (clone / "docs" / "ORG.md").write_text(org_index.read_text())
+            add_paths.append("docs/ORG.md")
+        git("add", *add_paths, cwd=clone)
         dirty = git("status", "--porcelain", cwd=clone)
         if dirty:
             git(
