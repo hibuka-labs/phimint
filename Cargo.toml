@@ -1,6 +1,6 @@
 [package]
 name = "phimint"
-version = "0.13.0"
+version = "0.15.0"
 edition = "2024"
 description = "phimint — a terminal AI coding agent built on phi-agent. Not just good at chat: it reads the code, changes it, compiles and tests until the job is done."
 license = "MIT OR Apache-2.0"
@@ -31,9 +31,9 @@ code-exec = ["phi-agent/code-exec", "dep:phi-ns", "dep:phi-ns-desktop"]
 # everything else the product needs (llm_trait, create_provider, guard,
 # max_turns_nudge, registry snapshots, fan-in router) — no direct deps on
 # agent-base / agent-works / phi-kernel-tools / llm-unified.
-phi-agent = { version = "0.24.1", features = ["shell", "multi-agent", "skill", "memory", "plugin-wasm"] }
+phi-agent = { version = "0.25.0", features = ["shell", "multi-agent", "skill", "memory", "plugin-wasm"] }
 # Context rotation tools (notes, history, handoff) — the I/O layer.
-phi-kernel-tools = { version = "0.16.1", features = ["context", "shell"] }
+phi-kernel-tools = { version = "0.17.0", features = ["context", "shell"] }
 # The runtime kernel's guard contract types (`ReactLoopGuard`, `GuardCtx`,
 # `GuardDecision`, the engine's notice/provider handles) — named directly by
 # `src/model/lite_pin.rs` to pin the judge to its tier without a framework
@@ -47,7 +47,7 @@ phi-tui = { version = "0.5.0" }
 # is rejected by `cargo publish`); `path` keeps local development resolving to
 # the sibling checkout. The release script strips `path` and resolves the
 # crate from crates.io.
-phi-agent-tui = { version = "0.5.0" }
+phi-agent-tui = { version = "0.6.0" }
 # Language intelligence (lsp/lang/repomap/ripgrep/diagnostics cores), extracted
 # from src/lsp.rs + src/lang.rs + src/tools cores — the product keeps the Tool
 # shells. Features declared explicitly per the distillation plan.

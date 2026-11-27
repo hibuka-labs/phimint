@@ -7,9 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.14.0] - 2026-11-27
+## [0.15.0] - 2026-11-27
 
 ### Added
+
+- **AtomGit is a release channel.** Every release now uploads its assets to
+  AtomGit alongside GitHub and Gitee — the same binaries, manifest, installers
+  and checksums — and the release run keeps the China mirrors in step.
 
 - **Scoop is a channel, and the install page knows your platform.** The landing
   pages detect the visitor's platform and put the matching command first; the
@@ -55,6 +59,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Gitee and AtomGit mirrors — the AtomGit copy carries that platform's badge
   and a link back to GitHub — and the English README points at both mirrors in
   one line.
+
+- **The family moves with the product.** `phi-agent` 0.25.0, `phi-agent-tui`
+  0.6.0 and `phi-kernel-tools` 0.17.0 — the release line that carries the
+  memory write-path limits and the scroll-arrow guard into phimint.
 
 ### Fixed
 
